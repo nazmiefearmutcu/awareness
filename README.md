@@ -1,5 +1,12 @@
 # Awareness
 
+[![Release](https://img.shields.io/github/v/release/nazmiefearmutcu/awareness?label=release&color=blue)](https://github.com/nazmiefearmutcu/awareness/releases)
+[![License: MIT](https://img.shields.io/github/license/nazmiefearmutcu/awareness?color=blue)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/nazmiefearmutcu/awareness?style=flat&logo=github)](https://github.com/nazmiefearmutcu/awareness/stargazers)
+[![Python](https://img.shields.io/badge/python-3.11%2B-3776ab?logo=python&logoColor=white)](https://python.org)
+[![Storage](https://img.shields.io/badge/storage-Apache%20Iceberg-1f6bff)](https://iceberg.apache.org/)
+[![Query](https://img.shields.io/badge/query-DuckDB-fff000?logo=duckdb&logoColor=black)](https://duckdb.org/)
+
 **Public text internet awareness engine.** Backfill ("BODY") any historical
 date range from the public text web up to now, and run a live tail ("TAIL")
 that captures newly published public text until you stop it.
