@@ -17,7 +17,7 @@ dependencies = [
   "anyio>=4.4",
   "aiosqlite>=0.20",
   # storage / data
-  "SQLAlchemy>=2.0",
+  "SQLAlchemy>=2.0.50",
   "pyarrow>=16.0",
   "duckdb>=1.0.0",
   "pyiceberg[sql-sqlite]>=0.7.0",
