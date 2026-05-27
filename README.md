@@ -10,6 +10,22 @@ politeness applies to live fetches.
 
 ---
 
+## Research Workbench (UI)
+
+Awareness ships with a built-in static SPA served from the FastAPI control surface at `/`. Start it with `awareness-api` (default port `8085`) and open `http://127.0.0.1:8085/` — no separate build step.
+
+| Dashboard | Captures |
+| --- | --- |
+| ![Dashboard with stat tiles for total captures, distinct hashes, dedup folds, recent jobs; live capture state and recent jobs list](docs/screenshots/01-dashboard.png) | ![Captures browser with full-text search, source/domain/date filters, paginated chronological list](docs/screenshots/02-captures.png) |
+
+| Jobs | Search |
+| --- | --- |
+| ![Jobs view: backfill and tail runs with state, progress, and captures-emitted counters](docs/screenshots/03-jobs.png) | ![BM25 ranked full-text search with snippet highlighting across the corpus](docs/screenshots/04-search.png) |
+
+Single-process Python + FastAPI + a hand-written vanilla SPA in `src/awareness/api/web/`. Five sections (Dashboard / Captures / Jobs / Tail / Settings) with keyboard shortcuts (`1`–`5`) and a `⌘K` command palette.
+
+---
+
 ## Architecture
 
 ```
