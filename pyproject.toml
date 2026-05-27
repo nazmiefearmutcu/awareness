@@ -28,7 +28,7 @@ dependencies = [
   "feedparser>=6.0.11",
   "lxml>=5.2",
   "langdetect>=1.0.9",
-  "xxhash>=3.4",
+  "xxhash>=3.7.0",
   "mmh3>=4.1",
   "tldextract>=5.1",
   # cli / api / obs
