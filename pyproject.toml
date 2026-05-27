@@ -11,7 +11,7 @@ dependencies = [
   # config / models
   "pydantic>=2.7",
   "pydantic-settings>=2.3",
-  "PyYAML>=6.0.1",
+  "PyYAML>=6.0.3",
   # async / http
   "httpx>=0.27",
   "anyio>=4.4",
