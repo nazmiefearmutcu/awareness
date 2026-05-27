@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+title: "Awareness — local-first public-text ingestion engine"
+message: "If you use this software, please cite it using the metadata below."
+type: software
+authors:
+  - alias: nazmiefearmutcu
+    given-names: Aylin
+    website: https://github.com/nazmiefearmutcu
+repository-code: https://github.com/nazmiefearmutcu/awareness
+url: https://github.com/nazmiefearmutcu/awareness
+license: MIT
+version: 0.1.0
+date-released: 2026-05-27
+keywords:
+  - common-crawl
+  - fineweb
+  - rss
+  - gdelt
+  - apache-iceberg
+  - duckdb
+  - web-ingestion
+  - data-pipeline
+abstract: >-
+  Awareness is a local-first public-text ingestion engine. It backfills
+  any historical date range from Common Crawl and HuggingFace FineWeb,
+  and live-tails RSS / sitemaps / GDELT for fresh items, writing
+  everything to Apache Iceberg on local disk for query via DuckDB or any
+  Iceberg-aware engine. Single Python process, no cluster required.
