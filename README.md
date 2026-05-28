@@ -35,6 +35,35 @@ Single-process Python + FastAPI + a hand-written vanilla SPA in `src/awareness/a
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    user(["user / CLI"]) -->|plan request| planner[Planner]
+    planner -->|partitions| state[(Tasks<br/>state DB)]
+    state --> worker[Worker Engine<br/>asyncio]
+    worker -->|async runs partition| adapters
+
+    subgraph adapters[Source Adapters]
+      cc[Common Crawl<br/>WET / CDX / WARC]
+      fw[HuggingFace<br/>FineWeb / FineWeb2]
+      rss[Sitemap / RSS / Atom]
+      tail[Tail recrawl<br/>politeness]
+      gd[GDELT]
+    end
+
+    adapters -->|DocCapture| norm[Normalize → Dedup<br/>xxhash + 64-bit simhash<br/>pigeonhole near-dup]
+    norm --> jsonl[JSONL staging atomic<br/>data/jsonl/captures/Y/M/D/]
+    jsonl -.optional copy.-> iceberg[(Apache Iceberg<br/>PyIceberg<br/>data/iceberg/awareness/captures/)]
+    iceberg --> duckdb[DuckDB range query<br/>awareness inspect / counts]
+
+    classDef sourceNode fill:#1f6bff15,stroke:#1f6bff,color:#1f6bff
+    classDef storageNode fill:#d4a57420,stroke:#d4a574,color:#d4a574
+    class cc,fw,rss,tail,gd sourceNode
+    class state,iceberg storageNode
+```
+
+<details>
+<summary>ASCII fallback diagram (for terminal viewers)</summary>
+
 ```
                  ┌──────────────────────────┐
    user/CLI ────►│        Planner          │── partitions ──┐
@@ -73,6 +102,7 @@ Single-process Python + FastAPI + a hand-written vanilla SPA in `src/awareness/a
                  │   DuckDB ── range query  │  CLI: `awareness inspect / counts`
                  └──────────────────────────┘
 ```
+</details>
 
 ### Layers
 
