@@ -7,9 +7,7 @@
 [![Storage](https://img.shields.io/badge/storage-Apache%20Iceberg-1f6bff)](https://iceberg.apache.org/)
 [![Query](https://img.shields.io/badge/query-DuckDB-fff000?logo=duckdb&logoColor=black)](https://duckdb.org/)
 
-**Public text internet awareness engine.** Backfill ("BODY") any historical
-date range from the public text web up to now, and run a live tail ("TAIL")
-that captures newly published public text until you stop it.
+**Ingest the public web (Common Crawl + HuggingFace FineWeb + RSS + GDELT) onto your laptop and query it like a normal table afterwards.** Backfill ("BODY") any historical date range, and run a live tail ("TAIL") that captures newly published public text until you stop it. Single Python process — no Spark, no Kafka, no cloud account.
 
 Stores **text and text-oriented metadata only**. No images, no binary media,
 no login-gated content, no paywall bypass. Robots.txt is respected; per-domain
