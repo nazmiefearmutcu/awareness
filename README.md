@@ -19,13 +19,20 @@ politeness applies to live fetches.
 
 Awareness ships with a built-in static SPA served from the FastAPI control surface at `/`. Start it with `awareness-api` (default port `8085`) and open `http://127.0.0.1:8085/` — no separate build step.
 
-| Dashboard | Captures |
-| --- | --- |
-| ![Dashboard with stat tiles for total captures, distinct hashes, dedup folds, recent jobs; live capture state and recent jobs list](docs/screenshots/01-dashboard.png) | ![Captures browser with full-text search, source/domain/date filters, paginated chronological list](docs/screenshots/02-captures.png) |
+#### Dashboard
+![Dashboard with KPI tiles for total captures, distinct hashes, dedup folds, recent jobs; live capture state pulse; recent backfill and tail runs with progress; live activity feed of newly captured documents](docs/screenshots/01-dashboard.png)
 
-| Jobs | Search |
-| --- | --- |
-| ![Jobs view: backfill and tail runs with state, progress, and captures-emitted counters](docs/screenshots/03-jobs.png) | ![BM25 ranked full-text search with snippet highlighting across the corpus](docs/screenshots/04-search.png) |
+#### Captures
+![Captures browser with full-text search box, source / domain / date filters, paginated chronological list of stored documents](docs/screenshots/02-captures.png)
+
+#### Jobs
+![Jobs view: backfill and tail runs with state badges, progress bars, tasks completed counters, docs emitted and folded counts](docs/screenshots/03-jobs.png)
+
+#### Tail (live capture)
+![Tail page hero showing running state, fetched feeds with last-seen timestamps and new-items counts, queue progress metrics across pending / fetching / completed / docs captured / folded buckets](docs/screenshots/04-tail.png)
+
+#### Settings
+![Settings page with backfill submission form, source toggles, language filters, project / data directory paths](docs/screenshots/05-settings.png)
 
 Single-process Python + FastAPI + a hand-written vanilla SPA in `src/awareness/api/web/`. Five sections (Dashboard / Captures / Jobs / Tail / Settings) with keyboard shortcuts (`1`–`5`) and a `⌘K` command palette.
 
