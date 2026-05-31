@@ -1,0 +1,25 @@
+name: Docs request
+description: Request a documentation fix, recipe, or clarification.
+title: "[docs] "
+labels: ["documentation"]
+body:
+  - type: textarea
+    id: page
+    attributes:
+      label: Page or command
+      description: Link to the page, section, CLI command, or config key that needs work.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is confusing or missing?
+    validations:
+      required: true
+  - type: textarea
+    id: suggested_fix
+    attributes:
+      label: Suggested fix
+      description: Optional wording, example command, SQL recipe, or screenshot.
+    validations:
+      required: false

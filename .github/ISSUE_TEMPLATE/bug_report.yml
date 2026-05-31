@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a reproducible Awareness defect.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is wrong, in one or two sentences?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include exact CLI/API commands, config values, and fixture paths when possible.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and logs
+      description: Paste the shortest log excerpt that proves the failure.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: "main@<sha>, release tag, or pip version"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Planner
+        - Worker engine
+        - Source adapter
+        - Dedup / normalization
+        - Storage
+        - API / UI
+        - Docs
+        - Other
+    validations:
+      required: true

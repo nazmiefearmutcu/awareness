@@ -1,6 +1,7 @@
 # Awareness
 
 [![Release](https://img.shields.io/github/v/release/nazmiefearmutcu/awareness?label=release&color=blue)](https://github.com/nazmiefearmutcu/awareness/releases)
+[![CI](https://github.com/nazmiefearmutcu/awareness/actions/workflows/ci.yml/badge.svg)](https://github.com/nazmiefearmutcu/awareness/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/nazmiefearmutcu/awareness?color=blue)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/nazmiefearmutcu/awareness?style=flat&logo=github)](https://github.com/nazmiefearmutcu/awareness/stargazers)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776ab?logo=python&logoColor=white)](https://python.org)

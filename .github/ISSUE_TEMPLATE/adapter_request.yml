@@ -1,0 +1,56 @@
+name: Source adapter request
+description: Propose or scope a new public-text source adapter.
+title: "[adapter] "
+labels: ["enhancement", "adapter"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for adapters that emit canonical `DocCapture` records while respecting robots.txt, rate limits, and public-text-only boundaries.
+  - type: input
+    id: source
+    attributes:
+      label: Source
+      description: Name and URL of the public corpus, feed, sitemap, API, or archive.
+      placeholder: "Example: arXiv Atom feed, SEC press releases, local RSS index"
+    validations:
+      required: true
+  - type: dropdown
+    id: source_type
+    attributes:
+      label: Source type
+      options:
+        - RSS / Atom
+        - Sitemap
+        - Public API
+        - Public archive
+        - Static fixture
+        - Other public text source
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: Sample input and expected DocCapture fields
+      description: Include a small sample URL or payload plus the expected title, text, domain, timestamps, and language fields.
+      placeholder: |
+        URL:
+        Expected capture_id/doc_id strategy:
+        Expected title:
+        Expected timestamp field:
+    validations:
+      required: true
+  - type: textarea
+    id: politeness
+    attributes:
+      label: Politeness and access notes
+      description: Confirm robots.txt behavior, crawl-delay, API terms, auth requirements, and rate limits.
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Fixture test plan
+      description: Describe the fixture-based test that proves this adapter emits canonical DocCapture records.
+    validations:
+      required: true
