@@ -8,14 +8,39 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
 
 import httpx
 
 from awareness.obs.logging import get_logger
+from awareness.util.urls import is_public_http_url
 
 logger = get_logger("util.robots")
+
+
+async def _get_public_robots_url(
+    client: httpx.AsyncClient,
+    url: str,
+    user_agent: str,
+    *,
+    max_redirects: int = 10,
+) -> httpx.Response | None:
+    """Fetch robots.txt while validating each redirect stays public."""
+    current_url = url
+    for _ in range(max_redirects + 1):
+        if not is_public_http_url(current_url):
+            return None
+        response = await client.get(current_url, headers={"User-Agent": user_agent})
+        if not response.is_redirect:
+            return response
+
+        location = response.headers.get("Location")
+        if not location:
+            return response
+        current_url = urljoin(str(response.url), location)
+
+    return None
 
 
 @dataclass
@@ -42,7 +67,7 @@ class RobotsCache:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=self._timeout,
-                follow_redirects=True,
+                follow_redirects=False,
                 headers={"Accept": "text/plain, */*;q=0.1"},
             )
         return self._client
@@ -66,8 +91,10 @@ class RobotsCache:
         crawl_delay: float | None = None
         try:
             client = await self._client_lazy()
-            resp = await client.get(url, headers={"User-Agent": user_agent})
-            if resp.status_code == 200 and resp.text:
+            resp = await _get_public_robots_url(client, url, user_agent)
+            if resp is None:
+                rp.parse([])
+            elif resp.status_code == 200 and resp.text:
                 rp.parse(resp.text.splitlines())
                 # crawl-delay isn't first-class in RobotFileParser; emulate.
                 cd = rp.crawl_delay(user_agent)

@@ -1,6 +1,8 @@
 """URL canonicalization tests."""
 
-from awareness.util.urls import canonical_url, domain_of, is_http_url
+import socket
+
+from awareness.util.urls import canonical_url, domain_of, is_http_url, is_public_http_url
 
 
 def test_canonical_url_lowercases_scheme_host_and_strips_default_port() -> None:
@@ -41,3 +43,31 @@ def test_is_http_url() -> None:
     assert is_http_url("http://x.test")
     assert not is_http_url("ftp://x.test")
     assert not is_http_url("")
+
+
+def test_is_public_http_url_rejects_internal_ip_literals() -> None:
+    assert not is_public_http_url("http://127.0.0.1:8000/admin")
+    assert not is_public_http_url("http://[::1]:8000/admin")
+    assert not is_public_http_url("http://169.254.169.254/latest/meta-data/")
+    assert not is_public_http_url("http://10.0.0.5/admin")
+    assert not is_public_http_url("http://192.168.1.10/admin")
+
+
+def test_is_public_http_url_rejects_dns_names_that_resolve_private(monkeypatch) -> None:
+    def fake_getaddrinfo(host: str, port: int | None, *, type: socket.SocketKind) -> list[tuple]:
+        assert host == "attacker.example"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port or 80))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    assert not is_public_http_url("https://attacker.example/news")
+
+
+def test_is_public_http_url_allows_dns_names_that_resolve_public(monkeypatch) -> None:
+    def fake_getaddrinfo(host: str, port: int | None, *, type: socket.SocketKind) -> list[tuple]:
+        assert host == "news.example"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    assert is_public_http_url("https://news.example/article")
