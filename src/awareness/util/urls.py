@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import tldextract
-
 
 # Tracking params that should be stripped during canonicalization.
 _TRACKING_PARAMS: frozenset[str] = frozenset(
@@ -106,3 +107,47 @@ def is_http_url(url: str | None) -> bool:
     except (ValueError, AttributeError):
         return False
     return scheme in ("http", "https")
+
+
+def is_public_http_url(url: str | None) -> bool:  # noqa: PLR0911
+    """Return whether ``url`` is HTTP(S) and resolves only to public IPs.
+
+    This is intended for fetch paths that consume untrusted discovered URLs. It
+    rejects localhost names, IP literals, and DNS results that are loopback,
+    private, link-local, multicast, reserved, unspecified, or otherwise not
+    globally routable.
+    """
+    if not is_http_url(url):
+        return False
+    try:
+        parts = urlsplit(url or "")
+        host = parts.hostname
+        port = parts.port
+    except (ValueError, AttributeError):
+        return False
+    if not host:
+        return False
+
+    host = host.rstrip(".").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        pass
+
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+        infos = socket.getaddrinfo(ascii_host, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError, ValueError):
+        return False
+
+    addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    for info in infos:
+        try:
+            addresses.add(ipaddress.ip_address(info[4][0]))
+        except (IndexError, ValueError):
+            return False
+
+    return bool(addresses) and all(addr.is_global for addr in addresses)
