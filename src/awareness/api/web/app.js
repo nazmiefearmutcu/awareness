@@ -18,6 +18,10 @@ function el(tag, props, ...children) {
       else if (k === "dataset") for (const [dk, dv] of Object.entries(v)) node.dataset[dk] = dv;
       else if (k === "style") Object.assign(node.style, v);
       else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2), v);
+      else if (k === "href") {
+        const href = safeHrefAttribute(v);
+        if (href) node.setAttribute(k, href);
+      }
       else node.setAttribute(k, v === true ? "" : String(v));
     }
   }
@@ -42,6 +46,28 @@ const ago = (iso, short = true) => {
   return short ? Math.round(d / 86400) + "d" : Math.round(d / 86400) + "d ago";
 };
 const isoDay = (d) => new Date(d).toISOString().slice(0, 10);
+
+function isHttpUrl(url) {
+  return url.protocol === "http:" || url.protocol === "https:";
+}
+
+function safeHrefAttribute(value) {
+  try {
+    const raw = String(value);
+    return isHttpUrl(new URL(raw, window.location.href)) ? raw : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function safeOutboundHref(value) {
+  try {
+    const url = new URL(String(value));
+    return isHttpUrl(url) ? url.href : null;
+  } catch (_) {
+    return null;
+  }
+}
 
 // ── Toast ─────────────────────────────────────────────────────
 let toastTimer;
@@ -403,9 +429,14 @@ async function openReader(cid) {
     const span = el("span");
     span.appendChild(el("span", { class: "b-key", text: label }));
     if (opts.link) {
-      const a = el("a", { href: value, target: "_blank", rel: "noopener" });
-      a.textContent = value;
-      span.appendChild(a);
+      const href = safeOutboundHref(value);
+      if (href) {
+        const a = el("a", { href, target: "_blank", rel: "noopener" });
+        a.textContent = value;
+        span.appendChild(a);
+      } else {
+        span.appendChild(document.createTextNode(String(value)));
+      }
     } else {
       span.appendChild(document.createTextNode(String(value)));
     }
