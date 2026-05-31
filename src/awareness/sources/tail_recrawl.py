@@ -12,7 +12,8 @@ Politeness:
 
 from __future__ import annotations
 
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
+from urllib.parse import urljoin
 
 import httpx
 
@@ -26,14 +27,16 @@ from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
 from awareness.util.hashing import (
     capture_id_for,
-    content_hash as compute_content_hash,
     doc_id_for,
     simhash64,
+)
+from awareness.util.hashing import (
+    content_hash as compute_content_hash,
 )
 from awareness.util.ratelimit import PerDomainLimiter
 from awareness.util.robots import RobotsCache
 from awareness.util.timeutil import parse_http_date, utcnow
-from awareness.util.urls import canonical_url, domain_of, is_http_url
+from awareness.util.urls import canonical_url, domain_of, is_public_http_url
 
 logger = get_logger("sources.tail_recrawl")
 
@@ -46,16 +49,15 @@ class TailRecrawlAdapter(Adapter):
         # adapter and the tail engine enqueue them as sub-partitions.
         return []
 
-    async def run_partition(
+    async def run_partition(  # noqa: PLR0911
         self,
         partition: PartitionSpec,
         context: AdapterContext,
     ) -> AsyncIterator[DocCapture]:
         url = partition.payload["url"]
         discovery_channel = partition.payload.get("discovery_channel", "tail")
-        source_kind = partition.payload.get("source_kind", "rss")
-
-        if not is_http_url(url):
+        if not is_public_http_url(url):
+            get_metrics().inc("tail.blocked_internal_url")
             return
         dom = domain_of(url)
         if not dom:
@@ -80,10 +82,13 @@ class TailRecrawlAdapter(Adapter):
             try:
                 async with httpx.AsyncClient(
                     timeout=settings.request_timeout_sec,
-                    follow_redirects=True,
+                    follow_redirects=False,
                     headers={"User-Agent": context.user_agent},
                 ) as client:
-                    r = await client.get(url)
+                    r = await _get_public_url(client, url)
+                    if r is None:
+                        get_metrics().inc("tail.blocked_internal_url", labels={"domain": dom})
+                        return
             except httpx.HTTPError as exc:
                 logger.warning("tail_fetch_failed", url=url, err=str(exc))
                 get_metrics().inc("tail.fetch_errors", labels={"domain": dom})
@@ -144,12 +149,36 @@ class TailRecrawlAdapter(Adapter):
         )
 
 
+async def _get_public_url(client: httpx.AsyncClient, url: str, *, max_redirects: int = 10) -> httpx.Response | None:
+    """Fetch a public URL while validating every redirect target.
+
+    ``httpx`` follows redirects transparently when ``follow_redirects=True``,
+    which means an attacker-controlled public URL can redirect the crawler to an
+    internal service. Keep redirect handling explicit so each hop is checked
+    before any request is sent.
+    """
+    current_url = url
+    for _ in range(max_redirects + 1):
+        if not is_public_http_url(current_url):
+            return None
+        response = await client.get(current_url)
+        if not response.is_redirect:
+            return response
+
+        location = response.headers.get("Location")
+        if not location:
+            return response
+        current_url = urljoin(str(response.url), location)
+
+    return None
+
+
 _LIMITER: PerDomainLimiter | None = None
 _ROBOTS: RobotsCache | None = None
 
 
 def _global_limiter(settings) -> PerDomainLimiter:
-    global _LIMITER
+    global _LIMITER  # noqa: PLW0603
     if _LIMITER is None:
         _LIMITER = PerDomainLimiter(
             concurrency=settings.per_domain_concurrency,
@@ -159,7 +188,7 @@ def _global_limiter(settings) -> PerDomainLimiter:
 
 
 def _global_robots(settings) -> RobotsCache:
-    global _ROBOTS
+    global _ROBOTS  # noqa: PLW0603
     if _ROBOTS is None:
         _ROBOTS = RobotsCache(ttl=settings.robots_cache_ttl_sec)
     return _ROBOTS
