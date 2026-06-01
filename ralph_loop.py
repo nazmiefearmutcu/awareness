@@ -33,9 +33,12 @@ def get_next_task() -> str | None:
             progress_content = f.read()
             
     for name, desc in tasks:
-        # If the task name is not mentioned as completed in the logs
-        search_str = f"Completed Task {len(tasks)}" # Fallback / placeholder
-        if name not in progress_content and "Completed " + name not in progress_content:
+        is_completed = False
+        for line in progress_content.splitlines():
+            if "Completed" in line and name in line:
+                is_completed = True
+                break
+        if not is_completed:
             return f"Task: {name} - Description: {desc.strip()}"
             
     return None
