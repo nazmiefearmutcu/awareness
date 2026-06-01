@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -35,6 +36,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from awareness.cli import banner
 from awareness.config import get_settings, reset_settings
 from awareness.obs.logging import configure_logging, get_logger
 from awareness.obs.metrics import get_metrics
@@ -115,12 +117,39 @@ BANNER = r"""
 /_/   \_\/     /_/   \_|_| \_\____|_| \_|____|____/____/ 
 """
 
+def _app_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("awareness")
+    except Exception:
+        return "0.1.0"
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        rprint(
+            f"[bold cyan]awareness[/bold cyan] v{_app_version()}  "
+            "·  public text internet awareness engine"
+        )
+        raise typer.Exit()
+
+
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context) -> None:
+def main(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        None,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the Awareness version and exit.",
+    ),
+) -> None:
     """Awareness — public text internet awareness engine"""
     if ctx.invoked_subcommand is None:
-        rprint("[bold cyan]" + BANNER + "[/bold cyan]")
-        rprint(ctx.get_help())
+        console.print(banner.render_intro(_quickstart_context()))
         raise typer.Exit()
 
 
@@ -130,6 +159,56 @@ def _bootstrap() -> tuple[StateDB, Planner]:
     state = StateDB(settings.state_db_url or "sqlite:///awareness.sqlite")
     state.init()
     return state, Planner(state)
+
+
+def _light_state() -> StateDB:
+    """Open the state DB for a read-only peek WITHOUT configuring stdout logging
+    or building the adapter registry — keeps the intro & shell prompt noise-free."""
+    settings = get_settings()
+    state = StateDB(settings.state_db_url or "sqlite:///awareness.sqlite")
+    state.init()
+    return state
+
+
+def _default_api_port() -> int:
+    """The port the API status indicators probe (honours AW_API_PORT, else 8085)."""
+    try:
+        return int(os.environ.get("AW_API_PORT", "8085"))
+    except (TypeError, ValueError):
+        return 8085
+
+
+def _quickstart_context() -> dict[str, Any]:
+    """Cheap signals powering the intro headline + status chips.
+
+    Never raises — the banner must render even on a pristine or broken setup.
+    """
+    ctx: dict[str, Any] = {
+        "initialized": False,
+        "jobs": 0,
+        "docs": None,
+        "api_running": False,
+        "tail_running": False,
+        "cloud": False,
+    }
+    try:
+        settings = get_settings()
+        ctx["cloud"] = bool(settings.enable_iceberg) and _is_cloud_path(settings.iceberg_warehouse)
+        state_file = settings.data_dir / "state" / "awareness.sqlite" if settings.data_dir else None
+        ctx["initialized"] = bool(state_file and state_file.exists())
+        ctx["api_running"] = _get_api_pid() is not None or _is_port_active("127.0.0.1", _default_api_port())
+        if ctx["initialized"]:
+            try:
+                state = _light_state()
+                metrics = _query_db_metrics(state)
+                ctx["jobs"] = metrics.get("jobs_count", 0)
+                ctx["docs"] = metrics.get("total_docs_emitted", 0)
+                ctx["tail_running"] = bool(state.get_tail().get("running"))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ctx
 
 
 @app.command()
@@ -239,7 +318,7 @@ def start(
     warehouse: str = typer.Option(None, "--warehouse", help="S3 bucket / warehouse path (e.g. s3://bucket/path)"),
 ) -> None:
     """Start the background Awareness API server (and optional tail daemon)."""
-    rprint("[bold cyan]" + BANNER + "[/bold cyan]")
+    console.print(banner.render_banner())
 
     if data_dir:
         os.environ["AW_DATA_DIR"] = str(data_dir.resolve())
@@ -325,6 +404,13 @@ def start(
         rprint(f"Dashboard available at: [bold][blue]http://{host}:{port}/[/blue][/bold]")
         if tail:
             _trigger_tail_start(host, port)
+        rprint(
+            "\n[dim]Next:[/dim] "
+            "[bold cyan]awareness shell[/bold cyan] (control center) · "
+            "[bold cyan]awareness status[/bold cyan] · "
+            "[bold cyan]awareness tail status[/bold cyan] · "
+            "[bold cyan]awareness logs -f[/bold cyan]"
+        )
     else:
         rprint("[yellow]⚠ API server started but port check timed out. It may still be booting.[/yellow]")
 
@@ -2721,102 +2807,240 @@ def cloud_status() -> None:
             rprint(f"    Folder Name:             Awareness Captures")
 
 
+# ── interactive shell (full REPL control center) ─────────────────────────
+_REPL_META = {"help", "?", "exit", "quit", "q", "clear", "cls", "commands", "menu"}
+
+
+def _shell_click_command() -> Any:
+    """Compile the Typer app to a Click command so the REPL gets every command."""
+    from typer.main import get_command
+
+    return get_command(app)
+
+
+def _shell_command_names(click_cmd: Any) -> list[str]:
+    try:
+        return sorted(click_cmd.commands.keys())
+    except Exception:
+        return []
+
+
+def _shell_subcommands(click_cmd: Any, group: str) -> list[str]:
+    try:
+        grp = click_cmd.commands.get(group)
+        return sorted(grp.commands.keys())
+    except Exception:
+        return []
+
+
+def _setup_shell_readline(click_cmd: Any, history_file: Path | None) -> bool:
+    """Wire up arrow-key history + Tab completion. Returns True iff readline loaded
+    (callers gate readline-only prompt escapes on this — see prompt_str)."""
+    try:
+        import readline
+    except Exception:
+        return False
+
+    top = _shell_command_names(click_cmd) + sorted(_REPL_META)
+
+    def completer(text: str, state: int) -> str | None:
+        try:
+            buffer = readline.get_line_buffer()
+            tokens = buffer.lstrip().split()
+            if len(tokens) <= 1 and not buffer.endswith(" "):
+                options = [c for c in top if c.startswith(text)]
+            else:
+                subs = _shell_subcommands(click_cmd, tokens[0])
+                pool = subs if subs else top
+                options = [c for c in pool if c.startswith(text)]
+            return options[state] if state < len(options) else None
+        except Exception:
+            return None
+
+    readline.set_completer(completer)
+    readline.set_completer_delims(" \t\n")
+    if "libedit" in (getattr(readline, "__doc__", "") or ""):
+        readline.parse_and_bind("bind ^I rl_complete")
+    else:
+        readline.parse_and_bind("tab: complete")
+    if history_file:
+        try:
+            if history_file.exists():
+                readline.read_history_file(str(history_file))
+            readline.set_history_length(2000)
+        except Exception:
+            pass
+    return True
+
+
+def _shell_help(click_cmd: Any) -> None:
+    rprint("\n[bold cyan]Available Shell Commands:[/bold cyan]")
+    console.print(banner.render_command_map())
+    rprint(
+        "\n[dim]In-shell extras:[/dim]  "
+        "[bold]help <cmd>[/bold] or [bold]<cmd> --help[/bold] for flags  ·  "
+        "[bold]↑/↓[/bold] history  ·  [bold]Tab[/bold] complete  ·  "
+        "any command also works with a leading [bold]/[/bold]  ·  "
+        "[bold]exit[/bold] / [bold]quit[/bold] to leave\n"
+    )
+
+
+def _shell_dispatch(click_cmd: Any, argv: list[str]) -> None:
+    """Run one parsed command line through the full CLI — must survive any error."""
+    import click
+
+    try:
+        click_cmd.main(args=argv, prog_name="awareness", standalone_mode=False)
+    except SystemExit:
+        # `--help` and `typer.Exit()` raise SystemExit; that is normal here.
+        pass
+    except click.exceptions.UsageError as exc:
+        rprint(f"[red]{escape(exc.format_message())}[/red]")
+        rprint("[dim]Type [bold]help[/bold] for the command map, or [bold]<command> --help[/bold].[/dim]")
+    except click.exceptions.Abort:
+        rprint("[yellow]Aborted.[/yellow]")
+    except click.exceptions.ClickException as exc:
+        rprint(f"[red]{escape(exc.format_message())}[/red]")
+    except KeyboardInterrupt:
+        rprint("\n[yellow]Interrupted.[/yellow]")
+    except Exception as exc:  # a bad command must never kill the REPL
+        rprint(f"[red]Error:[/red] {escape(str(exc))}")
+
+
 @app.command(name="shell")
 def shell() -> None:
-    """Start an interactive command shell (REPL) for the Awareness engine."""
-    rprint("[bold cyan]" + BANNER + "[/bold cyan]")
-    rprint("[bold green]Welcome to the Awareness Interactive Shell![/bold green]")
-    rprint("Type [bold]help[/bold] to list commands, or [bold]exit[/bold] to quit.\n")
-    
+    """Start the full interactive control center (REPL) — run ANY command."""
+    import shlex
+
+    click_cmd = _shell_click_command()
+    is_tty = sys.stdin.isatty()
+
+    console.print(
+        banner.render_intro(
+            _quickstart_context(),
+            subtitle="Welcome to the Awareness Interactive Shell!",
+        )
+    )
+    rprint(
+        "[dim]Type any command (e.g. [bold]status[/bold], [bold]search climate[/bold]), "
+        "[bold]help[/bold] for the map, or [bold]exit[/bold] to quit.[/dim]\n"
+    )
+
+    history_file: Path | None = None
+    try:
+        settings = get_settings()
+        if settings.data_dir:
+            history_file = settings.data_dir / "state" / "shell_history"
+            history_file.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        history_file = None
+    readline_ok = _setup_shell_readline(click_cmd, history_file) if is_tty else False
+
+    state: StateDB | None = None
+
+    def prompt_str() -> str:
+        nonlocal state
+        if not is_tty:
+            return "awareness> "
+        api = _get_api_pid() is not None or _is_port_active("127.0.0.1", _default_api_port())
+        tail_on = False
+        try:
+            if state is None:
+                state = _light_state()
+            tail_on = bool(state.get_tail().get("running"))
+        except Exception:
+            pass
+        if not readline_ok:
+            # Without GNU readline the \001/\002 invisibility markers would print
+            # as raw ^A/^B, so fall back to a plain, marker-free prompt.
+            return f"awareness {'●' if api else '○'}api {'●' if tail_on else '○'}tail > "
+        api_dot = "\001\033[32m\002●\001\033[0m\002" if api else "\001\033[90m\002○\001\033[0m\002"
+        tail_dot = "\001\033[32m\002●\001\033[0m\002" if tail_on else "\001\033[90m\002○\001\033[0m\002"
+        return (
+            f"\001\033[1;36m\002awareness\001\033[0m\002 "
+            f"{api_dot}api {tail_dot}tail \001\033[1;36m\002▸\001\033[0m\002 "
+        )
+
     while True:
         try:
-            cmd_line = typer.prompt("awareness> ", default="").strip()
-            if not cmd_line:
-                continue
-            if cmd_line.lower() in ("exit", "quit", "q"):
-                rprint("[yellow]Goodbye![/yellow]")
-                break
-                
-            parts = cmd_line.split()
-            cmd_name = parts[0].lower()
-            cmd_args = parts[1:]
-            
-            if cmd_name == "help":
-                rprint("[bold cyan]Available Shell Commands:[/bold cyan]")
-                rprint("  • [bold]status[/bold]        : Show overall system status")
-                rprint("  • [bold]stats[/bold]         : Detailed storage & db stats")
-                rprint("  • [bold]search <query>[/bold]: Search captured documents")
-                rprint("  • [bold]browse[/bold]        : Interactively browse captures")
-                rprint("  • [bold]compact[/bold]       : Run staging data compaction")
-                rprint("  • [bold]dedup <url/txt>[/bold]: Run deduplication check")
-                rprint("  • [bold]health[/bold]        : Quick liveness check")
-                rprint("  • [bold]clear[/bold]         : Clear screen")
-                rprint("  • [bold]exit / quit[/bold]   : Exit the interactive shell")
-                continue
-                
-            elif cmd_name == "status":
-                try:
-                    detailed = "--detailed" in cmd_args or "-d" in cmd_args
-                    status(detailed=detailed)
-                except Exception as e:
-                    rprint(f"[red]Error: {e}[/red]")
-                    
-            elif cmd_name == "stats":
-                try:
-                    stats(json_format="--json" in cmd_args, detailed=True)
-                except Exception as e:
-                    rprint(f"[red]Error: {e}[/red]")
-                    
-            elif cmd_name == "search":
-                if not cmd_args:
-                    rprint("[red]Error: Please provide a search query. Usage: search <query>[/red]")
-                    continue
-                q = " ".join(cmd_args)
-                try:
-                    search(query=q, interactive=True)
-                except Exception as e:
-                    rprint(f"[red]Error: {e}[/red]")
-                    
-            elif cmd_name == "browse":
-                try:
-                    browse()
-                except Exception as e:
-                    rprint(f"[red]Error: {e}[/red]")
-                    
-            elif cmd_name == "compact":
-                try:
-                    compact(force="--force" in cmd_args)
-                except Exception as e:
-                    rprint(f"[red]Error: {e}[/red]")
-                    
-            elif cmd_name == "dedup":
-                if not cmd_args:
-                    rprint("[red]Error: Please provide url or text. Usage: dedup <target>[/red]")
-                    continue
-                target = " ".join(cmd_args)
-                try:
-                    if target.startswith(("http://", "https://")):
-                        dedup_check(url=target)
-                    else:
-                        dedup_check(text=target)
-                except Exception as e:
-                    rprint(f"[red]Error: {e}[/red]")
-                    
-            elif cmd_name == "health":
-                try:
-                    health()
-                except Exception as e:
-                    rprint(f"[red]Error: {e}[/red]")
-                    
-            elif cmd_name == "clear":
-                print("\033[H\033[2J\033[3J", end="")
-                
-            else:
-                rprint(f"[red]Unknown command: '{cmd_name}'. Type 'help' for a list of commands.[/red]")
-                
-        except (KeyboardInterrupt, EOFError):
+            raw = input(prompt_str())
+        except EOFError:
             rprint("\n[yellow]Goodbye![/yellow]")
             break
+        except KeyboardInterrupt:
+            rprint("\n[dim](use [bold]exit[/bold] to quit)[/dim]")
+            continue
+
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("/"):
+            line = line[1:].strip()
+            if not line:
+                continue
+        low = line.lower()
+
+        if low in ("exit", "quit", "q"):
+            rprint("[yellow]Goodbye![/yellow]")
+            break
+        if low in ("clear", "cls"):
+            print("\033[H\033[2J\033[3J", end="")
+            continue
+        if low in ("commands", "menu"):
+            console.print(banner.render_command_map())
+            continue
+        if low == "shell":
+            rprint("[dim]Already in the Awareness shell. Type [bold]exit[/bold] to leave.[/dim]")
+            continue
+
+        try:
+            argv = shlex.split(line)
+        except ValueError as exc:
+            rprint(f"[red]Parse error:[/red] {escape(str(exc))}")
+            continue
+        if not argv:
+            continue
+
+        if argv[0].lower() in ("help", "?"):
+            rest = argv[1:]
+            if rest:
+                _shell_dispatch(click_cmd, [*rest, "--help"])
+            else:
+                _shell_help(click_cmd)
+            continue
+
+        _shell_dispatch(click_cmd, argv)
+
+        if is_tty and history_file:
+            try:
+                import readline
+
+                readline.write_history_file(str(history_file))
+            except Exception:
+                pass
+
+
+@app.command(name="commands")
+def commands_map() -> None:
+    """Show the full, categorised map of every Awareness command."""
+    console.print(banner.render_command_map())
+
+
+@app.command()
+def restart(
+    host: str = typer.Option("127.0.0.1", "--host", help="Host address to bind to"),
+    port: int = typer.Option(8085, "--port", help="Port to bind to"),
+) -> None:
+    """Restart the background Awareness API server (stop, then start)."""
+    import time
+
+    rprint("[cyan]Restarting Awareness API…[/cyan]")
+    try:
+        stop()
+    except Exception as exc:  # restart should proceed even if stop() hiccups
+        rprint(f"[yellow]stop() reported: {escape(str(exc))}[/yellow]")
+    time.sleep(1.0)
+    _shell_dispatch(_shell_click_command(), ["start", "--host", host, "--port", str(port)])
 
 
 if __name__ == "__main__":
