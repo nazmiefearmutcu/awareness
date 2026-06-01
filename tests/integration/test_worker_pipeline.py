@@ -6,23 +6,20 @@ This is the test that proves the whole framework runs without external deps.
 
 from __future__ import annotations
 
-import json
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from awareness.config import get_settings, reset_settings
+from awareness.config import get_settings
 from awareness.planner.planner import Planner
 from awareness.schemas.doc import SourceKind
-from awareness.schemas.jobs import BackfillRequest, JobStatus, TaskState
+from awareness.schemas.jobs import BackfillRequest
 from awareness.sources import get_adapter_registry
 from awareness.sources.local_fixture import LocalFixtureAdapter
 from awareness.storage.duckdb_index import DuckDbIndex
 from awareness.storage.state import StateDB
 from awareness.workers.engine import WorkerEngine
-
 
 pytestmark = pytest.mark.integration
 
@@ -100,8 +97,8 @@ async def test_pipeline_runs_dedup_and_writes_storage(tmp_project: Path) -> None
     fixture = _install_fixture_adapter()
 
     req = BackfillRequest(
-        start=datetime(2024, 6, 1, tzinfo=timezone.utc),
-        end=datetime(2024, 6, 2, tzinfo=timezone.utc),
+        start=datetime(2024, 6, 1, tzinfo=UTC),
+        end=datetime(2024, 6, 2, tzinfo=UTC),
         sources=[SourceKind.LOCAL_FIXTURE],
         max_tasks=10,
     )
@@ -112,6 +109,9 @@ async def test_pipeline_runs_dedup_and_writes_storage(tmp_project: Path) -> None
         await engine.run_job(job_id, poll_seconds=0.05)
     finally:
         await engine.aclose()
+
+    assert engine._total_docs_processed >= len(_DOCS)
+    assert engine._total_bytes_processed > 0
 
     status = planner.status(job_id)
     assert status["docs_emitted"] >= len(_DOCS)
@@ -131,8 +131,8 @@ async def test_pipeline_runs_dedup_and_writes_storage(tmp_project: Path) -> None
     rng = idx.execute(
         "SELECT count(*) AS n FROM captures WHERE fetch_ts BETWEEN $a AND $b AND source_type = $st",
         {
-            "a": datetime(2024, 6, 1, tzinfo=timezone.utc),
-            "b": datetime(2024, 6, 1, 23, 59, 59, tzinfo=timezone.utc),
+            "a": datetime(2024, 6, 1, tzinfo=UTC),
+            "b": datetime(2024, 6, 1, 23, 59, 59, tzinfo=UTC),
             "st": "local_fixture",
         },
     )
