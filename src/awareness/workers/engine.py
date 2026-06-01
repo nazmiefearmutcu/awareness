@@ -14,18 +14,19 @@ backpressure. The whole worker loop coordinates many parallel tasks
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+
+from rich.console import Console
+from rich.markup import escape
 
 from awareness.config import get_settings
 from awareness.dedup.engine import DedupDecision, DedupEngine
 from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
 from awareness.planner.planner import Planner
-from awareness.schemas.doc import DocCapture, SourceKind
+from awareness.schemas.doc import DocCapture
 from awareness.schemas.jobs import JobStatus, TaskState
 from awareness.sources import get_adapter_registry
 from awareness.sources.base import AdapterContext, PartitionSpec
@@ -34,6 +35,20 @@ from awareness.storage.jsonl import JsonlStagingWriter
 from awareness.storage.state import StateDB
 
 logger = get_logger("workers")
+
+
+def _format_size(size_bytes: int) -> str:
+    if size_bytes == 0:
+        return "0 B"
+    size_name = ("B", "KB", "MB", "GB", "TB")
+    import math
+    try:
+        i = int(math.floor(math.log(size_bytes, 1024)))
+        p = math.pow(1024, i)
+        s = round(size_bytes / p, 2)
+        return f"{s} {size_name[i]}"
+    except Exception:
+        return f"{size_bytes} B"
 
 
 class WorkerEngine:
@@ -61,6 +76,8 @@ class WorkerEngine:
         )
         self._iceberg: IcebergWriter | None = None
         if settings.enable_iceberg:
+            assert settings.iceberg_catalog_db is not None
+            assert settings.iceberg_warehouse is not None
             self._iceberg = iceberg_writer or IcebergWriter(
                 catalog_db=settings.iceberg_catalog_db,
                 warehouse=settings.iceberg_warehouse,
@@ -74,6 +91,10 @@ class WorkerEngine:
         self._batch_buffer: list[DocCapture] = []
         self._buffer_lock = asyncio.Lock()
         self._last_flush_at = time.time()
+        self._console = Console()
+        self._is_tty = sys.stdout.isatty()
+        self._total_bytes_processed = 0
+        self._total_docs_processed = 0
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def request_stop(self) -> None:
@@ -93,6 +114,12 @@ class WorkerEngine:
         """Drain all PENDING tasks for ``job_id`` using a worker pool."""
         self._state.set_job_status(job_id, JobStatus.RUNNING)
         sem = asyncio.Semaphore(self._concurrency)
+
+        # Initialize running metrics from DB if available
+        job = self._state.get_job(job_id)
+        if job:
+            self._total_bytes_processed = job.bytes_processed or 0
+            self._total_docs_processed = job.docs_emitted or 0
 
         async def run_one(task: TaskState) -> None:
             async with sem:
@@ -124,6 +151,12 @@ class WorkerEngine:
     async def run_tail(self, job_id: str, *, poll_seconds: float) -> None:
         """Like run_job, but never stops until ``request_stop`` is set."""
         sem = asyncio.Semaphore(self._concurrency)
+
+        # Initialize running metrics from DB if available
+        job = self._state.get_job(job_id)
+        if job:
+            self._total_bytes_processed = job.bytes_processed or 0
+            self._total_docs_processed = job.docs_emitted or 0
 
         async def run_one(task: TaskState) -> None:
             async with sem:
@@ -176,15 +209,42 @@ class WorkerEngine:
                     self._batch_buffer.append(cap)
                 docs_emitted += 1
                 bytes_processed += len(cap.text)
+                self._total_bytes_processed += len(cap.text)
+                self._total_docs_processed += 1
                 if outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.NEAR_DUP, DedupDecision.REVISION):
                     dedup_dropped += 1
                 get_metrics().inc(
                     "dedup.decisions",
                     labels={"decision": outcome.decision.value, "source": task.source_type.value},
                 )
+                if self._is_tty:
+                    title = cap.title or "(No Title)"
+                    if len(title) > 50:
+                        title = title[:47] + "..."
+                    domain = cap.domain or (cap.url.split("/")[2] if cap.url and "//" in cap.url else cap.url) or "unknown"
+                    if len(domain) > 30:
+                        domain = domain[:27] + "..."
+                    chars = len(cap.text)
+                    lang = cap.language or "unknown"
+                    decision_str = outcome.decision.value.upper()
+                    
+                    if outcome.decision == DedupDecision.UNIQUE:
+                        style = "bold green"
+                    elif outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.NEAR_DUP):
+                        style = "bold yellow"
+                    elif outcome.decision == DedupDecision.REVISION:
+                        style = "bold blue"
+                    else:
+                        style = "bold white"
+                    
+                    self._console.print(
+                        f"[cyan]📥[/cyan] [[{style}]{decision_str:^9}[/{style}]] "
+                        f"[bold white]{escape(title)}[/bold white] | [dim]{escape(domain)}[/dim] "
+                        f"({chars} chars, {escape(lang)} | Total: [green]{_format_size(self._total_bytes_processed)}[/green], {self._total_docs_processed} docs)"
+                    )
                 if len(self._batch_buffer) >= settings.storage_flush_records:
                     await self._flush(force=False)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("task_failed", task_id=task.task_id, err=str(exc))
             dead = task.attempts >= max(1, settings.max_retries)
             self._state.fail_task(task.task_id, error=str(exc), dead_letter=dead)
@@ -232,22 +292,59 @@ class WorkerEngine:
             self._batch_buffer.clear()
             self._last_flush_at = now
 
-        # JSONL always first.
-        try:
-            written = await asyncio.get_event_loop().run_in_executor(None, self._jsonl.write, rows)
-        except Exception:
-            logger.exception("jsonl_write_failed")
-            return
-        # Record latest committed chunk in manifest table for compaction.
-        chunk = self._jsonl.flush()
-        if chunk is not None and chunk.exists():
+        # JSONL always first if enabled or if we need a temporary chunk for cloud uploading.
+        written = 0
+        chunk = None
+        if settings.enable_jsonl_staging or settings.enable_iceberg:
             try:
-                bytes_ = chunk.stat().st_size
-            except OSError:
-                bytes_ = 0
-            await asyncio.get_event_loop().run_in_executor(
-                None, self._state.add_manifest, str(chunk), n, bytes_
-            )
+                written = await asyncio.get_event_loop().run_in_executor(None, self._jsonl.write, rows)
+            except Exception:
+                logger.exception("jsonl_write_failed")
+                return
+            
+            chunk = self._jsonl.flush()
+            if chunk is not None and chunk.exists():
+                try:
+                    bytes_ = chunk.stat().st_size
+                except OSError:
+                    bytes_ = 0
+                
+                # Record in sqlite manifest only if staging is enabled.
+                if settings.enable_jsonl_staging:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, self._state.add_manifest, str(chunk), n, bytes_
+                    )
+                
+                from awareness.storage import gdrive
+                if gdrive.is_authorized() and settings.enable_iceberg:
+                    if self._is_tty:
+                        self._console.print(
+                            f"[bold blue]☁️  [GDrive][/bold blue] Uploading JSONL chunk [bold]{chunk.name}[/bold]..."
+                        )
+                    def _upload():
+                        try:
+                            return gdrive.upload_file(chunk)
+                        except Exception as e:
+                            logger.exception("gdrive_upload_failed", err=str(e))
+                            return None
+                    file_id = await asyncio.get_event_loop().run_in_executor(None, _upload)
+                    if file_id:
+                        if self._is_tty:
+                            self._console.print(
+                                f"[bold green]☁️  [GDrive] ✔ Uploaded successfully![/bold green] File ID: [dim]{file_id}[/dim]"
+                            )
+                    else:
+                        if self._is_tty:
+                            self._console.print(
+                                "[bold red]☁️  [GDrive] ✘ Upload failed. Check application logs for details.[/bold red]"
+                            )
+                
+                # Clean up staging file if local staging is disabled.
+                if not settings.enable_jsonl_staging:
+                    try:
+                        chunk.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
         # Iceberg if enabled.
         if self._iceberg is not None and rows:
