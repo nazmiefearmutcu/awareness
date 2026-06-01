@@ -121,9 +121,44 @@ class WorkerEngine:
             self._total_bytes_processed = job.bytes_processed or 0
             self._total_docs_processed = job.docs_emitted or 0
 
+        start_time = time.time()
+        progress_bar = None
+        progress_task_id = None
+        
+        if self._is_tty and job:
+            from rich.progress import Progress, TextColumn, BarColumn, TimeElapsedColumn, MofNCompleteColumn
+            progress_bar = Progress(
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                console=self._console,
+            )
+            progress_task_id = progress_bar.add_task(
+                "Ingesting tasks", 
+                total=job.tasks_total, 
+                completed=job.tasks_completed
+            )
+            progress_bar.start()
+
         async def run_one(task: TaskState) -> None:
             async with sem:
                 await self._run_task(task)
+                if progress_bar and progress_task_id is not None:
+                    job_state = self._state.get_job(job_id)
+                    total_tasks = job_state.tasks_total if job_state else job.tasks_total
+                    elapsed = time.time() - start_time
+                    speed_str = ""
+                    if elapsed > 0:
+                        bytes_per_sec = self._total_bytes_processed / elapsed
+                        docs_per_sec = self._total_docs_processed / elapsed
+                        speed_str = f" @ {_format_size(int(bytes_per_sec))}/s, {docs_per_sec:.1f} doc/s"
+                    progress_bar.update(
+                        progress_task_id, 
+                        advance=1, 
+                        total=total_tasks,
+                        description=f"[bold blue]Ingesting ({_format_size(self._total_bytes_processed)}, {self._total_docs_processed} docs{speed_str})"
+                    )
 
         try:
             empty_polls = 0
@@ -139,6 +174,8 @@ class WorkerEngine:
                 await asyncio.gather(*(run_one(t) for t in tasks), return_exceptions=False)
                 await self._flush(force=False)
         finally:
+            if progress_bar:
+                progress_bar.stop()
             await self._flush(force=True)
             job = self._state.get_job(job_id)
             if job and job.status not in (
@@ -158,9 +195,38 @@ class WorkerEngine:
             self._total_bytes_processed = job.bytes_processed or 0
             self._total_docs_processed = job.docs_emitted or 0
 
+        start_time = time.time()
+        progress_bar = None
+        progress_task_id = None
+        
+        if self._is_tty and job:
+            from rich.progress import Progress, TextColumn, BarColumn, TimeElapsedColumn
+            progress_bar = Progress(
+                TextColumn("[bold green]{task.description}"),
+                BarColumn(),
+                TimeElapsedColumn(),
+                console=self._console,
+            )
+            progress_task_id = progress_bar.add_task(
+                "Tailing Live Feeds", 
+                total=None
+            )
+            progress_bar.start()
+
         async def run_one(task: TaskState) -> None:
             async with sem:
                 await self._run_task(task)
+                if progress_bar and progress_task_id is not None:
+                    elapsed = time.time() - start_time
+                    speed_str = ""
+                    if elapsed > 0:
+                        bytes_per_sec = self._total_bytes_processed / elapsed
+                        docs_per_sec = self._total_docs_processed / elapsed
+                        speed_str = f" @ {_format_size(int(bytes_per_sec))}/s, {docs_per_sec:.1f} doc/s"
+                    progress_bar.update(
+                        progress_task_id, 
+                        description=f"[bold green]Tailing ({_format_size(self._total_bytes_processed)}, {self._total_docs_processed} docs{speed_str})"
+                    )
 
         try:
             while not self.is_stopping():
@@ -171,6 +237,8 @@ class WorkerEngine:
                 await asyncio.gather(*(run_one(t) for t in tasks), return_exceptions=False)
                 await self._flush(force=False)
         finally:
+            if progress_bar:
+                progress_bar.stop()
             await self._flush(force=True)
 
     # ── single task ──────────────────────────────────────────────────────
