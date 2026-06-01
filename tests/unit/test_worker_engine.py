@@ -20,3 +20,12 @@ def test_worker_engine_metrics_initialization(tmp_path) -> None:
     engine = WorkerEngine(state, planner, concurrency=1)
     assert engine._total_bytes_processed == 0
     assert engine._total_docs_processed == 0
+    assert engine._silent_progress is False
+
+def test_worker_engine_silent_progress_initialization(tmp_path) -> None:
+    state = StateDB(f"sqlite:///{tmp_path / 'state.db'}")
+    state.init()
+    planner = Planner(state)
+    
+    engine = WorkerEngine(state, planner, concurrency=1, silent_progress=True)
+    assert engine._silent_progress is True

@@ -62,6 +62,7 @@ class WorkerEngine:
         jsonl_writer: JsonlStagingWriter | None = None,
         iceberg_writer: IcebergWriter | None = None,
         concurrency: int | None = None,
+        silent_progress: bool = False,
     ) -> None:
         self._state = state
         self._planner = planner
@@ -95,6 +96,7 @@ class WorkerEngine:
         self._is_tty = sys.stdout.isatty()
         self._total_bytes_processed = 0
         self._total_docs_processed = 0
+        self._silent_progress = silent_progress
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def request_stop(self) -> None:
@@ -285,7 +287,7 @@ class WorkerEngine:
                     "dedup.decisions",
                     labels={"decision": outcome.decision.value, "source": task.source_type.value},
                 )
-                if self._is_tty:
+                if self._is_tty and not self._silent_progress:
                     title = cap.title or "(No Title)"
                     if len(title) > 50:
                         title = title[:47] + "..."

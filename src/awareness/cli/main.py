@@ -1021,10 +1021,11 @@ def _print_job_summary_table(job_id: str, status: dict[str, Any]) -> None:
 def backfill_run(
     job_id: str = typer.Argument(..., help="Job id from `backfill submit`"),
     concurrency: int = typer.Option(0, "--concurrency", help="Override worker concurrency"),
+    silent_progress: bool = typer.Option(False, "--silent-progress", help="Mute per-document ingestion logs in the terminal"),
 ) -> None:
     """Run pending tasks for ``job_id`` to completion (in-process)."""
     state, planner = _bootstrap()
-    engine = WorkerEngine(state, planner, concurrency=concurrency or None)
+    engine = WorkerEngine(state, planner, concurrency=concurrency or None, silent_progress=silent_progress)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
