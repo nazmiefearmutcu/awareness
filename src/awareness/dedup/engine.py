@@ -23,7 +23,7 @@ from enum import Enum
 from awareness.obs.logging import get_logger
 from awareness.schemas.doc import DocCapture
 from awareness.storage.state import StateDB
-from awareness.util.hashing import hamming64
+from awareness.util.hashing import hamming128, simhash128
 
 logger = get_logger("dedup")
 
@@ -47,7 +47,12 @@ class DedupOutcome:
 
 
 class DedupEngine:
-    def __init__(self, state: StateDB, near_threshold: int = 3) -> None:
+    def __init__(self, state: StateDB, near_threshold: int = 24) -> None:
+        # 128-bit signatures: unrelated documents sit at Hamming ~45+, so a
+        # Hamming≤24 default folds tight-to-moderate near-dups at perfect
+        # precision (no false-merges) while leaving headroom to the unrelated
+        # floor. Raising it catches more (recall) until precision erodes near
+        # ~36 (see benchmarks/); the value is fully tunable per caller.
         self._state = state
         self._near_threshold = max(0, near_threshold)
 
@@ -71,29 +76,31 @@ class DedupEngine:
                 reason="content_hash_match",
             )
 
-        # Step 2: near-duplicate scan via simhash segment buckets.
-        if cap.near_dup_hash is not None and cap.near_dup_hash > 0:
+        # Step 2: near-duplicate scan via 128-bit simhash band buckets. The
+        # detection signature is computed from the document text (the durable
+        # ``near_dup_hash`` stays a 64-bit provenance fingerprint).
+        sig = simhash128(cap.text) if cap.text else 0
+        if sig > 0:
             best_doc: str | None = None
-            best_dist: int = 65
-            for other_doc_id, other_signed in self._state.find_near_dup_candidates(cap.near_dup_hash):
+            best_dist: int = 129
+            for other_doc_id, other_sig in self._state.find_near_dup_candidates(sig):
                 if other_doc_id == cap.doc_id:
                     continue
-                other_unsigned = other_signed if other_signed >= 0 else (other_signed + (1 << 64))
-                dist = hamming64(cap.near_dup_hash, other_unsigned)
+                dist = hamming128(sig, other_sig)
                 if dist < best_dist:
                     best_dist = dist
                     best_doc = other_doc_id
             if best_doc is not None and best_dist <= self._near_threshold:
                 cap.parent_doc_or_dup_group = best_doc
-                self._state.add_near_dup_index(cap.doc_id, cap.near_dup_hash)
+                self._state.add_near_dup_index(cap.doc_id, sig)
                 return DedupOutcome(
                     decision=DedupDecision.NEAR_DUP,
                     dup_group=best_doc,
-                    reason=f"simhash_hamming={best_dist}",
+                    reason=f"simhash128_hamming={best_dist}",
                 )
 
         # Step 3: brand new canonical doc.
-        if cap.near_dup_hash is not None and cap.near_dup_hash > 0:
-            self._state.add_near_dup_index(cap.doc_id, cap.near_dup_hash)
+        if sig > 0:
+            self._state.add_near_dup_index(cap.doc_id, sig)
         cap.parent_doc_or_dup_group = cap.doc_id
         return DedupOutcome(decision=DedupDecision.NEW, dup_group=cap.doc_id, reason="new_content")

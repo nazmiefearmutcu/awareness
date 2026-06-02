@@ -2708,7 +2708,7 @@ def dedup_check(
 ) -> None:
     """Check if a URL or text has already been ingested (exact or near-duplicate check)."""
     state, _ = _bootstrap()
-    from awareness.util.hashing import content_hash, simhash64, hamming64
+    from awareness.util.hashing import content_hash, simhash128, hamming128
     from awareness.storage.state import DedupRow
     from sqlalchemy import select
     
@@ -2739,23 +2739,21 @@ def dedup_check(
             else:
                 rprint("[green]✔ No exact duplicate content match found.[/green]")
                 
-        sh = simhash64(text_content)
-        rprint(f"Computed Simhash Value:     [bold cyan]{sh}[/bold cyan]")
-        
+        sh = simhash128(text_content)
+        rprint(f"Computed Simhash Value:     [bold cyan]{sh:032x}[/bold cyan]")
+
         candidates = state.find_near_dup_candidates(sh)
         near_match = None
-        min_dist = 64
-        
-        for doc_id, other_hash in candidates:
-            other_hash_unsigned = other_hash & 0xFFFFFFFFFFFFFFFF
-            dist = hamming64(sh, other_hash_unsigned)
-            if dist <= 3:
-                if dist < min_dist:
-                    min_dist = dist
-                    near_match = doc_id
-                    
+        min_dist = 128
+
+        for doc_id, other_sig in candidates:
+            dist = hamming128(sh, other_sig)
+            if dist <= 6 and dist < min_dist:
+                min_dist = dist
+                near_match = doc_id
+
         if near_match:
-            rprint(f"[yellow]⚠ NEAR-DUPLICATE DETECTED (Hamming Distance: {min_dist}/64)![/yellow]")
+            rprint(f"[yellow]⚠ NEAR-DUPLICATE DETECTED (Hamming Distance: {min_dist}/128)![/yellow]")
             rprint(f"  • Matching Doc ID:   [bold]{near_match}[/bold]")
         else:
             rprint("[green]✔ No near-duplicate content match found.[/green]")
