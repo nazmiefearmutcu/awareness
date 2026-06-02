@@ -30,7 +30,7 @@ def run() -> None:
     asyncio.set_event_loop(loop)
     shutdown = asyncio.Event()
 
-    def _stop(*_a) -> None:
+    def _stop(*_a: object) -> None:
         loop.call_soon_threadsafe(shutdown.set)
 
     for sig in (signal.SIGINT, signal.SIGTERM):

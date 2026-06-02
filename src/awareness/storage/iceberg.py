@@ -12,14 +12,15 @@ Why this shape:
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import pyarrow as pa
 from pyiceberg.catalog import Catalog
 from pyiceberg.catalog.sql import SqlCatalog
-from pyiceberg.exceptions import NamespaceAlreadyExistsError, TableAlreadyExistsError, NoSuchTableError
+from pyiceberg.exceptions import NamespaceAlreadyExistsError, NoSuchTableError, TableAlreadyExistsError
 
 from awareness.obs.logging import get_logger
 from awareness.storage.iceberg_schema import (
@@ -53,21 +54,24 @@ def _to_arrow(rows: Iterable[dict[str, Any]], schema: pa.Schema) -> pa.Table:
                 cols[f.name].append(None)
                 continue
             if f.name in ts_fields:
+                ts_val: datetime | None = None
                 if isinstance(v, str):
-                    # ISO format
                     try:
-                        v = datetime.fromisoformat(v)
+                        ts_val = datetime.fromisoformat(v)
                     except ValueError:
                         try:
-                            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
+                            ts_val = datetime.fromisoformat(v.replace("Z", "+00:00"))
                         except ValueError:
-                            v = None
-                if isinstance(v, datetime):
-                    if v.tzinfo is None:
-                        v = v.replace(tzinfo=timezone.utc)
+                            ts_val = None
+                elif isinstance(v, datetime):
+                    ts_val = v
+
+                if ts_val is not None:
+                    if ts_val.tzinfo is None:
+                        ts_val = ts_val.replace(tzinfo=UTC)
                     else:
-                        v = v.astimezone(timezone.utc)
-                cols[f.name].append(v)
+                        ts_val = ts_val.astimezone(UTC)
+                cols[f.name].append(ts_val)
                 continue
             if f.name in int32_fields and isinstance(v, int):
                 cols[f.name].append(int(v))
@@ -87,7 +91,7 @@ def _to_arrow(rows: Iterable[dict[str, Any]], schema: pa.Schema) -> pa.Table:
 class IcebergWriter:
     """Append rows to ``awareness.captures`` in an Iceberg SQL catalog."""
 
-    def __init__(self, catalog_db: Path, warehouse: Path) -> None:
+    def __init__(self, catalog_db: Path, warehouse: Path | str) -> None:
         self._catalog_db = catalog_db
         self._warehouse = warehouse
         self._lock = threading.RLock()
@@ -97,12 +101,28 @@ class IcebergWriter:
 
     def _ensure_catalog(self) -> Catalog:
         if self._catalog is None:
+            import os
             self._catalog_db.parent.mkdir(parents=True, exist_ok=True)
-            self._warehouse.mkdir(parents=True, exist_ok=True)
+            warehouse_str = str(self._warehouse)
+            properties = {}
+            if warehouse_str.startswith(("s3://", "s3a://", "gcs://", "gs://")):
+                uri_warehouse = warehouse_str
+                if warehouse_str.startswith(("s3://", "s3a://")):
+                    properties = {
+                        "s3.endpoint": os.environ.get("AWS_S3_ENDPOINT", "http://localhost:9000"),
+                        "s3.access-key-id": os.environ.get("AWS_ACCESS_KEY_ID", "awareness"),
+                        "s3.secret-access-key": os.environ.get("AWS_SECRET_ACCESS_KEY", "awareness12345"),
+                    }
+            else:
+                local_path = Path(self._warehouse)
+                local_path.mkdir(parents=True, exist_ok=True)
+                uri_warehouse = f"file://{local_path.resolve()}"
+
             self._catalog = SqlCatalog(
                 "awareness",
                 uri=f"sqlite:///{self._catalog_db}",
-                warehouse=f"file://{self._warehouse}",
+                warehouse=uri_warehouse,
+                **properties
             )
         return self._catalog
 
