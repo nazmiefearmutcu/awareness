@@ -7,8 +7,8 @@ explicitly.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from awareness.normalize.text import detect_language, normalize_text, safe_title
 from awareness.schemas.doc import DocCapture, RobotsDecision, SourceKind, SourceRef
@@ -16,9 +16,11 @@ from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
 from awareness.util.hashing import (
     capture_id_for,
-    content_hash as compute_content_hash,
     doc_id_for,
     simhash64,
+)
+from awareness.util.hashing import (
+    content_hash as compute_content_hash,
 )
 from awareness.util.timeutil import to_utc, utcnow
 from awareness.util.urls import canonical_url, domain_of

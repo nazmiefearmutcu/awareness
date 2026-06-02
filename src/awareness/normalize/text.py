@@ -90,9 +90,10 @@ def detect_language(text: str) -> str | None:
     if not text or len(text) < 80:
         return None
     try:
-        from langdetect import detect, DetectorFactory  # noqa: PLC0415
+        from langdetect import DetectorFactory, detect  # noqa: PLC0415
 
         DetectorFactory.seed = 0  # deterministic
-        return detect(text[:5000])
+        res = detect(text[:5000])
+        return str(res) if res is not None else None
     except (ImportError, Exception):  # langdetect raises LangDetectException
         return None

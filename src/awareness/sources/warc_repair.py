@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -17,9 +17,11 @@ from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
 from awareness.sources.commoncrawl_wet import CC_BASE
 from awareness.util.hashing import (
     capture_id_for,
-    content_hash as compute_content_hash,
     doc_id_for,
     simhash64,
+)
+from awareness.util.hashing import (
+    content_hash as compute_content_hash,
 )
 from awareness.util.timeutil import to_utc, utcnow
 from awareness.util.urls import canonical_url, domain_of
