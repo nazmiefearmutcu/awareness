@@ -11,14 +11,14 @@ from awareness.schemas.jobs import (
 )
 
 __all__ = [
+    "BackfillRequest",
     "CanonicalDoc",
     "DocCapture",
-    "RobotsDecision",
-    "SourceRef",
-    "BackfillRequest",
     "JobKind",
     "JobState",
     "JobStatus",
+    "RobotsDecision",
+    "SourceRef",
     "TaskState",
     "TaskStatus",
 ]

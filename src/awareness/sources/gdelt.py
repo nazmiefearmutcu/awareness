@@ -19,8 +19,8 @@ import asyncio
 import csv
 import io
 import zipfile
-from datetime import datetime, timedelta, timezone
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import datetime, timedelta
 
 import httpx
 
@@ -46,6 +46,19 @@ def _quarter_hours(start: datetime, end: datetime) -> list[str]:
         out.append(cur.strftime("%Y%m%d%H%M%S"))
         cur += timedelta(minutes=15)
     return out
+
+
+def latest_gkg_slot(now: datetime | None = None, lag_minutes: int = 30) -> str:
+    """Most recent 15-minute GKG slot that is likely already published.
+
+    GDELT v2 lags real time by ~15 min; we subtract ``lag_minutes`` (default
+    30) for safety, then round down to the nearest quarter hour. Used by the
+    tail engine to follow the live global-news firehose.
+    """
+    base = (to_utc(now) if now else utcnow()) or utcnow()
+    base = base - timedelta(minutes=max(0, lag_minutes))
+    base = base.replace(minute=base.minute - (base.minute % 15), second=0, microsecond=0)
+    return base.strftime("%Y%m%d%H%M%S")
 
 
 class GdeltAdapter(Adapter):
@@ -84,6 +97,10 @@ class GdeltAdapter(Adapter):
             return
 
         urls = await asyncio.get_event_loop().run_in_executor(None, _extract_gkg_urls, payload)
+        max_urls = partition.payload.get("max_urls")
+        # Cap only on a positive value; None/0/negative → no per-slot cap.
+        if max_urls is not None and int(max_urls) > 0:
+            urls = urls[: int(max_urls)]
         get_metrics().inc("gdelt.urls_discovered", value=len(urls), labels={"slot": slot})
         enqueue = context.extras.setdefault("enqueue", [])
         for u in urls:
@@ -100,7 +117,7 @@ class GdeltAdapter(Adapter):
             )
         return
         if False:  # pragma: no cover
-            yield  # type: ignore[unreachable]
+            yield
 
 
 def _extract_gkg_urls(zipped: bytes) -> list[str]:

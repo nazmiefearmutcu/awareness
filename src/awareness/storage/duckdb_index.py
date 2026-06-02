@@ -26,11 +26,44 @@ from awareness.obs.logging import get_logger
 
 logger = get_logger("storage.duckdb")
 
+# ── search configuration surface ─────────────────────────────────────────────
+# Columns the caller may point a search at. Mapped 1:1 onto the ``captures``
+# view so an attacker can never inject an arbitrary column name.
+ALLOWED_SEARCH_FIELDS: tuple[str, ...] = ("title", "text", "domain", "url")
+DEFAULT_SEARCH_FIELDS: tuple[str, ...] = ("title", "text")
+
+# Matching strategies, from strict to broad:
+#   fts       — BM25-ranked full-text (stemmed, stop-worded). Precise, fast.
+#   prefix    — stem-root substring per token (finance -> financ% -> financial).
+#   substring — raw ILIKE on the whole query string. No tokenization.
+#   auto      — FTS first; if it returns nothing, fall back to prefix. Default.
+SEARCH_MODES: tuple[str, ...] = ("auto", "fts", "prefix", "substring")
+DEFAULT_SEARCH_MODE = "auto"
+# Hard ceiling on rows materialized in a single search call (overload guard).
+DEFAULT_SEARCH_MAX_RESULTS = 200
+
+
+def _clean_fields(fields: list[str] | tuple[str, ...] | None) -> list[str]:
+    """Normalize + whitelist the requested search columns.
+
+    Unknown columns are dropped silently; an empty/None request falls back
+    to :data:`DEFAULT_SEARCH_FIELDS`. This is the *only* place a field name
+    reaches SQL, so the whitelist here is the injection boundary.
+    """
+    if not fields:
+        return list(DEFAULT_SEARCH_FIELDS)
+    seen: list[str] = []
+    for f in fields:
+        key = (f or "").strip().lower()
+        if key in ALLOWED_SEARCH_FIELDS and key not in seen:
+            seen.append(key)
+    return seen or list(DEFAULT_SEARCH_FIELDS)
+
 
 class DuckDbIndex:
     """Thin wrapper around a DuckDB connection that knows our layout."""
 
-    def __init__(self, db_path: Path, jsonl_dir: Path, iceberg_warehouse: Path | None) -> None:
+    def __init__(self, db_path: Path, jsonl_dir: Path, iceberg_warehouse: Path | str | None) -> None:
         self._db_path = db_path
         self._jsonl_dir = jsonl_dir
         self._iceberg_warehouse = iceberg_warehouse
@@ -73,8 +106,10 @@ class DuckDbIndex:
         existing = list(captures_root.rglob("*.jsonl")) if captures_root.exists() else []
         if existing:
             # Build an explicit list literal so DuckDB doesn't have to glob.
-            file_list = ", ".join(f"'{str(p)}'" for p in existing)
-            conn.execute(
+            # Paths are locally-discovered staging files (operator-owned data
+            # dir), not external input — safe to inline.
+            file_list = ", ".join(f"'{p!s}'" for p in existing)
+            conn.execute(  # nosemgrep
                 f"""
                 CREATE OR REPLACE VIEW staging_captures_raw AS
                 SELECT *
@@ -110,26 +145,98 @@ class DuckDbIndex:
 
         # Build a unified ``captures`` view that casts timestamps to TIMESTAMPTZ
         # so BETWEEN/range queries against datetime parameters work.
+        # We try to load and union the Iceberg warehouse captures when available.
+        iceberg_ok = False
+        if self._iceberg_warehouse:
+            try:
+                if str(self._iceberg_warehouse).startswith(("s3://", "s3a://", "gs://", "gcs://")):
+                    table_path = f"{self._iceberg_warehouse}/awareness/captures"
+                else:
+                    table_path = str(Path(self._iceberg_warehouse).resolve() / "awareness" / "captures")
+                
+                is_valid = True
+                if not str(self._iceberg_warehouse).startswith(("s3://", "s3a://", "gs://", "gcs://")):
+                    is_valid = Path(table_path).exists()
+                
+                if is_valid:
+                    conn.execute("SET unsafe_enable_version_guessing = true;")
+                    # table_path is derived from operator config, not request input.
+                    conn.execute(  # nosemgrep
+                        f"""
+                        CREATE OR REPLACE VIEW iceberg_captures_raw AS
+                        SELECT * FROM iceberg_scan('{table_path}');
+                        """
+                    )
+                    iceberg_ok = True
+            except Exception as exc:
+                logger.info("duckdb_iceberg_view_setup_skipped", err=str(exc))
+
         try:
-            conn.execute(
-                """
-                CREATE OR REPLACE VIEW captures AS
-                SELECT
-                  doc_id, capture_id, parent_doc_or_dup_group,
-                  source_type, source_name, source_locator,
-                  source_shard, source_offset_or_record_id,
-                  discovery_channel, job_id, batch_id, ingest_version,
-                  url, canonical_url, domain,
-                  TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
-                  TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
-                  TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
-                  TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
-                  content_type, http_status, etag, title, text, language,
-                  content_hash, near_dup_hash, robots_decision,
-                  terms_note_if_relevant
-                FROM staging_captures_raw;
-                """
-            )
+            if iceberg_ok:
+                conn.execute(
+                    """
+                    CREATE OR REPLACE VIEW captures_raw_union AS
+                    SELECT
+                      doc_id, capture_id, parent_doc_or_dup_group,
+                      source_type, source_name, source_locator,
+                      source_shard, source_offset_or_record_id,
+                      discovery_channel, job_id, batch_id, ingest_version,
+                      url, canonical_url, domain,
+                      TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
+                      TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
+                      TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
+                      TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
+                      content_type, http_status, etag, title, text, language,
+                      content_hash, TRY_CAST(near_dup_hash AS BIGINT) AS near_dup_hash, robots_decision,
+                      terms_note_if_relevant
+                    FROM staging_captures_raw
+                    UNION ALL
+                    SELECT
+                      doc_id, capture_id, parent_doc_or_dup_group,
+                      source_type, source_name, source_locator,
+                      source_shard, source_offset_or_record_id,
+                      discovery_channel, job_id, batch_id, ingest_version,
+                      url, canonical_url, domain,
+                      TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
+                      TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
+                      TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
+                      TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
+                      content_type, http_status, etag, title, text, language,
+                      content_hash, TRY_CAST(near_dup_hash AS BIGINT) AS near_dup_hash, robots_decision,
+                      terms_note_if_relevant
+                    FROM iceberg_captures_raw;
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE OR REPLACE VIEW captures AS
+                    SELECT * EXCLUDE (rn) FROM (
+                        SELECT *,
+                               ROW_NUMBER() OVER (PARTITION BY capture_id ORDER BY fetch_ts DESC) AS rn
+                        FROM captures_raw_union
+                    ) WHERE rn = 1;
+                    """
+                )
+            else:
+                conn.execute(
+                    """
+                    CREATE OR REPLACE VIEW captures AS
+                    SELECT
+                      doc_id, capture_id, parent_doc_or_dup_group,
+                      source_type, source_name, source_locator,
+                      source_shard, source_offset_or_record_id,
+                      discovery_channel, job_id, batch_id, ingest_version,
+                      url, canonical_url, domain,
+                      TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
+                      TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
+                      TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
+                      TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
+                      content_type, http_status, etag, title, text, language,
+                      content_hash, TRY_CAST(near_dup_hash AS BIGINT) AS near_dup_hash, robots_decision,
+                      terms_note_if_relevant
+                    FROM staging_captures_raw;
+                    """
+                )
             # Backwards-compat alias.
             conn.execute("CREATE OR REPLACE VIEW staging_captures AS SELECT * FROM captures;")
         except duckdb.Error as exc:
@@ -162,7 +269,10 @@ class DuckDbIndex:
             return False
         # Current corpus size.
         try:
-            count = int(conn.execute("SELECT COUNT(*) FROM captures").fetchone()[0])
+            row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+            if not row:
+                return False
+            count = int(row[0])
         except duckdb.Error:
             return False
         if count == 0:
@@ -195,6 +305,27 @@ class DuckDbIndex:
             self._fts_available = False
             return False
 
+    def _stem_roots(self, conn: duckdb.DuckDBPyConnection, terms: list[str]) -> list[str]:
+        """Reduce each query token to its Snowball stem (its prefix root).
+
+        ``finance`` -> ``financ`` so a substring match on the root also
+        catches ``financial``/``finances``/``financing``. Falls back to the
+        raw token if the ``stem`` scalar is unavailable.
+        """
+        roots: list[str] = []
+        for t in terms:
+            root = t
+            if self._fts_available:
+                try:
+                    val = conn.execute("SELECT stem(?, 'english')", [t]).fetchone()
+                    if val and val[0]:
+                        root = str(val[0])
+                except duckdb.Error:
+                    root = t
+            if root and root not in roots:
+                roots.append(root)
+        return roots
+
     def search(
         self,
         query: str,
@@ -205,92 +336,165 @@ class DuckDbIndex:
         domain: str | None = None,
         start: Any = None,
         end: Any = None,
+        mode: str = DEFAULT_SEARCH_MODE,
+        fields: list[str] | tuple[str, ...] | None = None,
+        max_results: int | None = DEFAULT_SEARCH_MAX_RESULTS,
     ) -> dict[str, Any]:
-        """BM25-ranked search. Falls back to substring ILIKE if FTS unavailable."""
+        """Search the corpus.
+
+        ``mode`` selects the matching strategy (see :data:`SEARCH_MODES`).
+        ``auto`` runs BM25 FTS first and, only if it finds nothing, retries
+        with stem-root prefix matching so e.g. ``finance`` still surfaces
+        ``financial``. ``fields`` restricts substring/prefix matching to a
+        whitelisted subset of :data:`ALLOWED_SEARCH_FIELDS`. ``max_results``
+        is a hard ceiling on rows materialized in one call (overload guard).
+        """
         query = (query or "").strip()
+        mode = (mode or DEFAULT_SEARCH_MODE).strip().lower()
+        if mode not in SEARCH_MODES:
+            mode = DEFAULT_SEARCH_MODE
+        cols = _clean_fields(fields)
+
+        # Clamp the page so a single call never materializes more than the cap.
+        limit = max(1, int(limit))
+        offset = max(0, int(offset))
+        if max_results is not None and max_results > 0:
+            if offset >= max_results:
+                offset = max(0, max_results - limit)
+            limit = max(1, min(limit, max_results - offset))
+
+        empty = {
+            "total": 0, "limit": limit, "offset": offset, "rows": [],
+            "ranked": False, "mode": mode, "fields": cols, "query": query,
+        }
         if not query:
-            return {"total": 0, "limit": limit, "offset": offset, "rows": [], "ranked": False}
+            return empty
 
         with self._lock:
             conn = self.connect()
             self._refresh_views(conn)
-            fts = self._ensure_fts(conn)
 
-            where: list[str] = []
-            params: dict[str, Any] = {"q": query}
-            if source:
-                where.append("source_type = $src")
-                params["src"] = source
-            if domain:
-                where.append("domain = $dom")
-                params["dom"] = domain
-            if start is not None:
-                where.append("fetch_ts >= $start")
-                params["start"] = start
-            if end is not None:
-                where.append("fetch_ts <= $end")
-                params["end"] = end
+            # Shared range/source/domain filters.
+            def base_filters() -> tuple[list[str], dict[str, Any]]:
+                w: list[str] = []
+                p: dict[str, Any] = {}
+                if source:
+                    w.append("source_type = $src")
+                    p["src"] = source
+                if domain:
+                    w.append("domain = $dom")
+                    p["dom"] = domain
+                if start is not None:
+                    w.append("fetch_ts >= $start")
+                    p["start"] = start
+                if end is not None:
+                    w.append("fetch_ts <= $end")
+                    p["end"] = end
+                return w, p
 
-            if fts:
-                where_sql = (" AND " + " AND ".join(where)) if where else ""
-                # BM25 score; null filter excludes non-matches.
-                base_sql = f"""
-                    FROM captures_idx
-                    WHERE fts_main_captures_idx.match_bm25(capture_id, $q) IS NOT NULL
-                    {where_sql}
-                """
-                total_row = conn.execute(f"SELECT COUNT(*) {base_sql}", params).fetchone()
+            total = 0
+            rows: list[dict[str, Any]] = []
+            used_mode = mode
+
+            # FTS indexes title+text as one blob, so it cannot honor a
+            # narrowed ``fields`` request. Explicit ``fts`` still runs (escape
+            # hatch); ``auto`` only takes the ranked path when fields are the
+            # default, otherwise it routes to field-aware prefix matching.
+            fts_eligible = list(cols) == list(DEFAULT_SEARCH_FIELDS)
+
+            # ── 1) FTS (ranked) path: used for fts/auto when available ──────
+            if mode == "fts" or (mode == "auto" and fts_eligible):
+                fts = self._ensure_fts(conn)
+                if fts:
+                    where, params = base_filters()
+                    params["q"] = query
+                    where_sql = (" AND " + " AND ".join(where)) if where else ""
+                    # NOTE: only static SQL fragments and bound params ($q, $src…)
+                    # reach the string here; the query text is a parameter, never
+                    # interpolated. Safe against injection.
+                    base = f"""
+                        FROM captures_idx
+                        WHERE fts_main_captures_idx.match_bm25(capture_id, $q) IS NOT NULL
+                        {where_sql}
+                    """
+                    total_row = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()  # nosemgrep
+                    total = int(total_row[0]) if total_row else 0
+                    if total > 0:
+                        sql = f"""
+                            SELECT
+                              capture_id, doc_id, parent_doc_or_dup_group,
+                              source_type, source_name, discovery_channel,
+                              url, canonical_url, domain,
+                              fetch_ts, observed_ts, published_ts,
+                              title, text, language, content_hash,
+                              fts_main_captures_idx.match_bm25(capture_id, $q) AS score
+                            {base}
+                            ORDER BY score DESC
+                            LIMIT {int(limit)} OFFSET {int(offset)}
+                        """
+                        rows = self._rows(conn, sql, params)
+                        used_mode = "fts"
+                elif mode == "fts":
+                    # FTS explicitly requested but unavailable → degrade to prefix.
+                    mode = "prefix"
+
+            # ── 2) prefix / substring (unranked) path ──────────────────────
+            snippet_terms = _tokenize_query(query)
+            if not rows and (mode in ("prefix", "substring") or (mode == "auto" and total == 0)):
+                where, params = base_filters()
+                terms = _tokenize_query(query)
+
+                if mode == "substring" or not terms:
+                    where.insert(0, "(" + " OR ".join(f"{c} ILIKE $like" for c in cols) + ")")
+                    params["like"] = f"%{query}%"
+                    used_mode = "substring"
+                else:
+                    # Match every token's stem-root anywhere in the chosen fields.
+                    roots = self._stem_roots(conn, terms)
+                    snippet_terms = roots or terms
+                    for i, root in enumerate(roots):
+                        key = f"r{i}"
+                        params[key] = f"%{root}%"
+                        where.insert(i, "(" + " OR ".join(f"{c} ILIKE ${key}" for c in cols) + ")")
+                    used_mode = "prefix"
+
+                # where_sql interpolates ONLY whitelisted column names (via
+                # _clean_fields) and $-bound placeholders; all user values are
+                # bound params. No untrusted string reaches the SQL text.
+                where_sql = " AND ".join(where) if where else "1=1"
+                total_row = conn.execute(  # nosemgrep
+                    f"SELECT COUNT(*) FROM captures WHERE {where_sql}",  # noqa: S608
+                    params,
+                ).fetchone()
                 total = int(total_row[0]) if total_row else 0
-                sql = f"""
-                    SELECT
-                      capture_id, doc_id, parent_doc_or_dup_group,
-                      source_type, source_name, discovery_channel,
-                      url, canonical_url, domain,
-                      fetch_ts, observed_ts, published_ts,
-                      title, text, language, content_hash,
-                      fts_main_captures_idx.match_bm25(capture_id, $q) AS score
-                    {base_sql}
-                    ORDER BY score DESC
-                    LIMIT {int(limit)} OFFSET {int(offset)}
-                """
-                rows = self._rows(conn, sql, params)
-                ranked = True
-            else:
-                # Fallback: ILIKE on title/text, no relevance ranking.
-                where.insert(0, "(title ILIKE $like OR text ILIKE $like)")
-                params["like"] = f"%{query}%"
-                where_sql = " AND ".join(where)
-                total = int(
-                    conn.execute(f"SELECT COUNT(*) FROM captures WHERE {where_sql}", params).fetchone()[0]
+                sql = (
+                    "SELECT"  # noqa: S608
+                    "  capture_id, doc_id, parent_doc_or_dup_group,"
+                    "  source_type, source_name, discovery_channel,"
+                    "  url, canonical_url, domain,"
+                    "  fetch_ts, observed_ts, published_ts,"
+                    "  title, text, language, content_hash,"
+                    "  NULL::DOUBLE AS score "
+                    "FROM captures "
+                    f"WHERE {where_sql} "
+                    "ORDER BY fetch_ts DESC "
+                    f"LIMIT {int(limit)} OFFSET {int(offset)}"
                 )
-                sql = f"""
-                    SELECT
-                      capture_id, doc_id, parent_doc_or_dup_group,
-                      source_type, source_name, discovery_channel,
-                      url, canonical_url, domain,
-                      fetch_ts, observed_ts, published_ts,
-                      title, text, language, content_hash,
-                      NULL::DOUBLE AS score
-                    FROM captures
-                    WHERE {where_sql}
-                    ORDER BY fetch_ts DESC
-                    LIMIT {int(limit)} OFFSET {int(offset)}
-                """
                 rows = self._rows(conn, sql, params)
-                ranked = False
+
+            ranked = used_mode == "fts"
 
             # Augment each row with a snippet + matched terms; strip the heavy
             # full text from the response payload.
-            terms = _tokenize_query(query)
             results = []
             for r in rows:
                 text = r.pop("text", None) or ""
                 title = r.get("title") or ""
-                snippet, hits = _snippet_for(text, title, terms)
+                snippet, hits = _snippet_for(text, title, snippet_terms)
                 r["snippet"] = snippet
                 r["snippet_hits"] = hits
                 r["text_len"] = len(text)
-                r["terms"] = terms
+                r["terms"] = snippet_terms
                 results.append(r)
             return {
                 "total": total,
@@ -298,6 +502,8 @@ class DuckDbIndex:
                 "offset": offset,
                 "rows": results,
                 "ranked": ranked,
+                "mode": used_mode,
+                "fields": cols,
                 "query": query,
             }
 

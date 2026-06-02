@@ -17,13 +17,12 @@ from __future__ import annotations
 import gzip
 import json
 import os
-import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, IO
+from typing import Any
 
 from awareness.obs.logging import get_logger
 
@@ -33,8 +32,8 @@ logger = get_logger("storage.jsonl")
 def _serialize_value(v: Any) -> Any:
     if isinstance(v, datetime):
         if v.tzinfo is None:
-            v = v.replace(tzinfo=timezone.utc)
-        return v.astimezone(timezone.utc).isoformat()
+            v = v.replace(tzinfo=UTC)
+        return v.astimezone(UTC).isoformat()
     return v
 
 
@@ -68,7 +67,7 @@ class JsonlStagingWriter:
         self._flush_seconds = max(1.0, flush_seconds)
 
         self._lock = threading.RLock()
-        self._fh: IO[bytes] | None = None
+        self._fh: Any = None
         self._current_path: Path | None = None
         self._current_records = 0
         self._current_bytes = 0
@@ -77,7 +76,7 @@ class JsonlStagingWriter:
 
     # ------------------------------------------------------------------
     def _open_new(self) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # Layout: <root>/captures/YYYY/MM/DD/*.jsonl
         day_dir = self._root / "captures" / f"{now.year:04d}" / f"{now.month:02d}" / f"{now.day:02d}"
         day_dir.mkdir(parents=True, exist_ok=True)
@@ -178,7 +177,7 @@ class JsonlStagingWriter:
 
     # ------------------------------------------------------------------
     # Context manager.
-    def __enter__(self) -> "JsonlStagingWriter":
+    def __enter__(self) -> JsonlStagingWriter:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
