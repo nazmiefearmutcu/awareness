@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from dateutil import parser as _dateutil_parser
 
 
 def utcnow() -> datetime:
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)
 
 
 def to_utc(dt: datetime | str | None) -> datetime | None:
@@ -24,8 +24,8 @@ def to_utc(dt: datetime | str | None) -> datetime | None:
     if not isinstance(dt, datetime):
         return None
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def parse_http_date(value: str | None) -> datetime | None:
@@ -33,7 +33,10 @@ def parse_http_date(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return _dateutil_parser.parse(value).astimezone(timezone.utc)
+        dt = _dateutil_parser.parse(value)
+        if isinstance(dt, datetime):
+            return dt.astimezone(UTC)
+        return None
     except (ValueError, TypeError):
         return None
 

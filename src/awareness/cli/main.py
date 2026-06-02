@@ -1010,12 +1010,23 @@ def backfill_submit(
     languages: list[str] = typer.Option([], "--lang", help="Limit to languages (BCP-47)."),
     max_tasks: int = typer.Option(0, "--max-tasks", help="Cap total tasks for smoke tests."),
     notes: str = typer.Option("", "--note", help="Free-form note."),
+    match: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--match",
+        "-m",
+        help="Topic filter: keep only docs with this whole word/phrase (case-insensitive). Repeat for OR; use --match-regex for partial/pattern matches.",
+    ),
+    match_all: bool = typer.Option(False, "--match-all", help="Require ALL --match terms (AND) instead of ANY (OR)."),
+    match_regex: bool = typer.Option(False, "--match-regex", help="Treat --match terms as Python regular expressions."),
+    match_field: str = typer.Option("both", "--match-field", help="Where to match: title | text | both."),
 ) -> None:
     state, planner = _bootstrap()
     src = [SourceKind(s) for s in sources] if sources else []
     start_dt = to_utc(start)
     if start_dt is None:
         raise typer.BadParameter("Invalid start date format")
+    if match_field not in ("title", "text", "both"):
+        raise typer.BadParameter("--match-field must be one of: title, text, both")
     req = BackfillRequest(
         start=start_dt,
         end=coerce_relative_end(end),
@@ -1024,9 +1035,16 @@ def backfill_submit(
         languages=languages or None,
         max_tasks=max_tasks or None,
         notes=notes or None,
+        match=list(match),
+        match_all=match_all,
+        match_regex=match_regex,
+        match_field=match_field,
     )
     job_id = planner.submit_backfill(req)
     rprint(f"[green]Submitted backfill[/green] job_id=[bold]{job_id}[/bold]")
+    if match:
+        joiner = " AND " if match_all else " OR "
+        rprint(f"[dim]Topic filter ({'regex' if match_regex else 'keyword'}, {match_field}): {escape(joiner.join(match))}[/dim]")
     print(json.dumps(planner.status(job_id), indent=2, default=str))
 
 
@@ -1216,9 +1234,24 @@ def tail_start(
     to_local: bool = typer.Option(None, "--to-local", help="Enable local JSONL/SQLite storage"),
     warehouse: str = typer.Option(None, "--warehouse", help="S3 bucket / warehouse path (e.g. s3://bucket/path)"),
     interactive: bool = typer.Option(True, "--interactive/--no-interactive", help="Prompt for storage target choice interactively"),
+    gdelt: bool = typer.Option(None, "--gdelt/--no-gdelt", help="Also follow the GDELT global-news firehose (default from config)."),
+    gdelt_max_urls: int = typer.Option(0, "--gdelt-max-urls", help="Cap URLs pulled per 15-min GDELT slot (0=use config default)."),
+    match: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--match",
+        "-m",
+        help="Topic filter: keep only live docs with this whole word/phrase (case-insensitive). Repeat for OR; use --match-regex for partial/pattern matches.",
+    ),
+    match_all: bool = typer.Option(False, "--match-all", help="Require ALL --match terms (AND) instead of ANY (OR)."),
+    match_regex: bool = typer.Option(False, "--match-regex", help="Treat --match terms as Python regular expressions."),
+    match_field: str = typer.Option("both", "--match-field", help="Where to match: title | text | both."),
 ) -> None:
     """Start the tail engine in foreground. Ctrl-C or pressing ENTER stops it cleanly."""
     is_tty = sys.stdin.isatty()
+    if match_field not in ("title", "text", "both"):
+        raise typer.BadParameter("--match-field must be one of: title, text, both")
+    if gdelt_max_urls < 0:
+        raise typer.BadParameter("--gdelt-max-urls must be >= 0 (0 uses the config default)")
     
     if interactive and is_tty and to_cloud is None and to_local is None:
         rprint("[bold cyan]Tail Storage Configuration[/bold cyan]")
@@ -1265,6 +1298,16 @@ def tail_start(
 
     reset_settings()
     state, planner = _bootstrap()
+    settings = get_settings()
+    # Resolve GDELT firehose + topic filter (CLI overrides config defaults).
+    use_gdelt = settings.tail_gdelt if gdelt is None else gdelt
+    gdelt_cap = gdelt_max_urls or settings.tail_gdelt_max_urls
+    match_config = {
+        "match": list(match),
+        "match_all": match_all,
+        "match_regex": match_regex,
+        "match_field": match_field,
+    }
     tail = TailEngine(state, planner)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -1333,8 +1376,18 @@ def tail_start(
                 rprint(f"\n[yellow]Ignored raw input: '{cmd}'. Press ENTER on an empty line or type /stop to exit.[/yellow]\n")
 
     async def _drive() -> None:
-        job_id = await tail.start(seeds_path=seeds)
+        job_id = await tail.start(
+            seeds_path=seeds,
+            match_config=match_config,
+            gdelt=use_gdelt,
+            gdelt_max_urls=gdelt_cap,
+        )
         rprint(f"[green]Tail started[/green] job_id=[bold]{job_id}[/bold]")
+        if use_gdelt:
+            rprint(f"[dim]GDELT firehose: ON (≤{gdelt_cap} URLs / 15-min slot)[/dim]")
+        if match:
+            joiner = " AND " if match_all else " OR "
+            rprint(f"[dim]Topic filter ({'regex' if match_regex else 'keyword'}, {match_field}): {escape(joiner.join(match))}[/dim]")
         rprint("[bold cyan]Type slash commands (e.g. /help, /clear, /status, /stop) or press ENTER to stop.[/bold cyan]\n")
         
         stop_task = asyncio.create_task(listen_for_stop(job_id))

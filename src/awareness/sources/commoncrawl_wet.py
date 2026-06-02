@@ -30,9 +30,9 @@ from __future__ import annotations
 
 import asyncio
 import gzip
-import io
-from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import httpx
 
@@ -45,9 +45,11 @@ from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
 from awareness.util.hashing import (
     capture_id_for,
-    content_hash as compute_content_hash,
     doc_id_for,
     simhash64,
+)
+from awareness.util.hashing import (
+    content_hash as compute_content_hash,
 )
 from awareness.util.timeutil import to_utc, utcnow
 from awareness.util.urls import canonical_url, domain_of
@@ -83,8 +85,7 @@ def crawl_ids_for_range(start: datetime, end: datetime) -> list[str]:
     out: list[str] = []
     for year, week in pairs:
         anchor_week = week if week % 2 == 1 else week - 1
-        if anchor_week < 1:
-            anchor_week = 1
+        anchor_week = max(anchor_week, 1)
         key = (year, anchor_week)
         if key in seen:
             continue
@@ -191,7 +192,7 @@ class CommonCrawlWetAdapter(Adapter):
             )
         return
         if False:  # pragma: no cover
-            yield  # type: ignore[unreachable]
+            yield
 
     async def _run_shard(
         self,
@@ -209,6 +210,7 @@ class CommonCrawlWetAdapter(Adapter):
         settings = get_settings()
         # Stream the shard to a local file, then parse with warcio. WET files
         # are typically 100-500 MB so streaming-to-disk is the cheap path.
+        assert settings.data_dir is not None
         cache_dir = settings.warc_cache_dir or settings.data_dir / "warc"
         cache_dir.mkdir(parents=True, exist_ok=True)
         local = cache_dir / shard_path.replace("/", "_")
@@ -270,7 +272,7 @@ def _ensure_warcio_available() -> None:
 
 
 def _parse_wet_to_captures(
-    path,
+    path: Path,
     crawl_id: str,
     shard_path: str,
     domains_filter: set[str] | None,

@@ -12,11 +12,11 @@ Politeness:
 
 from __future__ import annotations
 
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import httpx
 
-from awareness.config import get_settings
+from awareness.config import Settings, get_settings
 from awareness.normalize.html import html_to_text
 from awareness.normalize.text import detect_language
 from awareness.obs.logging import get_logger
@@ -26,9 +26,11 @@ from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
 from awareness.util.hashing import (
     capture_id_for,
-    content_hash as compute_content_hash,
     doc_id_for,
     simhash64,
+)
+from awareness.util.hashing import (
+    content_hash as compute_content_hash,
 )
 from awareness.util.ratelimit import PerDomainLimiter
 from awareness.util.robots import RobotsCache
@@ -148,7 +150,7 @@ _LIMITER: PerDomainLimiter | None = None
 _ROBOTS: RobotsCache | None = None
 
 
-def _global_limiter(settings) -> PerDomainLimiter:
+def _global_limiter(settings: Settings) -> PerDomainLimiter:
     global _LIMITER
     if _LIMITER is None:
         _LIMITER = PerDomainLimiter(
@@ -158,7 +160,7 @@ def _global_limiter(settings) -> PerDomainLimiter:
     return _LIMITER
 
 
-def _global_robots(settings) -> RobotsCache:
+def _global_robots(settings: Settings) -> RobotsCache:
     global _ROBOTS
     if _ROBOTS is None:
         _ROBOTS = RobotsCache(ttl=settings.robots_cache_ttl_sec)

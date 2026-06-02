@@ -73,7 +73,7 @@ class DuckDbIndex:
         existing = list(captures_root.rglob("*.jsonl")) if captures_root.exists() else []
         if existing:
             # Build an explicit list literal so DuckDB doesn't have to glob.
-            file_list = ", ".join(f"'{str(p)}'" for p in existing)
+            file_list = ", ".join(f"'{p!s}'" for p in existing)
             conn.execute(
                 f"""
                 CREATE OR REPLACE VIEW staging_captures_raw AS
@@ -110,26 +110,97 @@ class DuckDbIndex:
 
         # Build a unified ``captures`` view that casts timestamps to TIMESTAMPTZ
         # so BETWEEN/range queries against datetime parameters work.
+        # We try to load and union the Iceberg warehouse captures when available.
+        iceberg_ok = False
+        if self._iceberg_warehouse:
+            try:
+                if str(self._iceberg_warehouse).startswith(("s3://", "s3a://", "gs://", "gcs://")):
+                    table_path = f"{self._iceberg_warehouse}/awareness/captures"
+                else:
+                    table_path = str(Path(self._iceberg_warehouse).resolve() / "awareness" / "captures")
+                
+                is_valid = True
+                if not str(self._iceberg_warehouse).startswith(("s3://", "s3a://", "gs://", "gcs://")):
+                    is_valid = Path(table_path).exists()
+                
+                if is_valid:
+                    conn.execute("SET unsafe_enable_version_guessing = true;")
+                    conn.execute(
+                        f"""
+                        CREATE OR REPLACE VIEW iceberg_captures_raw AS
+                        SELECT * FROM iceberg_scan('{table_path}');
+                        """
+                    )
+                    iceberg_ok = True
+            except Exception as exc:
+                logger.info("duckdb_iceberg_view_setup_skipped", err=str(exc))
+
         try:
-            conn.execute(
-                """
-                CREATE OR REPLACE VIEW captures AS
-                SELECT
-                  doc_id, capture_id, parent_doc_or_dup_group,
-                  source_type, source_name, source_locator,
-                  source_shard, source_offset_or_record_id,
-                  discovery_channel, job_id, batch_id, ingest_version,
-                  url, canonical_url, domain,
-                  TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
-                  TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
-                  TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
-                  TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
-                  content_type, http_status, etag, title, text, language,
-                  content_hash, near_dup_hash, robots_decision,
-                  terms_note_if_relevant
-                FROM staging_captures_raw;
-                """
-            )
+            if iceberg_ok:
+                conn.execute(
+                    """
+                    CREATE OR REPLACE VIEW captures_raw_union AS
+                    SELECT
+                      doc_id, capture_id, parent_doc_or_dup_group,
+                      source_type, source_name, source_locator,
+                      source_shard, source_offset_or_record_id,
+                      discovery_channel, job_id, batch_id, ingest_version,
+                      url, canonical_url, domain,
+                      TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
+                      TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
+                      TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
+                      TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
+                      content_type, http_status, etag, title, text, language,
+                      content_hash, TRY_CAST(near_dup_hash AS BIGINT) AS near_dup_hash, robots_decision,
+                      terms_note_if_relevant
+                    FROM staging_captures_raw
+                    UNION ALL
+                    SELECT
+                      doc_id, capture_id, parent_doc_or_dup_group,
+                      source_type, source_name, source_locator,
+                      source_shard, source_offset_or_record_id,
+                      discovery_channel, job_id, batch_id, ingest_version,
+                      url, canonical_url, domain,
+                      TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
+                      TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
+                      TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
+                      TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
+                      content_type, http_status, etag, title, text, language,
+                      content_hash, TRY_CAST(near_dup_hash AS BIGINT) AS near_dup_hash, robots_decision,
+                      terms_note_if_relevant
+                    FROM iceberg_captures_raw;
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE OR REPLACE VIEW captures AS
+                    SELECT * EXCLUDE (rn) FROM (
+                        SELECT *,
+                               ROW_NUMBER() OVER (PARTITION BY capture_id ORDER BY fetch_ts DESC) AS rn
+                        FROM captures_raw_union
+                    ) WHERE rn = 1;
+                    """
+                )
+            else:
+                conn.execute(
+                    """
+                    CREATE OR REPLACE VIEW captures AS
+                    SELECT
+                      doc_id, capture_id, parent_doc_or_dup_group,
+                      source_type, source_name, source_locator,
+                      source_shard, source_offset_or_record_id,
+                      discovery_channel, job_id, batch_id, ingest_version,
+                      url, canonical_url, domain,
+                      TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
+                      TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
+                      TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
+                      TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
+                      content_type, http_status, etag, title, text, language,
+                      content_hash, TRY_CAST(near_dup_hash AS BIGINT) AS near_dup_hash, robots_decision,
+                      terms_note_if_relevant
+                    FROM staging_captures_raw;
+                    """
+                )
             # Backwards-compat alias.
             conn.execute("CREATE OR REPLACE VIEW staging_captures AS SELECT * FROM captures;")
         except duckdb.Error as exc:
@@ -162,7 +233,10 @@ class DuckDbIndex:
             return False
         # Current corpus size.
         try:
-            count = int(conn.execute("SELECT COUNT(*) FROM captures").fetchone()[0])
+            row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+            if not row:
+                return False
+            count = int(row[0])
         except duckdb.Error:
             return False
         if count == 0:
@@ -260,9 +334,8 @@ class DuckDbIndex:
                 where.insert(0, "(title ILIKE $like OR text ILIKE $like)")
                 params["like"] = f"%{query}%"
                 where_sql = " AND ".join(where)
-                total = int(
-                    conn.execute(f"SELECT COUNT(*) FROM captures WHERE {where_sql}", params).fetchone()[0]
-                )
+                total_row = conn.execute(f"SELECT COUNT(*) FROM captures WHERE {where_sql}", params).fetchone()
+                total = int(total_row[0]) if total_row else 0
                 sql = f"""
                     SELECT
                       capture_id, doc_id, parent_doc_or_dup_group,

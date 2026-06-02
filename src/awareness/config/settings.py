@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     # ── paths ────────────────────────────────────────────────────────────
     project_root: Path = Field(default_factory=_project_root)
     data_dir: Path | None = None
-    iceberg_warehouse: Path | None = None
+    iceberg_warehouse: Path | str | None = None
     iceberg_catalog_db: Path | None = None
     state_db_url: str | None = None
     log_dir: Path | None = None
@@ -90,6 +90,8 @@ class Settings(BaseSettings):
     # ── tail ─────────────────────────────────────────────────────────────
     tail_poll_seconds: float = 60.0
     tail_seed_file: Path | None = None  # YAML with feeds + sitemaps to watch
+    tail_gdelt: bool = False  # also discover via GDELT (global news firehose)
+    tail_gdelt_max_urls: int = 500  # cap URLs pulled per 15-min GDELT slot
 
     # ── corpus filters ───────────────────────────────────────────────────
     text_min_chars: int = 200
@@ -101,7 +103,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = True
 
-    def model_post_init(self, __context: Any) -> None:  # noqa: D401
+    def model_post_init(self, __context: Any) -> None:
         """Resolve derived paths and create directories."""
         root = self.project_root
         if self.data_dir is None:
@@ -136,7 +138,10 @@ class Settings(BaseSettings):
             self.data_dir / "duckdb",
             self.data_dir / "dlq",
         ):
-            p.mkdir(parents=True, exist_ok=True)
+            if p is not None:
+                p_str = str(p)
+                if not p_str.startswith(("s3://", "s3a://", "gcs://", "gs://")):
+                    Path(p).mkdir(parents=True, exist_ok=True)
 
     # ── helpers ──────────────────────────────────────────────────────────
     def staging_jsonl_dir(self) -> Path:

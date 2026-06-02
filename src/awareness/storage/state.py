@@ -11,13 +11,12 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
-from typing import Any, Iterable
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import (
-    JSON,
     DateTime,
-    Float,
     Integer,
     String,
     UniqueConstraint,
@@ -29,6 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from awareness.obs.logging import get_logger
+from awareness.schemas.doc import SourceKind
 from awareness.schemas.jobs import (
     JobKind,
     JobState,
@@ -41,7 +41,7 @@ logger = get_logger("storage.state")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Base(DeclarativeBase):
@@ -305,6 +305,17 @@ class StateDB:
                     )
                 ).scalar_one_or_none()
                 if existing is not None:
+                    # One-shot per-URL fetch rows (tail_recrawl) must NOT be
+                    # re-armed once COMPLETED: re-adding the same URL across
+                    # overlapping GDELT slots would otherwise force a redundant
+                    # network re-fetch before dedup can fold it. Re-arm is only
+                    # for constant-key discovery rows (RSS/sitemap/GDELT-slot)
+                    # that are *meant* to re-run each poll.
+                    if (
+                        existing.status == TaskStatus.COMPLETED.value
+                        and t.source_type == SourceKind.TAIL_RECRAWL
+                    ):
+                        continue
                     # Re-arm: reset status, remember the previous one.
                     prev = existing.status
                     rearmed_from[prev] = rearmed_from.get(prev, 0) + 1

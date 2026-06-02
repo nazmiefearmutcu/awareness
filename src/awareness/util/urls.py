@@ -6,7 +6,6 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import tldextract
 
-
 # Tracking params that should be stripped during canonicalization.
 _TRACKING_PARAMS: frozenset[str] = frozenset(
     {

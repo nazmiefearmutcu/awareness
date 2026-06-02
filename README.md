@@ -177,7 +177,12 @@ awareness tail stop             # cooperative stop request
 ### Inspect & metrics
 
 ```bash
-awareness status
+awareness status                # overall status, now shows data processed & disk size
+awareness status --detailed     # detailed component sizes (JSONL, state DB, logs)
+awareness stats                 # comprehensive storage and ingestion metrics
+awareness tui                   # full-screen interactive live TUI dashboard
+awareness browse                # interactive CLI search & document reader
+awareness compact               # compact local staging files into Iceberg warehouse
 awareness inspect --start 2024-06-01 --end now --limit 25
 awareness counts --start 2024-06-01 --end now
 awareness dedup-stats

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from awareness.storage.jsonl import JsonlStagingWriter
@@ -12,7 +12,7 @@ from awareness.storage.jsonl import JsonlStagingWriter
 def _row(i: int) -> dict:
     return {
         "doc_id": f"d{i:04d}",
-        "fetch_ts": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "fetch_ts": datetime(2024, 1, 1, tzinfo=UTC),
         "text": "hello world",
     }
 

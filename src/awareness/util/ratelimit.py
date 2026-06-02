@@ -53,7 +53,7 @@ class PerDomainLimiter:
         slot.sem.release()
 
     class _DomainCtx:
-        def __init__(self, parent: "PerDomainLimiter", domain: str, override_delay: float | None) -> None:
+        def __init__(self, parent: PerDomainLimiter, domain: str, override_delay: float | None) -> None:
             self.parent = parent
             self.domain = domain
             self.override_delay = override_delay
@@ -64,6 +64,6 @@ class PerDomainLimiter:
         async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
             self.parent.release(self.domain)
 
-    def domain(self, domain: str, override_delay: float | None = None) -> "PerDomainLimiter._DomainCtx":
+    def domain(self, domain: str, override_delay: float | None = None) -> PerDomainLimiter._DomainCtx:
         """Async context manager for an acquire/release pair."""
         return PerDomainLimiter._DomainCtx(self, domain, override_delay)

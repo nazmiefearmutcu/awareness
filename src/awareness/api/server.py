@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -36,14 +37,13 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import Optional
 
 from awareness.config import get_settings
 from awareness.obs.logging import configure_logging, get_logger
 from awareness.obs.metrics import get_metrics
 from awareness.planner.planner import Planner
 from awareness.schemas.doc import SourceKind
-from awareness.schemas.jobs import BackfillRequest, JobStatus
+from awareness.schemas.jobs import BackfillRequest
 from awareness.storage.duckdb_index import DuckDbIndex
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
@@ -62,13 +62,26 @@ class BackfillBody(BaseModel):
     languages: list[str] | None = None
     max_tasks: int | None = None
     notes: str | None = None
+    match: list[str] = []
+    match_all: bool = False
+    match_regex: bool = False
+    match_field: str = "both"
+
+
+class TailStartBody(BaseModel):
+    gdelt: bool | None = None  # None → fall back to config (tail_gdelt)
+    gdelt_max_urls: int = 0  # 0 → config default
+    match: list[str] = []
+    match_all: bool = False
+    match_regex: bool = False
+    match_field: str = "both"
 
 
 class _State:
     state: StateDB | None = None
     planner: Planner | None = None
     tail: TailEngine | None = None
-    background_tasks: set[asyncio.Task] = set()
+    background_tasks: set[asyncio.Task[Any]] = set()
 
 
 def create_app() -> FastAPI:
@@ -76,7 +89,7 @@ def create_app() -> FastAPI:
     configure_logging(level=settings.log_level, json=settings.log_json, log_dir=settings.log_dir)
 
     @asynccontextmanager
-    async def lifespan(_app: FastAPI):
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         state = StateDB(settings.state_db_url or "sqlite:///awareness.sqlite")
         state.init()
         # Reconcile phantom "running" tail state from a previous process that
@@ -135,14 +148,26 @@ def create_app() -> FastAPI:
             raise HTTPException(500, "not initialized")
         end = body.end or (coerce_relative_end(body.end_str or "now"))
         srcs = [SourceKind(s) for s in body.sources] if body.sources else []
+        start_dt = to_utc(body.start)
+        if start_dt is None:
+            raise HTTPException(400, "Invalid start date")
+        end_dt = to_utc(end)
+        if end_dt is None:
+            raise HTTPException(400, "Invalid end date")
+        if body.match_field not in ("title", "text", "both"):
+            raise HTTPException(400, "match_field must be one of: title, text, both")
         req = BackfillRequest(
-            start=to_utc(body.start),
-            end=to_utc(end),
+            start=start_dt,
+            end=end_dt,
             sources=srcs,
             domains=body.domains,
             languages=body.languages,
             max_tasks=body.max_tasks,
             notes=body.notes,
+            match=body.match,
+            match_all=body.match_all,
+            match_regex=body.match_regex,
+            match_field=body.match_field,
         )
         job_id = _State.planner.submit_backfill(req)
         return _State.planner.status(job_id)
@@ -177,12 +202,28 @@ def create_app() -> FastAPI:
         return [j.model_dump(mode="json") for j in _State.state.list_jobs(limit=limit)]
 
     @app.post("/tail/start")
-    async def tail_start() -> dict[str, Any]:
+    async def tail_start(body: TailStartBody | None = None) -> dict[str, Any]:
         if _State.tail is None or _State.state is None:
             raise HTTPException(500, "not initialized")
         if _State.tail.running:
             return _State.state.get_tail()
-        await _State.tail.start()
+        body = body or TailStartBody()
+        if body.match_field not in ("title", "text", "both"):
+            raise HTTPException(400, "match_field must be one of: title, text, both")
+        if body.gdelt_max_urls < 0:
+            raise HTTPException(400, "gdelt_max_urls must be >= 0")
+        s = get_settings()
+        use_gdelt = s.tail_gdelt if body.gdelt is None else body.gdelt
+        await _State.tail.start(
+            match_config={
+                "match": body.match,
+                "match_all": body.match_all,
+                "match_regex": body.match_regex,
+                "match_field": body.match_field,
+            },
+            gdelt=use_gdelt,
+            gdelt_max_urls=body.gdelt_max_urls or s.tail_gdelt_max_urls,
+        )
         return _State.state.get_tail()
 
     @app.post("/tail/stop")
@@ -239,10 +280,10 @@ def create_app() -> FastAPI:
     @app.get("/inspect")
     def inspect(
         start: datetime = Query(...),
-        end: Optional[datetime] = Query(None),
+        end: datetime | None = Query(None),
         limit: int = Query(20, ge=1, le=500),
-        domain: Optional[str] = Query(None),
-        source: Optional[str] = Query(None),
+        domain: str | None = Query(None),
+        source: str | None = Query(None),
     ) -> list[dict[str, Any]]:
         s = get_settings()
         idx = DuckDbIndex(
@@ -270,7 +311,7 @@ def create_app() -> FastAPI:
         return idx.execute(sql, params)
 
     @app.get("/counts")
-    def counts(start: datetime, end: Optional[datetime] = None) -> dict[str, Any]:
+    def counts(start: datetime, end: datetime | None = None) -> dict[str, Any]:
         s = get_settings()
         idx = DuckDbIndex(
             db_path=s.duckdb_path(),
@@ -294,11 +335,11 @@ def create_app() -> FastAPI:
     def list_captures(
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
-        start: Optional[datetime] = Query(None),
-        end: Optional[datetime] = Query(None),
-        domain: Optional[str] = Query(None),
-        source: Optional[str] = Query(None),
-        search: Optional[str] = Query(None),
+        start: datetime | None = Query(None),
+        end: datetime | None = Query(None),
+        domain: str | None = Query(None),
+        source: str | None = Query(None),
+        search: str | None = Query(None),
     ) -> dict[str, Any]:
         s = get_settings()
         idx = DuckDbIndex(
@@ -383,10 +424,10 @@ def create_app() -> FastAPI:
         q: str = Query(..., min_length=1),
         limit: int = Query(30, ge=1, le=200),
         offset: int = Query(0, ge=0),
-        source: Optional[str] = Query(None),
-        domain: Optional[str] = Query(None),
-        start: Optional[datetime] = Query(None),
-        end: Optional[datetime] = Query(None),
+        source: str | None = Query(None),
+        domain: str | None = Query(None),
+        start: datetime | None = Query(None),
+        end: datetime | None = Query(None),
     ) -> dict[str, Any]:
         s = get_settings()
         idx = DuckDbIndex(

@@ -23,6 +23,7 @@ from rich.markup import escape
 
 from awareness.config import get_settings
 from awareness.dedup.engine import DedupDecision, DedupEngine
+from awareness.filters import TopicFilter
 from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
 from awareness.planner.planner import Planner
@@ -96,7 +97,29 @@ class WorkerEngine:
         self._is_tty = sys.stdout.isatty()
         self._total_bytes_processed = 0
         self._total_docs_processed = 0
+        self._total_docs_filtered = 0
         self._silent_progress = silent_progress
+        # Per-job compiled topic filter (None = no filter). Cached so we read
+        # the job request once, not once per task.
+        self._topic_filters: dict[str, TopicFilter | None] = {}
+
+    def _topic_filter_for(self, job_id: str) -> TopicFilter | None:
+        """Resolve (and cache) the ingest-time topic filter for a job."""
+        if job_id in self._topic_filters:
+            return self._topic_filters[job_id]
+        try:
+            job = self._state.get_job(job_id)
+        except Exception as exc:
+            # Transient read failure — do NOT memoize, so a later task retries.
+            logger.warning("topic_filter_resolve_failed", job_id=job_id, err=str(exc))
+            return None
+        if job is None:
+            return None  # job row not visible yet; retry on the next task
+        flt = TopicFilter.from_config(job.request) if isinstance(job.request, dict) else None
+        if flt is not None:
+            logger.info("topic_filter_active", job_id=job_id, filter=flt.describe())
+        self._topic_filters[job_id] = flt  # cache only confirmed resolutions
+        return flt
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def request_stop(self) -> None:
@@ -122,6 +145,7 @@ class WorkerEngine:
         if job:
             self._total_bytes_processed = job.bytes_processed or 0
             self._total_docs_processed = job.docs_emitted or 0
+            self._total_docs_filtered = 0  # per-job, like the counters above
 
         start_time = time.time()
         progress_bar = None
@@ -155,11 +179,12 @@ class WorkerEngine:
                         bytes_per_sec = self._total_bytes_processed / elapsed
                         docs_per_sec = self._total_docs_processed / elapsed
                         speed_str = f" @ {_format_size(int(bytes_per_sec))}/s, {docs_per_sec:.1f} doc/s"
+                    filt_str = f", {self._total_docs_filtered} filtered" if self._total_docs_filtered else ""
                     progress_bar.update(
-                        progress_task_id, 
-                        advance=1, 
+                        progress_task_id,
+                        advance=1,
                         total=total_tasks,
-                        description=f"[bold blue]Ingesting ({_format_size(self._total_bytes_processed)}, {self._total_docs_processed} docs{speed_str})"
+                        description=f"[bold blue]Ingesting ({_format_size(self._total_bytes_processed)}, {self._total_docs_processed} docs{filt_str}{speed_str})"
                     )
 
         try:
@@ -196,6 +221,7 @@ class WorkerEngine:
         if job:
             self._total_bytes_processed = job.bytes_processed or 0
             self._total_docs_processed = job.docs_emitted or 0
+            self._total_docs_filtered = 0  # per-job, like the counters above
 
         start_time = time.time()
         progress_bar = None
@@ -225,9 +251,10 @@ class WorkerEngine:
                         bytes_per_sec = self._total_bytes_processed / elapsed
                         docs_per_sec = self._total_docs_processed / elapsed
                         speed_str = f" @ {_format_size(int(bytes_per_sec))}/s, {docs_per_sec:.1f} doc/s"
+                    filt_str = f", {self._total_docs_filtered} filtered" if self._total_docs_filtered else ""
                     progress_bar.update(
-                        progress_task_id, 
-                        description=f"[bold green]Tailing ({_format_size(self._total_bytes_processed)}, {self._total_docs_processed} docs{speed_str})"
+                        progress_task_id,
+                        description=f"[bold green]Tailing ({_format_size(self._total_bytes_processed)}, {self._total_docs_processed} docs{filt_str}{speed_str})"
                     )
 
         try:
@@ -271,8 +298,15 @@ class WorkerEngine:
         docs_emitted = 0
         dedup_dropped = 0
         bytes_processed = 0
+        topic = self._topic_filter_for(task.job_id)
         try:
             async for cap in adapter.run_partition(partition, context):
+                # Topic filter: drop non-matching docs BEFORE dedup/storage so
+                # they never cost disk. Inactive filter (no terms) passes all.
+                if topic is not None and topic.active and not topic.matches(cap.title or "", cap.text or ""):
+                    self._total_docs_filtered += 1
+                    get_metrics().inc("docs.filtered", labels={"source": task.source_type.value})
+                    continue
                 outcome = self._dedup.evaluate(cap)
                 # Persist all captures (provenance), but track stats.
                 async with self._buffer_lock:

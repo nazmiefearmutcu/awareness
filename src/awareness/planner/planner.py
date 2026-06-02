@@ -13,9 +13,9 @@ work. Workers update task status as they run.
 from __future__ import annotations
 
 import uuid
-from typing import Iterable
+from collections.abc import Iterable
+from typing import Any
 
-from awareness.config import get_settings
 from awareness.obs.logging import get_logger
 from awareness.schemas.doc import SourceKind
 from awareness.schemas.jobs import (
@@ -24,7 +24,6 @@ from awareness.schemas.jobs import (
     JobState,
     JobStatus,
     TaskState,
-    TaskStatus,
 )
 from awareness.sources import get_adapter_registry
 from awareness.sources.base import PartitionSpec
@@ -92,7 +91,7 @@ class Planner:
         return job_id
 
     # ── TAIL ─────────────────────────────────────────────────────────────
-    def submit_tail(self, seeds: dict) -> str:
+    def submit_tail(self, seeds: dict[str, Any]) -> str:
         """Create or refresh a long-lived tail job and seed its initial partitions."""
         job_id = f"tail-{uuid.uuid4().hex[:12]}"
         job = JobState(
@@ -136,7 +135,7 @@ class Planner:
         logger.info("planner_tail_stopped", job_id=job_id)
 
     # ── helpers ──────────────────────────────────────────────────────────
-    def _task(self, job_id: str, source: SourceKind, partition_key: str, payload: dict) -> TaskState:
+    def _task(self, job_id: str, source: SourceKind, partition_key: str, payload: dict[str, Any]) -> TaskState:
         return TaskState(
             task_id=f"t-{uuid.uuid4().hex[:16]}",
             job_id=job_id,
@@ -157,7 +156,7 @@ class Planner:
         return self._state.add_tasks(tasks)
 
     # ── reporting ────────────────────────────────────────────────────────
-    def status(self, job_id: str) -> dict:
+    def status(self, job_id: str) -> dict[str, Any]:
         job = self._state.get_job(job_id)
         if job is None:
             return {"error": "unknown_job", "job_id": job_id}

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -25,9 +25,7 @@ from awareness.sources import get_adapter_registry
 from awareness.sources.local_fixture import LocalFixtureAdapter
 from awareness.storage.duckdb_index import DuckDbIndex
 from awareness.storage.state import StateDB
-from awareness.tail.engine import TailEngine
 from awareness.workers.engine import WorkerEngine
-
 
 pytestmark = [pytest.mark.smoke, pytest.mark.asyncio]
 
@@ -42,7 +40,7 @@ _LIVE_DOCS = [
             "narrative spanning multiple sentences to satisfy the minimum "
             "content length filter applied during normalization. " * 4
         ),
-        "fetch_ts": datetime(2024, 8, 1, 12, i, tzinfo=timezone.utc).isoformat(),
+        "fetch_ts": datetime(2024, 8, 1, 12, i, tzinfo=UTC).isoformat(),
         "language": "en",
     }
     for i in range(1, 6)

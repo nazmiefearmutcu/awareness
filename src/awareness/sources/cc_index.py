@@ -12,8 +12,8 @@ partition per matched record.
 from __future__ import annotations
 
 import json
-from datetime import datetime
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
@@ -67,7 +67,7 @@ class CommonCrawlIndexAdapter(Adapter):
         cdx_url = f"{CDX_BASE}/{crawl_id}-index"
         params = {"url": url_filter, "output": "json", "limit": str(max_results)}
         logger.info("cc_index_query", crawl_id=crawl_id, filter=url_filter)
-        records: list[dict] = []
+        records: list[dict[str, Any]] = []
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
             try:
                 async with client.stream(
@@ -118,4 +118,4 @@ class CommonCrawlIndexAdapter(Adapter):
             )
         return
         if False:  # pragma: no cover
-            yield  # type: ignore[unreachable]
+            yield
