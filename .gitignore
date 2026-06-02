@@ -9,6 +9,9 @@ __pycache__/
 # Project data — never commit captured corpus
 data/
 
+# Large local promo-video generator (503MB) — do not commit
+videos/
+
 # Tool caches
 .pytest_cache/
 .ruff_cache/

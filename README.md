@@ -38,6 +38,111 @@ Single-process Python + FastAPI + a hand-written vanilla SPA in `src/awareness/a
 
 ---
 
+## Benchmarks
+
+Awareness is benchmarked **head-to-head against the de-facto peer in each
+space**, on one machine, over a **deterministic** synthetic corpus (fixed seed —
+the corpus and the accuracy numbers reproduce exactly; throughput drifts with
+hardware/load). Where a result trailed the standard, the gap was closed with a
+*real code change*, then re-measured. Nothing here is hand-tuned to flatter a
+single number; figures below are from one representative run (`results.json`).
+
+![Head-to-head summary: hashing throughput, near-dup throughput, near-dup memory, extraction quality](docs/benchmarks/summary.png)
+
+```bash
+uv pip install -e '.[bench]'
+python -m benchmarks.run_all      # writes docs/benchmarks/results.json
+python -m benchmarks.plot         # renders the charts below
+```
+
+<sub>Machine for the numbers below: Apple Silicon (arm64), Python 3.11, single core. Peers: datasketch 1.10, BLAKE3 1.0, trafilatura, DuckDB FTS, SQLite FTS5.</sub>
+
+### Near-duplicate detection — fixed the fingerprint *and* the retrieval
+
+Awareness dedups with a **128-bit frequency-weighted Charikar SimHash** +
+Hamming threshold, indexed with Manku/Jain pigeonhole banding. The de-facto
+peer is `datasketch` **MinHashLSH** (num_perm=128). We compare the **full
+pipelines end-to-end** (retrieval + threshold + grouping) — the same way
+text-dedup and datasketch report — not an all-pairs oracle.
+
+![Near-dup: throughput, signature footprint, end-to-end F1 vs edit intensity](docs/benchmarks/dedup.png)
+
+The original engine trailed badly: a 64-bit SimHash (separability F1 ~0.86) behind
+an 8-band index that retrieved almost nothing at the realistic near-dup radius —
+end-to-end recall was **~2%**. Three changes fixed it: a **128-bit
+frequency-weighted fingerprint** (all-pairs *separability* **0.99**, on par with
+MinHash — so the fingerprint was never the problem;
+[text-dedup's CORE benchmark](https://github.com/ChenghaoMou/text-dedup) puts
+plain 64-bit SimHash at 0.85, MinHash at 0.95), **finer 16×8-bit banding** (roughly
+doubles candidate retrieval), and a **Hamming≤24 default** threshold.
+
+| End-to-end (full pipeline) | **Awareness DedupEngine** | `datasketch` MinHashLSH |
+| --- | --- | --- |
+| **F1** (shipped default · tuned) | **0.84 · 0.96** | 0.998 |
+| **Precision** | **1.00** — never false-merges | 0.999 |
+| **Recall** (default · tuned) | 0.73 · 0.93 | 0.997 |
+| **Throughput** | **≈5,200 docs/s** (3.3×) | ≈1,600 docs/s |
+| **Signature size** | **16 B/doc** (64× smaller) | 1,024 B/doc |
+
+Numbers are the **shipped default** (`near_threshold=24`); raised toward the
+precision boundary (Hamming≤32) the engine reaches **F1 0.96 / recall 0.93 with
+precision still 1.00** — the threshold is tunable per call. MinHashLSH is reported
+at its F1-optimal Jaccard≥0.5 (≈ its default).
+
+Honest verdict: **MinHashLSH wins recall** — its LSH needs no per-corpus tuning
+and degrades more gracefully as edits grow (right-hand panel; at the shipped
+default the curves separate above ~7% word edits). This is the well-established
+SimHash↔MinHash trade. Awareness's SimHash is the **precision-first,
+resource-frugal** choice: identical precision, **3.3× the throughput, 64× less
+memory**, and — because dedup only ever sets a grouping hint and never drops a
+row — lower recall costs a little less folding, never data.
+
+### Content fingerprinting — xxh3 is the right call
+
+![Hashing throughput: xxh3 vs BLAKE3, SHA-256, MD5, …](docs/benchmarks/hashing.png)
+
+Awareness fingerprints every document for exact-dedup with `xxhash.xxh3_64`.
+On per-document digests it is the fastest option measured — **≈11 GB/s**,
+~2.4× MurmurHash3, ~6× SHA-256, and ~14–16× BLAKE3/MD5 — so exact-dedup is
+never the bottleneck. (BLAKE3's SIMD edge shows on large contiguous buffers,
+not the many small inputs Awareness actually hashes.)
+
+### HTML → main-text extraction — riding the F1 leader
+
+![Extraction quality, measured on our corpus and on the published Barbaresi 2022 leaderboard](docs/benchmarks/extraction.png)
+
+Awareness extracts article text with **trafilatura**, which tops both our
+measured boilerplate-rejection test (**F1 0.96**) and the published
+[Barbaresi 2022 leaderboard](https://trafilatura.readthedocs.io/en/latest/evaluation.html)
+(**F1 0.909**, ahead of readabilipy, news-please, readability-lxml, goose3,
+jusText, inscriptis, html2text). Honesty note: this quality costs speed —
+trafilatura is the *slowest* extractor measured (~370 pages/s vs raw
+tag-stripping at ~50k pages/s); Awareness deliberately spends that time to keep
+boilerplate out of the durable corpus.
+
+### Query & ingestion — optimizations shipped for this benchmark
+
+![Before/after speedups: fingerprint stage, ingestion loop, BM25 search latency](docs/benchmarks/speedups.png)
+
+Three concrete improvements made while benchmarking (same machine, same corpus):
+
+- **SimHash vectorization** — the per-shingle 64-bit accumulator loop was
+  replaced with a NumPy bit-matrix; the fingerprint stage went **≈5–6× faster**
+  (and is bit-identical for the 64-bit path).
+- **End-to-end ingestion loop** (normalize → fingerprint → JSONL write) is
+  **≈4× faster** as a result.
+- **BM25 search latency** dropped **≈8–9×** (≈200 ms → ≈24 ms) after the DuckDB
+  index stopped rebuilding its views on *every* query and instead refreshes
+  only when the on-disk corpus changes.
+
+Honesty note on search: a dedicated inverted index (SQLite FTS5) answers an
+unranked lookup *much* faster (sub-millisecond vs ~24 ms here) — Awareness
+chooses DuckDB so the *same* SQL engine serves BM25 search, range scans, and
+Iceberg analytics over one lake, not because it's the fastest pure-FTS engine.
+
+Full methodology and raw numbers live in [`benchmarks/`](benchmarks/) and
+[`docs/benchmarks/results.json`](docs/benchmarks/results.json).
+
 ## Architecture
 
 ```mermaid
