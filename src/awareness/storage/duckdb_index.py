@@ -71,6 +71,12 @@ class DuckDbIndex:
         self._conn: duckdb.DuckDBPyConnection | None = None
         self._fts_available: bool | None = None
         self._fts_built_for_count: int = -1
+        self._fts_built_signature: tuple[Any, ...] | None = None
+        # Cache the (path, size, mtime) signature of the source files so we
+        # only rebuild views when the corpus on disk actually changed. Without
+        # this, every query paid a full view-refresh (~150ms over a few JSONL
+        # chunks); steady-state queries are now bound by the query itself.
+        self._views_signature: tuple[Any, ...] | None = None
 
     def connect(self) -> duckdb.DuckDBPyConnection:
         with self._lock:
@@ -94,12 +100,51 @@ class DuckDbIndex:
                 logger.info("duckdb_fts_extension_unavailable", err=str(exc))
                 self._fts_available = False
             self._refresh_views(conn)
+            self._views_signature = self._source_signature()
             self._conn = conn
             return conn
 
     def _staging_glob(self) -> str:
         # JSONL chunks land here; use a recursive glob.
         return str(self._jsonl_dir / "captures" / "**" / "*.jsonl")
+
+    def _source_signature(self) -> tuple[Any, ...]:
+        """Cheap fingerprint of the on-disk corpus (JSONL chunks + Iceberg metadata).
+
+        Changes whenever a staging chunk is added/rotated or the Iceberg table
+        gains a snapshot, so :meth:`_refresh_views_if_stale` can skip the
+        expensive view rebuild while still picking up new data.
+        """
+        captures_root = self._jsonl_dir / "captures"
+        jsonl: tuple[Any, ...] = ()
+        if captures_root.exists():
+            entries = []
+            for p in captures_root.rglob("*.jsonl"):
+                try:
+                    st = p.stat()
+                    entries.append((str(p), st.st_size, st.st_mtime_ns))
+                except OSError:
+                    continue
+            jsonl = tuple(sorted(entries))
+        iceberg: tuple[Any, ...] = ()
+        wh = self._iceberg_warehouse
+        if wh and not str(wh).startswith(("s3://", "s3a://", "gs://", "gcs://")):
+            meta_dir = Path(wh).resolve() / "awareness" / "captures" / "metadata"
+            if meta_dir.exists():
+                try:
+                    iceberg = tuple(
+                        sorted((str(p), p.stat().st_mtime_ns) for p in meta_dir.glob("*.json"))
+                    )
+                except OSError:
+                    iceberg = ()
+        return (jsonl, iceberg)
+
+    def _refresh_views_if_stale(self, conn: duckdb.DuckDBPyConnection) -> None:
+        """Rebuild views only when the source-file signature changed."""
+        sig = self._source_signature()
+        if sig != self._views_signature:
+            self._refresh_views(conn)
+            self._views_signature = sig
 
     def _refresh_views(self, conn: duckdb.DuckDBPyConnection) -> None:
         captures_root = self._jsonl_dir / "captures"
@@ -248,11 +293,12 @@ class DuckDbIndex:
                 self.connect()
                 return
             self._refresh_views(self._conn)
+            self._views_signature = self._source_signature()
 
     def execute(self, sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         with self._lock:
             conn = self.connect()
-            self._refresh_views(conn)
+            self._refresh_views_if_stale(conn)
             cur = conn.execute(sql, params or {})
             cols = [d[0] for d in cur.description] if cur.description else []
             return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
@@ -267,6 +313,10 @@ class DuckDbIndex:
         """
         if not self._fts_available:
             return False
+        # Fast path: the source files are unchanged since we last built the
+        # index, so skip the COUNT(*) probe (which scans the JSON-backed view).
+        if self._fts_built_signature is not None and self._fts_built_signature == self._views_signature:
+            return True
         # Current corpus size.
         try:
             row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
@@ -278,6 +328,7 @@ class DuckDbIndex:
         if count == 0:
             return False
         if count == self._fts_built_for_count:
+            self._fts_built_signature = self._views_signature
             return True
         # Rebuild materialized table + FTS index.
         try:
@@ -298,6 +349,7 @@ class DuckDbIndex:
                 "PRAGMA create_fts_index('captures_idx', 'capture_id', 'title', 'text', overwrite=1, stemmer='english', stopwords='english')"
             )
             self._fts_built_for_count = count
+            self._fts_built_signature = self._views_signature
             logger.info("duckdb_fts_index_built", rows=count)
             return True
         except duckdb.Error as exc:
@@ -372,7 +424,7 @@ class DuckDbIndex:
 
         with self._lock:
             conn = self.connect()
-            self._refresh_views(conn)
+            self._refresh_views_if_stale(conn)
 
             # Shared range/source/domain filters.
             def base_filters() -> tuple[list[str], dict[str, Any]]:
