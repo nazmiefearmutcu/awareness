@@ -12,14 +12,13 @@ support resume via the ``checkpoint`` argument.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any
 
 from awareness.obs.logging import get_logger
 from awareness.schemas.doc import DocCapture, SourceKind
 from awareness.schemas.jobs import BackfillRequest
-
 
 logger = get_logger("sources.base")
 
@@ -67,16 +66,13 @@ class Adapter(ABC):
         """Convert a backfill request into source-native partitions."""
 
     @abstractmethod
-    async def run_partition(
+    def run_partition(
         self,
         partition: PartitionSpec,
         context: AdapterContext,
     ) -> AsyncIterator[DocCapture]:
         """Yield captures for a partition. Must honor ``context.is_stopping``."""
-        # The signature is async iterator. Subclasses use `async def` + `yield`.
         raise NotImplementedError
-        if False:  # pragma: no cover -- ensure async generator typing
-            yield  # type: ignore[unreachable]
 
 
 class AdapterRegistry:
@@ -107,13 +103,13 @@ def get_adapter_registry() -> AdapterRegistry:
 
 def _register_defaults(reg: AdapterRegistry) -> None:
     # Imported here to avoid circular imports at module load.
-    from awareness.sources.commoncrawl_wet import CommonCrawlWetAdapter
-    from awareness.sources.fineweb import FineWebAdapter
-    from awareness.sources.feeds import FeedsAdapter
-    from awareness.sources.tail_recrawl import TailRecrawlAdapter
-    from awareness.sources.gdelt import GdeltAdapter
-    from awareness.sources.warc_repair import WarcRepairAdapter
     from awareness.sources.cc_index import CommonCrawlIndexAdapter
+    from awareness.sources.commoncrawl_wet import CommonCrawlWetAdapter
+    from awareness.sources.feeds import FeedsAdapter
+    from awareness.sources.fineweb import FineWebAdapter
+    from awareness.sources.gdelt import GdeltAdapter
+    from awareness.sources.tail_recrawl import TailRecrawlAdapter
+    from awareness.sources.warc_repair import WarcRepairAdapter
 
     for cls in (
         CommonCrawlWetAdapter,

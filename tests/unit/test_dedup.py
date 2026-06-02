@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from awareness.dedup.engine import DedupDecision, DedupEngine
@@ -27,7 +27,7 @@ def _make_cap(url: str, text: str, *, observed_str: str = "2024-01-01T00:00:00+0
         url=url,
         canonical_url=cu,
         domain="x.test",
-        fetch_ts=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        fetch_ts=datetime(2024, 1, 1, tzinfo=UTC),
         observed_ts=datetime.fromisoformat(observed_str),
         text=text,
         content_hash=ch,
