@@ -12,11 +12,11 @@ Design rules:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class RobotsDecision(str, Enum):
@@ -123,8 +123,8 @@ class DocCapture(BaseModel):
             return v
         if isinstance(v, datetime):
             if v.tzinfo is None:
-                return v.replace(tzinfo=timezone.utc)
-            return v.astimezone(timezone.utc)
+                return v.replace(tzinfo=UTC)
+            return v.astimezone(UTC)
         return v
 
     @field_validator("text")

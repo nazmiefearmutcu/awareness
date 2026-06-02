@@ -33,7 +33,7 @@ def run() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    def _stop(*_a) -> None:
+    def _stop(*_a: object) -> None:
         engine.request_stop()
 
     for sig in (signal.SIGINT, signal.SIGTERM):

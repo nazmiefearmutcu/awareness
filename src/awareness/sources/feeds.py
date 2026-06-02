@@ -14,26 +14,26 @@ sub-partition that actually fetches the page (tail_recrawl).
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
 
 import feedparser
 import httpx
 import yaml
 from lxml import etree
 
-from awareness.config import get_settings
 from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
 from awareness.schemas.doc import DocCapture, SourceKind
 from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
-from awareness.util.timeutil import to_utc, utcnow
-from awareness.util.urls import canonical_url, domain_of
+from awareness.util.urls import canonical_url
 
 logger = get_logger("sources.feeds")
 
 
-def _load_seeds(path) -> dict[str, Any]:
+def _load_seeds(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {}
     with open(path, encoding="utf-8") as fh:
@@ -89,7 +89,7 @@ class FeedsAdapter(Adapter):
             )
         return
         if False:  # pragma: no cover
-            yield  # type: ignore[unreachable]
+            yield
 
 
 async def _read_feed(url: str, user_agent: str) -> list[str]:

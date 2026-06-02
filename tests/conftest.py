@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 import pytest
 
@@ -17,6 +16,14 @@ def tmp_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Pa
     monkeypatch.setenv("AW_PROJECT_ROOT", str(tmp_path))
     # No on-disk YAML overrides during tests.
     monkeypatch.delenv("AW_CONFIG_FILE", raising=False)
+    # `tail start` / `start` set destination flags directly in os.environ (that is
+    # how they hand config to reset_settings()). Those writes are NOT undone by
+    # monkeypatch, so clear them here to isolate each test from prior leakage.
+    for _leak in (
+        "AW_ENABLE_ICEBERG", "AW_ENABLE_JSONL_STAGING", "AW_ENABLE_GDRIVE",
+        "AW_ICEBERG_WAREHOUSE", "AW_DATA_DIR",
+    ):
+        monkeypatch.delenv(_leak, raising=False)
     # Always JSON logging off during tests for readable failures.
     monkeypatch.setenv("AW_LOG_JSON", "false")
     monkeypatch.setenv("AW_LOG_LEVEL", "WARNING")
