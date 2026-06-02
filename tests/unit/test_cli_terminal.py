@@ -1,5 +1,5 @@
-"""Tests for the enhanced terminal UX: big shadowed banner, getting-started
-intro, --version, the command map, and the full-dispatch interactive shell."""
+"""Tests for the turquoise terminal UX: outline wordmark, getting-started intro,
+power-on self-test, --version, the command map, and the interactive shell."""
 
 from __future__ import annotations
 
@@ -21,25 +21,31 @@ def _render(renderable: object, width: int = 100) -> str:
 
 
 # ── banner module (pure rendering) ───────────────────────────────────────────
-def test_big_banner_lines_are_block_art() -> None:
-    # Every glyph row is the same width and made of block + box-drawing chars.
+def test_big_banner_lines_are_outline_art() -> None:
+    # Every glyph row is the same width; the wordmark is a fill-less outline
+    # (box-drawing strokes), NOT a solid-block shadowed art.
     widths = {len(line) for line in banner._BIG_LINES}
     assert len(widths) == 1, "all banner rows must share one width"
-    assert "█" in "".join(banner._BIG_LINES)
+    joined = "".join(banner._BIG_LINES)
+    assert "|" in joined and "_" in joined
+    assert "█" not in joined, "the turquoise theme uses an outline wordmark, no fill"
 
 
 def test_render_banner_picks_tier_by_width() -> None:
-    assert "█" in _render(banner.render_banner(width=120))  # big shadowed wordmark
-    small = _render(banner.render_banner(width=60))
-    assert "█" not in small and "_" in small  # compact ASCII fallback
+    big = _render(banner.render_banner(width=120))
+    assert "|_____|" in big and "█" not in big  # big outline wordmark
+    compact = _render(banner.render_banner(width=60))
+    assert "[__" in compact and "█" not in compact  # compact wordmark (cybermedium 'SS')
     tiny = _render(banner.render_banner(width=20))
     assert "AWARENESS" in tiny  # plain wordmark for very narrow terminals
 
 
-def test_intro_has_wordmark_tagline_and_getting_started() -> None:
-    out = _render(banner.render_intro({"initialized": False}))
-    assert "█" in out
-    assert "public text internet awareness engine" in out
+def test_intro_has_wordmark_tagline_boot_and_getting_started() -> None:
+    out = _render(banner.render_intro({"initialized": False, "version": "0.1.0"}))
+    assert "|_____|" in out  # outline wordmark
+    assert "Ambient capture & ingestion engine" in out  # design tagline
+    assert "v0.1.0" in out  # real version threaded through
+    assert "SELF TEST" in out.upper() and "READY" in out  # boot self-test + load bar
     assert "Getting started" in out
     assert "awareness shell" in out
 
@@ -143,3 +149,86 @@ def test_small_banner_rows_share_one_width() -> None:
     rows = [line for line in banner.SMALL_BANNER.splitlines() if line.strip()]
     assert rows, "small banner must have content"
     assert len({len(line) for line in rows}) == 1, "compact wordmark rows must align"
+
+
+# ── turquoise theme — palette + boot self-test + load bar ─────────────────────
+def test_theme_exposes_seven_semantic_tokens() -> None:
+    # The Rich theme the CLI Console + Typer help consume, sourced from the spec.
+    styles = banner.AWARENESS_THEME.styles
+    for slot in ("aw.fg", "aw.hi", "aw.dim", "aw.faint", "aw.line"):
+        assert slot in styles
+    # Typer/rich help slots so commands, options and borders match the spec.
+    for slot in ("command", "option", "switch", "metavar", "usage", "panel.border"):
+        assert slot in styles
+    # The canonical turquoise primary, hex-pinned to the design.
+    assert banner.C_FG == "#6cf9f2"
+    assert banner.C_LINE == "#379590"
+
+
+def test_boot_sequence_reflects_live_state() -> None:
+    idle = _render(banner.boot_sequence({"initialized": False, "api_running": False, "tail_running": False}))
+    assert "POWER-ON SELF TEST" in idle.upper()
+    assert "STANDBY" in idle  # api + tail idle
+    assert "NEW" in idle  # storage not initialised yet
+    live = _render(banner.boot_sequence({"initialized": True, "api_running": True, "tail_running": True}))
+    assert "LIVE" in live  # tail running
+    assert "NEW" not in live  # initialised → state.db attaches OK
+
+
+def test_ready_bar_renders_percent_and_fill() -> None:
+    out = _render(banner.ready_bar(100))
+    assert "READY" in out and "100%" in out
+    assert "█" in out and "│" in out  # dashed turquoise fill inside a thin frame
+
+
+def test_command_map_uses_no_legacy_colors() -> None:
+    # The map renders (categories + commands) without raising under the theme.
+    out = _render(banner.render_command_map(), width=100)
+    assert "▸" in out and "Service & lifecycle" in out
+
+
+# ── framed boot card + emoji-free, professional getting-started ───────────────
+def test_intro_has_no_emoji() -> None:
+    # The launch screen is a professional operator console — no emoji / dingbats.
+    out = _render(banner.render_intro({"initialized": False, "version": "0.1.0"}), width=120)
+    for glyph in ("🚀", "✦", "⛁", "✅", "📦", "🎉", "🔧"):
+        assert glyph not in out, f"intro must not contain {glyph!r}"
+
+
+def test_getting_started_title_is_plain_text() -> None:
+    out = _render(banner.getting_started_panel({"initialized": False}), width=120)
+    assert "Getting started" in out
+    assert "🚀" not in out
+
+
+def test_intro_frames_logo_with_ready_bar_at_bottom() -> None:
+    # One rounded card holds the logo at the top and the READY load bar flush at
+    # the bottom (copyright rides the bottom border), all above Getting started.
+    out = _render(
+        banner.render_intro({"initialized": False, "version": "0.1.0", "api_port": 8085}),
+        width=120,
+    )
+    assert "╭" in out and "╰" in out  # rounded frame corners
+    i_logo = out.index("|_____|")
+    i_selftest = out.lower().index("self test")
+    i_ready = out.index("READY")
+    i_copy = out.upper().index("SM-LINK DATA SYSTEMS")
+    i_start = out.index("Getting started")
+    # logo (top) → self-test (middle) → READY bar (bottom) → copyright (bottom
+    # border) → the separate Getting started card. This locks the layout so a
+    # refactor that reordered boot_sequence/ready_bar inside the frame would fail.
+    assert i_logo < i_selftest < i_ready < i_copy < i_start
+
+
+def test_boot_panel_is_a_single_bordered_frame() -> None:
+    out = _render(banner.boot_panel({"initialized": False, "version": "0.1.0"}), width=120)
+    assert "|_____|" in out  # wordmark inside
+    assert "READY" in out and "│" in out and "█" in out  # load bar inside
+    assert "SM-LINK DATA SYSTEMS" in out.upper()  # copyright on the border
+
+
+def test_ready_bar_spans_requested_width() -> None:
+    narrow = _render(banner.ready_bar(100, 30))
+    wide = _render(banner.ready_bar(100, 80))
+    # a wider request yields a wider load bar (more fill blocks)
+    assert wide.count("█") > narrow.count("█")

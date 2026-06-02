@@ -65,7 +65,39 @@ app.add_typer(cloud_app, name="cloud")
 app.add_typer(dedup_app, name="dedup")
 
 logger = get_logger("cli")
-console = Console()
+console = Console(theme=banner.AWARENESS_THEME)
+
+
+def _install_typer_theme() -> None:
+    """Recolour Typer's rich help (usage, options/commands panels) to match the
+    Awareness turquoise spec — same hex values as ``banner.AWARENESS_THEME``."""
+    try:
+        import typer.rich_utils as ru
+    except Exception:
+        return
+    overrides = {
+        "STYLE_USAGE": banner.C_DIM,
+        "STYLE_USAGE_COMMAND": f"bold {banner.C_HI}",
+        "STYLE_OPTION": banner.C_HI,
+        "STYLE_COMMANDS_TABLE_FIRST_COLUMN": banner.C_HI,
+        "STYLE_SWITCH": banner.C_FG,
+        "STYLE_METAVAR": banner.C_DIM,
+        "STYLE_METAVAR_SEPARATOR": banner.C_FAINT,
+        "STYLE_HELPTEXT": banner.C_FG,
+        "STYLE_HELPTEXT_FIRST_LINE": banner.C_FG,
+        "STYLE_OPTION_HELP": banner.C_DIM,
+        "STYLE_OPTION_DEFAULT": banner.C_DIM,
+        "STYLE_OPTIONS_PANEL_BORDER": banner.C_LINE,
+        "STYLE_COMMANDS_PANEL_BORDER": banner.C_LINE,
+        "STYLE_OPTIONS_TABLE_LEADING": "",
+        "STYLE_COMMANDS_TABLE_LEADING": "",
+    }
+    for name, value in overrides.items():
+        if hasattr(ru, name):
+            setattr(ru, name, value)
+
+
+_install_typer_theme()
 
 
 def _get_yaml_config_path() -> Path:
@@ -109,13 +141,6 @@ def _update_yaml_config(key: str, value: Any) -> None:
     with open(path, "w", encoding="utf-8") as fh:
         yaml.safe_dump(data, fh, default_flow_style=False)
 
-BANNER = r"""
-    _    _  _  _  _    ____  _____ _   _ _____ ____ ____ 
-   / \  | |/ \| |/ \  |  _ \|  ___| \ | |  ___/ ___/ ___|
-  / _ \ |  / \  / _ \ | |_) | |_  |  \| | |_  \___ \___ \
- / ___ \| /   \/ ___ \|  _ <|  _| | |\  |  _|  ___) |___) |
-/_/   \_\/     /_/   \_|_| \_\____|_| \_|____|____/____/ 
-"""
 
 def _app_version() -> str:
     try:
@@ -129,8 +154,8 @@ def _app_version() -> str:
 def _version_callback(value: bool) -> None:
     if value:
         rprint(
-            f"[bold cyan]awareness[/bold cyan] v{_app_version()}  "
-            "·  public text internet awareness engine"
+            f"[bold {banner.C_HI}]awareness[/] [{banner.C_DIM}]v{_app_version()}[/]  "
+            f"[{banner.C_FAINT}]·[/]  [{banner.C_DIM}]public text internet awareness engine[/]"
         )
         raise typer.Exit()
 
@@ -190,7 +215,18 @@ def _quickstart_context() -> dict[str, Any]:
         "api_running": False,
         "tail_running": False,
         "cloud": False,
+        "version": _app_version(),
+        "prompt": "awareness ~ %",
+        "api_port": _default_api_port(),
     }
+    try:
+        import getpass
+        import socket
+
+        host = socket.gethostname().split(".")[0]
+        ctx["prompt"] = f"{getpass.getuser()}@{host} ~ %"
+    except Exception:
+        pass
     try:
         settings = get_settings()
         ctx["cloud"] = bool(settings.enable_iceberg) and _is_cloud_path(settings.iceberg_warehouse)
@@ -929,10 +965,10 @@ def stats(
         return
         
     # Standard terminal output using rich
-    rprint("[bold cyan]" + BANNER + "[/bold cyan]")
-    rprint("[bold cyan]================================================================[/bold cyan]")
-    rprint("[bold cyan]       AWARENESS ENGINE — INGESTION & STORAGE PERFORMANCE       [/bold cyan]")
-    rprint("[bold cyan]================================================================[/bold cyan]\n")
+    console.print(banner.render_banner())
+    rprint(f"[{banner.C_LINE}]════════════════════════════════════════════════════════════════[/]")
+    rprint(f"[bold {banner.C_HI}]       AWARENESS ENGINE — INGESTION & STORAGE PERFORMANCE       [/]")
+    rprint(f"[{banner.C_LINE}]════════════════════════════════════════════════════════════════[/]\n")
     
     # Ingestion Volume Section
     rprint("[bold white]1. Ingestion Volume & Performance[/bold white]")
@@ -1162,7 +1198,7 @@ def backfill_run(
                 action = parts[0].lower()
                 if action == "clear":
                     print("\033[H\033[2J\033[3J", end="")
-                    rprint("[bold cyan]" + BANNER + "[/bold cyan]")
+                    console.print(banner.render_banner())
                     rprint(f"[green]Backfill running[/green] job_id=[bold]{job_id}[/bold]")
                     rprint("[bold cyan]Type slash commands (e.g. /help, /clear, /status, /stop) or press ENTER to stop.[/bold cyan]\n")
                 elif action == "help":
@@ -1342,7 +1378,7 @@ def tail_start(
                 action = parts[0].lower()
                 if action == "clear":
                     print("\033[H\033[2J\033[3J", end="")
-                    rprint("[bold cyan]" + BANNER + "[/bold cyan]")
+                    console.print(banner.render_banner())
                     rprint(f"[green]Tail running[/green] job_id=[bold]{job_id}[/bold]")
                     rprint("[bold cyan]Type slash commands (e.g. /help, /clear, /status, /stop) or press ENTER to stop.[/bold cyan]\n")
                 elif action == "help":
