@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from awareness.planner.planner import Planner
@@ -16,8 +16,8 @@ from awareness.storage.state import StateDB
 def test_crawl_ids_for_range_covers_a_year() -> None:
     # Stay inside ISO year 2024 to avoid the year-boundary ISO-week shift
     # (Dec 30-31 2024 fall in ISO year 2025).
-    start = datetime(2024, 1, 8, tzinfo=timezone.utc)  # ISO week 2 of 2024
-    end = datetime(2024, 12, 22, tzinfo=timezone.utc)
+    start = datetime(2024, 1, 8, tzinfo=UTC)  # ISO week 2 of 2024
+    end = datetime(2024, 12, 22, tzinfo=UTC)
     crawls = crawl_ids_for_range(start, end)
     assert 12 <= len(crawls) <= 30
     assert all(c.startswith("CC-MAIN-2024-") for c in crawls)
@@ -28,8 +28,8 @@ def test_planner_emits_tasks_for_default_sources(tmp_path: Path) -> None:
     db.init()
     p = Planner(db)
     req = BackfillRequest(
-        start=datetime(2024, 6, 1, tzinfo=timezone.utc),
-        end=datetime(2024, 6, 14, tzinfo=timezone.utc),
+        start=datetime(2024, 6, 1, tzinfo=UTC),
+        end=datetime(2024, 6, 14, tzinfo=UTC),
         max_tasks=5,
     )
     job_id = p.submit_backfill(req)

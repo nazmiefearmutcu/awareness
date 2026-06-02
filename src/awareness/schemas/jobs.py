@@ -9,9 +9,9 @@ Tasks belong to a job and represent a single partition of work
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -55,6 +55,11 @@ class BackfillRequest(BaseModel):
     languages: list[str] | None = None
     max_tasks: int | None = None  # smoke-test cap
     notes: str | None = None
+    # Topic filter applied at ingest time (worker drops non-matching docs):
+    match: list[str] = Field(default_factory=list)  # keyword/phrase/regex terms
+    match_all: bool = False  # require ALL terms (AND) vs ANY (OR, default)
+    match_regex: bool = False  # treat terms as Python regex
+    match_field: Literal["title", "text", "both"] = "both"
 
 
 class TaskState(BaseModel):
@@ -70,7 +75,7 @@ class TaskState(BaseModel):
     status: TaskStatus = TaskStatus.PENDING
     attempts: int = 0
     last_error: str | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
     completed_at: datetime | None = None
     docs_emitted: int = 0
@@ -88,7 +93,7 @@ class JobState(BaseModel):
     kind: JobKind
     status: JobStatus = JobStatus.PENDING
     request: dict[str, Any]  # raw BackfillRequest or tail config
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
     completed_at: datetime | None = None
     tasks_total: int = 0

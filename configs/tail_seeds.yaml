@@ -1,5 +1,60 @@
+# Awareness tail seeds — public RSS/Atom feeds & sitemaps polled live.
+#
+# The tail engine re-polls each of these every `tail_poll_seconds` and captures
+# newly-published text. This is a broad, reputable default set; add your own
+# (or run `awareness tail start --gdelt` to also follow the GDELT global-news
+# firehose, which discovers ~all news article URLs worldwide).
+#
+# Each entry: { url: "https://…" }. `feeds` covers RSS & Atom alike.
+
 feeds:
-  - { url: "https://hnrss.org/frontpage" }
+  # ── World / general news ────────────────────────────────────────────────
+  - { url: "https://feeds.bbci.co.uk/news/rss.xml" }
   - { url: "https://feeds.bbci.co.uk/news/world/rss.xml" }
+  - { url: "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml" }
+  - { url: "https://rss.nytimes.com/services/xml/rss/nyt/World.xml" }
+  - { url: "https://www.theguardian.com/world/rss" }
+  - { url: "https://www.theguardian.com/international/rss" }
+  - { url: "https://www.aljazeera.com/xml/rss/all.xml" }
+  - { url: "https://feeds.npr.org/1001/rss.xml" }
+  - { url: "http://rss.cnn.com/rss/edition.rss" }
+  - { url: "https://rss.dw.com/rdf/rss-en-all" }
+  - { url: "https://www.france24.com/en/rss" }
+  - { url: "https://www.cbc.ca/cmlink/rss-topstories" }
+  - { url: "https://feeds.skynews.com/feeds/rss/world.xml" }
+
+  # ── Politics ──────────────────────────────────────────────────────────────
+  - { url: "https://www.politico.com/rss/politicopicks.xml" }
+  - { url: "https://thehill.com/rss/syndicator/19110" }
+
+  # ── Technology ──────────────────────────────────────────────────────────
+  - { url: "https://hnrss.org/frontpage" }
+  - { url: "https://hnrss.org/newest?points=50" }
+  - { url: "https://feeds.arstechnica.com/arstechnica/index" }
+  - { url: "https://www.theverge.com/rss/index.xml" }
+  - { url: "https://techcrunch.com/feed/" }
+  - { url: "https://www.wired.com/feed/rss" }
+  - { url: "https://www.engadget.com/rss.xml" }
+  - { url: "https://www.technologyreview.com/feed/" }
+  - { url: "https://github.blog/feed/" }
+  - { url: "https://stackoverflow.blog/feed/" }
+
+  # ── Science ───────────────────────────────────────────────────────────────
+  - { url: "http://feeds.nature.com/nature/rss/current" }
+  - { url: "https://www.sciencedaily.com/rss/all.xml" }
+  - { url: "https://phys.org/rss-feed/" }
+  - { url: "https://www.quantamagazine.org/feed/" }
+  - { url: "http://export.arxiv.org/rss/cs.AI" }
+  - { url: "http://export.arxiv.org/rss/cs.LG" }
+  - { url: "http://export.arxiv.org/rss/cs.CL" }
+
+  # ── Business / finance ────────────────────────────────────────────────────
+  - { url: "http://feeds.marketwatch.com/marketwatch/topstories/" }
+  - { url: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain" }
+  - { url: "https://feeds.a.dj.com/rss/RSSWorldNews.xml" }
+
 atom: []
+
+# Sitemaps can each expand to tens of thousands of URLs — add deliberately.
+# Example: - { url: "https://example.com/sitemap.xml" }
 sitemaps: []

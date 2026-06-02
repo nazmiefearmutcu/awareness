@@ -16,9 +16,7 @@ feeds adapter restores its ``seen_urls`` cursor from each task's checkpoint.
 from __future__ import annotations
 
 import asyncio
-import signal
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +26,7 @@ from awareness.config import get_settings
 from awareness.obs.logging import get_logger
 from awareness.planner.planner import Planner
 from awareness.schemas.doc import SourceKind
-from awareness.schemas.jobs import JobStatus, TaskState
+from awareness.schemas.jobs import TaskState
 from awareness.storage.state import StateDB
 from awareness.util.timeutil import utcnow
 from awareness.workers.engine import WorkerEngine
@@ -36,7 +34,7 @@ from awareness.workers.engine import WorkerEngine
 logger = get_logger("tail.engine")
 
 
-def _load_seeds(path: Path) -> dict[str, Any]:
+def _load_seeds(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {"feeds": [], "sitemaps": [], "atom": []}
     with open(path, encoding="utf-8") as fh:
@@ -54,8 +52,8 @@ class TailEngine:
         self._planner = planner
         self._engine: WorkerEngine | None = None
         self._stop_event = asyncio.Event()
-        self._task: asyncio.Task | None = None
-        self._reseed_task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._reseed_task: asyncio.Task[None] | None = None
         self._job_id: str | None = None
         # Visibility hooks for the UI: next poll time, last poll time/count.
         self._next_reseed_at: float | None = None
@@ -75,13 +73,46 @@ class TailEngine:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    async def start(self, seeds_path: Path | None = None) -> str:
+    def _gdelt_task(self, job_id: str, slot: str, max_urls: int) -> TaskState:
+        return TaskState(
+            task_id=f"t-{uuid.uuid4().hex[:16]}",
+            job_id=job_id,
+            source_type=SourceKind.GDELT,
+            partition_key=f"gdelt:gkg:{slot}",  # matches the backfill planner key
+            payload={"slot": slot, "max_urls": max_urls},
+        )
+
+    async def start(
+        self,
+        seeds_path: Path | None = None,
+        *,
+        match_config: dict[str, Any] | None = None,
+        gdelt: bool = False,
+        gdelt_max_urls: int = 500,
+    ) -> str:
         settings = get_settings()
         seeds = _load_seeds(seeds_path or settings.tail_seed_file)
+        # Merge the ingest-time topic filter into the job request so the worker
+        # can read it back from job.request (same shape as a BackfillRequest).
+        if match_config:
+            seeds = {**seeds, **match_config}
+        self._gdelt = bool(gdelt)
+        self._gdelt_max_urls = int(gdelt_max_urls)
+        self._last_gdelt_slot: str | None = None
+
         job_id = self._planner.submit_tail(seeds)
         self._job_id = job_id
         self._engine = WorkerEngine(self._state, self._planner)
         self._stop_event.clear()
+
+        # Seed an initial GDELT slot immediately (don't wait a full poll).
+        if self._gdelt:
+            from awareness.sources.gdelt import latest_gkg_slot
+
+            slot = latest_gkg_slot()
+            self._state.add_tasks([self._gdelt_task(job_id, slot, self._gdelt_max_urls)])
+            self._last_gdelt_slot = slot
+            logger.info("tail_gdelt_seeded", job_id=job_id, slot=slot, max_urls=self._gdelt_max_urls)
 
         async def reseed_loop() -> None:
             """Re-arm seed discovery tasks every tail_poll_seconds.
@@ -138,12 +169,22 @@ class TailEngine:
                                     payload={"kind": "sitemap", "url": entry["url"]},
                                 )
                             )
+                        # GDELT firehose: follow the latest 15-min slot. Only
+                        # emit when the slot advances, so we don't re-process
+                        # the same global-news batch every poll.
+                        if getattr(self, "_gdelt", False):
+                            from awareness.sources.gdelt import latest_gkg_slot
+
+                            slot = latest_gkg_slot()
+                            if slot != self._last_gdelt_slot:
+                                tasks.append(self._gdelt_task(job_id, slot, self._gdelt_max_urls))
+                                self._last_gdelt_slot = slot
                         if tasks:
                             self._state.add_tasks(tasks)
                             logger.info("tail_reseeded", count=len(tasks), iteration=iteration)
                             self._last_reseed_at = utcnow().isoformat()
                             self._last_reseed_count = len(tasks)
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.exception("tail_reseed_iteration_failed", iteration=iteration, err=str(exc))
             except asyncio.CancelledError:
                 pass
@@ -174,7 +215,7 @@ class TailEngine:
                 pass
         try:
             await asyncio.wait_for(self._task, timeout=drain_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("tail_drain_timeout", drain_seconds=drain_seconds)
         if self._job_id:
             self._planner.stop_tail(self._job_id, note="user-requested-stop")

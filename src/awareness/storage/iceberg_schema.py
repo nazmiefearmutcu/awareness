@@ -24,7 +24,6 @@ from pyiceberg.types import (
     TimestamptzType,
 )
 
-
 # Field IDs are stable; never renumber.
 ICEBERG_SCHEMA = Schema(
     NestedField(1, "doc_id", StringType(), required=True),

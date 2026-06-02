@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     # ── paths ────────────────────────────────────────────────────────────
     project_root: Path = Field(default_factory=_project_root)
     data_dir: Path | None = None
-    iceberg_warehouse: Path | None = None
+    iceberg_warehouse: Path | str | None = None
     iceberg_catalog_db: Path | None = None
     state_db_url: str | None = None
     log_dir: Path | None = None
@@ -90,18 +90,38 @@ class Settings(BaseSettings):
     # ── tail ─────────────────────────────────────────────────────────────
     tail_poll_seconds: float = 60.0
     tail_seed_file: Path | None = None  # YAML with feeds + sitemaps to watch
+    tail_gdelt: bool = False  # also discover via GDELT (global news firehose)
+    tail_gdelt_max_urls: int = 500  # cap URLs pulled per 15-min GDELT slot
+    tail_show_captures: bool = True  # print each capture to the terminal as it lands
 
     # ── corpus filters ───────────────────────────────────────────────────
     text_min_chars: int = 200
     text_max_chars: int = 1_500_000
-    enable_iceberg: bool = True
-    enable_jsonl_staging: bool = True
+
+    # ── storage destinations (where captures are written) ────────────────
+    # These three toggles are the TAIL/BODY write destinations. Set them with
+    # ``awareness configure`` (a wizard) or ``awareness config set``.
+    enable_iceberg: bool = True  # write to the Iceberg warehouse (local or cloud)
+    enable_jsonl_staging: bool = True  # write local JSONL staging (+ index)
+    enable_gdrive: bool = False  # upload finalized JSONL chunks to Google Drive
+    gdrive_folder_name: str = "Awareness Captures"  # target Drive folder
+    jsonl_compress: bool = False  # gzip staging files (.jsonl.gz)
+
+    # ── search ───────────────────────────────────────────────────────────
+    # Defaults for the ``search`` command. ``mode`` picks the matching
+    # strategy (auto = FTS, then stem-prefix fallback); ``fields`` is the
+    # comma-list of columns prefix/substring matching looks at; ``max_results``
+    # is the hard overload ceiling on rows returned in one call.
+    search_default_mode: str = "auto"
+    search_default_fields: str = "title,text"
+    search_default_limit: int = 10
+    search_max_results: int = 200
 
     # ── observability ────────────────────────────────────────────────────
     log_level: str = "INFO"
     log_json: bool = True
 
-    def model_post_init(self, __context: Any) -> None:  # noqa: D401
+    def model_post_init(self, __context: Any) -> None:
         """Resolve derived paths and create directories."""
         root = self.project_root
         if self.data_dir is None:
@@ -136,7 +156,10 @@ class Settings(BaseSettings):
             self.data_dir / "duckdb",
             self.data_dir / "dlq",
         ):
-            p.mkdir(parents=True, exist_ok=True)
+            if p is not None:
+                p_str = str(p)
+                if not p_str.startswith(("s3://", "s3a://", "gcs://", "gs://")):
+                    Path(p).mkdir(parents=True, exist_ok=True)
 
     # ── helpers ──────────────────────────────────────────────────────────
     def staging_jsonl_dir(self) -> Path:

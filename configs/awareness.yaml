@@ -20,16 +20,26 @@ storage_flush_records: 200
 storage_flush_seconds: 10
 bounded_queue_size: 1024
 
-# Tail
+# Tail (live capture)
 tail_poll_seconds: 60
+# tail_gdelt: false          # also follow the GDELT global-news firehose
+# tail_gdelt_max_urls: 500   # cap URLs pulled per 15-min GDELT slot
+# tail_show_captures: true   # print each capture to the terminal as it lands
 
 # Corpus filters
 text_min_chars: 200
 text_max_chars: 1500000
 
-# Storage
-enable_iceberg: true
-enable_jsonl_staging: true
+# Storage destinations — WHERE captures are written.
+# Set these the easy way with:  awareness configure   (an interactive wizard)
+# Inspect them with:            awareness config doctor
+enable_jsonl_staging: true    # local JSONL staging files (+ SQLite/DuckDB index)
+enable_iceberg: true          # Iceberg warehouse (local path or s3:// cloud URI)
+enable_gdrive: false          # upload finalized JSONL chunks to Google Drive
+# gdrive_folder_name: "Awareness Captures"   # target Drive folder
+# jsonl_compress: false       # gzip staging files (.jsonl.gz)
+# data_dir: "/absolute/path/to/data"         # local data root (default: <project>/data)
+# iceberg_warehouse: "s3://bucket/warehouse" # cloud or local warehouse location
 
 # Observability
 log_level: "INFO"
