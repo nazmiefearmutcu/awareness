@@ -9,6 +9,9 @@ __pycache__/
 # Project data — never commit captured corpus
 data/
 
+# Promo-video generator (separate Node project — bundles node_modules, ~500MB)
+videos/
+
 # Tool caches
 .pytest_cache/
 .ruff_cache/
