@@ -214,7 +214,7 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
     # ── Identity ─────────────────────────────────────────────────────────────
     ConfigField(
         "user_agent", "Identity", KIND_STR,
-        "AwarenessBot/0.1 (+https://github.com/nazmiefearmutcu/claude; public-text-research)",
+        "AwarenessBot/0.1 (+https://github.com/nazmiefearmutcu/awareness; public-text-research)",
         "User-Agent header sent with every fetch.",
     ),
     ConfigField(
