@@ -1205,10 +1205,11 @@ def backfill_run(
     job_id: str = typer.Argument(..., help="Job id from `backfill submit`"),
     concurrency: int = typer.Option(0, "--concurrency", help="Override worker concurrency"),
     silent_progress: bool = typer.Option(False, "--silent-progress", help="Mute per-document ingestion logs in the terminal"),
+    mute_duplicates: bool = typer.Option(None, "--mute-duplicates/--no-mute-duplicates", help="Hide duplicate/revision documents in the terminal log"),
 ) -> None:
     """Run pending tasks for ``job_id`` to completion (in-process)."""
     state, planner = _bootstrap()
-    engine = WorkerEngine(state, planner, concurrency=concurrency or None, silent_progress=silent_progress)
+    engine = WorkerEngine(state, planner, concurrency=concurrency or None, silent_progress=silent_progress, mute_duplicates=mute_duplicates)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -1325,6 +1326,7 @@ def tail_start(
     match_all: bool = typer.Option(False, "--match-all", help="Require ALL --match terms (AND) instead of ANY (OR)."),
     match_regex: bool = typer.Option(False, "--match-regex", help="Treat --match terms as Python regular expressions."),
     match_field: str = typer.Option("both", "--match-field", help="Where to match: title | text | both."),
+    mute_duplicates: bool = typer.Option(None, "--mute-duplicates/--no-mute-duplicates", help="Hide duplicate/revision documents in the terminal log"),
 ) -> None:
     """Start the tail engine in foreground. Ctrl-C or pressing ENTER stops it cleanly."""
     is_tty = sys.stdin.isatty()
@@ -1481,6 +1483,7 @@ def tail_start(
             match_config=match_config,
             gdelt=use_gdelt,
             gdelt_max_urls=gdelt_cap,
+            mute_duplicates=mute_duplicates,
         )
         rprint(f"[green]Tail started[/green] job_id=[bold]{job_id}[/bold]")
         if use_gdelt:
@@ -3186,6 +3189,7 @@ _DESTINATION_KEYS = (
     "enable_jsonl_staging", "enable_iceberg", "enable_gdrive",
     "data_dir", "iceberg_warehouse", "gdrive_folder_name", "jsonl_compress",
     "tail_poll_seconds", "tail_gdelt", "tail_gdelt_max_urls", "tail_show_captures",
+    "terminal_mute_duplicates",
     "storage_flush_records", "storage_flush_seconds",
 )
 
@@ -3205,6 +3209,7 @@ def configure(
     poll_seconds: float = typer.Option(None, "--poll-seconds", help="Tail seed re-arm interval in seconds."),
     gdelt: bool = typer.Option(None, "--gdelt/--no-gdelt", help="Follow the GDELT firehose while tailing."),
     gdelt_max_urls: int = typer.Option(None, "--gdelt-max-urls", help="Cap URLs pulled per 15-min GDELT slot."),
+    mute_duplicates: bool = typer.Option(None, "--mute-duplicates/--no-mute-duplicates", help="Mute duplicate captures in terminal logging."),
     show: bool = typer.Option(False, "--show", help="Print the current write-destination plan and exit."),
     reset: bool = typer.Option(False, "--reset", help="Reset destination/tail settings to defaults."),
     non_interactive: bool = typer.Option(False, "--non-interactive", help="Never prompt; apply flags (or do nothing)."),
@@ -3244,7 +3249,7 @@ def configure(
     decisive = terminal_only or any(
         v is not None
         for v in (local, s3, gdrive, data_dir, warehouse, gdrive_folder, compress,
-                  flush_records, flush_seconds, poll_seconds, gdelt, gdelt_max_urls)
+                  flush_records, flush_seconds, poll_seconds, gdelt, gdelt_max_urls, mute_duplicates)
     )
 
     if not decisive and not non_interactive:
@@ -3261,7 +3266,7 @@ def configure(
             settings, local=local, s3=s3, gdrive=gdrive, terminal_only=terminal_only,
             data_dir=data_dir, warehouse=warehouse, gdrive_folder=gdrive_folder, compress=compress,
             flush_records=flush_records, flush_seconds=flush_seconds, poll_seconds=poll_seconds,
-            gdelt=gdelt, gdelt_max_urls=gdelt_max_urls,
+            gdelt=gdelt, gdelt_max_urls=gdelt_max_urls, mute_duplicates=mute_duplicates,
         )
         if errors:
             for e in errors:
@@ -3281,7 +3286,7 @@ def _configure_from_flags(
     terminal_only: bool, data_dir: Path | None, warehouse: str | None,
     gdrive_folder: str | None, compress: bool | None, flush_records: int | None,
     flush_seconds: float | None, poll_seconds: float | None, gdelt: bool | None,
-    gdelt_max_urls: int | None,
+    gdelt_max_urls: int | None, mute_duplicates: bool | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Translate non-interactive flags into a validated values mapping."""
     values: dict[str, Any] = {}
@@ -3328,6 +3333,8 @@ def _configure_from_flags(
         put("tail_poll_seconds", poll_seconds)
     if gdelt is not None:
         values["tail_gdelt"] = gdelt
+    if mute_duplicates is not None:
+        values["terminal_mute_duplicates"] = mute_duplicates
     if gdelt_max_urls is not None:
         put("tail_gdelt_max_urls", gdelt_max_urls)
 

@@ -64,6 +64,7 @@ class WorkerEngine:
         iceberg_writer: IcebergWriter | None = None,
         concurrency: int | None = None,
         silent_progress: bool = False,
+        mute_duplicates: bool | None = None,
     ) -> None:
         self._state = state
         self._planner = planner
@@ -100,6 +101,7 @@ class WorkerEngine:
         self._total_docs_processed = 0
         self._total_docs_filtered = 0
         self._silent_progress = silent_progress
+        self._mute_duplicates = settings.terminal_mute_duplicates if mute_duplicates is None else mute_duplicates
         # One-time destination warnings (avoid spamming every flush).
         self._gdrive_unauth_warned = False
         self._no_sink_warned = False
@@ -284,13 +286,17 @@ class WorkerEngine:
 
         settings = get_settings()
         batch_id = f"b-{uuid.uuid4().hex[:8]}"
+        init_checkpoint = dict(task.checkpoint or {})
+        if not init_checkpoint:
+            init_checkpoint = self._state.get_last_task_checkpoint(task.partition_key)
+
         context = AdapterContext(
             user_agent=settings.user_agent,
             job_id=task.job_id,
             task_id=task.task_id,
             batch_id=batch_id,
             ingest_version=settings.ingest_version,
-            checkpoint=dict(task.checkpoint or {}),
+            checkpoint=init_checkpoint,
             is_stopping=self.is_stopping,
         )
         partition = PartitionSpec(
@@ -325,7 +331,9 @@ class WorkerEngine:
                     "dedup.decisions",
                     labels={"decision": outcome.decision.value, "source": task.source_type.value},
                 )
-                if self._is_tty and not self._silent_progress:
+                is_unique = outcome.decision == DedupDecision.NEW
+                show_dup = not self._mute_duplicates
+                if self._is_tty and not self._silent_progress and (is_unique or show_dup):
                     title = cap.title or "(No Title)"
                     if len(title) > 50:
                         title = title[:47] + "..."
@@ -336,7 +344,7 @@ class WorkerEngine:
                     lang = cap.language or "unknown"
                     decision_str = outcome.decision.value.upper()
                     
-                    if outcome.decision == DedupDecision.UNIQUE:
+                    if outcome.decision == DedupDecision.NEW:
                         style = "bold green"
                     elif outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.NEAR_DUP):
                         style = "bold yellow"

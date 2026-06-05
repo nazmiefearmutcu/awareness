@@ -72,3 +72,13 @@ async def test_gdrive_only_successful_upload_deletes_chunk(tmp_project, monkeypa
     await engine._flush(force=True)
     chunks = list(get_settings().staging_jsonl_dir().rglob("*.jsonl"))
     assert not chunks, "successful upload with staging disabled should remove the temp chunk"
+
+
+def test_worker_engine_mute_duplicates_initialization(tmp_path) -> None:
+    state = StateDB(f"sqlite:///{tmp_path / 'state.db'}")
+    state.init()
+    planner = Planner(state)
+    
+    engine = WorkerEngine(state, planner, concurrency=1, mute_duplicates=True)
+    assert engine._mute_duplicates is True
+
