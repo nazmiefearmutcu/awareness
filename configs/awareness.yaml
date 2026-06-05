@@ -1,46 +1,22 @@
-# Awareness runtime configuration.
-# Any value here can be overridden by an environment variable AW_* (matching
-# the Settings field name, case-insensitive). See src/awareness/config/settings.py.
-
-ingest_version: "0.1.0"
-user_agent: "AwarenessBot/0.1 (+https://github.com/nazmiefearmutcu/claude; public-text-research)"
-contact_email: "research@example.invalid"
-
-# Politeness
+bounded_queue_size: 1024
+contact_email: research@example.invalid
+enable_gdrive: false
+enable_iceberg: true
+enable_jsonl_staging: true
+extract_concurrency: 2
+global_fetch_concurrency: 32
+ingest_version: 0.1.0
+log_json: true
+log_level: INFO
+max_retries: 4
 per_domain_concurrency: 2
 per_domain_delay_sec: 1.0
 robots_cache_ttl_sec: 3600
-global_fetch_concurrency: 32
-max_retries: 4
-
-# Runtime / scheduler
-worker_concurrency: 4
-extract_concurrency: 2
 storage_flush_records: 200
 storage_flush_seconds: 10
-bounded_queue_size: 1024
-
-# Tail (live capture)
 tail_poll_seconds: 60
-# tail_gdelt: false          # also follow the GDELT global-news firehose
-# tail_gdelt_max_urls: 500   # cap URLs pulled per 15-min GDELT slot
-# tail_show_captures: true   # print each capture to the terminal as it lands
-
-# Corpus filters
-text_min_chars: 200
+terminal_mute_duplicates: true
 text_max_chars: 1500000
-
-# Storage destinations — WHERE captures are written.
-# Set these the easy way with:  awareness configure   (an interactive wizard)
-# Inspect them with:            awareness config doctor
-enable_jsonl_staging: true    # local JSONL staging files (+ SQLite/DuckDB index)
-enable_iceberg: true          # Iceberg warehouse (local path or s3:// cloud URI)
-enable_gdrive: false          # upload finalized JSONL chunks to Google Drive
-# gdrive_folder_name: "Awareness Captures"   # target Drive folder
-# jsonl_compress: false       # gzip staging files (.jsonl.gz)
-# data_dir: "/absolute/path/to/data"         # local data root (default: <project>/data)
-# iceberg_warehouse: "s3://bucket/warehouse" # cloud or local warehouse location
-
-# Observability
-log_level: "INFO"
-log_json: true
+text_min_chars: 200
+user_agent: AwarenessBot/0.1 (+https://github.com/nazmiefearmutcu/claude; public-text-research)
+worker_concurrency: 4

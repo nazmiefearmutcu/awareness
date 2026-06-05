@@ -89,6 +89,7 @@ class TailEngine:
         match_config: dict[str, Any] | None = None,
         gdelt: bool = False,
         gdelt_max_urls: int = 500,
+        mute_duplicates: bool | None = None,
     ) -> str:
         settings = get_settings()
         seeds = _load_seeds(seeds_path or settings.tail_seed_file)
@@ -102,7 +103,7 @@ class TailEngine:
 
         job_id = self._planner.submit_tail(seeds)
         self._job_id = job_id
-        self._engine = WorkerEngine(self._state, self._planner)
+        self._engine = WorkerEngine(self._state, self._planner, mute_duplicates=mute_duplicates)
         self._stop_event.clear()
 
         # Seed an initial GDELT slot immediately (don't wait a full poll).
