@@ -239,6 +239,13 @@ class StateDB:
                 return None
             return self._job_state_from_row(row)
 
+    def delete_job(self, job_id: str) -> None:
+        from sqlalchemy import delete
+        with self.session() as s:
+            s.execute(delete(TaskRow).where(TaskRow.job_id == job_id))
+            s.execute(delete(JobRow).where(JobRow.job_id == job_id))
+            s.commit()
+
     def list_jobs(self, kind: JobKind | None = None, limit: int = 50) -> list[JobState]:
         with self.session() as s:
             stmt = select(JobRow).order_by(JobRow.created_at.desc()).limit(limit)

@@ -1,0 +1,13 @@
+........................................................................ [ 37%]
+........................................................................ [ 74%]
+.................................................                        [100%]
+=============================== warnings summary ===============================
+tests/integration/test_topic_filter_pipeline.py: 4 warnings
+tests/integration/test_worker_pipeline.py: 4 warnings
+tests/smoke/test_tail_lifecycle.py: 15 warnings
+tests/unit/test_urls.py: 2 warnings
+  /Users/nazmi/awareness_dev/src/awareness/util/urls.py:94: DeprecationWarning: The 'registered_domain' property is deprecated and will be removed in the next major version. Use 'top_domain_under_public_suffix' instead, which has the same behavior but a more accurate name.
+    primary = getattr(ext, "top_domain_under_public_suffix", None) or ext.registered_domain
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+193 passed, 25 warnings in 18.62s

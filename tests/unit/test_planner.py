@@ -60,3 +60,33 @@ def test_adapter_registry_has_all_sources(tmp_path: Path) -> None:
         SourceKind.GDELT,
     }
     assert expected.issubset(kinds)
+
+
+def test_delete_job(tmp_path: Path) -> None:
+    db = StateDB(f"sqlite:///{tmp_path / 'state.db'}")
+    db.init()
+    p = Planner(db)
+    req = BackfillRequest(
+        start=datetime(2024, 6, 1, tzinfo=UTC),
+        end=datetime(2024, 6, 14, tzinfo=UTC),
+        max_tasks=5,
+    )
+    job_id = p.submit_backfill(req)
+    
+    # Check that job and tasks exist
+    assert db.get_job(job_id) is not None
+    # Verify tasks were added
+    with db.session() as s:
+        from sqlalchemy import select
+        from awareness.storage.state import TaskRow
+        tasks = list(s.scalars(select(TaskRow).where(TaskRow.job_id == job_id)))
+        assert len(tasks) > 0
+
+    # Delete the job
+    db.delete_job(job_id)
+
+    # Check that job and tasks no longer exist
+    assert db.get_job(job_id) is None
+    with db.session() as s:
+        tasks = list(s.scalars(select(TaskRow).where(TaskRow.job_id == job_id)))
+        assert len(tasks) == 0

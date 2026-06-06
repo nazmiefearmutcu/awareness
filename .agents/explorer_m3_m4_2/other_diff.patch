@@ -1,0 +1,119 @@
+diff --git a/src/awareness/storage/state.py b/src/awareness/storage/state.py
+index 86da006..68bf944 100644
+--- a/src/awareness/storage/state.py
++++ b/src/awareness/storage/state.py
+@@ -239,6 +239,13 @@ class StateDB:
+                 return None
+             return self._job_state_from_row(row)
+ 
++    def delete_job(self, job_id: str) -> None:
++        from sqlalchemy import delete
++        with self.session() as s:
++            s.execute(delete(TaskRow).where(TaskRow.job_id == job_id))
++            s.execute(delete(JobRow).where(JobRow.job_id == job_id))
++            s.commit()
++
+     def list_jobs(self, kind: JobKind | None = None, limit: int = 50) -> list[JobState]:
+         with self.session() as s:
+             stmt = select(JobRow).order_by(JobRow.created_at.desc()).limit(limit)
+diff --git a/src/awareness/tail/engine.py b/src/awareness/tail/engine.py
+index f447e4b..0247300 100644
+--- a/src/awareness/tail/engine.py
++++ b/src/awareness/tail/engine.py
+@@ -90,6 +90,7 @@ class TailEngine:
+         gdelt: bool = False,
+         gdelt_max_urls: int = 500,
+         mute_duplicates: bool | None = None,
++        job_id: str | None = None,
+     ) -> str:
+         settings = get_settings()
+         seeds = _load_seeds(seeds_path or settings.tail_seed_file)
+@@ -101,7 +102,11 @@ class TailEngine:
+         self._gdelt_max_urls = int(gdelt_max_urls)
+         self._last_gdelt_slot: str | None = None
+ 
+-        job_id = self._planner.submit_tail(seeds)
++        if job_id is None:
++            job_id = self._planner.submit_tail(seeds)
++        else:
++            self._state.set_job_status(job_id, JobStatus.RUNNING)
++            self._state.set_tail(running=True, job_id=job_id, note="tail-active")
+         self._job_id = job_id
+         self._engine = WorkerEngine(self._state, self._planner, mute_duplicates=mute_duplicates)
+         self._stop_event.clear()
+diff --git a/src/awareness/workers/engine.py b/src/awareness/workers/engine.py
+index 3d5fab8..aa779f4 100644
+--- a/src/awareness/workers/engine.py
++++ b/src/awareness/workers/engine.py
+@@ -196,6 +196,16 @@ class WorkerEngine:
+         try:
+             empty_polls = 0
+             while not self.is_stopping():
++                js = self._state.get_job(job_id)
++                if js:
++                    if js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
++                        break
++                    while js.status == JobStatus.PAUSED and not self.is_stopping():
++                        await asyncio.sleep(1.0)
++                        js = self._state.get_job(job_id)
++                    if js and js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
++                        break
++
+                 tasks = self._state.claim_pending_tasks(job_id, limit=self._concurrency * 2)
+                 if not tasks:
+                     empty_polls += 1
+@@ -265,6 +275,16 @@ class WorkerEngine:
+ 
+         try:
+             while not self.is_stopping():
++                js = self._state.get_job(job_id)
++                if js:
++                    if js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
++                        break
++                    while js.status == JobStatus.PAUSED and not self.is_stopping():
++                        await asyncio.sleep(1.0)
++                        js = self._state.get_job(job_id)
++                    if js and js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
++                        break
++
+                 tasks = self._state.claim_pending_tasks(job_id, limit=self._concurrency * 2)
+                 if not tasks:
+                     await asyncio.sleep(min(poll_seconds, 1.0))
+diff --git a/tests/unit/test_planner.py b/tests/unit/test_planner.py
+index 99002a0..53c4123 100644
+--- a/tests/unit/test_planner.py
++++ b/tests/unit/test_planner.py
+@@ -60,3 +60,33 @@ def test_adapter_registry_has_all_sources(tmp_path: Path) -> None:
+         SourceKind.GDELT,
+     }
+     assert expected.issubset(kinds)
++
++
++def test_delete_job(tmp_path: Path) -> None:
++    db = StateDB(f"sqlite:///{tmp_path / 'state.db'}")
++    db.init()
++    p = Planner(db)
++    req = BackfillRequest(
++        start=datetime(2024, 6, 1, tzinfo=UTC),
++        end=datetime(2024, 6, 14, tzinfo=UTC),
++        max_tasks=5,
++    )
++    job_id = p.submit_backfill(req)
++    
++    # Check that job and tasks exist
++    assert db.get_job(job_id) is not None
++    # Verify tasks were added
++    with db.session() as s:
++        from sqlalchemy import select
++        from awareness.storage.state import TaskRow
++        tasks = list(s.scalars(select(TaskRow).where(TaskRow.job_id == job_id)))
++        assert len(tasks) > 0
++
++    # Delete the job
++    db.delete_job(job_id)
++
++    # Check that job and tasks no longer exist
++    assert db.get_job(job_id) is None
++    with db.session() as s:
++        tasks = list(s.scalars(select(TaskRow).where(TaskRow.job_id == job_id)))
++        assert len(tasks) == 0

@@ -196,6 +196,16 @@ class WorkerEngine:
         try:
             empty_polls = 0
             while not self.is_stopping():
+                js = self._state.get_job(job_id)
+                if js:
+                    if js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
+                        break
+                    while js.status == JobStatus.PAUSED and not self.is_stopping():
+                        await asyncio.sleep(1.0)
+                        js = self._state.get_job(job_id)
+                    if js and js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
+                        break
+
                 tasks = self._state.claim_pending_tasks(job_id, limit=self._concurrency * 2)
                 if not tasks:
                     empty_polls += 1
@@ -265,6 +275,16 @@ class WorkerEngine:
 
         try:
             while not self.is_stopping():
+                js = self._state.get_job(job_id)
+                if js:
+                    if js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
+                        break
+                    while js.status == JobStatus.PAUSED and not self.is_stopping():
+                        await asyncio.sleep(1.0)
+                        js = self._state.get_job(job_id)
+                    if js and js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
+                        break
+
                 tasks = self._state.claim_pending_tasks(job_id, limit=self._concurrency * 2)
                 if not tasks:
                     await asyncio.sleep(min(poll_seconds, 1.0))
