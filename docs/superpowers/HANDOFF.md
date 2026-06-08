@@ -14,7 +14,7 @@ Iceberg/DuckDB/JSONL → serves a Typer CLI + FastAPI SPA. A 73-agent audit foun
 results"* and *"no idea how to scrape the internet"* — are **both fixed and verified**.
 
 All work is on branch **`feat/cycle1-make-it-work`** (off `main` at `69614e9`),
-**not yet merged** (needs user consent — outward-facing). **259 tests green.**
+**not yet merged** (needs user consent — outward-facing). **265 tests green.**
 
 Also read the persistent memory: `~/.claude/projects/-Users-nazmi/memory/awareness-cycle1-progress.md`.
 
@@ -90,6 +90,18 @@ substantive tasks. Plans are pre-written, fully-specified TDD task lists under
   pure BM25 order when factors are neutral. Plan `plans/2026-06-08-awareness-cycle2-bm25f-ranking.md`;
   19 new tests (16 pure + 3 integration); 3-lens adversarial review + final review APPROVED.
 
+**Cycle 1 — P3b search availability (process-wide index singleton):**
+- **Index singleton** (`api/server.py`, `storage/duckdb_index.py`, commits `7305194`/`8e860a6`):
+  the API was building a NEW `DuckDbIndex` per request, so the FTS index rebuilt every `/search`
+  and concurrent searches collided on DuckDB's single-writer lock during the rebuild. Now one
+  shared instance via `_get_index()` (double-checked locking on `_State.index` + `_index_lock`,
+  closed on lifespan shutdown) serves all six endpoints; FTS builds once (it already memoizes
+  `_fts_built_signature` + serializes behind its `RLock`). Added lock-guarded
+  `DuckDbIndex.related()` so `/related` no longer runs a query on the raw conn outside the lock.
+  Plan `plans/2026-06-09-awareness-cycle1-fts-singleton.md`; 6 new tests; review APPROVED.
+  (Note: the full non-slow suite can take minutes when offline — `connect()` does network
+  `INSTALL iceberg/fts` per fresh index; unrelated to this change.)
+
 ## What REMAINS (specced, prioritized — pick up here)
 
 The recommended immediate move is one of: **(a) finish/merge the branch**
@@ -99,10 +111,10 @@ shippable independent block, needs user consent), or **(b) continue** with:
 1. ~~**Cycle 2 P3 — BM25F ranking.**~~ **✅ DONE** (commits `6796330`/`0b360af`/`9951f1a`).
    Also this session: item 5's **GDELT slot-math** was verified — **✅ clean, no 2nd fabricated-ID
    bug** (details under item 5). Recommended next pick: item 2 (FTS singleton — API-side availability).
-2. **Cycle 1 P3b remainder (search availability/correctness):** FTS index **process-wide
-   singleton + serialized rebuild** (fixes per-request rebuild + concurrent `/search`
-   write-write-conflict — API-side, needs `api/server.py`); inclusive end-of-day across
-   `/captures`,`/search`,`/inspect`,`/counts`; pagination corruption; phrase/prefix/fuzzy.
+2. **Cycle 1 P3b remainder (search availability/correctness):** ~~FTS index process-wide
+   singleton + serialized rebuild~~ **✅ DONE** (commits `7305194`/`8e860a6`). **STILL REMAINING
+   in P3b:** inclusive end-of-day across `/captures`,`/search`,`/inspect`,`/counts`; pagination
+   corruption; phrase/prefix/fuzzy.
 3. **Cycle 2 P4** — confidence-aware language detection (fastText/CLD3) + Gopher/C4-style
    WET content-quality filter.
 4. **Cycle 2 P6 (systems)** — persisted/incremental FTS; streaming WET parse (bounded
@@ -145,7 +157,7 @@ shippable independent block, needs user consent), or **(b) continue** with:
 ```bash
 cd /Users/nazmi/Desktop/awareness
 git status && git log --oneline -8
-PYTHONPATH=src .venv/bin/python -m pytest -q -m "not slow and not smoke"   # expect 259 passed
+PYTHONPATH=src .venv/bin/python -m pytest -q -m "not slow and not smoke"   # expect 265 passed (can take minutes offline: connect() does network INSTALL iceberg/fts)
 ls docs/superpowers/plans/   # the executable TDD plans
 ```
 Then either invoke `superpowers:finishing-a-development-branch` (to merge) or write/execute
