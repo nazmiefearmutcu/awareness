@@ -332,6 +332,18 @@ class DuckDbIndex:
             cols = [d[0] for d in cur.description] if cur.description else []
             return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
+    def related(self, capture_id: str, *, limit: int = 12) -> list[dict[str, Any]]:
+        """Sibling captures in the same dup-group, lock-guarded.
+
+        Wraps the module-level :func:`find_related_captures` under ``self._lock``
+        so a process-wide singleton can serve ``/related`` from FastAPI's
+        threadpool without ever touching the raw connection unsynchronized.
+        """
+        with self._lock:
+            conn = self.connect()
+            self._refresh_views_if_stale(conn)
+            return find_related_captures(conn, capture_id, limit=limit)
+
     # ── full-text search ────────────────────────────────────────────────
     def _ensure_fts(self, conn: duckdb.DuckDBPyConnection) -> bool:
         """Build/refresh the FTS index on a materialized captures table.
