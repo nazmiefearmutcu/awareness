@@ -37,6 +37,7 @@ from pathlib import Path
 import httpx
 
 from awareness.config import get_settings
+from awareness.normalize.quality import gopher_quality
 from awareness.normalize.text import detect_language, normalize_text, safe_title
 from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
@@ -88,6 +89,13 @@ def _record_passes_domain_filter(url: str, domains_filter: set[str] | None) -> b
     cu = canonical_url(url)
     dom = domain_of(cu) if cu else None
     return dom in domains_filter
+
+
+def _record_passes_quality(text: str, *, enabled: bool) -> bool:
+    """WET records below Gopher/C4 content quality are dropped when ``enabled``."""
+    if not enabled:
+        return True
+    return gopher_quality(text).ok
 
 
 class CommonCrawlWetAdapter(Adapter):
@@ -314,6 +322,9 @@ def _parse_wet_to_captures(
                 max_chars=settings.text_max_chars,
             )
             if norm.discarded_reason:
+                continue
+            if not _record_passes_quality(norm.text, enabled=settings.wet_quality_filter):
+                get_metrics().inc("cc_wet.quality_filtered")
                 continue
             lang = detect_language(norm.text) or None
             if languages_filter and lang not in languages_filter:

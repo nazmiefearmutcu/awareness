@@ -101,6 +101,7 @@ class Settings(BaseSettings):
 
     # ── source adapters ──────────────────────────────────────────────────
     cc_wet_max_shards_per_crawl: int = Field(4, ge=1)  # WET shards fetched per crawl ID
+    wet_quality_filter: bool = True  # drop Gopher/C4-low-quality WET records before storing
 
     # ── storage destinations (where captures are written) ────────────────
     # These three toggles are the TAIL/BODY write destinations. Set them with
