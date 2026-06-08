@@ -498,6 +498,11 @@ class DuckDbIndex:
                     total_row = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()  # nosemgrep
                     total = int(total_row[0]) if total_row else 0
                     if total > 0:
+                        # DuckDB FTS scores title+text as one blob, so we cannot
+                        # field-boost in SQL. Retrieve the top-`window` candidates
+                        # by raw BM25, re-rank them in Python (title boost / length
+                        # / optional recency), then slice the requested page.
+                        window = max(offset + limit, max_results or 0) or (offset + limit)
                         sql = f"""
                             SELECT
                               capture_id, doc_id, parent_doc_or_dup_group,
@@ -508,9 +513,11 @@ class DuckDbIndex:
                               fts_main_captures_idx.match_bm25(capture_id, $q) AS score
                             {base}
                             ORDER BY score DESC
-                            LIMIT {int(limit)} OFFSET {int(offset)}
+                            LIMIT {int(window)}
                         """
-                        rows = self._rows(conn, sql, params)
+                        candidates = self._rows(conn, sql, params)
+                        ranked_rows = _rerank(candidates, _tokenize_query(query))
+                        rows = ranked_rows[offset : offset + limit]
                         used_mode = "fts"
                 elif mode == "fts":
                     # FTS explicitly requested but unavailable → degrade to prefix.
