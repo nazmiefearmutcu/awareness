@@ -73,6 +73,23 @@ def crawl_ids_for_range(start: datetime, end: datetime) -> list[str]:
     return resolve_crawl_ids(start, end)
 
 
+def _normalize_domain_filter(domains: list[str] | None) -> set[str] | None:
+    """Reduce requested domains to their registered eTLD+1 so a subdomain
+    request (news.bbc.co.uk) matches records whose domain_of is bbc.co.uk."""
+    if not domains:
+        return None
+    normalized = {domain_of(d) or domain_of(f"http://{d}") or d.lower() for d in domains}
+    return {d for d in normalized if d} or None
+
+
+def _record_passes_domain_filter(url: str, domains_filter: set[str] | None) -> bool:
+    if not domains_filter:
+        return True
+    cu = canonical_url(url)
+    dom = domain_of(cu) if cu else None
+    return dom in domains_filter
+
+
 class CommonCrawlWetAdapter(Adapter):
     source_type = SourceKind.COMMON_CRAWL_WET
 
@@ -180,7 +197,7 @@ class CommonCrawlWetAdapter(Adapter):
     ) -> AsyncIterator[DocCapture]:
         crawl_id = partition.payload["crawl_id"]
         shard_path = partition.payload["shard_path"]
-        domains_filter = set(partition.payload.get("domains") or []) or None
+        domains_filter = _normalize_domain_filter(partition.payload.get("domains"))
         languages_filter = set(partition.payload.get("languages") or []) or None
 
         url = f"{CC_BASE}/{shard_path}"
