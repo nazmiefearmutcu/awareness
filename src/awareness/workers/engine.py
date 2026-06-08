@@ -155,11 +155,16 @@ class WorkerEngine:
         """Drain all PENDING tasks for ``job_id`` using a worker pool."""
         self._state.set_job_status(job_id, JobStatus.RUNNING)
         # Recover tasks left RUNNING by a previous crash/stop before draining.
-        self._state.requeue_orphaned_running(
-            job_id,
-            older_than_seconds=ORPHAN_LEASE_SECONDS,
-            max_retries=get_settings().max_retries,
-        )
+        # Best-effort: a transient DB error here must not abort the run (which
+        # would leave the job stuck RUNNING with no drain and no completion).
+        try:
+            self._state.requeue_orphaned_running(
+                job_id,
+                older_than_seconds=ORPHAN_LEASE_SECONDS,
+                max_retries=get_settings().max_retries,
+            )
+        except Exception as exc:
+            logger.warning("orphan_reap_on_start_failed", job_id=job_id, err=str(exc))
         sem = asyncio.Semaphore(self._concurrency)
 
         # Initialize running metrics from DB if available

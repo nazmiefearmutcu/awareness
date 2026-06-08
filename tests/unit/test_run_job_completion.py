@@ -17,6 +17,7 @@ def test_should_complete_logic() -> None:
     assert WorkerEngine._should_complete(drained=True, stopping=False) is True
     assert WorkerEngine._should_complete(drained=False, stopping=False) is False
     assert WorkerEngine._should_complete(drained=True, stopping=True) is False
+    assert WorkerEngine._should_complete(drained=False, stopping=True) is False
 
 
 async def test_run_job_with_zero_tasks_completes(tmp_project) -> None:
