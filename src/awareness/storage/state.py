@@ -21,6 +21,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     create_engine,
+    event,
     func,
     select,
     update,
@@ -183,6 +184,18 @@ class StateDB:
             url = "sqlite:" + url[len("sqlite+aiosqlite:") :]
         self._url = url
         self._engine = create_engine(url, future=True)
+        if url.startswith("sqlite"):
+            # WAL + a busy timeout make concurrent readers/writers across
+            # processes (standalone worker + API + CLI) coexist without
+            # "database is locked", and underpin the atomic claim in
+            # claim_pending_tasks. synchronous=NORMAL is the safe WAL pairing.
+            @event.listens_for(self._engine, "connect")
+            def _set_sqlite_pragmas(dbapi_conn, _record):  # noqa: ANN001
+                cur = dbapi_conn.cursor()
+                cur.execute("PRAGMA journal_mode=WAL")
+                cur.execute("PRAGMA busy_timeout=5000")
+                cur.execute("PRAGMA synchronous=NORMAL")
+                cur.close()
         self._sessionmaker = sessionmaker(self._engine, expire_on_commit=False)
         self._lock = threading.RLock()
         self._initialized = False
