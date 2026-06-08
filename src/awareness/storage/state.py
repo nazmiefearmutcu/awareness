@@ -86,6 +86,9 @@ class TaskRow(Base):
     docs_dedup_dropped: Mapped[int] = mapped_column(Integer, default=0)
     bytes_processed: Mapped[int] = mapped_column(Integer, default=0)
     checkpoint_json: Mapped[str] = mapped_column(String, default="{}")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     __table_args__ = (UniqueConstraint("job_id", "partition_key", name="uq_task_part"),)
 
 
@@ -139,6 +142,15 @@ _NEAR_DUP_SEG_MASK = (1 << NEAR_DUP_SEG_BITS) - 1
 # Per-band candidate cap. Higher than the 64-bit era's 256 so moderate-scale
 # corpora don't silently truncate true near-dup candidates out of a hot band.
 NEAR_DUP_CANDIDATE_LIMIT = 1024
+
+# Exponential backoff for failed-task retries: base * 2**(attempts-1), capped.
+RETRY_BACKOFF_BASE_SECONDS = 30
+RETRY_BACKOFF_CAP_SECONDS = 3600
+
+
+def _retry_delay_seconds(attempts: int) -> float:
+    exp = max(0, attempts - 1)
+    return float(min(RETRY_BACKOFF_BASE_SECONDS * (2**exp), RETRY_BACKOFF_CAP_SECONDS))
 
 
 class ManifestRow(Base):
@@ -210,14 +222,19 @@ class StateDB:
                 return
             Base.metadata.create_all(self._engine)
 
-            # Simple automatic schema migration for legacy databases
+            # Simple automatic schema migration for legacy databases.
             from sqlalchemy import inspect, text
+
             try:
                 inspector = inspect(self._engine)
-                columns = [c["name"] for c in inspector.get_columns("dedup_near")]
-                if columns and "sig_hex" not in columns:
+                near_cols = [c["name"] for c in inspector.get_columns("dedup_near")]
+                if near_cols and "sig_hex" not in near_cols:
                     with self._engine.begin() as conn:
                         conn.execute(text("ALTER TABLE dedup_near ADD COLUMN sig_hex VARCHAR"))
+                task_cols = [c["name"] for c in inspector.get_columns("tasks")]
+                if task_cols and "next_attempt_at" not in task_cols:
+                    with self._engine.begin() as conn:
+                        conn.execute(text("ALTER TABLE tasks ADD COLUMN next_attempt_at TIMESTAMP"))
             except Exception as e:
                 logger.warning("migration_failed", error=str(e))
 
@@ -448,6 +465,7 @@ class StateDB:
                     .where(
                         TaskRow.job_id == job_id,
                         TaskRow.status == TaskStatus.PENDING.value,
+                        (TaskRow.next_attempt_at.is_(None)) | (TaskRow.next_attempt_at <= now),
                     )
                     .order_by(TaskRow.created_at)
                     .limit(limit)
@@ -562,6 +580,7 @@ class StateDB:
                 row.completed_at = _utcnow()
             else:
                 row.status = TaskStatus.PENDING.value  # retry
+                row.next_attempt_at = _utcnow() + timedelta(seconds=_retry_delay_seconds(row.attempts))
             s.commit()
 
     def get_last_task_checkpoint(self, partition_key: str) -> dict[str, Any]:
