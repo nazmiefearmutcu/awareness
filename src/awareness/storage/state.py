@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
@@ -479,6 +479,49 @@ class StateDB:
             )
             rows.sort(key=lambda r: (r.created_at, r.task_id))
             return [self._task_state_from_row(r) for r in rows]
+
+    def requeue_orphaned_running(
+        self, job_id: str, *, older_than_seconds: float, max_retries: int
+    ) -> int:
+        """Reset RUNNING tasks whose ``started_at`` is older than the lease back
+        to PENDING so a worker re-claims them after a crash/stop. Tasks that have
+        already exhausted ``max_retries`` are dead-lettered instead. Returns the
+        number of tasks requeued (not dead-lettered).
+        """
+        cutoff = _utcnow() - timedelta(seconds=older_than_seconds)
+        with self._lock, self.session() as s:
+            rows = list(
+                s.scalars(
+                    select(TaskRow).where(
+                        TaskRow.job_id == job_id,
+                        TaskRow.status == TaskStatus.RUNNING.value,
+                        TaskRow.started_at.is_not(None),
+                        TaskRow.started_at < cutoff,
+                    )
+                )
+            )
+            requeued = 0
+            dead = 0
+            for r in rows:
+                if r.attempts >= max(1, max_retries):
+                    r.status = TaskStatus.DEAD_LETTERED.value
+                    r.completed_at = _utcnow()
+                    r.last_error = "orphaned_running_exceeded_max_retries"
+                    dead += 1
+                else:
+                    r.status = TaskStatus.PENDING.value
+                    r.started_at = None
+                    requeued += 1
+            if dead:
+                s.execute(
+                    update(JobRow)
+                    .where(JobRow.job_id == job_id)
+                    .values(tasks_dead_lettered=JobRow.tasks_dead_lettered + dead)
+                )
+            s.commit()
+        if requeued or dead:
+            logger.info("orphaned_running_reaped", job_id=job_id, requeued=requeued, dead=dead)
+        return requeued
 
     def complete_task(
         self,
