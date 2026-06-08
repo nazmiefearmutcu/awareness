@@ -449,7 +449,7 @@ class DuckDbIndex:
             # narrowed ``fields`` request. Explicit ``fts`` still runs (escape
             # hatch); ``auto`` only takes the ranked path when fields are the
             # default, otherwise it routes to field-aware prefix matching.
-            fts_eligible = list(cols) == list(DEFAULT_SEARCH_FIELDS)
+            fts_eligible = set(cols) == set(DEFAULT_SEARCH_FIELDS)
 
             # ── 1) FTS (ranked) path: used for fts/auto when available ──────
             if mode == "fts" or (mode == "auto" and fts_eligible):
@@ -498,13 +498,17 @@ class DuckDbIndex:
                     params["like"] = f"%{query}%"
                     used_mode = "substring"
                 else:
-                    # Match every token's stem-root anywhere in the chosen fields.
+                    # Match ANY token's stem-root in ANY chosen field (OR-by-default,
+                    # matching the FTS path so multi-word recall is consistent).
                     roots = self._stem_roots(conn, terms)
                     snippet_terms = roots or terms
+                    or_clauses: list[str] = []
                     for i, root in enumerate(roots):
                         key = f"r{i}"
                         params[key] = f"%{root}%"
-                        where.insert(i, "(" + " OR ".join(f"{c} ILIKE ${key}" for c in cols) + ")")
+                        or_clauses.extend(f"{c} ILIKE ${key}" for c in cols)
+                    if or_clauses:
+                        where.insert(0, "(" + " OR ".join(or_clauses) + ")")
                     used_mode = "prefix"
 
                 # where_sql interpolates ONLY whitelisted column names (via
