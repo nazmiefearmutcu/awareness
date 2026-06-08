@@ -697,7 +697,11 @@ def _rerank(
     scores = [float(c.get("score") or 0.0) for c in candidates]
     max_score = max(scores) if scores else 0.0
 
-    if recency_weight > 0 and ref_epoch is None:
+    # Recency is off by default; only parse timestamps when it is actually
+    # enabled — otherwise we'd _to_epoch every candidate on the search hot path
+    # only for _recency_factor to discard it (it short-circuits to 1.0).
+    recency_on = recency_weight > 0
+    if recency_on and ref_epoch is None:
         epochs = [
             e
             for c in candidates
@@ -710,8 +714,9 @@ def _rerank(
         norm = (raw / max_score) if max_score > 0 else 0.0
         title_f = 1.0 + title_boost * _title_hit_frac(c.get("title") or "", terms)
         len_f = _length_factor(len(c.get("text") or ""), pivot=len_pivot, floor=len_floor)
+        doc_epoch = _to_epoch(c.get("published_ts") or c.get("fetch_ts")) if recency_on else None
         rec_f = _recency_factor(
-            _to_epoch(c.get("published_ts") or c.get("fetch_ts")),
+            doc_epoch,
             ref_epoch,
             halflife_days=recency_halflife_days,
             weight=recency_weight,
