@@ -93,10 +93,10 @@ def _record_passes_domain_filter(url: str, domains_filter: set[str] | None) -> b
 class CommonCrawlWetAdapter(Adapter):
     source_type = SourceKind.COMMON_CRAWL_WET
 
-    def __init__(self, max_shards_per_crawl: int = 1) -> None:
+    def __init__(self, max_shards_per_crawl: int = 4) -> None:
         super().__init__()
-        # Default to 1 shard per crawl for sanity in smoke tests. CLI/config can
-        # override via the ``BackfillRequest.notes`` payload or per-partition.
+        # Default to 4 shards per crawl (configurable via AW_CC_WET_MAX_SHARDS_PER_CRAWL).
+        # CLI/config can override via the ``BackfillRequest.notes`` payload or per-partition.
         self._max_shards_per_crawl = max(1, max_shards_per_crawl)
 
     # ── planner ──────────────────────────────────────────────────────────

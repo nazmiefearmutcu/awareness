@@ -99,6 +99,9 @@ class Settings(BaseSettings):
     text_min_chars: int = 200
     text_max_chars: int = 1_500_000
 
+    # ── source adapters ──────────────────────────────────────────────────
+    cc_wet_max_shards_per_crawl: int = Field(4, ge=1)  # WET shards fetched per crawl ID
+
     # ── storage destinations (where captures are written) ────────────────
     # These three toggles are the TAIL/BODY write destinations. Set them with
     # ``awareness configure`` (a wizard) or ``awareness config set``.

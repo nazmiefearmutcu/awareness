@@ -168,6 +168,11 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
         "Drop documents whose extracted text is longer than this.",
         minimum=1, maximum=1_000_000_000,
     ),
+    ConfigField(
+        "cc_wet_max_shards_per_crawl", "Corpus filters", KIND_INT, 4,
+        "Maximum WET shards fetched per Common Crawl crawl ID during backfill.",
+        minimum=1, maximum=100_000,
+    ),
     # ── Politeness / fetch ───────────────────────────────────────────────────
     ConfigField(
         "per_domain_concurrency", "Politeness / fetch", KIND_INT, 2,
