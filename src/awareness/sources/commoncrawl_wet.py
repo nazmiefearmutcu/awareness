@@ -91,9 +91,19 @@ def _record_passes_domain_filter(url: str, domains_filter: set[str] | None) -> b
     return dom in domains_filter
 
 
-def _record_passes_quality(text: str, *, enabled: bool) -> bool:
-    """WET records below Gopher/C4 content quality are dropped when ``enabled``."""
+def _record_passes_quality(text: str, *, enabled: bool, lang: str | None) -> bool:
+    """Drop WET records below Gopher/C4 content quality when ``enabled``.
+
+    ``gopher_quality`` carries English-leaning gates (the stopword signal, the
+    mean-word-length / alpha-fraction checks that misfire on non-space-delimited
+    or non-English scripts), so it may only judge English text — ``quality.py``
+    documents that non-English text is admitted by language selection, not
+    dropped here. Records the language filter has admitted in any *other*
+    language pass through unjudged rather than being silently discarded.
+    """
     if not enabled:
+        return True
+    if lang != "en":
         return True
     return gopher_quality(text).ok
 
@@ -323,11 +333,16 @@ def _parse_wet_to_captures(
             )
             if norm.discarded_reason:
                 continue
-            if not _record_passes_quality(norm.text, enabled=settings.wet_quality_filter):
-                get_metrics().inc("cc_wet.quality_filtered")
-                continue
             lang = detect_language(norm.text) or None
             if languages_filter and lang not in languages_filter:
+                continue
+            # Quality gating runs DOWNSTREAM of language selection so the
+            # English-leaning Gopher gates only judge text the language filter
+            # has already admitted (see normalize/quality.py docstring).
+            if not _record_passes_quality(
+                norm.text, enabled=settings.wet_quality_filter, lang=lang
+            ):
+                get_metrics().inc("cc_wet.quality_filtered")
                 continue
 
             ch = compute_content_hash(norm.text)

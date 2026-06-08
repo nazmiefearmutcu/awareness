@@ -22,12 +22,19 @@ def test_quality_filter_default_is_on() -> None:
 
 
 def test_clean_record_passes_when_enabled() -> None:
-    assert _record_passes_quality(_clean(), enabled=True) is True
+    assert _record_passes_quality(_clean(), enabled=True, lang="en") is True
 
 
 def test_junk_record_is_dropped_when_enabled() -> None:
-    assert _record_passes_quality("buy now buy now", enabled=True) is False
+    assert _record_passes_quality("buy now buy now", enabled=True, lang="en") is False
 
 
 def test_disabled_filter_passes_everything() -> None:
-    assert _record_passes_quality("buy now buy now", enabled=False) is True
+    assert _record_passes_quality("buy now buy now", enabled=False, lang="en") is True
+
+
+def test_non_english_record_is_not_judged_by_english_gates() -> None:
+    # English-leaning Gopher gates only judge English; a record the language
+    # filter admitted in another language passes through unjudged (no silent
+    # data loss for non-English WET text).
+    assert _record_passes_quality("buy now buy now", enabled=True, lang="de") is True
