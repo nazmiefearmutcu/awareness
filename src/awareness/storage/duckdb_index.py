@@ -42,6 +42,42 @@ DEFAULT_SEARCH_MODE = "auto"
 # Hard ceiling on rows materialized in a single search call (overload guard).
 DEFAULT_SEARCH_MAX_RESULTS = 200
 
+# Canonical captures columns in UNION order. The staging projection is built
+# from this so a JSONL chunk missing any of these still yields a buildable
+# `captures` view (absent columns become typed NULLs) instead of Binder-erroring
+# the whole view out of existence.
+_CAPTURE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("doc_id", "VARCHAR"), ("capture_id", "VARCHAR"), ("parent_doc_or_dup_group", "VARCHAR"),
+    ("source_type", "VARCHAR"), ("source_name", "VARCHAR"), ("source_locator", "VARCHAR"),
+    ("source_shard", "VARCHAR"), ("source_offset_or_record_id", "VARCHAR"),
+    ("discovery_channel", "VARCHAR"), ("job_id", "VARCHAR"), ("batch_id", "VARCHAR"),
+    ("ingest_version", "VARCHAR"), ("url", "VARCHAR"), ("canonical_url", "VARCHAR"),
+    ("domain", "VARCHAR"),
+    ("fetch_ts", "TIMESTAMPTZ"), ("observed_ts", "TIMESTAMPTZ"),
+    ("published_ts", "TIMESTAMPTZ"), ("last_modified", "TIMESTAMPTZ"),
+    ("content_type", "VARCHAR"), ("http_status", "INTEGER"), ("etag", "VARCHAR"),
+    ("title", "VARCHAR"), ("text", "VARCHAR"), ("language", "VARCHAR"),
+    ("content_hash", "VARCHAR"), ("near_dup_hash", "BIGINT"),
+    ("robots_decision", "VARCHAR"), ("terms_note_if_relevant", "VARCHAR"),
+)
+_TS_COLUMNS = frozenset({"fetch_ts", "observed_ts", "published_ts", "last_modified"})
+
+
+def _staging_projection(present: set[str]) -> str:
+    """SELECT-list over staging_captures_raw that NULL-fills absent columns and
+    TRY_CASTs timestamps / near_dup_hash, matching the iceberg-union order."""
+    parts: list[str] = []
+    for name, typ in _CAPTURE_COLUMNS:
+        if name not in present:
+            parts.append(f"NULL::{typ} AS {name}")
+        elif name in _TS_COLUMNS:
+            parts.append(f"TRY_CAST({name} AS TIMESTAMPTZ) AS {name}")
+        elif name == "near_dup_hash":
+            parts.append(f"TRY_CAST({name} AS BIGINT) AS {name}")
+        else:
+            parts.append(name)
+    return ",\n                      ".join(parts)
+
 
 def _clean_fields(fields: list[str] | tuple[str, ...] | None) -> list[str]:
     """Normalize + whitelist the requested search columns.
@@ -191,6 +227,10 @@ class DuckDbIndex:
         # Build a unified ``captures`` view that casts timestamps to TIMESTAMPTZ
         # so BETWEEN/range queries against datetime parameters work.
         # We try to load and union the Iceberg warehouse captures when available.
+        present = {
+            str(r[0]) for r in conn.execute("DESCRIBE staging_captures_raw").fetchall()
+        }
+        staging_proj = _staging_projection(present)
         iceberg_ok = False
         if self._iceberg_warehouse:
             try:
@@ -218,22 +258,11 @@ class DuckDbIndex:
 
         try:
             if iceberg_ok:
-                conn.execute(
-                    """
+                conn.execute(  # nosemgrep
+                    f"""
                     CREATE OR REPLACE VIEW captures_raw_union AS
                     SELECT
-                      doc_id, capture_id, parent_doc_or_dup_group,
-                      source_type, source_name, source_locator,
-                      source_shard, source_offset_or_record_id,
-                      discovery_channel, job_id, batch_id, ingest_version,
-                      url, canonical_url, domain,
-                      TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
-                      TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
-                      TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
-                      TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
-                      content_type, http_status, etag, title, text, language,
-                      content_hash, TRY_CAST(near_dup_hash AS BIGINT) AS near_dup_hash, robots_decision,
-                      terms_note_if_relevant
+                      {staging_proj}
                     FROM staging_captures_raw
                     UNION ALL
                     SELECT
@@ -263,22 +292,11 @@ class DuckDbIndex:
                     """
                 )
             else:
-                conn.execute(
-                    """
+                conn.execute(  # nosemgrep
+                    f"""
                     CREATE OR REPLACE VIEW captures AS
                     SELECT
-                      doc_id, capture_id, parent_doc_or_dup_group,
-                      source_type, source_name, source_locator,
-                      source_shard, source_offset_or_record_id,
-                      discovery_channel, job_id, batch_id, ingest_version,
-                      url, canonical_url, domain,
-                      TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
-                      TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
-                      TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
-                      TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
-                      content_type, http_status, etag, title, text, language,
-                      content_hash, TRY_CAST(near_dup_hash AS BIGINT) AS near_dup_hash, robots_decision,
-                      terms_note_if_relevant
+                      {staging_proj}
                     FROM staging_captures_raw;
                     """
                 )
