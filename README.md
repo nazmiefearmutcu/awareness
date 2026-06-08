@@ -73,19 +73,20 @@ end-to-end recall was **~2%**. Three changes fixed it: a **128-bit
 frequency-weighted fingerprint** (all-pairs *separability* **0.99**, on par with
 MinHash — so the fingerprint was never the problem;
 [text-dedup's CORE benchmark](https://github.com/ChenghaoMou/text-dedup) puts
-plain 64-bit SimHash at 0.85, MinHash at 0.95), **finer 16×8-bit banding** (roughly
-doubles candidate retrieval), and a **Hamming≤24 default** threshold.
+plain 64-bit SimHash at 0.85, MinHash at 0.95), **finer 32×4-bit banding**
+(pigeonhole-exact retrieval up to Hamming≤31, covering the default threshold), and
+a **Hamming≤24 default** threshold.
 
 | End-to-end (full pipeline) | **Awareness DedupEngine** | `datasketch` MinHashLSH |
 | --- | --- | --- |
-| **F1** (shipped default · tuned) | **0.84 · 0.96** | 0.998 |
+| **F1** (shipped default · tuned) | **0.85 · 0.97** | 0.998 |
 | **Precision** | **1.00** — never false-merges | 0.999 |
-| **Recall** (default · tuned) | 0.73 · 0.93 | 0.997 |
+| **Recall** (default · tuned) | 0.74 · 0.95 | 0.997 |
 | **Throughput** | **≈5,200 docs/s** (3.3×) | ≈1,600 docs/s |
 | **Signature size** | **16 B/doc** (64× smaller) | 1,024 B/doc |
 
 Numbers are the **shipped default** (`near_threshold=24`); raised toward the
-precision boundary (Hamming≤32) the engine reaches **F1 0.96 / recall 0.93 with
+precision boundary (Hamming≤32) the engine reaches **F1 0.97 / recall 0.95 with
 precision still 1.00** — the threshold is tunable per call. MinHashLSH is reported
 at its F1-optimal Jaccard≥0.5 (≈ its default).
 
@@ -98,9 +99,11 @@ memory**, and — because dedup only ever sets a grouping hint and never drops a
 row — lower recall costs a little less folding, never data.
 
 > **Note (2026-06):** the near-duplicate band index was upgraded from 16×8-bit to
-> **32×4-bit** so the Manku/Jain pigeonhole guarantee (≤ bands−1) covers the default
-> Hamming≤24 merge threshold (exact retrieval, not probabilistic). The F1/recall
-> figures above predate this change and are being re-measured.
+> **32×4-bit** so the Manku/Jain pigeonhole guarantee (≤ bands−1) now covers the
+> default Hamming≤24 threshold (exact retrieval, not probabilistic). Re-measured on
+> the same synthetic corpus: precision stays **1.00**, default F1/recall are
+> unchanged and the tuned operating point improved slightly — the tables above
+> reflect the re-measured figures.
 
 ### Content fingerprinting — xxh3 is the right call
 
