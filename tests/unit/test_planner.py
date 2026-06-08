@@ -13,13 +13,16 @@ from awareness.sources.commoncrawl_wet import crawl_ids_for_range
 from awareness.storage.state import StateDB
 
 
-def test_crawl_ids_for_range_covers_a_year() -> None:
-    # Stay inside ISO year 2024 to avoid the year-boundary ISO-week shift
-    # (Dec 30-31 2024 fall in ISO year 2025).
-    start = datetime(2024, 1, 8, tzinfo=UTC)  # ISO week 2 of 2024
-    end = datetime(2024, 12, 22, tzinfo=UTC)
-    crawls = crawl_ids_for_range(start, end)
-    assert 12 <= len(crawls) <= 30
+def test_crawl_ids_for_range_covers_a_year(monkeypatch) -> None:
+    import awareness.sources.cc_crawls as cc
+
+    monkeypatch.setattr(cc, "_fetch_catalog", lambda: None)
+    monkeypatch.setattr(cc, "_read_cache", lambda: None)
+    crawls = crawl_ids_for_range(
+        datetime(2024, 1, 1, tzinfo=UTC), datetime(2024, 12, 31, tzinfo=UTC)
+    )
+    assert crawls, "a one-year range must resolve at least one real crawl"
+    assert set(crawls).issubset(set(cc.BUNDLED_CRAWL_IDS))
     assert all(c.startswith("CC-MAIN-2024-") for c in crawls)
 
 

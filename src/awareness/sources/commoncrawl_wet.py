@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -59,39 +59,18 @@ logger = get_logger("sources.cc_wet")
 CC_BASE = "https://data.commoncrawl.org"
 
 
-def _iso_year_weeks(start: datetime, end: datetime) -> list[tuple[int, int]]:
-    """Return ISO (year, week) tuples covering ``[start, end]``."""
-    cur = to_utc(start) or utcnow()
-    end_utc = to_utc(end) or utcnow()
-    if cur > end_utc:
-        cur, end_utc = end_utc, cur
-    seen: list[tuple[int, int]] = []
-    last_pair: tuple[int, int] | None = None
-    while cur <= end_utc:
-        iso = cur.isocalendar()
-        pair = (iso.year, iso.week)
-        if pair != last_pair:
-            seen.append(pair)
-            last_pair = pair
-        cur += timedelta(days=1)
-    return seen
-
 
 def crawl_ids_for_range(start: datetime, end: datetime) -> list[str]:
-    """Convert a date range to candidate crawl_ids like ``CC-MAIN-2024-26``."""
-    pairs = _iso_year_weeks(start, end)
-    # Common Crawl crawls span ~2 weeks; we coalesce to even-week starts.
-    seen: set[tuple[int, int]] = set()
-    out: list[str] = []
-    for year, week in pairs:
-        anchor_week = week if week % 2 == 1 else week - 1
-        anchor_week = max(anchor_week, 1)
-        key = (year, anchor_week)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(f"CC-MAIN-{year}-{anchor_week:02d}")
-    return out
+    """Convert a date range to REAL crawl_ids (e.g. ``CC-MAIN-2024-26``).
+
+    Delegates to :func:`awareness.sources.cc_crawls.resolve_crawl_ids`, which
+    uses the authoritative collinfo.json catalog (cached, with a bundled
+    fallback) instead of the old odd-ISO-week heuristic that produced
+    non-existent crawl IDs.
+    """
+    from awareness.sources.cc_crawls import resolve_crawl_ids
+
+    return resolve_crawl_ids(start, end)
 
 
 class CommonCrawlWetAdapter(Adapter):
