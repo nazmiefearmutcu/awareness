@@ -202,7 +202,7 @@ class StateDB:
             # "database is locked", and underpin the atomic claim in
             # claim_pending_tasks. synchronous=NORMAL is the safe WAL pairing.
             @event.listens_for(self._engine, "connect")
-            def _set_sqlite_pragmas(dbapi_conn, _record):  # noqa: ANN001
+            def _set_sqlite_pragmas(dbapi_conn: Any, _record: Any) -> None:
                 cur = dbapi_conn.cursor()
                 cur.execute("PRAGMA journal_mode=WAL")
                 cur.execute("PRAGMA busy_timeout=5000")
