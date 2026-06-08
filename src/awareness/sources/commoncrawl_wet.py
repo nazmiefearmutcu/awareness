@@ -68,7 +68,7 @@ def crawl_ids_for_range(start: datetime, end: datetime) -> list[str]:
     fallback) instead of the old odd-ISO-week heuristic that produced
     non-existent crawl IDs.
     """
-    from awareness.sources.cc_crawls import resolve_crawl_ids
+    from awareness.sources.cc_crawls import resolve_crawl_ids  # noqa: PLC0415
 
     return resolve_crawl_ids(start, end)
 
@@ -151,7 +151,7 @@ class CommonCrawlWetAdapter(Adapter):
         url = f"{CC_BASE}/crawl-data/{crawl_id}/wet.paths.gz"
         logger.info("cc_wet_discovery_start", crawl_id=crawl_id, url=url)
 
-        from awareness.util.http import get_with_retries
+        from awareness.util.http import get_with_retries  # noqa: PLC0415
 
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
             # Transient failures raise RetryableHTTPError (task retries with
