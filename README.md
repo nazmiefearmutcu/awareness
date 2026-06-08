@@ -97,6 +97,11 @@ resource-frugal** choice: identical precision, **3.3× the throughput, 64× less
 memory**, and — because dedup only ever sets a grouping hint and never drops a
 row — lower recall costs a little less folding, never data.
 
+> **Note (2026-06):** the near-duplicate band index was upgraded from 16×8-bit to
+> **32×4-bit** so the Manku/Jain pigeonhole guarantee (≤ bands−1) covers the default
+> Hamming≤24 merge threshold (exact retrieval, not probabilistic). The F1/recall
+> figures above predate this change and are being re-measured.
+
 ### Content fingerprinting — xxh3 is the right call
 
 ![Hashing throughput: xxh3 vs BLAKE3, SHA-256, MD5, …](docs/benchmarks/hashing.png)
