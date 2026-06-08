@@ -342,7 +342,7 @@ def _parse_wet_to_captures(
             if not _record_passes_quality(
                 norm.text, enabled=settings.wet_quality_filter, lang=lang
             ):
-                get_metrics().inc("cc_wet.quality_filtered")
+                get_metrics().inc("cc_wet.quality_filtered", labels={"crawl_id": crawl_id})
                 continue
 
             ch = compute_content_hash(norm.text)
