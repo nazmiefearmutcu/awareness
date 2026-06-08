@@ -24,7 +24,7 @@ dependencies = [
   "pyiceberg[sql-sqlite]>=0.7.0",
   "pyiceberg-core>=0.6",
   # text extraction / language / dedup
-  "trafilatura>=1.10",
+  "trafilatura>=2.1.0",
   "warcio>=1.7.4",
   "feedparser>=6.0.11",
   "lxml>=5.2",
