@@ -37,6 +37,10 @@ from awareness.storage.state import StateDB
 
 logger = get_logger("workers")
 
+# How long a task may sit RUNNING before a (re)started run_job treats it as
+# orphaned and requeues it. Comfortably longer than any single partition fetch.
+ORPHAN_LEASE_SECONDS = 900
+
 
 def _format_size(size_bytes: int) -> str:
     if size_bytes == 0:
@@ -134,6 +138,12 @@ class WorkerEngine:
     def is_stopping(self) -> bool:
         return self._stop_event.is_set()
 
+    @staticmethod
+    def _should_complete(*, drained: bool, stopping: bool) -> bool:
+        """A job is COMPLETED only when the queue genuinely drained AND we are
+        not stopping. A stop leaves the job RUNNING so it can be resumed."""
+        return drained and not stopping
+
     async def aclose(self) -> None:
         await self._flush(force=True)
         self._jsonl.close()
@@ -144,6 +154,12 @@ class WorkerEngine:
     async def run_job(self, job_id: str, *, poll_seconds: float = 0.5) -> None:
         """Drain all PENDING tasks for ``job_id`` using a worker pool."""
         self._state.set_job_status(job_id, JobStatus.RUNNING)
+        # Recover tasks left RUNNING by a previous crash/stop before draining.
+        self._state.requeue_orphaned_running(
+            job_id,
+            older_than_seconds=ORPHAN_LEASE_SECONDS,
+            max_retries=get_settings().max_retries,
+        )
         sem = asyncio.Semaphore(self._concurrency)
 
         # Initialize running metrics from DB if available
@@ -194,6 +210,7 @@ class WorkerEngine:
                     )
 
         try:
+            drained = False
             empty_polls = 0
             while not self.is_stopping():
                 js = self._state.get_job(job_id)
@@ -210,6 +227,7 @@ class WorkerEngine:
                 if not tasks:
                     empty_polls += 1
                     if empty_polls >= 3:
+                        drained = True
                         break
                     await asyncio.sleep(poll_seconds)
                     continue
@@ -221,10 +239,10 @@ class WorkerEngine:
                 progress_bar.stop()
             await self._flush(force=True)
             job = self._state.get_job(job_id)
-            if job and job.status not in (
-                JobStatus.CANCELLED,
-                JobStatus.COMPLETED,
-                JobStatus.FAILED,
+            if (
+                job
+                and job.status not in (JobStatus.CANCELLED, JobStatus.COMPLETED, JobStatus.FAILED)
+                and self._should_complete(drained=drained, stopping=self.is_stopping())
             ):
                 self._state.set_job_status(job_id, JobStatus.COMPLETED)
 
