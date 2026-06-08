@@ -26,7 +26,7 @@ from awareness.config import get_settings
 from awareness.obs.logging import get_logger
 from awareness.planner.planner import Planner
 from awareness.schemas.doc import SourceKind
-from awareness.schemas.jobs import TaskState
+from awareness.schemas.jobs import JobStatus, TaskState
 from awareness.storage.state import StateDB
 from awareness.util.timeutil import utcnow
 from awareness.workers.engine import WorkerEngine
