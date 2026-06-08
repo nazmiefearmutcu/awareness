@@ -119,7 +119,7 @@ class DuckDbIndex:
         jsonl: tuple[Any, ...] = ()
         if captures_root.exists():
             entries = []
-            for p in captures_root.rglob("*.jsonl"):
+            for p in captures_root.rglob("*.jsonl*"):
                 try:
                     st = p.stat()
                     entries.append((str(p), st.st_size, st.st_mtime_ns))
@@ -148,7 +148,7 @@ class DuckDbIndex:
 
     def _refresh_views(self, conn: duckdb.DuckDBPyConnection) -> None:
         captures_root = self._jsonl_dir / "captures"
-        existing = list(captures_root.rglob("*.jsonl")) if captures_root.exists() else []
+        existing = list(captures_root.rglob("*.jsonl*")) if captures_root.exists() else []
         if existing:
             # Build an explicit list literal so DuckDB doesn't have to glob.
             # Paths are locally-discovered staging files (operator-owned data
