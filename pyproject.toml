@@ -39,7 +39,7 @@ dependencies = [
   "structlog>=24.1",
   "rich>=13.7",
   # time
-  "python-dateutil>=2.9",
+  "python-dateutil>=2.9.0.post0",
 ]
 
 [project.optional-dependencies]
