@@ -433,15 +433,15 @@ class StateDB:
     def claim_pending_tasks(self, job_id: str, limit: int) -> list[TaskState]:
         """Atomically transition up to ``limit`` PENDING tasks to RUNNING.
 
-        The claim is a single conditional ``UPDATE ... WHERE status='pending'
-        RETURNING`` over a bounded candidate set. Because the status guard is
-        evaluated inside the write-locked UPDATE, two concurrent claimers (even
-        across processes) can never both win the same row. ``self._lock``
-        serializes in-process callers; WAL + busy_timeout keep cross-process
-        writers from erroring.
+        Correctness rests on the conditional ``UPDATE ... WHERE status='pending'
+        RETURNING``: the status guard is re-evaluated at write time, so even if
+        two claimers race the (lock-free) candidate SELECT and pick overlapping
+        ids, only one UPDATE flips each row — the loser's guard no longer
+        matches and it claims nothing. ``self._lock`` serializes in-process
+        callers; WAL + busy_timeout keep cross-process writers from erroring.
         """
-        now = _utcnow()
         with self._lock, self.session() as s:
+            now = _utcnow()
             candidates = list(
                 s.scalars(
                     select(TaskRow.task_id)
@@ -471,12 +471,12 @@ class StateDB:
                     .execution_options(synchronize_session=False)
                 )
             )
+            s.commit()
             rows = (
                 list(s.scalars(select(TaskRow).where(TaskRow.task_id.in_(claimed_ids))))
                 if claimed_ids
                 else []
             )
-            s.commit()
             rows.sort(key=lambda r: (r.created_at, r.task_id))
             return [self._task_state_from_row(r) for r in rows]
 
