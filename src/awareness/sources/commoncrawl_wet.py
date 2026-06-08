@@ -151,14 +151,16 @@ class CommonCrawlWetAdapter(Adapter):
         url = f"{CC_BASE}/crawl-data/{crawl_id}/wet.paths.gz"
         logger.info("cc_wet_discovery_start", crawl_id=crawl_id, url=url)
 
+        from awareness.util.http import get_with_retries
+
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            try:
-                resp = await client.get(url, headers={"User-Agent": context.user_agent})
-            except httpx.HTTPError as exc:
-                logger.warning("cc_wet_paths_fetch_failed", crawl_id=crawl_id, err=str(exc))
-                return
+            # Transient failures raise RetryableHTTPError (task retries with
+            # backoff); a genuine 404 means this crawl has no wet.paths — skip.
+            resp = await get_with_retries(
+                client, url, headers={"User-Agent": context.user_agent}
+            )
             if resp.status_code != 200:
-                logger.warning("cc_wet_paths_not_found", crawl_id=crawl_id, status=resp.status_code)
+                logger.info("cc_wet_paths_not_found", crawl_id=crawl_id, status=resp.status_code)
                 return
             try:
                 body = gzip.decompress(resp.content).decode("utf-8", "replace")
