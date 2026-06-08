@@ -327,9 +327,6 @@ class DuckDbIndex:
             return False
         if count == 0:
             return False
-        if count == self._fts_built_for_count:
-            self._fts_built_signature = self._views_signature
-            return True
         # Rebuild materialized table + FTS index.
         try:
             conn.execute(
