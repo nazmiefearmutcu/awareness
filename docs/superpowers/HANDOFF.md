@@ -97,9 +97,8 @@ The recommended immediate move is one of: **(a) finish/merge the branch**
 shippable independent block, needs user consent), or **(b) continue** with:
 
 1. ~~**Cycle 2 P3 — BM25F ranking.**~~ **✅ DONE** (commits `6796330`/`0b360af`/`9951f1a`).
-   The recommended next pick is item 2 (FTS singleton — API-side availability) or item 5's
-   **GDELT slot-math verification** (a *possible 2nd fabricated-ID bug* — same correctness
-   class as the original CC odd-week defect; cheap to check, protects the "scraping works" claim).
+   Also this session: item 5's **GDELT slot-math** was verified — **✅ clean, no 2nd fabricated-ID
+   bug** (details under item 5). Recommended next pick: item 2 (FTS singleton — API-side availability).
 2. **Cycle 1 P3b remainder (search availability/correctness):** FTS index **process-wide
    singleton + serialized rebuild** (fixes per-request rebuild + concurrent `/search`
    write-write-conflict — API-side, needs `api/server.py`); inclusive end-of-day across
@@ -112,8 +111,11 @@ shippable independent block, needs user consent), or **(b) continue** with:
    `/metrics` export + per-fetch tracing.
 5. **Cycle 1 Plan 2b (scraping hardening, before any breadth increase):** per-domain
    rate-limiter delay race; robots crawl-delay + UA consistency; seed discovery
-   (sitemaps/robots); **GDELT slot/time-math verification** (possible 2nd fabricated-id
-   bug — same class as the CC odd-week defect, NOT yet checked); job-wide fan-out budget.
+   (sitemaps/robots); **GDELT slot/time-math** ✅ VERIFIED CLEAN (2026-06-08): the flooring
+   `minute−(minute%15)` lands exactly on real GDELT slots {00,15,30,45} (e.g. `…003000.gkg.csv.zip`),
+   missing slots 404→logged not fatal, and `latest_gkg_slot` is unit-tested — so this is NOT a
+   2nd fabricated-ID bug. Only remaining nit: `_quarter_hours` (backfill range-walker) shares the
+   identical flooring but lacks a direct test (cheap regression-lock). Job-wide fan-out budget.
 6. **Cycle 1 Plan 4b:** tail_recrawl/warc_repair honor text_min/max_chars + charset;
    one-command `quickstart`; zero-task backfill warning; search empty-state "why".
 7. **Math follow-ups:** raise `DEFAULT_NEAR_THRESHOLD` toward the calibrated 36 — BUT this
