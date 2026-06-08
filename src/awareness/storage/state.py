@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     DateTime,
     Integer,
     String,
@@ -125,7 +126,7 @@ class DedupNearRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     doc_id: Mapped[str] = mapped_column(String, index=True)
     sig_hex: Mapped[str | None] = mapped_column(String, nullable=True)
-    near_dup_hash: Mapped[int | None] = mapped_column(Integer, nullable=True)  # legacy 64-bit signed
+    near_dup_hash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # 64-bit signed simhash
     seg: Mapped[int] = mapped_column(Integer, index=True)
     seg_value: Mapped[int] = mapped_column(Integer, index=True)
     __table_args__ = (UniqueConstraint("doc_id", "seg", name="uq_dedup_near"),)
