@@ -1205,10 +1205,11 @@ def backfill_run(
     job_id: str = typer.Argument(..., help="Job id from `backfill submit`"),
     concurrency: int = typer.Option(0, "--concurrency", help="Override worker concurrency"),
     silent_progress: bool = typer.Option(False, "--silent-progress", help="Mute per-document ingestion logs in the terminal"),
+    mute_duplicates: bool = typer.Option(None, "--mute-duplicates/--no-mute-duplicates", help="Hide duplicate/revision documents in the terminal log"),
 ) -> None:
     """Run pending tasks for ``job_id`` to completion (in-process)."""
     state, planner = _bootstrap()
-    engine = WorkerEngine(state, planner, concurrency=concurrency or None, silent_progress=silent_progress)
+    engine = WorkerEngine(state, planner, concurrency=concurrency or None, silent_progress=silent_progress, mute_duplicates=mute_duplicates)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -1325,6 +1326,8 @@ def tail_start(
     match_all: bool = typer.Option(False, "--match-all", help="Require ALL --match terms (AND) instead of ANY (OR)."),
     match_regex: bool = typer.Option(False, "--match-regex", help="Treat --match terms as Python regular expressions."),
     match_field: str = typer.Option("both", "--match-field", help="Where to match: title | text | both."),
+    mute_duplicates: bool = typer.Option(None, "--mute-duplicates/--no-mute-duplicates", help="Hide duplicate/revision documents in the terminal log"),
+    job_id: str = typer.Option(None, "--job-id", help="Existing job ID to reuse"),
 ) -> None:
     """Start the tail engine in foreground. Ctrl-C or pressing ENTER stops it cleanly."""
     is_tty = sys.stdin.isatty()
@@ -1476,13 +1479,15 @@ def tail_start(
                 rprint(f"\n[yellow]Ignored raw input: '{cmd}'. Press ENTER on an empty line or type /stop to exit.[/yellow]\n")
 
     async def _drive() -> None:
-        job_id = await tail.start(
+        job_id_res = await tail.start(
             seeds_path=seeds,
             match_config=match_config,
             gdelt=use_gdelt,
             gdelt_max_urls=gdelt_cap,
+            mute_duplicates=mute_duplicates,
+            job_id=job_id,
         )
-        rprint(f"[green]Tail started[/green] job_id=[bold]{job_id}[/bold]")
+        rprint(f"[green]Tail started[/green] job_id=[bold]{job_id_res}[/bold]")
         if use_gdelt:
             rprint(f"[dim]GDELT firehose: ON (≤{gdelt_cap} URLs / 15-min slot)[/dim]")
         if match:
@@ -1490,7 +1495,7 @@ def tail_start(
             rprint(f"[dim]Topic filter ({'regex' if match_regex else 'keyword'}, {match_field}): {escape(joiner.join(match))}[/dim]")
         rprint("[bold cyan]Type slash commands (e.g. /help, /clear, /status, /stop) or press ENTER to stop.[/bold cyan]\n")
         
-        stop_task = asyncio.create_task(listen_for_stop(job_id))
+        stop_task = asyncio.create_task(listen_for_stop(job_id_res))
         try:
             if duration > 0:
                 try:
@@ -1721,7 +1726,7 @@ def clear() -> None:
     print("\033[H\033[2J\033[3J", end="")
 
 
-def _make_tui_layout(state: StateDB, settings: Any) -> Any:
+def _make_tui_layout(state: StateDB, settings: Any, idx: DuckDbIndex, selected_job_idx: int = 0) -> Any:
     from rich.layout import Layout
     from rich.panel import Panel
     from rich.text import Text
@@ -1740,6 +1745,7 @@ def _make_tui_layout(state: StateDB, settings: Any) -> Any:
     )
     layout["right"].split_column(
         Layout(name="right_top", ratio=1),
+        Layout(name="right_middle", ratio=1),
         Layout(name="right_bottom", ratio=1)
     )
     
@@ -1748,7 +1754,7 @@ def _make_tui_layout(state: StateDB, settings: Any) -> Any:
     header_text = Text.assemble(
         (" AWARENESS ENGINE TUI DASHBOARD ", "bold reverse cyan"),
         "  |  Local Time: ", (time_str, "yellow"),
-        "  |  Controls: ", ("[Q] Quit  [C] Compact  [T] Toggle Tail  [A] Toggle API  [R] Refresh  [L] Logs", "bold green")
+        "  |  Controls: ", ("[Q] Quit  [C] Compact  [T] Toggle Tail  [A] Toggle API  [R] Refresh  [L] Logs  [S] Cancel  [D] Delete  [N] New", "bold green")
     )
     layout["header"].update(Panel(header_text, border_style="cyan"))
     
@@ -1792,6 +1798,11 @@ def _make_tui_layout(state: StateDB, settings: Any) -> Any:
     
     # 3. Right Top Panel: Jobs
     jobs = state.list_jobs(limit=5)
+    if jobs:
+        selected_job_idx = max(0, min(selected_job_idx, len(jobs) - 1))
+    else:
+        selected_job_idx = 0
+
     jobs_table = Table(expand=True, box=None)
     jobs_table.add_column("Job ID", style="cyan")
     jobs_table.add_column("Kind", style="white")
@@ -1800,18 +1811,81 @@ def _make_tui_layout(state: StateDB, settings: Any) -> Any:
     jobs_table.add_column("Docs", style="green")
     jobs_table.add_column("Dedup", style="yellow")
     
-    for j in jobs:
+    for idx_job, j in enumerate(jobs):
         status_color = "green" if j.status.value == "completed" else "yellow" if j.status.value == "running" else "red"
-        jobs_table.add_row(
-            j.job_id[:12],
-            j.kind.value,
-            f"[{status_color}]{j.status.value}[/{status_color}]",
-            f"{j.tasks_completed}/{j.tasks_total}",
-            str(j.docs_emitted),
-            str(j.docs_dedup_dropped),
-        )
+        is_selected = (idx_job == selected_job_idx)
+        prefix = "→ " if is_selected else "  "
+        
+        job_id_text = f"{prefix}{j.job_id[:12]}"
+        kind_text = j.kind.value
+        status_text = f"[{status_color}]{j.status.value}[/{status_color}]"
+        tasks_text = f"{j.tasks_completed}/{j.tasks_total}"
+        docs_text = str(j.docs_emitted)
+        dedup_text = str(j.docs_dedup_dropped)
+        
+        if is_selected:
+            jobs_table.add_row(
+                f"[bold reverse cyan]{job_id_text}[/bold reverse cyan]",
+                f"[bold cyan]{kind_text}[/bold cyan]",
+                f"[bold]{status_text}[/bold]",
+                f"[bold cyan]{tasks_text}[/bold cyan]",
+                f"[bold green]{docs_text}[/bold green]",
+                f"[bold yellow]{dedup_text}[/bold yellow]",
+            )
+        else:
+            jobs_table.add_row(
+                job_id_text,
+                kind_text,
+                status_text,
+                tasks_text,
+                docs_text,
+                dedup_text,
+            )
     layout["right_top"].update(Panel(jobs_table, title="[bold white]Recent Jobs[/bold white]", border_style="magenta"))
     
+    # 3.1 Right Middle Panel: Recent Captures
+    captures_table = Table(expand=True, box=None)
+    captures_table.add_column("Time", style="cyan")
+    captures_table.add_column("Title", style="white")
+    captures_table.add_column("Domain", style="dim white")
+    
+    try:
+        captures_rows = idx.execute(
+            """
+            SELECT fetch_ts, title, domain, source_type
+            FROM captures
+            ORDER BY fetch_ts DESC
+            LIMIT 10
+            """
+        )
+    except Exception:
+        captures_rows = []
+        
+    import re
+    for r in captures_rows:
+        fetch_ts = r.get("fetch_ts")
+        time_str = ""
+        if isinstance(fetch_ts, datetime):
+            time_str = fetch_ts.strftime("%H:%M:%S")
+        else:
+            s = str(fetch_ts)
+            m = re.search(r'(\d{2}):(\d{2}):(\d{2})', s)
+            if m:
+                time_str = m.group(0)
+            else:
+                time_str = s[:8]
+                
+        title = r.get("title") or "(No Title)"
+        if len(title) > 50:
+            title = title[:47] + "..."
+        domain = r.get("domain") or "unknown"
+        if len(domain) > 30:
+            domain = domain[:27] + "..."
+            
+        captures_table.add_row(time_str, title, domain)
+        
+    layout["right_middle"].update(Panel(captures_table, title="[bold white]Recent Captures[/bold white]", border_style="cyan"))
+
     # 4. Right Bottom Panel: Storage sizes
     total_local_bytes = 0
     total_local_files = 0
@@ -1843,6 +1917,7 @@ def _make_tui_layout(state: StateDB, settings: Any) -> Any:
     layout["footer"].update(Panel(footer_text, border_style="cyan"))
     
     return layout
+
 
 
 def _get_key_nonblocking() -> str | None:
@@ -1983,8 +2058,14 @@ def tui(
     refresh_rate: float = typer.Option(2.0, "--refresh", "-r", help="Refresh rate in seconds")
 ) -> None:
     """Launch the interactive Terminal User Interface (TUI) dashboard."""
-    state, _ = _bootstrap()
+    state, planner = _bootstrap()
     settings = get_settings()
+    idx = DuckDbIndex(
+        db_path=settings.duckdb_path(),
+        jsonl_dir=settings.staging_jsonl_dir(),
+        iceberg_warehouse=settings.iceberg_warehouse,
+    )
+    selected_job_idx = 0
     
     from rich.live import Live
     from rich.text import Text
@@ -2082,7 +2163,7 @@ def tui(
                 return f"[red]Failed to start API: {e}[/red]"
                 
     try:
-        layout = _make_tui_layout(state, settings)
+        layout = _make_tui_layout(state, settings, idx, selected_job_idx)
         with Live(layout, refresh_per_second=10, screen=True) as live:
             while True:
                 # Read keyboard non-blockingly
@@ -2145,12 +2226,158 @@ def tui(
                     elif key_lower == "g" and current_view in ("api_logs", "app_logs"):
                         log_scroll_offset = 0
                         last_update = 0.0
+                    elif key_lower in ("up", "k") and current_view == "dashboard":
+                        selected_job_idx = max(0, selected_job_idx - 1)
+                        last_update = 0.0
+                    elif key_lower in ("down", "j") and current_view == "dashboard":
+                        jobs = state.list_jobs(limit=5)
+                        selected_job_idx = min(len(jobs) - 1 if jobs else 0, selected_job_idx + 1)
+                        last_update = 0.0
+                    elif key_lower == "s" and current_view == "dashboard":
+                        jobs = state.list_jobs(limit=5)
+                        if jobs and 0 <= selected_job_idx < len(jobs):
+                            sel_job = jobs[selected_job_idx]
+                            from awareness.schemas.jobs import JobStatus, JobKind
+                            if sel_job.status not in (JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED):
+                                live.stop()
+                                print("\033[H\033[2J\033[3J", end="")
+                                rprint(f"[bold red]Cancel Job[/bold red]")
+                                confirm = typer.confirm(f"Are you sure you want to cancel job {sel_job.job_id}?")
+                                if confirm:
+                                    state.set_job_status(sel_job.job_id, JobStatus.CANCELLED)
+                                    if sel_job.kind == JobKind.TAIL:
+                                        state.set_tail(False, job_id=sel_job.job_id, note="tui-cancelled")
+                                    status_msg = f"[yellow]Cancelled job {sel_job.job_id}[/yellow]"
+                                else:
+                                    status_msg = "[yellow]Cancellation aborted[/yellow]"
+                                print("\033[H\033[2J\033[3J", end="")
+                                live.start()
+                            else:
+                                status_msg = f"[red]Job {sel_job.job_id} is already completed/cancelled[/red]"
+                        else:
+                            status_msg = "[red]No job selected to cancel[/red]"
+                        last_update = 0.0
+                    elif key_lower == "d" and current_view == "dashboard":
+                        jobs = state.list_jobs(limit=5)
+                        if jobs and 0 <= selected_job_idx < len(jobs):
+                            sel_job = jobs[selected_job_idx]
+                            from awareness.schemas.jobs import JobStatus
+                            if sel_job.status != JobStatus.RUNNING:
+                                live.stop()
+                                print("\033[H\033[2J\033[3J", end="")
+                                rprint(f"[bold red]Delete Job[/bold red]")
+                                confirm = typer.confirm(f"Are you sure you want to delete job {sel_job.job_id}?")
+                                if confirm:
+                                    state.delete_job(sel_job.job_id)
+                                    status_msg = f"[green]Deleted job {sel_job.job_id}[/green]"
+                                    selected_job_idx = max(0, selected_job_idx - 1)
+                                else:
+                                    status_msg = "[yellow]Deletion aborted[/yellow]"
+                                print("\033[H\033[2J\033[3J", end="")
+                                live.start()
+                            else:
+                                status_msg = f"[red]Cannot delete running job {sel_job.job_id}[/red]"
+                        else:
+                            status_msg = "[red]No job selected to delete[/red]"
+                        last_update = 0.0
+                    elif key_lower == "n" and current_view == "dashboard":
+                        live.stop()
+                        print("\n\033[H\033[2J\033[3J", end="")
+                        rprint("[bold cyan]=== Create New Job ===[/bold cyan]\n")
+                        job_type = ""
+                        while job_type not in ("backfill", "tail"):
+                            job_type = typer.prompt("Job Type (backfill or tail)", default="backfill").strip().lower()
+                        if job_type == "backfill":
+                            start_str = typer.prompt("Start date (ISO or relative, e.g. '1 day ago', '2026-06-05')").strip()
+                            end_str = typer.prompt("End date (ISO, relative, or 'now')", default="now").strip()
+                            sources_str = typer.prompt("Sources (comma-separated, e.g. 'CC-WET,FineWeb,GDELT')", default="CC-WET,FineWeb,GDELT").strip()
+                            domains_str = typer.prompt("Domain filters (comma-separated, optional)", default="").strip()
+                            match_str = typer.prompt("Match keywords (comma-separated, optional)", default="").strip()
+                            
+                            from awareness.schemas.doc import SourceKind
+                            sources_list = [s.strip() for s in sources_str.split(",") if s.strip()]
+                            src_kinds = []
+                            for s in sources_list:
+                                s_clean = s.strip().lower().replace("-", "_")
+                                if s_clean in ("cc_wet", "common_crawl_wet", "wet"):
+                                    src_kinds.append(SourceKind.COMMON_CRAWL_WET)
+                                elif s_clean in ("fineweb", "fw"):
+                                    src_kinds.append(SourceKind.FINEWEB)
+                                elif s_clean in ("gdelt",):
+                                    src_kinds.append(SourceKind.GDELT)
+                                elif s_clean in ("rss",):
+                                    src_kinds.append(SourceKind.RSS)
+                                elif s_clean in ("sitemap",):
+                                    src_kinds.append(SourceKind.SITEMAP)
+                                else:
+                                    try:
+                                        src_kinds.append(SourceKind(s_clean))
+                                    except ValueError:
+                                        pass
+                            domains_list = [d.strip() for d in domains_str.split(",") if d.strip()] or None
+                            matches = [m.strip() for m in match_str.split(",") if m.strip()]
+                            from awareness.schemas.jobs import BackfillRequest
+                            start_dt = to_utc(start_str)
+                            req = BackfillRequest(
+                                start=start_dt,
+                                end=coerce_relative_end(end_str),
+                                sources=src_kinds,
+                                domains=domains_list,
+                                match=matches,
+                                match_all=False,
+                                match_regex=False,
+                                match_field="both",
+                            )
+                            job_id = planner.submit_backfill(req)
+                            subprocess.Popen([
+                                sys.executable, "-m", "awareness.cli.main", "backfill", "run", job_id, "--silent-progress"
+                            ], start_new_session=True)
+                            status_msg = f"[green]Launched backfill job: {job_id}[/green]"
+                        else: # tail
+                            duration_str = typer.prompt("Duration in seconds (0 for infinite)", default="0").strip()
+                            sources_str = typer.prompt("Sources (comma-separated, e.g. 'RSS,GDELT')", default="RSS,GDELT").strip()
+                            match_str = typer.prompt("Match keywords (comma-separated, optional)", default="").strip()
+                            try:
+                                duration = int(duration_str)
+                            except ValueError:
+                                duration = 0
+                            sources_list = [s.strip().lower() for s in sources_str.split(",") if s.strip()]
+                            use_gdelt = "gdelt" in sources_list
+                            matches = [m.strip() for m in match_str.split(",") if m.strip()]
+                            from awareness.tail.engine import _load_seeds
+                            seeds = _load_seeds(None)
+                            if matches:
+                                seeds = {
+                                    **seeds,
+                                    "match": matches,
+                                    "match_all": False,
+                                    "match_regex": False,
+                                    "match_field": "both",
+                                }
+                            job_id = planner.submit_tail(seeds)
+                            cmd = [
+                                sys.executable, "-m", "awareness.cli.main", "tail", "start",
+                                "--no-interactive",
+                                "--duration", str(duration),
+                                "--job-id", job_id,
+                            ]
+                            if use_gdelt:
+                                cmd.append("--gdelt")
+                            else:
+                                cmd.append("--no-gdelt")
+                            for m in matches:
+                                cmd.extend(["--match", m])
+                            subprocess.Popen(cmd, start_new_session=True)
+                            status_msg = f"[green]Launched tail job: {job_id}[/green]"
+                        print("\033[H\033[2J\033[3J", end="")
+                        live.start()
+                        last_update = 0.0
                 
                 # Check refresh interval
                 now = time.time()
                 if now - last_update >= refresh_rate:
                     if current_view == "dashboard":
-                        layout = _make_tui_layout(state, settings)
+                        layout = _make_tui_layout(state, settings, idx, selected_job_idx)
                         if status_msg:
                             footer_content = Text.assemble(
                                 (status_msg, "bold yellow"),
@@ -2174,12 +2401,67 @@ def tui(
         rprint("[yellow]TUI Dashboard exited.[/yellow]")
 
 
+def highlight_query(text: str, query: str) -> str:
+    """Escapes rich tags in text and highlights query tokens case-insensitively using prefix boundaries."""
+    escaped_text = escape(text or "")
+    if not query:
+        return escaped_text
+    
+    # Extract query tokens (word characters, length >= 2)
+    terms = [t for t in re.findall(r"[\w']+", query.lower()) if len(t) >= 2]
+    if not terms:
+        return escaped_text
+        
+    terms.sort(key=len, reverse=True)
+    
+    # Compile a regex to match terms case-insensitively starting at word boundaries
+    pattern = re.compile(r"\b(" + "|".join(re.escape(t) for t in terms) + r")\w*", re.IGNORECASE)
+    
+    def replace(m: re.Match) -> str:
+        match_str = m.group(0)
+        start, end = m.span()
+        
+        # Check if this match is inside an HTML entity (e.g., &amp;, &lt;, &gt;, &quot;, &#39;)
+        # Search backwards for '&'
+        amp_pos = -1
+        for i in range(start - 1, -1, -1):
+            c = escaped_text[i]
+            if c == '&':
+                amp_pos = i
+                break
+            if not (c.isalnum() or c == '#'):
+                break
+                
+        if amp_pos != -1:
+            # Search forwards for ';'
+            semi_pos = -1
+            for i in range(end, len(escaped_text)):
+                c = escaped_text[i]
+                if c == ';':
+                    semi_pos = i
+                    break
+                if not (c.isalnum() or c == '#'):
+                    break
+            if semi_pos != -1:
+                return match_str
+                
+        return f"[bold yellow]{match_str}[/bold yellow]"
+        
+    return pattern.sub(replace, escaped_text)
+
+
+
+def highlight_tokens(text: str, query: str) -> str:
+    return highlight_query(text, query)
+
+
 @app.command(name="browse")
 def browse(
     start: str = typer.Option("30 days ago", "--start", help="Start date range"),
     end: str = typer.Option("now", "--end", help="End date range"),
     domain: str = typer.Option("", "--domain", help="Filter by domain"),
     source: str = typer.Option("", "--source", help="Filter by source"),
+    query: str = typer.Option("", "--query", "-q", help="Search query/terms to highlight"),
 ) -> None:
     """Interactively browse and read captured text documents from the terminal."""
     state, _ = _bootstrap()
@@ -2200,14 +2482,27 @@ def browse(
     limit = 10
     
     while True:
-        where = ["fetch_ts >= $start", "fetch_ts <= $end"]
-        params = {"start": start_dt, "end": end_dt}
+        where = ["fetch_ts <= $end"]
+        params = {"end": end_dt}
+        if start_dt is not None:
+            where.append("fetch_ts >= $start")
+            params["start"] = start_dt
         if domain:
             where.append("domain = $dom")
             params["dom"] = domain
         if source:
             where.append("source_type = $src")
             params["src"] = source
+        if query:
+            terms = [t for t in re.findall(r"[A-Za-z0-9']+", query.lower()) if len(t) >= 2]
+            if terms:
+                for idx_term, term in enumerate(terms):
+                    param_name = f"q_term_{idx_term}"
+                    where.append(f"(title ILIKE ${param_name} OR text ILIKE ${param_name})")
+                    params[param_name] = f"%{term}%"
+            else:
+                where.append("(title ILIKE $q_term OR text ILIKE $q_term)")
+                params["q_term"] = f"%{query}%"
             
         where_sql = " AND ".join(where)
         sql = f"""
@@ -2245,10 +2540,11 @@ def browse(
             title = r["title"] or "No Title"
             if len(title) > 50:
                 title = title[:47] + "..."
+            highlighted_title = highlight_tokens(title, query)
             table.add_row(
                 str(i),
                 r["domain"] or "N/A",
-                title,
+                highlighted_title,
                 str(r["fetch_ts"])[:16],
                 r["source_type"] or "N/A"
             )
@@ -2275,7 +2571,8 @@ def browse(
                 # Clear and view doc
                 print("\033[H\033[2J\033[3J", end="")
                 rprint(f"[bold reverse cyan] DOCUMENT READ VIEW [/bold reverse cyan]\n")
-                rprint(f"[bold cyan]Title:[/bold cyan]       {doc['title']}")
+                highlighted_title = highlight_tokens(doc['title'] or "No Title", query)
+                rprint(f"[bold cyan]Title:[/bold cyan]       {highlighted_title}")
                 rprint(f"[bold cyan]Domain:[/bold cyan]      {doc['domain']}")
                 rprint(f"[bold cyan]Captured at:[/bold cyan] {doc['fetch_ts']}")
                 rprint(f"[bold cyan]Source:[/bold cyan]      {doc['source_type']}")
@@ -2283,9 +2580,10 @@ def browse(
                 rprint("-" * 80)
                 
                 # Display body text with word wrapping
-                rprint(doc["text"] or "[Empty Document]")
+                highlighted_body = highlight_tokens(doc['text'] or "[Empty Document]", query)
+                rprint(highlighted_body)
                 rprint("-" * 80)
-                typer.prompt("\nPress ENTER to return to list")
+                typer.prompt("\nPress ENTER to return to list", default="")
                 print("\033[H\033[2J\033[3J", end="")
             else:
                 rprint("[red]Invalid document index.[/red]")
@@ -2359,10 +2657,12 @@ def search(
         for r in rows:
             title = r["title"] or "No Title"
             score_str = f" [score: {r['score']:.4f}]" if r["score"] is not None else ""
-            rprint(f"[bold yellow]• {title}[/bold yellow]{score_str}")
+            highlighted_title = highlight_tokens(title, query)
+            rprint(f"[bold white]• {highlighted_title}[/bold white]{score_str}")
             rprint(f"  [dim]Domain: {r['domain'] or 'N/A'} | Captured: {r['fetch_ts']} | Source: {r['source_type'] or 'N/A'}[/dim]")
             if r.get("snippet"):
-                rprint(f"  [italic]\"{r['snippet']}\"[/italic]")
+                highlighted_snippet = highlight_tokens(r["snippet"], query)
+                rprint(f"  [italic]\"{highlighted_snippet}\"[/italic]")
             rprint()
         return
 
@@ -2409,11 +2709,13 @@ def search(
             title = r["title"] or "No Title"
             if len(title) > 60:
                 title = title[:57] + "..."
+            highlighted_title = highlight_tokens(title, query)
             snippet = r.get("snippet", "")
             if snippet:
-                title_and_snippet = f"[bold]{title}[/bold]\n  [dim]{snippet}[/dim]"
+                highlighted_snippet = highlight_tokens(snippet, query)
+                title_and_snippet = f"[bold]{highlighted_title}[/bold]\n  [dim]{highlighted_snippet}[/dim]"
             else:
-                title_and_snippet = f"[bold]{title}[/bold]"
+                title_and_snippet = f"[bold]{highlighted_title}[/bold]"
                 
             table.add_row(
                 str(i),
@@ -2447,27 +2749,19 @@ def search(
                     doc = full_doc_rows[0]
                     print("\033[H\033[2J\033[3J", end="")
                     rprint(f"[bold reverse cyan] DOCUMENT READ VIEW [/bold reverse cyan]\n")
-                    rprint(f"[bold cyan]Title:[/bold cyan]       {doc['title']}")
+                    highlighted_title = highlight_tokens(doc['title'] or "No Title", query)
+                    rprint(f"[bold cyan]Title:[/bold cyan]       {highlighted_title}")
                     rprint(f"[bold cyan]Domain:[/bold cyan]      {doc['domain']}")
                     rprint(f"[bold cyan]Captured at:[/bold cyan] {doc['fetch_ts']}")
                     rprint(f"[bold cyan]Source:[/bold cyan]      {doc['source_type']}")
                     rprint(f"[bold cyan]Doc ID:[/bold cyan]      {doc['doc_id']}\n")
                     rprint("-" * 80)
                     
-                    import re
-                    from rich.markup import escape
                     text_body = doc["text"] or "[Empty Document]"
-                    escaped_text = escape(text_body)
-                    terms = [t for t in re.findall(r"[A-Za-z0-9']+", query.lower()) if len(t) >= 2]
-                    if terms:
-                        pattern = re.compile(r"\b(" + "|".join(re.escape(t) for t in terms) + r")\b", re.IGNORECASE)
-                        highlighted_text = pattern.sub(lambda m: f"[bold yellow]{m.group(0)}[/bold yellow]", escaped_text)
-                    else:
-                        highlighted_text = escaped_text
-                    
+                    highlighted_text = highlight_tokens(text_body, query)
                     rprint(highlighted_text)
                     rprint("-" * 80)
-                    typer.prompt("\nPress ENTER to return to search results")
+                    typer.prompt("\nPress ENTER to return to search results", default="")
                     print("\033[H\033[2J\033[3J", end="")
                 else:
                     rprint("[red]Failed to load full document text.[/red]")
@@ -3186,6 +3480,7 @@ _DESTINATION_KEYS = (
     "enable_jsonl_staging", "enable_iceberg", "enable_gdrive",
     "data_dir", "iceberg_warehouse", "gdrive_folder_name", "jsonl_compress",
     "tail_poll_seconds", "tail_gdelt", "tail_gdelt_max_urls", "tail_show_captures",
+    "terminal_mute_duplicates",
     "storage_flush_records", "storage_flush_seconds",
 )
 
@@ -3205,6 +3500,7 @@ def configure(
     poll_seconds: float = typer.Option(None, "--poll-seconds", help="Tail seed re-arm interval in seconds."),
     gdelt: bool = typer.Option(None, "--gdelt/--no-gdelt", help="Follow the GDELT firehose while tailing."),
     gdelt_max_urls: int = typer.Option(None, "--gdelt-max-urls", help="Cap URLs pulled per 15-min GDELT slot."),
+    mute_duplicates: bool = typer.Option(None, "--mute-duplicates/--no-mute-duplicates", help="Mute duplicate captures in terminal logging."),
     show: bool = typer.Option(False, "--show", help="Print the current write-destination plan and exit."),
     reset: bool = typer.Option(False, "--reset", help="Reset destination/tail settings to defaults."),
     non_interactive: bool = typer.Option(False, "--non-interactive", help="Never prompt; apply flags (or do nothing)."),
@@ -3244,7 +3540,7 @@ def configure(
     decisive = terminal_only or any(
         v is not None
         for v in (local, s3, gdrive, data_dir, warehouse, gdrive_folder, compress,
-                  flush_records, flush_seconds, poll_seconds, gdelt, gdelt_max_urls)
+                  flush_records, flush_seconds, poll_seconds, gdelt, gdelt_max_urls, mute_duplicates)
     )
 
     if not decisive and not non_interactive:
@@ -3261,7 +3557,7 @@ def configure(
             settings, local=local, s3=s3, gdrive=gdrive, terminal_only=terminal_only,
             data_dir=data_dir, warehouse=warehouse, gdrive_folder=gdrive_folder, compress=compress,
             flush_records=flush_records, flush_seconds=flush_seconds, poll_seconds=poll_seconds,
-            gdelt=gdelt, gdelt_max_urls=gdelt_max_urls,
+            gdelt=gdelt, gdelt_max_urls=gdelt_max_urls, mute_duplicates=mute_duplicates,
         )
         if errors:
             for e in errors:
@@ -3281,7 +3577,7 @@ def _configure_from_flags(
     terminal_only: bool, data_dir: Path | None, warehouse: str | None,
     gdrive_folder: str | None, compress: bool | None, flush_records: int | None,
     flush_seconds: float | None, poll_seconds: float | None, gdelt: bool | None,
-    gdelt_max_urls: int | None,
+    gdelt_max_urls: int | None, mute_duplicates: bool | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Translate non-interactive flags into a validated values mapping."""
     values: dict[str, Any] = {}
@@ -3328,6 +3624,8 @@ def _configure_from_flags(
         put("tail_poll_seconds", poll_seconds)
     if gdelt is not None:
         values["tail_gdelt"] = gdelt
+    if mute_duplicates is not None:
+        values["terminal_mute_duplicates"] = mute_duplicates
     if gdelt_max_urls is not None:
         put("tail_gdelt_max_urls", gdelt_max_urls)
 
@@ -3624,14 +3922,85 @@ def _setup_shell_readline(click_cmd: Any, history_file: Path | None) -> bool:
 
     def completer(text: str, state: int) -> str | None:
         try:
+            import shlex
+            import click
+            from awareness.schemas.doc import SourceKind
+            
             buffer = readline.get_line_buffer()
-            tokens = buffer.lstrip().split()
-            if len(tokens) <= 1 and not buffer.endswith(" "):
-                options = [c for c in top if c.startswith(text)]
+            begidx = readline.get_begidx()
+            
+            # Parse words before the cursor
+            prefix = buffer[:begidx]
+            try:
+                words = shlex.split(prefix)
+            except Exception:
+                words = prefix.split()
+                
+            # Strip leading slash and handle help
+            if words:
+                if words[0].startswith("/"):
+                    words[0] = words[0][1:]
+                if words[0] in ("help", "?"):
+                    words = words[1:]
+                    if words and words[0].startswith("/"):
+                        words[0] = words[0][1:]
+                        
+            normalized_words = [w.lower() for w in words]
+            pool = []
+            
+            # Check for specific option values (e.g. source, match-field)
+            if words and words[-1] in ("--source", "-s"):
+                pool = [s.value for s in SourceKind]
+            elif words and words[-1] == "--match-field":
+                pool = ["title", "text", "both"]
+            # Check for config key autocomplete
+            elif len(normalized_words) >= 2 and normalized_words[-2] == "config" and normalized_words[-1] in ("get", "set", "unset"):
+                pool = [fld.key for fld in cfg_schema.CONFIG_SCHEMA]
+            # Check for config key value autocomplete
+            elif len(normalized_words) >= 3 and normalized_words[-3] == "config" and normalized_words[-2] == "set":
+                key = normalized_words[-1]
+                norm_key = key.replace("-", "_")
+                fld = cfg_schema.get_field(norm_key)
+                if fld:
+                    if fld.kind == cfg_schema.KIND_BOOL:
+                        pool = ["true", "false"]
+                    elif fld.kind == cfg_schema.KIND_CHOICE and fld.choices:
+                        pool = list(fld.choices)
             else:
-                subs = _shell_subcommands(click_cmd, tokens[0])
-                pool = subs if subs else top
-                options = [c for c in pool if c.startswith(text)]
+                current_group = click_cmd
+                for word in words:
+                    if word.startswith("-"):
+                        continue
+                    if current_group and hasattr(current_group, "commands") and word in current_group.commands:
+                        current_group = current_group.commands[word]
+                    else:
+                        current_group = None
+                        break
+                        
+                if current_group is not None:
+                    if text.startswith("-"):
+                        opts = []
+                        if hasattr(current_group, "params"):
+                            for param in current_group.params:
+                                opts.extend(getattr(param, "opts", []))
+                                opts.extend(getattr(param, "secondary_opts", []))
+                        pool = opts
+                    else:
+                        if hasattr(current_group, "commands"):
+                            pool = list(current_group.commands.keys())
+                            if current_group == click_cmd:
+                                pool = list(set(pool) | _REPL_META)
+                        else:
+                            pool = []
+                            
+            has_slash = text.startswith("/")
+            search_text = text[1:] if has_slash else text
+            
+            options = []
+            for c in sorted(pool):
+                if c.startswith(search_text):
+                    options.append("/" + c if has_slash else c)
+                    
             return options[state] if state < len(options) else None
         except Exception:
             return None
@@ -3650,6 +4019,7 @@ def _setup_shell_readline(click_cmd: Any, history_file: Path | None) -> bool:
         except Exception:
             pass
     return True
+
 
 
 def _shell_help(click_cmd: Any) -> None:
@@ -3707,12 +4077,17 @@ def shell() -> None:
 
     history_file: Path | None = None
     try:
-        settings = get_settings()
-        if settings.data_dir:
-            history_file = settings.data_dir / "state" / "shell_history"
-            history_file.parent.mkdir(parents=True, exist_ok=True)
+        history_file = Path("~/.awareness_history").expanduser()
+        if history_file.exists() and history_file.is_dir():
+            raise ValueError("History path is a directory")
     except Exception:
-        history_file = None
+        try:
+            settings = get_settings()
+            if settings.data_dir:
+                history_file = settings.data_dir / "state" / "shell_history"
+                history_file.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            history_file = None
     readline_ok = _setup_shell_readline(click_cmd, history_file) if is_tty else False
 
     state: StateDB | None = None
@@ -3740,63 +4115,71 @@ def shell() -> None:
             f"{api_dot}api {tail_dot}tail \001\033[1;36m\002▸\001\033[0m\002 "
         )
 
-    while True:
-        try:
-            raw = input(prompt_str())
-        except EOFError:
-            rprint("\n[yellow]Goodbye![/yellow]")
-            break
-        except KeyboardInterrupt:
-            rprint("\n[dim](use [bold]exit[/bold] to quit)[/dim]")
-            continue
+    try:
+        while True:
+            try:
+                raw = input(prompt_str())
+            except EOFError:
+                rprint("\n[yellow]Goodbye![/yellow]")
+                break
+            except KeyboardInterrupt:
+                rprint("\n[dim](use [bold]exit[/bold] to quit)[/dim]")
+                continue
 
-        line = raw.strip()
-        if not line:
-            continue
-        if line.startswith("/"):
-            line = line[1:].strip()
+            line = raw.strip()
             if not line:
                 continue
-        low = line.lower()
+            if line.startswith("/"):
+                line = line[1:].strip()
+                if not line:
+                    continue
+            low = line.lower()
 
-        if low in ("exit", "quit", "q"):
-            rprint("[yellow]Goodbye![/yellow]")
-            break
-        if low in ("clear", "cls"):
-            print("\033[H\033[2J\033[3J", end="")
-            continue
-        if low in ("commands", "menu"):
-            console.print(banner.render_command_map())
-            continue
-        if low == "shell":
-            rprint("[dim]Already in the Awareness shell. Type [bold]exit[/bold] to leave.[/dim]")
-            continue
+            if low in ("exit", "quit", "q"):
+                rprint("[yellow]Goodbye![/yellow]")
+                break
+            if low in ("clear", "cls"):
+                print("\033[H\033[2J\033[3J", end="")
+                continue
+            if low in ("commands", "menu"):
+                console.print(banner.render_command_map())
+                continue
+            if low == "shell":
+                rprint("[dim]Already in the Awareness shell. Type [bold]exit[/bold] to leave.[/dim]")
+                continue
 
-        try:
-            argv = shlex.split(line)
-        except ValueError as exc:
-            rprint(f"[red]Parse error:[/red] {escape(str(exc))}")
-            continue
-        if not argv:
-            continue
+            try:
+                argv = shlex.split(line)
+            except ValueError as exc:
+                rprint(f"[red]Parse error:[/red] {escape(str(exc))}")
+                continue
+            if not argv:
+                continue
 
-        if argv[0].lower() in ("help", "?"):
-            rest = argv[1:]
-            if rest:
-                _shell_dispatch(click_cmd, [*rest, "--help"])
-            else:
-                _shell_help(click_cmd)
-            continue
+            if argv[0].lower() in ("help", "?"):
+                rest = argv[1:]
+                if rest:
+                    _shell_dispatch(click_cmd, [*rest, "--help"])
+                else:
+                    _shell_help(click_cmd)
+                continue
 
-        _shell_dispatch(click_cmd, argv)
+            _shell_dispatch(click_cmd, argv)
 
+            if is_tty and history_file:
+                try:
+                    import readline
+                    readline.write_history_file(str(history_file))
+                except Exception:
+                    pass
+    finally:
         if is_tty and history_file:
             try:
                 import readline
-
                 readline.write_history_file(str(history_file))
             except Exception:
                 pass
+
 
 
 @app.command(name="commands")

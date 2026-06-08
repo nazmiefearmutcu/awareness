@@ -5,7 +5,7 @@ single turquoise hue, a power-on self-test boot log that reflects real engine
 state, a READY load bar, and context-aware getting-started + command-map panels.
 
 The whole look comes from one source of truth: the seven semantic colour tokens
-below (the "Awareness" turquoise theme spec, hue 177).
+below (mirrored verbatim from the Claude Design "Awareness" theme spec, hue 177).
 Those tokens build both the raw styles used by these renderables *and* the
 ``AWARENESS_THEME`` Rich theme consumed by the CLI's ``Console`` and Typer help.
 
@@ -27,7 +27,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-# ── palette — the single source of truth (Awareness theme spec, hue 177) ───────
+# ── palette — the single source of truth (Claude Design spec, hue 177) ───────
 #   token      hex         xterm-256   role
 C_BG = "#061313"  # 233    background / screen
 C_BG2 = "#091a1a"  # 233   panel / raised surface

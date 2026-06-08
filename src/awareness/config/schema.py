@@ -129,6 +129,10 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
         "Print each captured document to the terminal as it lands while tailing.",
     ),
     ConfigField(
+        "terminal_mute_duplicates", "Tail (live capture)", KIND_BOOL, False,
+        "Mute/skip printing duplicate captures (EXACT_DUP, NEAR_DUP, REVISION) to the terminal.",
+    ),
+    ConfigField(
         "tail_seed_file", "Tail (live capture)", KIND_PATH, None,
         "Path to the YAML file of feeds/sitemaps the tail watches.",
         example="configs/tail_seeds.yaml",

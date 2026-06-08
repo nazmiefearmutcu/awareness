@@ -196,6 +196,18 @@ class StateDB:
             if self._initialized:
                 return
             Base.metadata.create_all(self._engine)
+
+            # Simple automatic schema migration for legacy databases
+            from sqlalchemy import inspect, text
+            try:
+                inspector = inspect(self._engine)
+                columns = [c["name"] for c in inspector.get_columns("dedup_near")]
+                if columns and "sig_hex" not in columns:
+                    with self._engine.begin() as conn:
+                        conn.execute(text("ALTER TABLE dedup_near ADD COLUMN sig_hex VARCHAR"))
+            except Exception as e:
+                logger.warning("migration_failed", error=str(e))
+
             self._initialized = True
 
     def session(self) -> Session:
@@ -226,6 +238,13 @@ class StateDB:
             if row is None:
                 return None
             return self._job_state_from_row(row)
+
+    def delete_job(self, job_id: str) -> None:
+        from sqlalchemy import delete
+        with self.session() as s:
+            s.execute(delete(TaskRow).where(TaskRow.job_id == job_id))
+            s.execute(delete(JobRow).where(JobRow.job_id == job_id))
+            s.commit()
 
     def list_jobs(self, kind: JobKind | None = None, limit: int = 50) -> list[JobState]:
         with self.session() as s:
@@ -457,6 +476,24 @@ class StateDB:
                 row.status = TaskStatus.PENDING.value  # retry
             s.commit()
 
+    def get_last_task_checkpoint(self, partition_key: str) -> dict[str, Any]:
+        """Find the checkpoint of the most recently completed task for a partition key."""
+        with self.session() as s:
+            stmt = (
+                select(TaskRow.checkpoint_json)
+                .where(TaskRow.partition_key == partition_key)
+                .where(TaskRow.status == TaskStatus.COMPLETED.value)
+                .order_by(TaskRow.completed_at.desc().nullslast())
+                .limit(1)
+            )
+            val = s.scalar(stmt)
+            if val:
+                try:
+                    return json.loads(val) or {}
+                except Exception:
+                    pass
+            return {}
+
     def task_status_counts(self, job_id: str) -> dict[str, int]:
         with self.session() as s:
             stmt = (
@@ -604,6 +641,11 @@ class StateDB:
         if simhash_unsigned <= 0:
             return
         sig_hex = sig128_to_hex(simhash_unsigned)
+        # Calculate legacy 64-bit signed hash for backward compatibility / database schema constraints
+        legacy_hash = simhash_unsigned & 0xffffffffffffffff
+        if legacy_hash >= (1 << 63):
+            legacy_hash -= (1 << 64)
+
         with self.session() as s:
             for seg in range(NEAR_DUP_SEGMENTS):
                 value = (simhash_unsigned >> (NEAR_DUP_SEG_BITS * seg)) & _NEAR_DUP_SEG_MASK
@@ -611,6 +653,7 @@ class StateDB:
                     DedupNearRow(
                         doc_id=doc_id,
                         sig_hex=sig_hex,
+                        near_dup_hash=legacy_hash,
                         seg=seg,
                         seg_value=value,
                     )
