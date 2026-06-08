@@ -431,21 +431,53 @@ class StateDB:
         return added
 
     def claim_pending_tasks(self, job_id: str, limit: int) -> list[TaskState]:
-        """Atomically transition PENDING tasks to RUNNING for processing."""
-        with self.session() as s:
-            stmt = (
-                select(TaskRow)
-                .where(TaskRow.job_id == job_id, TaskRow.status == TaskStatus.PENDING.value)
-                .order_by(TaskRow.created_at)
-                .limit(limit)
+        """Atomically transition up to ``limit`` PENDING tasks to RUNNING.
+
+        The claim is a single conditional ``UPDATE ... WHERE status='pending'
+        RETURNING`` over a bounded candidate set. Because the status guard is
+        evaluated inside the write-locked UPDATE, two concurrent claimers (even
+        across processes) can never both win the same row. ``self._lock``
+        serializes in-process callers; WAL + busy_timeout keep cross-process
+        writers from erroring.
+        """
+        now = _utcnow()
+        with self._lock, self.session() as s:
+            candidates = list(
+                s.scalars(
+                    select(TaskRow.task_id)
+                    .where(
+                        TaskRow.job_id == job_id,
+                        TaskRow.status == TaskStatus.PENDING.value,
+                    )
+                    .order_by(TaskRow.created_at)
+                    .limit(limit)
+                )
             )
-            rows = list(s.scalars(stmt))
-            now = _utcnow()
-            for r in rows:
-                r.status = TaskStatus.RUNNING.value
-                r.started_at = now
-                r.attempts += 1
+            if not candidates:
+                return []
+            claimed_ids = list(
+                s.scalars(
+                    update(TaskRow)
+                    .where(
+                        TaskRow.task_id.in_(candidates),
+                        TaskRow.status == TaskStatus.PENDING.value,
+                    )
+                    .values(
+                        status=TaskStatus.RUNNING.value,
+                        started_at=now,
+                        attempts=TaskRow.attempts + 1,
+                    )
+                    .returning(TaskRow.task_id)
+                    .execution_options(synchronize_session=False)
+                )
+            )
+            rows = (
+                list(s.scalars(select(TaskRow).where(TaskRow.task_id.in_(claimed_ids))))
+                if claimed_ids
+                else []
+            )
             s.commit()
+            rows.sort(key=lambda r: (r.created_at, r.task_id))
             return [self._task_state_from_row(r) for r in rows]
 
     def complete_task(
