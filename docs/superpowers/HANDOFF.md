@@ -14,7 +14,7 @@ Iceberg/DuckDB/JSONL → serves a Typer CLI + FastAPI SPA. A 73-agent audit foun
 results"* and *"no idea how to scrape the internet"* — are **both fixed and verified**.
 
 All work is on branch **`feat/cycle1-make-it-work`** (off `main` at `69614e9`),
-**not yet merged** (needs user consent — outward-facing). **240 tests green.**
+**not yet merged** (needs user consent — outward-facing). **259 tests green.**
 
 Also read the persistent memory: `~/.claude/projects/-Users-nazmi/memory/awareness-cycle1-progress.md`.
 
@@ -80,6 +80,15 @@ substantive tasks. Plans are pre-written, fully-specified TDD task lists under
 - **Benchmark re-measured + README updated** (commit `ef591bd`): ran `benchmarks.bench_simhash`
   offline against the real 32×4 engine — precision still **1.00**, default F1 0.848/recall
   0.736, tuned (Hamming≤32) F1 0.973/recall 0.947. README near-dup numbers are CURRENT.
+- **P3 BM25F re-ranking** (`storage/duckdb_index.py`, commits `6796330`/`0b360af`/`9951f1a`):
+  DuckDB FTS scores title+text as one blob, so a pure `_rerank` re-orders the top-`max_results`
+  BM25 candidates by **independent multiplicative factors** — title field-boost
+  (`1+Wt·title_hit_frac`), length damping ∈`[floor,1]`, optional recency (OFF by default;
+  injected/derived ref-time ⇒ deterministic, never the wall clock). The FTS path now fetches a
+  candidate window by raw BM25, re-ranks, then slices `[offset:offset+limit]`;
+  `total`/`mode`/`ranked`/row-schema/`max_results`-cap are all unchanged, and it degrades to
+  pure BM25 order when factors are neutral. Plan `plans/2026-06-08-awareness-cycle2-bm25f-ranking.md`;
+  19 new tests (16 pure + 3 integration); 3-lens adversarial review + final review APPROVED.
 
 ## What REMAINS (specced, prioritized — pick up here)
 
@@ -87,10 +96,10 @@ The recommended immediate move is one of: **(a) finish/merge the branch**
 (`superpowers:finishing-a-development-branch` — Cycle 1 + Cycle 2 math core is a
 shippable independent block, needs user consent), or **(b) continue** with:
 
-1. **Cycle 2 P3 — BM25F ranking.** DuckDB FTS scores title+text as ONE blob, so do a
-   post-retrieval re-rank in `duckdb_index.search()`: title field-boost + length-aware
-   + optional recency prior. Extract a pure `_rerank(...)` for testing; fetch up to
-   `max_results` by raw BM25, re-rank, then slice `[offset:offset+limit]`.
+1. ~~**Cycle 2 P3 — BM25F ranking.**~~ **✅ DONE** (commits `6796330`/`0b360af`/`9951f1a`).
+   The recommended next pick is item 2 (FTS singleton — API-side availability) or item 5's
+   **GDELT slot-math verification** (a *possible 2nd fabricated-ID bug* — same correctness
+   class as the original CC odd-week defect; cheap to check, protects the "scraping works" claim).
 2. **Cycle 1 P3b remainder (search availability/correctness):** FTS index **process-wide
    singleton + serialized rebuild** (fixes per-request rebuild + concurrent `/search`
    write-write-conflict — API-side, needs `api/server.py`); inclusive end-of-day across
@@ -134,7 +143,7 @@ shippable independent block, needs user consent), or **(b) continue** with:
 ```bash
 cd /Users/nazmi/Desktop/awareness
 git status && git log --oneline -8
-PYTHONPATH=src .venv/bin/python -m pytest -q -m "not slow and not smoke"   # expect 240 passed
+PYTHONPATH=src .venv/bin/python -m pytest -q -m "not slow and not smoke"   # expect 259 passed
 ls docs/superpowers/plans/   # the executable TDD plans
 ```
 Then either invoke `superpowers:finishing-a-development-branch` (to merge) or write/execute
