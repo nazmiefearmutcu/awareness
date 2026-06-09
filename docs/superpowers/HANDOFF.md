@@ -14,7 +14,7 @@ Iceberg/DuckDB/JSONL → serves a Typer CLI + FastAPI SPA. A 73-agent audit foun
 results"* and *"no idea how to scrape the internet"* — are **both fixed and verified**.
 
 All work is on branch **`feat/cycle1-make-it-work`** (off `main` at `69614e9`),
-**not yet merged** (needs user consent — outward-facing). **265 tests green.**
+**not yet merged** (needs user consent — outward-facing). **283 tests green.**
 
 Also read the persistent memory: `~/.claude/projects/-Users-nazmi/memory/awareness-cycle1-progress.md`.
 
@@ -102,6 +102,18 @@ substantive tasks. Plans are pre-written, fully-specified TDD task lists under
   (Note: the full non-slow suite can take minutes when offline — `connect()` does network
   `INSTALL iceberg/fts` per fresh index; unrelated to this change.)
 
+**Cycle 2 — P4 language detection & WET quality:**
+- **Confidence-aware LID + Gopher/C4 WET filter** (`normalize/text.py`, `normalize/quality.py`,
+  `config/settings.py`, `sources/commoncrawl_wet.py`, commits `33cab11`/`574def9`/`f53ff55`/`6d333da`/`b5832b1`):
+  `detect_language` now uses langdetect's `detect_langs()` and suppresses sub-`0.50`-confidence
+  guesses to `None` (ambiguous text no longer gets a confidently-wrong label); `detect_language_conf`
+  returns `(lang, conf)`. New pure `gopher_quality()` (Gopher/C4 heuristics) drops
+  boilerplate/symbol-spam WET records, gated by `settings.wet_quality_filter` (default on) with a
+  `cc_wet.quality_filtered{crawl_id}` metric. **Adversarial review caught a real plan bug:** the
+  English-leaning filter originally ran BEFORE LID and would have dropped non-English text — fixed
+  to run downstream of LID and only judge `lang=="en"` (German-canary test pins it). **No new
+  dependency** (langdetect already present; backend stays swappable). 25 new tests; final review APPROVED.
+
 ## What REMAINS (specced, prioritized — pick up here)
 
 The recommended immediate move is one of: **(a) finish/merge the branch**
@@ -115,8 +127,9 @@ shippable independent block, needs user consent), or **(b) continue** with:
    singleton + serialized rebuild~~ **✅ DONE** (commits `7305194`/`8e860a6`). **STILL REMAINING
    in P3b:** inclusive end-of-day across `/captures`,`/search`,`/inspect`,`/counts`; pagination
    corruption; phrase/prefix/fuzzy.
-3. **Cycle 2 P4** — confidence-aware language detection (fastText/CLD3) + Gopher/C4-style
-   WET content-quality filter.
+3. ~~**Cycle 2 P4** — confidence-aware language detection + Gopher/C4-style WET quality filter.~~
+   **✅ DONE** (commits `33cab11`/`574def9`/`f53ff55`/`6d333da`/`b5832b1`). Future: stronger LID
+   backend (fastText/CLD3) behind the same `detect_language*` surface; quality filter for non-WET sources.
 4. **Cycle 2 P6 (systems)** — persisted/incremental FTS; streaming WET parse (bounded
    memory); pooled httpx client + global fetch concurrency; Iceberg re-partition
    `month(fetch_ts)+source_type` + compaction; crash-safe flush + idempotent appends;
@@ -157,7 +170,7 @@ shippable independent block, needs user consent), or **(b) continue** with:
 ```bash
 cd /Users/nazmi/Desktop/awareness
 git status && git log --oneline -8
-PYTHONPATH=src .venv/bin/python -m pytest -q -m "not slow and not smoke"   # expect 265 passed (can take minutes offline: connect() does network INSTALL iceberg/fts)
+PYTHONPATH=src .venv/bin/python -m pytest -q -m "not slow and not smoke"   # expect 283 passed (can take minutes offline: connect() does network INSTALL iceberg/fts)
 ls docs/superpowers/plans/   # the executable TDD plans
 ```
 Then either invoke `superpowers:finishing-a-development-branch` (to merge) or write/execute
