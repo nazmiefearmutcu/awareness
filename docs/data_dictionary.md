@@ -64,7 +64,7 @@ mirrors this exactly.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `content_hash` | string (req) | `xxhash3_64_hexdigest` over `normalize_for_hash(text)` (lowercased, punctuation-stripped) |
-| `near_dup_hash` | int64 | 64-bit simhash. Stored as **signed** int64; values >= 2^63 are folded to negative |
+| `near_dup_hash` | int64 | 64-bit simhash. Stored as **signed** int64; values are consistently signed. |
 
 ## Compliance & notes
 

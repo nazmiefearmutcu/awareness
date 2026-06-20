@@ -17,10 +17,13 @@ from typing import Any
 
 from sqlalchemy import (
     DateTime,
+    Float,
     Integer,
+    BigInteger,
     String,
     UniqueConstraint,
     create_engine,
+    event,
     func,
     select,
     update,
@@ -62,9 +65,9 @@ class JobRow(Base):
     tasks_completed: Mapped[int] = mapped_column(Integer, default=0)
     tasks_failed: Mapped[int] = mapped_column(Integer, default=0)
     tasks_dead_lettered: Mapped[int] = mapped_column(Integer, default=0)
-    docs_emitted: Mapped[int] = mapped_column(Integer, default=0)
-    docs_dedup_dropped: Mapped[int] = mapped_column(Integer, default=0)
-    bytes_processed: Mapped[int] = mapped_column(Integer, default=0)
+    docs_emitted: Mapped[int] = mapped_column(BigInteger, default=0)
+    docs_dedup_dropped: Mapped[int] = mapped_column(BigInteger, default=0)
+    bytes_processed: Mapped[int] = mapped_column(BigInteger, default=0)
     notes: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
@@ -81,9 +84,9 @@ class TaskRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    docs_emitted: Mapped[int] = mapped_column(Integer, default=0)
-    docs_dedup_dropped: Mapped[int] = mapped_column(Integer, default=0)
-    bytes_processed: Mapped[int] = mapped_column(Integer, default=0)
+    docs_emitted: Mapped[int] = mapped_column(BigInteger, default=0)
+    docs_dedup_dropped: Mapped[int] = mapped_column(BigInteger, default=0)
+    bytes_processed: Mapped[int] = mapped_column(BigInteger, default=0)
     checkpoint_json: Mapped[str] = mapped_column(String, default="{}")
     __table_args__ = (UniqueConstraint("job_id", "partition_key", name="uq_task_part"),)
 
@@ -121,7 +124,7 @@ class DedupNearRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     doc_id: Mapped[str] = mapped_column(String, index=True)
     sig_hex: Mapped[str | None] = mapped_column(String, nullable=True)
-    near_dup_hash: Mapped[int | None] = mapped_column(Integer, nullable=True)  # legacy 64-bit signed
+    near_dup_hash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # legacy 64-bit signed
     seg: Mapped[int] = mapped_column(Integer, index=True)
     seg_value: Mapped[int] = mapped_column(Integer, index=True)
     __table_args__ = (UniqueConstraint("doc_id", "seg", name="uq_dedup_near"),)
@@ -147,7 +150,7 @@ class ManifestRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     path: Mapped[str] = mapped_column(String, unique=True)
     records: Mapped[int] = mapped_column(Integer, default=0)
-    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     committed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
     compacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
@@ -174,15 +177,58 @@ class TailRow(Base):
     notes: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class RobotsCacheRow(Base):
+    __tablename__ = "robots_cache"
+    site: Mapped[str] = mapped_column(String, primary_key=True)
+    robots_txt: Mapped[str | None] = mapped_column(String, nullable=True)
+    expires_at: Mapped[float] = mapped_column(Float)
+    crawl_delay: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
 class StateDB:
     """High-level state operations used by the planner/workers/tail."""
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, redis_url: str | None = None) -> None:
         # Strip ``+aiosqlite`` if present; we use sync.
         if url.startswith("sqlite+aiosqlite:"):
             url = "sqlite:" + url[len("sqlite+aiosqlite:") :]
+        
+        self._redis_url = redis_url
+        if url.startswith(("redis://", "rediss://", "redlock://", "redlocks://")):
+            self._redis_url = url
+            url = "sqlite:///awareness.sqlite"
+
+        if self._redis_url is None:
+            try:
+                from awareness.config import get_settings
+                self._redis_url = get_settings().redis_url
+            except Exception:
+                pass
+
         self._url = url
-        self._engine = create_engine(url, future=True)
+        
+        # SQLite-specific logic: enable WAL mode, timeouts, etc.
+        if url.startswith("sqlite:"):
+            self._engine = create_engine(
+                url,
+                future=True,
+                connect_args={"timeout": 30, "check_same_thread": False}
+            )
+
+            @event.listens_for(self._engine, "connect")
+            def set_sqlite_pragma(dbapi_connection, connection_record):
+                cursor = dbapi_connection.cursor()
+                try:
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                    cursor.execute("PRAGMA synchronous=NORMAL")
+                    cursor.execute("PRAGMA foreign_keys=ON")
+                except Exception as e:
+                    logger.warning("failed_to_set_sqlite_pragmas", error=str(e))
+                finally:
+                    cursor.close()
+        else:
+            self._engine = create_engine(url, future=True)
+
         self._sessionmaker = sessionmaker(self._engine, expire_on_commit=False)
         self._lock = threading.RLock()
         self._initialized = False
@@ -197,16 +243,17 @@ class StateDB:
                 return
             Base.metadata.create_all(self._engine)
 
-            # Simple automatic schema migration for legacy databases
-            from sqlalchemy import inspect, text
-            try:
-                inspector = inspect(self._engine)
-                columns = [c["name"] for c in inspector.get_columns("dedup_near")]
-                if columns and "sig_hex" not in columns:
-                    with self._engine.begin() as conn:
-                        conn.execute(text("ALTER TABLE dedup_near ADD COLUMN sig_hex VARCHAR"))
-            except Exception as e:
-                logger.warning("migration_failed", error=str(e))
+            # Simple automatic schema migration for legacy databases (SQLite only)
+            if self._engine.dialect.name == "sqlite":
+                from sqlalchemy import inspect, text
+                try:
+                    inspector = inspect(self._engine)
+                    columns = [c["name"] for c in inspector.get_columns("dedup_near")]
+                    if columns and "sig_hex" not in columns:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE dedup_near ADD COLUMN sig_hex VARCHAR"))
+                except Exception as e:
+                    logger.warning("migration_failed", error=str(e))
 
             self._initialized = True
 
@@ -238,6 +285,13 @@ class StateDB:
             if row is None:
                 return None
             return self._job_state_from_row(row)
+
+    def delete_job(self, job_id: str) -> None:
+        from sqlalchemy import delete
+        with self.session() as s:
+            s.execute(delete(TaskRow).where(TaskRow.job_id == job_id))
+            s.execute(delete(JobRow).where(JobRow.job_id == job_id))
+            s.commit()
 
     def list_jobs(self, kind: JobKind | None = None, limit: int = 50) -> list[JobState]:
         with self.session() as s:
@@ -323,6 +377,23 @@ class StateDB:
         materialized = list(tasks)
         if not materialized:
             return 0
+
+        if self._redis_url:
+            from awareness.util.lock import RedisLock
+            job_id = materialized[0].job_id
+            try:
+                with RedisLock(self._redis_url, f"add_tasks:{job_id}", expire_sec=30.0, timeout_sec=15.0):
+                    return self._do_add_tasks(materialized)
+            except ImportError:
+                logger.warning("redis_library_missing_falling_back_to_unlocked_add_tasks")
+                return self._do_add_tasks(materialized)
+            except Exception as e:
+                logger.warning("redis_lock_failed_falling_back_to_unlocked_add_tasks", error=str(e))
+                return self._do_add_tasks(materialized)
+        else:
+            return self._do_add_tasks(materialized)
+
+    def _do_add_tasks(self, materialized: list[TaskState]) -> int:
         added = 0
         rearmed = 0
         # Count re-arms by *previous status* so we can keep the job's status
@@ -412,13 +483,30 @@ class StateDB:
 
     def claim_pending_tasks(self, job_id: str, limit: int) -> list[TaskState]:
         """Atomically transition PENDING tasks to RUNNING for processing."""
+        if self._redis_url:
+            from awareness.util.lock import RedisLock
+            try:
+                with RedisLock(self._redis_url, f"claim:{job_id}", expire_sec=30.0, timeout_sec=15.0):
+                    return self._do_claim_pending_tasks(job_id, limit)
+            except ImportError:
+                logger.warning("redis_library_missing_falling_back_to_unlocked_claims")
+                return self._do_claim_pending_tasks(job_id, limit)
+            except Exception as e:
+                logger.warning("redis_lock_failed_falling_back_to_unlocked_claims", error=str(e))
+                return self._do_claim_pending_tasks(job_id, limit)
+        else:
+            return self._do_claim_pending_tasks(job_id, limit)
+
+    def _do_claim_pending_tasks(self, job_id: str, limit: int) -> list[TaskState]:
         with self.session() as s:
             stmt = (
                 select(TaskRow)
                 .where(TaskRow.job_id == job_id, TaskRow.status == TaskStatus.PENDING.value)
                 .order_by(TaskRow.created_at)
-                .limit(limit)
             )
+            if self._engine.dialect.name != "sqlite":
+                stmt = stmt.with_for_update(skip_locked=True)
+            stmt = stmt.limit(limit)
             rows = list(s.scalars(stmt))
             now = _utcnow()
             for r in rows:
@@ -619,12 +707,37 @@ class StateDB:
     # ── dedup ────────────────────────────────────────────────────────────
     def upsert_dedup(self, content_hash: str, doc_id: str) -> tuple[str, bool]:
         """Insert a new content_hash if absent. Returns (canonical_doc_id, was_new)."""
+        if self._redis_url:
+            from awareness.util.lock import RedisLock
+            try:
+                with RedisLock(self._redis_url, f"dedup:{content_hash}", expire_sec=10.0, timeout_sec=5.0):
+                    return self._do_upsert_dedup(content_hash, doc_id)
+            except ImportError:
+                return self._do_upsert_dedup(content_hash, doc_id)
+            except Exception as e:
+                logger.warning("redis_lock_failed_falling_back_to_unlocked_upsert_dedup", error=str(e))
+                return self._do_upsert_dedup(content_hash, doc_id)
+        else:
+            return self._do_upsert_dedup(content_hash, doc_id)
+
+    def _do_upsert_dedup(self, content_hash: str, doc_id: str) -> tuple[str, bool]:
+        from sqlalchemy.exc import IntegrityError
         with self.session() as s:
             row = s.get(DedupRow, content_hash)
             if row is None:
-                s.add(DedupRow(content_hash=content_hash, first_doc_id=doc_id))
-                s.commit()
-                return doc_id, True
+                try:
+                    s.add(DedupRow(content_hash=content_hash, first_doc_id=doc_id))
+                    s.commit()
+                    return doc_id, True
+                except IntegrityError:
+                    s.rollback()
+                    # Re-fetch since another worker inserted it concurrently
+                    row = s.get(DedupRow, content_hash)
+                    if row is not None:
+                        row.capture_count += 1
+                        s.commit()
+                        return row.first_doc_id, False
+                    return doc_id, True
             row.capture_count += 1
             s.commit()
             return row.first_doc_id, False
@@ -639,19 +752,47 @@ class StateDB:
         if legacy_hash >= (1 << 63):
             legacy_hash -= (1 << 64)
 
+        from sqlalchemy.exc import IntegrityError
         with self.session() as s:
             for seg in range(NEAR_DUP_SEGMENTS):
                 value = (simhash_unsigned >> (NEAR_DUP_SEG_BITS * seg)) & _NEAR_DUP_SEG_MASK
-                s.merge(
-                    DedupNearRow(
-                        doc_id=doc_id,
-                        sig_hex=sig_hex,
-                        near_dup_hash=legacy_hash,
-                        seg=seg,
-                        seg_value=value,
+                # Check by unique constraint (doc_id, seg)
+                row = s.execute(
+                    select(DedupNearRow).where(
+                        DedupNearRow.doc_id == doc_id,
+                        DedupNearRow.seg == seg,
                     )
-                )
-            s.commit()
+                ).scalar_one_or_none()
+                if row is None:
+                    try:
+                        s.add(
+                            DedupNearRow(
+                                doc_id=doc_id,
+                                sig_hex=sig_hex,
+                                near_dup_hash=legacy_hash,
+                                seg=seg,
+                                seg_value=value,
+                            )
+                        )
+                        s.commit()
+                    except IntegrityError:
+                        s.rollback()
+                        row = s.execute(
+                            select(DedupNearRow).where(
+                                DedupNearRow.doc_id == doc_id,
+                                DedupNearRow.seg == seg,
+                            )
+                        ).scalar_one_or_none()
+                        if row is not None:
+                            row.sig_hex = sig_hex
+                            row.near_dup_hash = legacy_hash
+                            row.seg_value = value
+                            s.commit()
+                else:
+                    row.sig_hex = sig_hex
+                    row.near_dup_hash = legacy_hash
+                    row.seg_value = value
+                    s.commit()
 
     def find_near_dup_candidates(self, simhash_unsigned: int) -> list[tuple[str, int]]:
         """Look up doc_ids that share at least one band with this 128-bit signature.
@@ -672,7 +813,7 @@ class StateDB:
                     if sig_hex:
                         out[did] = sig128_from_hex(sig_hex)
                     elif legacy is not None:
-                        out[did] = legacy if legacy >= 0 else legacy + (1 << 64)
+                        out[did] = legacy & 0xffffffffffffffff
         return list(out.items())
 
     def dedup_stats(self) -> dict[str, int]:
@@ -687,9 +828,25 @@ class StateDB:
 
     # ── manifests ────────────────────────────────────────────────────────
     def add_manifest(self, path: str, records: int, bytes_: int) -> None:
+        from sqlalchemy.exc import IntegrityError
         with self.session() as s:
-            s.merge(ManifestRow(path=path, records=records, bytes=bytes_))
-            s.commit()
+            row = s.execute(select(ManifestRow).where(ManifestRow.path == path)).scalar_one_or_none()
+            if row is None:
+                try:
+                    s.add(ManifestRow(path=path, records=records, bytes=bytes_))
+                    s.commit()
+                except IntegrityError:
+                    s.rollback()
+                    # Re-fetch and update
+                    row = s.execute(select(ManifestRow).where(ManifestRow.path == path)).scalar_one_or_none()
+                    if row is not None:
+                        row.records = records
+                        row.bytes = bytes_
+                        s.commit()
+            else:
+                row.records = records
+                row.bytes = bytes_
+                s.commit()
 
     def list_pending_manifests(self) -> list[dict[str, Any]]:
         with self.session() as s:
@@ -751,3 +908,60 @@ class StateDB:
                 "stopped_at": row.stopped_at.isoformat() if row.stopped_at else None,
                 "notes": row.notes,
             }
+
+    # ── database reaper / cleanup ────────────────────────────────────────
+    def cleanup_old_tasks(self, retention_days: int) -> int:
+        """Delete completed tasks older than retention_days."""
+        from datetime import timedelta
+        from sqlalchemy import delete
+
+        threshold = _utcnow() - timedelta(days=retention_days)
+        with self.session() as s:
+            stmt = (
+                delete(TaskRow)
+                .where(TaskRow.completed_at.is_not(None))
+                .where(TaskRow.completed_at < threshold)
+            )
+            res = s.execute(stmt)
+            s.commit()
+            return res.rowcount
+
+    def vacuum_database(self) -> None:
+        """Run database VACUUM (or Postgres VACUUM/ANALYZE if configured)."""
+        from sqlalchemy import text
+
+        dialect_name = self._engine.dialect.name
+        try:
+            with self._engine.connect() as conn:
+                # Vacuum and Analyze commands cannot run inside a transaction block.
+                # Setting AUTOCOMMIT isolation level ensures they run outside a transaction.
+                conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+                if dialect_name == "postgresql":
+                    logger.info("vacuum_postgres_start")
+                    conn.execute(text("VACUUM"))
+                    conn.execute(text("ANALYZE"))
+                    logger.info("vacuum_postgres_success")
+                else:
+                    logger.info("vacuum_sqlite_start")
+                    conn.execute(text("VACUUM"))
+                    logger.info("vacuum_sqlite_success")
+        except Exception as e:
+            logger.warning("vacuum_failed", error=str(e))
+            raise
+
+    # ── robots cache ─────────────────────────────────────────────────────
+    def get_robots_cache(self, site: str) -> RobotsCacheRow | None:
+        with self.session() as s:
+            return s.get(RobotsCacheRow, site)
+
+    def set_robots_cache(self, site: str, robots_txt: str | None, expires_at: float, crawl_delay: float | None) -> None:
+        with self.session() as s:
+            s.merge(
+                RobotsCacheRow(
+                    site=site,
+                    robots_txt=robots_txt,
+                    expires_at=expires_at,
+                    crawl_delay=crawl_delay,
+                )
+            )
+            s.commit()

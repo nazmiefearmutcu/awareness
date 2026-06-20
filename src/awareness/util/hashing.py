@@ -71,11 +71,12 @@ def _bits_to_int(out_bits: np.ndarray) -> int:
 
 
 def simhash64(text: str, k: int = 3) -> int:
-    """Compute a 64-bit Charikar simhash (unsigned int).
+    """Compute a 64-bit Charikar simhash (signed int).
 
     Vectorized with NumPy but **bit-identical** to the original per-shingle
     accumulator: each shingle contributes +1/-1 per bit via mmh3's unsigned
     64-bit hash, and bit *i* is set when its signed sum is >= 0.
+    Values are returned as a signed 64-bit integer in [-2^63, 2^63 - 1].
     """
     grams = _grams_for(text, k)
     if not grams:
@@ -87,7 +88,10 @@ def simhash64(text: str, k: int = 3) -> int:
     )
     bits = ((hv[:, None] >> _ARANGE64) & np.uint64(1)).astype(np.int64)  # (n, 64)
     sums = (bits * 2 - 1).sum(axis=0)  # +1 if bit set, -1 otherwise
-    return _bits_to_int(sums >= 0) & _MASK64
+    val = _bits_to_int(sums >= 0)
+    if val >= (1 << 63):
+        val -= (1 << 64)
+    return val
 
 
 def simhash128(text: str, k: int = 3, *, weighted: bool = True) -> int:

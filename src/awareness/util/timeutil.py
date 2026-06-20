@@ -17,6 +17,16 @@ def to_utc(dt: datetime | str | None) -> datetime | None:
     if dt is None:
         return None
     if isinstance(dt, str):
+        s = dt.strip().lower()
+        if s in ("now", "today"):
+            return utcnow()
+        if s.endswith("days ago"):
+            try:
+                days = int(s.split()[0])
+                from datetime import timedelta
+                return utcnow() - timedelta(days=days)
+            except (ValueError, IndexError):
+                pass
         try:
             dt = _dateutil_parser.parse(dt)
         except (ValueError, TypeError):

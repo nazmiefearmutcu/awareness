@@ -157,6 +157,20 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
         "Maximum in-flight items in the bounded work queue.",
         minimum=1, maximum=10_000_000,
     ),
+    ConfigField(
+        "reaper_enabled", "Storage tuning", KIND_BOOL, True,
+        "Enable the background state database reaper to clean up old tasks.",
+    ),
+    ConfigField(
+        "reaper_interval_seconds", "Storage tuning", KIND_INT, 86400,
+        "How often the state database reaper runs, in seconds.",
+        minimum=1, maximum=10_000_000,
+    ),
+    ConfigField(
+        "reaper_retention_days", "Storage tuning", KIND_INT, 7,
+        "Number of days to retain completed/old tasks in the state database.",
+        minimum=0, maximum=3650,
+    ),
     # ── Corpus filters ───────────────────────────────────────────────────────
     ConfigField(
         "text_min_chars", "Corpus filters", KIND_INT, 200,
@@ -215,6 +229,11 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
         "Number of concurrent text-extraction workers.",
         minimum=1, maximum=4096,
     ),
+    ConfigField(
+        "redis_url", "Runtime / scheduler", KIND_STR, None,
+        "Redis URL for distributed locking and horizontal scaling coordination (e.g. redis:// or redlock://).",
+        example="redis://localhost:6379/0",
+    ),
     # ── Identity ─────────────────────────────────────────────────────────────
     ConfigField(
         "user_agent", "Identity", KIND_STR,
@@ -251,6 +270,11 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
         "search_max_results", "Search", KIND_INT, 200,
         "Hard ceiling on rows returned in a single search (overload guard).",
         minimum=1, maximum=100000,
+    ),
+    ConfigField(
+        "search_idf_threshold", "Search", KIND_FLOAT, 1.0,
+        "Minimum Inverse Document Frequency (IDF) threshold for query terms in BM25F ranking.",
+        minimum=0.0, maximum=100.0,
     ),
     # ── Observability / terminal ─────────────────────────────────────────────
     ConfigField(

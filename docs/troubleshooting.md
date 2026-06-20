@@ -23,9 +23,9 @@ continues to work without it; only the Iceberg sink fails.
 
 ## "Python int too large to convert to C long" during Iceberg append
 
-The simhash is 64-bit unsigned; Arrow's `int64` expects signed values.
-Fixed in `awareness.storage.iceberg._to_arrow` by folding values >= 2^63
-to negative. If it reappears, ensure you're on the latest code.
+The 64-bit simhash is consistently represented as a signed 64-bit integer (`int64`/`BIGINT`)
+throughout the codebase, including Python, database schemas, and queries. A folding check is
+retained in `_to_arrow` as a fallback for parsing legacy staging JSONL files.
 
 ## DuckDB "No files found that match the pattern"
 

@@ -90,6 +90,7 @@ class TailEngine:
         gdelt: bool = False,
         gdelt_max_urls: int = 500,
         mute_duplicates: bool | None = None,
+        job_id: str | None = None,
     ) -> str:
         settings = get_settings()
         seeds = _load_seeds(seeds_path or settings.tail_seed_file)
@@ -101,7 +102,11 @@ class TailEngine:
         self._gdelt_max_urls = int(gdelt_max_urls)
         self._last_gdelt_slot: str | None = None
 
-        job_id = self._planner.submit_tail(seeds)
+        if job_id is None:
+            job_id = self._planner.submit_tail(seeds)
+        else:
+            self._state.set_job_status(job_id, JobStatus.RUNNING)
+            self._state.set_tail(running=True, job_id=job_id, note="tail-active")
         self._job_id = job_id
         self._engine = WorkerEngine(self._state, self._planner, mute_duplicates=mute_duplicates)
         self._stop_event.clear()

@@ -105,9 +105,18 @@ def create_app() -> FastAPI:
         _State.state = state
         _State.planner = Planner(state)
         _State.tail = TailEngine(state, _State.planner)
+
+        reaper = None
+        if settings.reaper_enabled:
+            from awareness.workers.engine import DatabaseReaper
+            reaper = DatabaseReaper(state)
+            await reaper.start()
+
         try:
             yield
         finally:
+            if reaper:
+                await reaper.stop()
             if _State.tail and _State.tail.running:
                 await _State.tail.stop(drain_seconds=10.0)
             for t in list(_State.background_tasks):

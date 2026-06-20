@@ -29,6 +29,7 @@ in ``run_partition`` so the planner stays cheap.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ProcessPoolExecutor
 import gzip
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
@@ -57,6 +58,16 @@ from awareness.util.urls import canonical_url, domain_of
 logger = get_logger("sources.cc_wet")
 
 CC_BASE = "https://data.commoncrawl.org"
+
+
+_PROCESS_POOL: ProcessPoolExecutor | None = None
+
+
+def _get_process_pool() -> ProcessPoolExecutor:
+    global _PROCESS_POOL
+    if _PROCESS_POOL is None:
+        _PROCESS_POOL = ProcessPoolExecutor()
+    return _PROCESS_POOL
 
 
 def _iso_year_weeks(start: datetime, end: datetime) -> list[tuple[int, int]]:
@@ -248,8 +259,9 @@ class CommonCrawlWetAdapter(Adapter):
         )
 
         # Yield captures parsed from the cached file.
-        for cap in await asyncio.get_event_loop().run_in_executor(
-            None,
+        loop = asyncio.get_event_loop()
+        caps = await loop.run_in_executor(
+            _get_process_pool(),
             _parse_wet_to_captures,
             local,
             crawl_id,
@@ -261,7 +273,8 @@ class CommonCrawlWetAdapter(Adapter):
             context.task_id,
             context.batch_id,
             context.ingest_version,
-        ):
+        )
+        for cap in caps:
             if context.is_stopping():
                 return
             yield cap

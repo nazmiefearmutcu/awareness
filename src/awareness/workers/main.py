@@ -43,15 +43,24 @@ def run() -> None:
             pass
 
     async def _drive() -> None:
-        # Drain any non-tail job that is RUNNING or PENDING.
-        jobs = state.list_jobs()
-        for j in jobs:
-            if j.kind.value == "tail":
-                continue
-            if j.status.value in ("pending", "running", "paused"):
-                logger.info("worker_running_job", job_id=j.job_id, status=j.status.value)
-                await engine.run_job(j.job_id)
-        await engine.aclose()
+        reaper = None
+        if settings.reaper_enabled:
+            from awareness.workers.engine import DatabaseReaper
+            reaper = DatabaseReaper(state)
+            await reaper.start()
+        try:
+            # Drain any non-tail job that is RUNNING or PENDING.
+            jobs = state.list_jobs()
+            for j in jobs:
+                if j.kind.value == "tail":
+                    continue
+                if j.status.value in ("pending", "running", "paused"):
+                    logger.info("worker_running_job", job_id=j.job_id, status=j.status.value)
+                    await engine.run_job(j.job_id)
+            await engine.aclose()
+        finally:
+            if reaper:
+                await reaper.stop()
 
     try:
         loop.run_until_complete(_drive())

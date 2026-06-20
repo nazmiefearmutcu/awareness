@@ -40,6 +40,7 @@ dependencies = [
   "rich>=13.7",
   # time
   "python-dateutil>=2.9",
+  "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]

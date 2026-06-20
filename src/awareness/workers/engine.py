@@ -34,6 +34,7 @@ from awareness.sources.base import AdapterContext, PartitionSpec
 from awareness.storage.iceberg import IcebergWriter
 from awareness.storage.jsonl import JsonlStagingWriter
 from awareness.storage.state import StateDB
+from awareness.util.robots import RobotsCache
 
 logger = get_logger("workers")
 
@@ -72,6 +73,7 @@ class WorkerEngine:
         self._dedup = DedupEngine(state)
         settings = get_settings()
         self._concurrency = concurrency or settings.worker_concurrency
+        self._robots = RobotsCache(state_db=state, ttl=settings.robots_cache_ttl_sec)
         self._jsonl = jsonl_writer or JsonlStagingWriter(
             root=settings.staging_jsonl_dir(),
             flush_seconds=settings.storage_flush_seconds,
@@ -139,6 +141,7 @@ class WorkerEngine:
         self._jsonl.close()
         if self._iceberg is not None:
             self._iceberg.close()
+        await self._robots.aclose()
 
     # ── public: run a job to completion ──────────────────────────────────
     async def run_job(self, job_id: str, *, poll_seconds: float = 0.5) -> None:
@@ -196,6 +199,16 @@ class WorkerEngine:
         try:
             empty_polls = 0
             while not self.is_stopping():
+                js = self._state.get_job(job_id)
+                if js:
+                    if js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
+                        break
+                    while js.status == JobStatus.PAUSED and not self.is_stopping():
+                        await asyncio.sleep(1.0)
+                        js = self._state.get_job(job_id)
+                    if js and js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
+                        break
+
                 tasks = self._state.claim_pending_tasks(job_id, limit=self._concurrency * 2)
                 if not tasks:
                     empty_polls += 1
@@ -265,6 +278,16 @@ class WorkerEngine:
 
         try:
             while not self.is_stopping():
+                js = self._state.get_job(job_id)
+                if js:
+                    if js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
+                        break
+                    while js.status == JobStatus.PAUSED and not self.is_stopping():
+                        await asyncio.sleep(1.0)
+                        js = self._state.get_job(job_id)
+                    if js and js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
+                        break
+
                 tasks = self._state.claim_pending_tasks(job_id, limit=self._concurrency * 2)
                 if not tasks:
                     await asyncio.sleep(min(poll_seconds, 1.0))
@@ -298,6 +321,7 @@ class WorkerEngine:
             ingest_version=settings.ingest_version,
             checkpoint=init_checkpoint,
             is_stopping=self.is_stopping,
+            extras={"robots": self._robots},
         )
         partition = PartitionSpec(
             source_type=task.source_type,
@@ -501,3 +525,57 @@ class WorkerEngine:
                 logger.warning("iceberg_append_failed", err=str(exc))
 
         get_metrics().add("flushes.records", written or n)
+
+
+class DatabaseReaper:
+    """Background asyncio daemon job that periodically cleans up old completed tasks and vacuums the DB."""
+
+    def __init__(self, state: StateDB, interval_seconds: int | None = None, retention_days: int | None = None) -> None:
+        self._state = state
+        self._settings = get_settings()
+        self._interval_seconds = interval_seconds if interval_seconds is not None else self._settings.reaper_interval_seconds
+        self._retention_days = retention_days if retention_days is not None else self._settings.reaper_retention_days
+        self._task: asyncio.Task | None = None
+        self._stop_event = asyncio.Event()
+
+    async def start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        self._stop_event.clear()
+        self._task = asyncio.create_task(self._run_loop())
+        logger.info("reaper_started", interval_seconds=self._interval_seconds, retention_days=self._retention_days)
+
+    async def stop(self) -> None:
+        if self._task is None:
+            return
+        self._stop_event.set()
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        self._task = None
+        logger.info("reaper_stopped")
+
+    async def _run_loop(self) -> None:
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    logger.info("reaper_run_started")
+                    # Run cleanup in a thread to keep the event loop responsive
+                    deleted_count = await asyncio.to_thread(self._state.cleanup_old_tasks, self._retention_days)
+                    logger.info("reaper_cleanup_done", deleted_tasks=deleted_count)
+                    
+                    # Run vacuum in a thread
+                    await asyncio.to_thread(self._state.vacuum_database)
+                    logger.info("reaper_run_completed")
+                except Exception as e:
+                    logger.exception("reaper_run_failed", err=str(e))
+
+                # Sleep in increments so cancellation responds quickly
+                elapsed = 0
+                while elapsed < self._interval_seconds and not self._stop_event.is_set():
+                    await asyncio.sleep(min(10.0, self._interval_seconds - elapsed))
+                    elapsed += 10.0
+        except asyncio.CancelledError:
+            pass

@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     storage_flush_seconds: float = 15.0
     bounded_queue_size: int = 1024
 
+    # ── state db reaper ──────────────────────────────────────────────────
+    reaper_enabled: bool = True
+    reaper_interval_seconds: int = 86400  # default 24 hours
+    reaper_retention_days: int = 7        # keep completed/old tasks for 7 days
+    redis_url: str | None = None
+
     # ── tail ─────────────────────────────────────────────────────────────
     tail_poll_seconds: float = 60.0
     tail_seed_file: Path | None = None  # YAML with feeds + sitemaps to watch
@@ -117,6 +123,7 @@ class Settings(BaseSettings):
     search_default_fields: str = "title,text"
     search_default_limit: int = 10
     search_max_results: int = 200
+    search_idf_threshold: float = 1.0
 
     # ── observability ────────────────────────────────────────────────────
     log_level: str = "INFO"

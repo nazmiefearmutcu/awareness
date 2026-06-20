@@ -110,7 +110,7 @@ class DocCapture(BaseModel):
 
     # Hashes / fingerprints
     content_hash: str  # xxhash64 of normalized text
-    near_dup_hash: int | None = None  # simhash 64-bit unsigned, stored as signed int
+    near_dup_hash: int | None = None  # simhash 64-bit signed int
 
     # Compliance / notes
     robots_decision: RobotsDecision = RobotsDecision.NOT_APPLICABLE
