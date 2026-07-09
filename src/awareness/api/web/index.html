@@ -3,29 +3,27 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>awareness — research workbench</title>
-  <meta name="description" content="awareness · public text web ingestion engine" />
+  <title>Awareness</title>
+  <meta name="description" content="Public text capture &amp; search" />
   <meta name="color-scheme" content="dark" />
-  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='12' fill='%23d4a574'/><path d='M20 22h24v4H20zM20 30h24v4H20zM20 38h16v4H20z' fill='%230c0a08'/></svg>" />
+  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%230b0b0c'/><circle cx='32' cy='32' r='14' fill='none' stroke='%2334d399' stroke-width='6'/></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&display=swap" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
 
 <a class="skip-link" href="#main">Skip to content</a>
 
-<div class="grain" aria-hidden="true"></div>
-
 <div class="api-offline" id="api-offline" role="alert" hidden>
   <span class="api-offline-dot" aria-hidden="true"></span>
   <div class="api-offline-text">
     <strong>API offline.</strong>
-    <span class="api-offline-msg">API unreachable — start it with <code>awareness-api</code>, or check the port.</span>
+    <span class="api-offline-msg">Start with <code>awareness-api</code> or check the port.</span>
     <span class="api-offline-why" aria-live="polite"></span>
   </div>
-  <button class="api-offline-retry" id="api-offline-retry">retry</button>
+  <button class="api-offline-retry" id="api-offline-retry">Retry</button>
 </div>
 
 <div class="app">
@@ -34,14 +32,14 @@
     <div class="brand">
       <div class="brand-mark" aria-hidden="true"></div>
       <div class="brand-text">
-        <div class="brand-name">awareness</div>
-        <div class="brand-sub">research workbench</div>
+        <div class="brand-name">Awareness</div>
+        <div class="brand-sub">capture · search</div>
       </div>
     </div>
 
     <nav class="nav" aria-label="Sections">
       <button class="nav-item" data-route="dashboard" aria-current="page">
-        <span class="nav-icon" aria-hidden="true">◐</span>
+        <span class="nav-icon" aria-hidden="true">◉</span>
         <span class="nav-label">Dashboard</span>
         <span class="nav-shortcut">1</span>
       </button>
@@ -51,12 +49,12 @@
         <span class="nav-shortcut">2</span>
       </button>
       <button class="nav-item" data-route="jobs">
-        <span class="nav-icon" aria-hidden="true">▱</span>
+        <span class="nav-icon" aria-hidden="true">▷</span>
         <span class="nav-label">Jobs</span>
         <span class="nav-shortcut">3</span>
       </button>
       <button class="nav-item" data-route="tail">
-        <span class="nav-icon" aria-hidden="true">⟳</span>
+        <span class="nav-icon" aria-hidden="true">◎</span>
         <span class="nav-label">Tail</span>
         <span class="nav-shortcut">4</span>
       </button>
@@ -71,53 +69,52 @@
       <div class="tail-card" aria-live="polite" id="sidebar-tail">
         <div class="tail-card-hd">
           <span class="tail-led" data-state="off" aria-hidden="true"></span>
-          <span class="tail-card-label">Tail</span>
+          <span class="tail-card-label">Live tail</span>
         </div>
         <div class="tail-card-status" id="sidebar-tail-status">stopped</div>
         <div class="tail-card-meta" id="sidebar-tail-meta">—</div>
       </div>
       <button class="cmdk-hint" aria-label="Open command palette" data-action="open-cmdk">
-        <kbd>⌘</kbd><kbd>K</kbd> <span>commands</span>
+        <kbd>⌘</kbd><kbd>K</kbd> <span>Command</span>
       </button>
     </div>
   </aside>
 
   <main class="main" id="main" tabindex="-1">
 
-    <!-- ── DASHBOARD ─────────────────────────────────────────────── -->
+    <!-- DASHBOARD -->
     <section class="view view-dashboard is-active" data-view="dashboard" aria-labelledby="title-dashboard">
       <header class="view-head">
-        <div class="eyebrow">section i</div>
         <h1 class="page-title" id="title-dashboard">Dashboard</h1>
-        <p class="lede">A view onto the public text you've gathered. Stats update in real time; activity below streams as the tail captures new documents.</p>
+        <p class="lede">Corpus stats, live tail, and recent jobs.</p>
       </header>
 
       <div class="kpi-grid">
         <article class="kpi" aria-labelledby="kpi-cap-label">
-          <div class="kpi-label" id="kpi-cap-label">Total captures</div>
+          <div class="kpi-label" id="kpi-cap-label">Captures</div>
           <div class="kpi-value" id="kpi-captures">—</div>
-          <div class="kpi-sub" id="kpi-captures-sub">across the corpus</div>
+          <div class="kpi-sub" id="kpi-captures-sub">total stored</div>
         </article>
         <article class="kpi" aria-labelledby="kpi-uni-label">
-          <div class="kpi-label" id="kpi-uni-label">Distinct hashes</div>
+          <div class="kpi-label" id="kpi-uni-label">Unique hashes</div>
           <div class="kpi-value" id="kpi-distinct">—</div>
-          <div class="kpi-sub" id="kpi-distinct-sub">unique content</div>
+          <div class="kpi-sub" id="kpi-distinct-sub">distinct content</div>
         </article>
         <article class="kpi" aria-labelledby="kpi-fold-label">
           <div class="kpi-label" id="kpi-fold-label">Dedup folds</div>
           <div class="kpi-value" id="kpi-folds">—</div>
-          <div class="kpi-sub" id="kpi-folds-sub">re-captures collapsed</div>
+          <div class="kpi-sub" id="kpi-folds-sub">collapsed re-captures</div>
         </article>
         <article class="kpi" aria-labelledby="kpi-job-label">
-          <div class="kpi-label" id="kpi-job-label">Recent jobs</div>
+          <div class="kpi-label" id="kpi-job-label">Jobs</div>
           <div class="kpi-value" id="kpi-jobs">—</div>
-          <div class="kpi-sub" id="kpi-jobs-sub">backfill &amp; tail runs</div>
+          <div class="kpi-sub" id="kpi-jobs-sub">recent runs</div>
         </article>
       </div>
 
       <section class="band" aria-labelledby="tail-strip-title">
         <header class="band-head">
-          <h2 id="tail-strip-title" class="band-title"><span class="serif-i">tail</span> · live capture</h2>
+          <h2 id="tail-strip-title" class="band-title">Live tail</h2>
           <div class="band-meta" id="tail-strip-meta">—</div>
         </header>
         <div class="tail-strip" id="tail-strip">
@@ -137,25 +134,23 @@
 
       <section class="band" aria-labelledby="jobs-strip-title">
         <header class="band-head">
-          <h2 id="jobs-strip-title" class="band-title"><span class="serif-i">recent</span> jobs</h2>
-          <a class="band-link" href="#" data-route="jobs">view all →</a>
+          <h2 id="jobs-strip-title" class="band-title">Recent jobs</h2>
+          <a class="band-link" href="#" data-route="jobs">View all →</a>
         </header>
         <div class="jobs-strip" id="jobs-strip"></div>
       </section>
-
     </section>
 
-    <!-- ── CAPTURES ──────────────────────────────────────────────── -->
+    <!-- CAPTURES -->
     <section class="view view-captures" data-view="captures" aria-labelledby="title-captures" hidden>
       <header class="view-head">
-        <div class="eyebrow">section ii</div>
         <h1 class="page-title" id="title-captures">Captures</h1>
-        <p class="lede">Browse stored text. Open any row to read the full normalized document with provenance.</p>
+        <p class="lede">Search and browse stored documents.</p>
       </header>
 
       <div class="searchbar" role="search">
         <span class="searchbar-icon" aria-hidden="true">⌕</span>
-        <input id="caps-search" type="search" placeholder="search title or text — press / to focus" aria-label="Search captures" />
+        <input id="caps-search" type="search" placeholder="Search title or text…" aria-label="Search captures" />
         <kbd class="kbd-inline">/</kbd>
       </div>
 
@@ -163,7 +158,7 @@
         <label class="field">
           <span class="field-label">Source</span>
           <select id="caps-source">
-            <option value="">all sources</option>
+            <option value="">All sources</option>
             <option value="tail_recrawl">tail_recrawl</option>
             <option value="common_crawl_wet">common_crawl_wet</option>
             <option value="common_crawl_warc">common_crawl_warc</option>
@@ -177,7 +172,7 @@
         </label>
         <label class="field">
           <span class="field-label">Domain</span>
-          <input id="caps-domain" type="text" placeholder="bbc.com" />
+          <input id="caps-domain" type="text" placeholder="example.com" />
         </label>
         <label class="field">
           <span class="field-label">From</span>
@@ -187,78 +182,76 @@
           <span class="field-label">To</span>
           <input id="caps-end" type="date" />
         </label>
-        <button class="btn btn-ghost" id="caps-apply">apply</button>
-        <button class="btn btn-link" id="caps-reset" aria-label="Reset filters">reset</button>
+        <button class="btn btn-ghost" id="caps-apply">Apply</button>
+        <button class="btn btn-link" id="caps-reset" aria-label="Reset filters">Reset</button>
       </div>
 
       <div class="caps-meta" id="caps-meta" aria-live="polite">—</div>
-
       <ol class="caps-list" id="caps-list" aria-label="Capture results" tabindex="0"></ol>
 
       <nav class="pager" aria-label="Pagination">
-        <button class="btn btn-ghost" id="caps-prev">← previous</button>
+        <button class="btn btn-ghost" id="caps-prev">← Previous</button>
         <div class="pager-pos" id="caps-pos">—</div>
-        <button class="btn btn-ghost" id="caps-next">next →</button>
+        <button class="btn btn-ghost" id="caps-next">Next →</button>
       </nav>
     </section>
 
-    <!-- ── JOBS ──────────────────────────────────────────────────── -->
+    <!-- JOBS -->
     <section class="view view-jobs" data-view="jobs" aria-labelledby="title-jobs" hidden>
       <header class="view-head">
-        <div class="eyebrow">section iii</div>
         <h1 class="page-title" id="title-jobs">Jobs</h1>
-        <p class="lede">Backfill and tail jobs, with task counters and dedup folds. Use the form below to schedule a new historical backfill.</p>
+        <p class="lede">Backfill and tail runs. Submit a historical range below.</p>
       </header>
 
       <section class="band" aria-labelledby="bf-title">
         <header class="band-head">
-          <h2 id="bf-title" class="band-title"><span class="serif-i">new</span> backfill</h2>
+          <h2 id="bf-title" class="band-title">New backfill</h2>
         </header>
         <form class="bf-form" id="bf-form" aria-describedby="bf-help">
-          <p id="bf-help" class="bf-help">Pick a date range and the source tiers you want. Domain &amp; language filters are optional; <em>Max tasks</em> caps the planner output for smoke runs.</p>
+          <p id="bf-help" class="bf-help">Date range required. Sources optional (defaults apply if empty). Max tasks is useful for smoke runs.</p>
 
           <div class="bf-row">
             <label class="field">
               <span class="field-label">Start</span>
               <input id="bf-start" type="date" required aria-describedby="bf-start-help" />
-              <span id="bf-start-help" class="field-help">Inclusive lower bound. Required.</span>
+              <span id="bf-start-help" class="field-help">Inclusive start date</span>
             </label>
             <label class="field">
               <span class="field-label">End</span>
               <input id="bf-end" type="text" value="now" placeholder="now" aria-describedby="bf-end-help" />
-              <span id="bf-end-help" class="field-help">Accepts <code>now</code>, <code>today</code>, or an ISO date.</span>
+              <span id="bf-end-help" class="field-help"><code>now</code>, <code>today</code>, or ISO date</span>
             </label>
           </div>
 
           <fieldset class="bf-sources">
             <legend>Sources</legend>
-            <label><input type="checkbox" value="common_crawl_wet" /> <span>Common Crawl WET</span><em>bulk historical text</em></label>
-            <label><input type="checkbox" value="fineweb" /> <span>FineWeb</span><em>HF curated English</em></label>
-            <label><input type="checkbox" value="fineweb_2" /> <span>FineWeb-2</span><em>HF multilingual</em></label>
-            <label><input type="checkbox" value="gdelt" /> <span>GDELT</span><em>15-min news slots</em></label>
-            <label><input type="checkbox" value="common_crawl_index" /> <span>CC Index</span><em>domain-narrow planner</em></label>
-            <label><input type="checkbox" value="rss" /> <span>RSS feeds</span><em>seed-feed walk</em></label>
-            <p class="field-help">Leave empty for sensible defaults (CC-WET + FineWeb + GDELT).</p>
+            <label><input type="checkbox" value="common_crawl_wet" /> <span>Common Crawl WET</span><em>historical bulk</em></label>
+            <label><input type="checkbox" value="fineweb" /> <span>FineWeb</span><em>English HF</em></label>
+            <label><input type="checkbox" value="fineweb_2" /> <span>FineWeb-2</span><em>multilingual HF</em></label>
+            <label><input type="checkbox" value="gdelt" /> <span>GDELT</span><em>news slots</em></label>
+            <label><input type="checkbox" value="common_crawl_index" /> <span>CC Index</span><em>domain-narrow</em></label>
+            <label><input type="checkbox" value="rss" /> <span>RSS</span><em>seed feeds</em></label>
+            <p class="field-help">Empty = CC-WET + FineWeb + GDELT</p>
           </fieldset>
 
           <div class="bf-row">
             <label class="field field-wide">
               <span class="field-label">Domains</span>
-              <input id="bf-domains" placeholder="bbc.com, reuters.com (optional)" />
-              <span class="field-help">Comma-separated. Enables CC-Index for selective historical pulls.</span>
+              <input id="bf-domains" placeholder="bbc.com, reuters.com" />
+              <span class="field-help">Comma-separated, optional</span>
             </label>
             <label class="field field-wide">
               <span class="field-label">Languages</span>
-              <input id="bf-langs" placeholder="en, tr (optional)" />
-              <span class="field-help">ISO 639-1 codes. Pivots HF adapter to FineWeb-2 when non-English.</span>
+              <input id="bf-langs" placeholder="en, tr" />
+              <span class="field-help">ISO 639-1, optional</span>
             </label>
           </div>
 
           <div class="bf-row">
             <label class="field">
               <span class="field-label">Max tasks</span>
-              <input id="bf-max" type="number" min="1" placeholder="(unlimited)" />
-              <span class="field-help">Caps planner output. Useful for smoke runs.</span>
+              <input id="bf-max" type="number" min="1" placeholder="unlimited" />
+              <span class="field-help">Optional cap</span>
             </label>
             <div class="bf-actions">
               <button type="submit" class="btn btn-primary">Submit &amp; run</button>
@@ -269,19 +262,18 @@
 
       <section class="band" aria-labelledby="alljobs-title">
         <header class="band-head">
-          <h2 id="alljobs-title" class="band-title"><span class="serif-i">all</span> jobs</h2>
-          <button class="btn btn-link" id="jobs-refresh">refresh</button>
+          <h2 id="alljobs-title" class="band-title">All jobs</h2>
+          <button class="btn btn-link" id="jobs-refresh">Refresh</button>
         </header>
         <div class="jobs-full" id="jobs-full"></div>
       </section>
     </section>
 
-    <!-- ── TAIL ─────────────────────────────────────────────────── -->
+    <!-- TAIL -->
     <section class="view view-tail" data-view="tail" aria-labelledby="title-tail" hidden>
       <header class="view-head">
-        <div class="eyebrow">section iv</div>
         <h1 class="page-title" id="title-tail">Tail</h1>
-        <p class="lede">Live capture of newly published public text. Reads the feeds listed in <code>configs/tail_seeds.yaml</code> every <code>tail_poll_seconds</code>; respects robots.txt and per-domain politeness.</p>
+        <p class="lede">Live RSS/sitemap capture from <code>configs/tail_seeds.yaml</code>.</p>
       </header>
 
       <div class="tail-big" id="tail-big" data-state="off">
@@ -299,14 +291,14 @@
           <div class="tail-big-meta" id="tail-big-meta">—</div>
         </div>
         <div class="tail-big-actions">
-          <button class="btn btn-primary btn-large" id="tail-big-start">Start tail</button>
+          <button class="btn btn-primary btn-large" id="tail-big-start">Start</button>
           <button class="btn btn-ghost btn-large" id="tail-big-stop">Pause</button>
         </div>
       </div>
 
       <section class="band" aria-labelledby="tail-progress-title">
         <header class="band-head">
-          <h2 id="tail-progress-title" class="band-title"><span class="serif-i">queue</span> · progress</h2>
+          <h2 id="tail-progress-title" class="band-title">Queue</h2>
           <div class="band-meta" id="tail-progress-meta">—</div>
         </header>
         <div class="tail-progress" id="tail-progress">
@@ -318,38 +310,38 @@
       <div class="tail-cols">
         <section class="band" aria-labelledby="tail-now-title">
           <header class="band-head">
-            <h2 id="tail-now-title" class="band-title"><span class="serif-i">now</span> fetching</h2>
+            <h2 id="tail-now-title" class="band-title">Fetching</h2>
             <div class="band-meta" id="tail-now-meta">—</div>
           </header>
           <ol class="tail-now-list" id="tail-now-list" aria-live="polite">
-            <li class="muted-li">No fetches in flight.</li>
+            <li class="muted-li">Nothing in flight.</li>
           </ol>
         </section>
 
         <section class="band" aria-labelledby="tail-done-title">
           <header class="band-head">
-            <h2 id="tail-done-title" class="band-title"><span class="serif-i">just</span> captured</h2>
+            <h2 id="tail-done-title" class="band-title">Just captured</h2>
             <div class="band-meta" id="tail-done-meta">—</div>
           </header>
           <ol class="tail-done-list" id="tail-done-list">
-            <li class="muted-li">No completed fetches yet.</li>
+            <li class="muted-li">No recent completions.</li>
           </ol>
         </section>
       </div>
 
       <section class="band" aria-labelledby="tail-chunks-title">
         <header class="band-head">
-          <h2 id="tail-chunks-title" class="band-title"><span class="serif-i">storage</span> · last commits</h2>
-          <div class="band-meta">JSONL chunks written by the worker</div>
+          <h2 id="tail-chunks-title" class="band-title">Storage commits</h2>
+          <div class="band-meta">Recent JSONL chunks</div>
         </header>
         <ol class="tail-chunks-list" id="tail-chunks-list">
-          <li class="muted-li">No chunks committed yet.</li>
+          <li class="muted-li">No chunks yet.</li>
         </ol>
       </section>
 
       <section class="band" aria-labelledby="seeds-title">
         <header class="band-head">
-          <h2 id="seeds-title" class="band-title"><span class="serif-i">seeds</span></h2>
+          <h2 id="seeds-title" class="band-title">Seeds</h2>
           <div class="band-meta" id="seeds-meta">—</div>
         </header>
         <div class="seeds" id="seeds-block">
@@ -358,21 +350,20 @@
       </section>
     </section>
 
-    <!-- ── SETTINGS ─────────────────────────────────────────────── -->
+    <!-- SETTINGS -->
     <section class="view view-settings" data-view="settings" aria-labelledby="title-settings" hidden>
       <header class="view-head">
-        <div class="eyebrow">section v</div>
         <h1 class="page-title" id="title-settings">Settings</h1>
-        <p class="lede">Runtime configuration. These reflect the current <code>configs/awareness.yaml</code> + <code>AW_*</code> env vars and are read-only from the UI.</p>
+        <p class="lede">Read-only view of <code>awareness.yaml</code> and <code>AW_*</code> env.</p>
       </header>
 
       <div class="settings" id="settings-block">
-        <p class="muted">Loading settings…</p>
+        <p class="muted">Loading…</p>
       </div>
 
       <section class="band" aria-labelledby="dedup-title">
         <header class="band-head">
-          <h2 id="dedup-title" class="band-title"><span class="serif-i">dedup</span> index</h2>
+          <h2 id="dedup-title" class="band-title">Dedup index</h2>
         </header>
         <div class="dedup-block" id="dedup-block">—</div>
       </section>
@@ -380,49 +371,42 @@
 
   </main>
 
-  <!-- ── Live activity rail (dashboard only) ──────────────────── -->
   <aside class="rail" id="rail" aria-label="Live activity">
     <div class="rail-head">
-      <div class="rail-eyebrow">section vi</div>
-      <h2 class="rail-title"><span class="serif-i">live</span> activity</h2>
-      <div class="rail-sub" id="rail-sub">listening…</div>
+      <h2 class="rail-title">Activity</h2>
+      <div class="rail-sub" id="rail-sub">—</div>
     </div>
     <ol class="feed" id="feed" aria-live="polite" aria-atomic="false"></ol>
-    <div class="rail-empty" id="rail-empty">No captures yet — start the tail or run a backfill.</div>
+    <div class="rail-empty" id="rail-empty">No captures yet. Start tail or run a backfill.</div>
   </aside>
 
 </div>
 
-<!-- ── Command palette ────────────────────────────────────────── -->
 <div class="cmdk-overlay" id="cmdk" role="dialog" aria-modal="true" aria-label="Command palette" hidden>
   <div class="cmdk-shell" tabindex="-1">
     <div class="cmdk-input-wrap">
-      <span class="cmdk-prefix" aria-hidden="true">⌘ K</span>
-      <input type="text" id="cmdk-input" autocomplete="off" placeholder="Where to? Search corpus, go to a section, run an action…" />
+      <span class="cmdk-prefix" aria-hidden="true">⌘K</span>
+      <input type="text" id="cmdk-input" autocomplete="off" placeholder="Search, jump, or run an action…" />
     </div>
     <ol class="cmdk-list" id="cmdk-list" role="listbox"></ol>
     <div class="cmdk-foot">
-      <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
       <span><kbd>↵</kbd> open</span>
-      <span><kbd>esc</kbd> dismiss</span>
+      <span><kbd>esc</kbd> close</span>
     </div>
   </div>
 </div>
 
-<!-- ── Reader drawer ──────────────────────────────────────────── -->
 <div class="reader-scrim" id="reader-scrim" hidden></div>
 <aside class="reader" id="reader" aria-hidden="true" aria-label="Capture detail">
   <header class="reader-head">
-    <button class="btn btn-link" id="reader-close" aria-label="Close reader">← back</button>
-    <span class="reader-eyebrow" id="reader-eyebrow">capture</span>
+    <button class="btn btn-link" id="reader-close" aria-label="Close reader">← Back</button>
+    <span class="reader-eyebrow" id="reader-eyebrow">Capture</span>
   </header>
   <article class="reader-body" id="reader-body"></article>
 </aside>
 
-<!-- ── Toast ──────────────────────────────────────────────────── -->
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-
-<!-- ── Mobile nav toggle ──────────────────────────────────────── -->
 <button class="mobile-nav-btn" id="mobile-nav-btn" aria-label="Toggle navigation" aria-expanded="false">☰</button>
 
 <script src="/static/app.js" type="module"></script>
