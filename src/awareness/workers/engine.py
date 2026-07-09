@@ -342,19 +342,27 @@ class WorkerEngine:
                     get_metrics().inc("docs.filtered", labels={"source": task.source_type.value})
                     continue
                 outcome = self._dedup.evaluate(cap)
-                # Persist all captures (provenance), but track stats.
-                async with self._buffer_lock:
-                    self._batch_buffer.append(cap)
-                docs_emitted += 1
-                bytes_processed += len(cap.text)
-                self._total_bytes_processed += len(cap.text)
-                self._total_docs_processed += 1
-                if outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.NEAR_DUP, DedupDecision.REVISION):
-                    dedup_dropped += 1
                 get_metrics().inc(
                     "dedup.decisions",
                     labels={"decision": outcome.decision.value, "source": task.source_type.value},
                 )
+                # EXACT_DUP / REVISION: skip durable storage — same bytes already
+                # on disk (different URL or same URL re-fetch). NEAR_DUP still
+                # persists for provenance of near-matches. Stats track the fold.
+                if outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.REVISION):
+                    dedup_dropped += 1
+                    self._total_docs_processed += 1
+                    bytes_processed += len(cap.text)
+                    self._total_bytes_processed += len(cap.text)
+                else:
+                    async with self._buffer_lock:
+                        self._batch_buffer.append(cap)
+                    docs_emitted += 1
+                    bytes_processed += len(cap.text)
+                    self._total_bytes_processed += len(cap.text)
+                    self._total_docs_processed += 1
+                    if outcome.decision == DedupDecision.NEAR_DUP:
+                        dedup_dropped += 1
                 is_unique = outcome.decision == DedupDecision.NEW
                 show_dup = not self._mute_duplicates
                 if self._is_tty and not self._silent_progress and (is_unique or show_dup):

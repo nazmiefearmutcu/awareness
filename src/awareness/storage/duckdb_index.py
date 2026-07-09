@@ -105,6 +105,51 @@ def _clean_fields(fields: list[str] | tuple[str, ...] | None) -> list[str]:
     return seen or list(DEFAULT_SEARCH_FIELDS)
 
 
+def _collapse_key(row: dict[str, Any]) -> str:
+    """Key used to fold exact-duplicate search hits into one result.
+
+    Prefer ``content_hash`` (true content identity). When it is missing/empty
+    fall back to lower(title)|domain so syndicated copies without a hash still
+    collapse together.
+    """
+    ch = row.get("content_hash")
+    if ch is not None:
+        ch_s = str(ch).strip()
+        if ch_s:
+            return f"h:{ch_s}"
+    title = (row.get("title") or "").strip().lower()
+    domain = (row.get("domain") or "").strip().lower()
+    return f"t:{title}|{domain}"
+
+
+def _collapse_search_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse rows to unique content, keeping the highest-scoring hit.
+
+    Input order is preserved for first-seen keys; when a later row shares the
+    same collapse key and has a strictly higher ``score``, it replaces the
+    earlier one (ties keep the first). Unscored rows (prefix/substring) keep
+    first-seen order (already sorted by fetch_ts DESC upstream).
+    """
+    if not rows:
+        return []
+    best: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for r in rows:
+        key = _collapse_key(r)
+        prev = best.get(key)
+        if prev is None:
+            best[key] = r
+            order.append(key)
+            continue
+        prev_score = prev.get("score")
+        cur_score = r.get("score")
+        if cur_score is None:
+            continue
+        if prev_score is None or float(cur_score) > float(prev_score):
+            best[key] = r
+    return [best[k] for k in order]
+
+
 class DuckDbIndex:
     """Thin wrapper around a DuckDB connection that knows our layout."""
 
@@ -163,28 +208,7 @@ class DuckDbIndex:
                         raise
             
             try:
-                # Load/install extensions
-                if not DuckDbIndex._extensions_installed:
-                    try:
-                        conn.execute("INSTALL iceberg")
-                        conn.execute("INSTALL fts")
-                        DuckDbIndex._extensions_installed = True
-                    except duckdb.Error as exc:
-                        logger.info("duckdb_extensions_install_failed", err=str(exc))
-                
-                try:
-                    conn.execute("LOAD iceberg")
-                    conn.execute("SET unsafe_enable_version_guessing = true;")
-                except duckdb.Error as exc:
-                    logger.info("duckdb_iceberg_extension_unavailable", err=str(exc))
-                
-                try:
-                    conn.execute("LOAD fts")
-                    self._fts_available = True
-                except duckdb.Error as exc:
-                    logger.info("duckdb_fts_extension_unavailable", err=str(exc))
-                    self._fts_available = False
-                
+                self._configure_connection(conn)
                 # Check and refresh views if stale
                 self._refresh_views_if_stale(conn)
                 
@@ -195,6 +219,36 @@ class DuckDbIndex:
                         conn.close()
                     except Exception:
                         pass
+
+    def _configure_connection(self, conn: duckdb.DuckDBPyConnection) -> None:
+        """Apply session defaults and load optional extensions on a new connection."""
+        # Canonical session timezone so TIMESTAMPTZ values stay UTC
+        # (otherwise local TZ shifts display/filter edges by hours).
+        try:
+            conn.execute("SET TimeZone = 'UTC'")
+        except duckdb.Error as exc:
+            logger.info("duckdb_timezone_set_failed", err=str(exc))
+
+        if not DuckDbIndex._extensions_installed:
+            try:
+                conn.execute("INSTALL iceberg")
+                conn.execute("INSTALL fts")
+                DuckDbIndex._extensions_installed = True
+            except duckdb.Error as exc:
+                logger.info("duckdb_extensions_install_failed", err=str(exc))
+
+        try:
+            conn.execute("LOAD iceberg")
+            conn.execute("SET unsafe_enable_version_guessing = true;")
+        except duckdb.Error as exc:
+            logger.info("duckdb_iceberg_extension_unavailable", err=str(exc))
+
+        try:
+            conn.execute("LOAD fts")
+            self._fts_available = True
+        except duckdb.Error as exc:
+            logger.info("duckdb_fts_extension_unavailable", err=str(exc))
+            self._fts_available = False
 
     def connect(self) -> duckdb.DuckDBPyConnection:
         with self._lock:
@@ -223,28 +277,7 @@ class DuckDbIndex:
                         else:
                             raise
                 
-                # Load/install extensions
-                if not DuckDbIndex._extensions_installed:
-                    try:
-                        conn.execute("INSTALL iceberg")
-                        conn.execute("INSTALL fts")
-                        DuckDbIndex._extensions_installed = True
-                    except duckdb.Error as exc:
-                        logger.info("duckdb_extensions_install_failed", err=str(exc))
-                
-                try:
-                    conn.execute("LOAD iceberg")
-                    conn.execute("SET unsafe_enable_version_guessing = true;")
-                except duckdb.Error as exc:
-                    logger.info("duckdb_iceberg_extension_unavailable", err=str(exc))
-                
-                try:
-                    conn.execute("LOAD fts")
-                    self._fts_available = True
-                except duckdb.Error as exc:
-                    logger.info("duckdb_fts_extension_unavailable", err=str(exc))
-                    self._fts_available = False
-                
+                self._configure_connection(conn)
                 self._refresh_views_if_stale(conn)
                 self._conn = conn
                 return conn
@@ -599,6 +632,14 @@ class DuckDbIndex:
             if offset >= max_results:
                 offset = max(0, max_results - limit)
             limit = max(1, min(limit, max_results - offset))
+        # Candidate window for collapse-then-page: fetch up to the overload
+        # ceiling (no SQL offset) so exact dups don't under-fill the page.
+        candidate_cap = (
+            int(max_results)
+            if max_results is not None and max_results > 0
+            else DEFAULT_SEARCH_MAX_RESULTS
+        )
+        candidate_cap = max(candidate_cap, offset + limit)
 
         empty = {
             "total": 0, "limit": limit, "offset": offset, "rows": [],
@@ -681,16 +722,28 @@ class DuckDbIndex:
                             idf = math.log(1.0 + (N - df + 0.5) / (df + 0.5))
                             term_idfs[st] = max(0.0, idf)
 
-                        # IDF threshold validation
+                        # IDF threshold validation. Skip pruning on tiny corpora:
+                        # with N docs a term present in every document still has
+                        # IDF ≈ log(1.33) ≈ 0.29, so a default threshold of 1.0
+                        # would wipe legitimate queries during smoke/tests and
+                        # early ingestion.
                         settings = get_settings()
-                        threshold = getattr(settings, "search_idf_threshold", 1.0)
-                        valid_terms = [st for st in stemmed_terms if term_idfs.get(st, 0.0) >= threshold]
-                        if len(valid_terms) < len(stemmed_terms):
-                            dropped = [st for st in stemmed_terms if term_idfs.get(st, 0.0) < threshold]
-                            logger.info("bm25f_low_idf_terms_dropped", dropped=dropped, threshold=threshold)
-
-                        if not valid_terms:
-                            valid_terms = stemmed_terms
+                        threshold = float(getattr(settings, "search_idf_threshold", 1.0) or 0.0)
+                        _MIN_DOCS_FOR_IDF_PRUNE = 20
+                        if N < _MIN_DOCS_FOR_IDF_PRUNE or threshold <= 0.0:
+                            valid_terms = list(stemmed_terms)
+                        else:
+                            valid_terms = [st for st in stemmed_terms if term_idfs.get(st, 0.0) >= threshold]
+                            if len(valid_terms) < len(stemmed_terms):
+                                dropped = [st for st in stemmed_terms if term_idfs.get(st, 0.0) < threshold]
+                                logger.info(
+                                    "bm25f_low_idf_terms_dropped",
+                                    dropped=dropped,
+                                    threshold=threshold,
+                                )
+                            # Never drop every term — fall back to the full query.
+                            if not valid_terms:
+                                valid_terms = list(stemmed_terms)
 
                         # Build BM25F SQL using FTS join tables
                         term_placeholders = ", ".join(f"$term_{i}" for i in range(len(valid_terms)))
@@ -753,7 +806,7 @@ class DuckDbIndex:
                                   c.fetch_ts, c.observed_ts, c.published_ts,
                                   c.title, c.text, c.language, c.content_hash
                                 ORDER BY score DESC
-                                LIMIT {int(limit)} OFFSET {int(offset)}
+                                LIMIT {int(candidate_cap)}
                             """
                             rows = self._rows(conn, sql, params)
                             used_mode = "fts"
@@ -785,8 +838,19 @@ class DuckDbIndex:
                 # _clean_fields) and $-bound placeholders; all user values are
                 # bound params. No untrusted string reaches the SQL text.
                 where_sql = " AND ".join(where) if where else "1=1"
+                # Unique-content total (content_hash, else title|domain).
+                collapse_expr = (
+                    "CASE "
+                    "WHEN content_hash IS NOT NULL AND CAST(content_hash AS VARCHAR) != '' "
+                    "THEN CAST(content_hash AS VARCHAR) "
+                    "ELSE lower(trim(coalesce(title, ''))) || '|' || lower(coalesce(domain, '')) "
+                    "END"
+                )
                 total_row = conn.execute(  # nosemgrep
-                    f"SELECT COUNT(*) FROM captures WHERE {where_sql}",  # noqa: S608
+                    f"SELECT COUNT(*) FROM ("  # noqa: S608
+                    f"  SELECT 1 FROM captures WHERE {where_sql} "
+                    f"  GROUP BY {collapse_expr}"
+                    f") u",
                     params,
                 ).fetchone()
                 total = int(total_row[0]) if total_row else 0
@@ -801,11 +865,35 @@ class DuckDbIndex:
                     "FROM captures "
                     f"WHERE {where_sql} "
                     "ORDER BY fetch_ts DESC "
-                    f"LIMIT {int(limit)} OFFSET {int(offset)}"
+                    f"LIMIT {int(candidate_cap)}"
                 )
                 rows = self._rows(conn, sql, params)
 
             ranked = used_mode == "fts"
+
+            # Collapse exact content duplicates (same hash / same title|domain)
+            # before pagination so top-K never shows syndicated copies twice.
+            pre_collapse_n = len(rows)
+            rows = _collapse_search_rows(rows)
+            unique_n = len(rows)
+            if used_mode == "fts":
+                # FTS COUNT is per capture_id; fold to unique content. When the
+                # candidate window held every match, unique_n is exact.
+                if total <= candidate_cap and pre_collapse_n >= total:
+                    total = unique_n
+                else:
+                    # Lower-bound unique total using dups observed in-window.
+                    total = max(unique_n, total - (pre_collapse_n - unique_n))
+            else:
+                # Prefix path already counted unique groups in SQL; still prefer
+                # the candidate-window unique count when we saw the full set.
+                if pre_collapse_n < candidate_cap:
+                    total = unique_n
+                else:
+                    total = max(unique_n, total)
+
+            # Page after collapse.
+            rows = rows[offset : offset + limit]
 
             # Augment each row with a snippet + matched terms; strip the heavy
             # full text from the response payload.

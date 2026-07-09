@@ -95,13 +95,13 @@ def create_app() -> FastAPI:
         # Reconcile phantom "running" tail state from a previous process that
         # didn't clean up. Whatever was running in another Python process is
         # not running here. Mark it cancelled so the UI doesn't lie.
-        tail = state.get_tail()
-        if tail.get("running"):
-            stale_job = tail.get("job_id")
-            state.set_tail(running=False, job_id=stale_job, note="reconciled-on-startup")
-            if stale_job:
-                from awareness.schemas.jobs import JobStatus  # local import
-                state.set_job_status(stale_job, JobStatus.CANCELLED, note="orphaned-by-process-exit")
+        # get_tail(reconcile=True) clears phantom running rows; then sweep
+        # any TAIL jobs still stuck in RUNNING that aren't a live owner.
+        state.get_tail(reconcile=True)
+        try:
+            state.reconcile_orphan_tail_jobs()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("orphan_tail_reconcile_failed", error=str(exc))
         _State.state = state
         _State.planner = Planner(state)
         _State.tail = TailEngine(state, _State.planner)
@@ -276,13 +276,27 @@ def create_app() -> FastAPI:
                 "recent_chunks": [],
             }
         job = state.get_job(job_id)
+        # When tail is not live, never present PENDING/RUNNING tasks as
+        # "now fetching" — those rows are leftovers from a crashed process.
+        live = bool(tail_info.get("running")) or bool(engine_info.get("in_process_running"))
+        if not live:
+            # Best-effort cleanup so subsequent reads stay quiet.
+            try:
+                state.abandon_inflight_tasks(job_id, note="stale-tasks-on-stopped-tail")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("abandon_inflight_on_tail_status_failed", error=str(exc))
+        counts = state.task_status_counts(job_id)
+        if not live:
+            # UI queue panel should not show zombie in-flight buckets.
+            for k in ("pending", "running"):
+                counts.pop(k, None)
         return {
             **base,
             "job": job.model_dump(mode="json") if job else None,
-            "task_status_counts": state.task_status_counts(job_id),
-            "running_tasks": state.list_running_tasks(job_id, limit=12),
+            "task_status_counts": counts,
+            "running_tasks": state.list_running_tasks(job_id, limit=12) if live else [],
             "recent_completed": state.list_recent_completed_tasks(job_id, limit=10),
-            "per_seed": state.per_seed_progress(job_id),
+            "per_seed": state.per_seed_progress(job_id) if live else {"feeds": [], "fetch": {}},
             "recent_chunks": state.list_recent_manifests(limit=8),
         }
 

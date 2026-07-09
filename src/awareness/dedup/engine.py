@@ -1,8 +1,9 @@
 """Deduplication engine — exact + canonical-URL + simhash near-duplicate.
 
 Design principles (per spec):
-- We always persist captures for provenance. Dedup never drops a row from the
-  durable corpus by itself.
+- Decision only: the worker decides what to persist. EXACT_DUP captures are
+  skipped at storage time (content already on disk under another URL);
+  NEAR_DUP / REVISION / NEW still land for provenance.
 - ``parent_doc_or_dup_group`` is set so downstream queries can fold captures
   into canonical docs (``WHERE doc_id = parent_doc_or_dup_group``).
 - Decision space:

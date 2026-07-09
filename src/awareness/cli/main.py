@@ -292,19 +292,33 @@ def _quickstart_context() -> dict[str, Any]:
 
 @app.command()
 def init(
-    interactive: bool = typer.Option(True, "--interactive/--no-interactive", help="Prompt user for directory path")
+    interactive: bool = typer.Option(
+        True,
+        "--interactive/--no-interactive",
+        help="Prompt user for directory path (auto-disabled when stdin is not a TTY)",
+    ),
 ) -> None:
     """Initialize storage paths, state DB, Iceberg catalog (idempotent)."""
     settings = get_settings()
-    
+
+    # Scripts / CI / piped stdin must never hang on a confirm prompt.
+    if interactive and not sys.stdin.isatty():
+        interactive = False
+
     if interactive:
         rprint("[bold cyan]Awareness Environment Initialization[/bold cyan]")
         current_dir = settings.data_dir or (settings.project_root / "data")
         rprint(f"Current local data save directory: [yellow]{current_dir}[/yellow]")
-        
-        change = typer.confirm("Would you like to choose a different local directory for data storage?", default=False)
+
+        change = typer.confirm(
+            "Would you like to choose a different local directory for data storage?",
+            default=False,
+        )
         if change:
-            new_path = typer.prompt("Enter the absolute path to store data files", default=str(current_dir))
+            new_path = typer.prompt(
+                "Enter the absolute path to store data files",
+                default=str(current_dir),
+            )
             new_path_resolved = Path(new_path).resolve()
             try:
                 _update_yaml_config("data_dir", str(new_path_resolved))
@@ -357,6 +371,7 @@ def _is_port_active(host: str, port: int) -> bool:
 
 
 def _get_api_pid() -> int | None:
+    """Return the live API server PID, cleaning a stale pid file if needed."""
     settings = get_settings()
     pid_file = settings.data_dir / "state" / "api.pid"
     if not pid_file.exists():
@@ -366,6 +381,11 @@ def _get_api_pid() -> int | None:
         os.kill(pid, 0)
         return pid
     except (ValueError, OSError):
+        # Process gone or unreadable pid — drop the file so status stays honest.
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
         return None
 
 
@@ -388,7 +408,7 @@ def _trigger_tail_start(host: str, port: int, silent: bool = False) -> None:
 @app.command()
 def start(
     host: str = typer.Option("127.0.0.1", "--host", help="Host address to bind to"),
-    port: int = typer.Option(8085, "--port", help="Port to bind to"),
+    port: int = typer.Option(_default_api_port, "--port", help="Port to bind to (default: AW_API_PORT or 8085)"),
     tail: bool = typer.Option(True, "--tail/--no-tail", help="Start the live tail daemon in-process"),
     fg: bool = typer.Option(False, "--fg", help="Run in foreground (blocking)"),
     data_dir: Path = typer.Option(None, "--data-dir", "-d", help="Custom local data directory"),
@@ -494,34 +514,72 @@ def start(
         rprint("[yellow]⚠ API server started but port check timed out. It may still be booting.[/yellow]")
 
 
+def _launchd_label(port: int) -> str:
+    return f"com.awareness.api.{port}"
+
+
+def _launchd_plist_path(port: int) -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{_launchd_label(port)}.plist"
+
+
+def _launchd_belongs_to_project(plist_path: Path, project_root: Path) -> bool:
+    """Return True only when the launchd unit's WorkingDirectory matches this project.
+
+    Prevents ``awareness stop`` under an isolated AW_PROJECT_ROOT from unloading
+    the user's system-wide LaunchAgent for a different install.
+    """
+    if not plist_path.exists():
+        return False
+    try:
+        import plistlib
+
+        with plist_path.open("rb") as fh:
+            data = plistlib.load(fh)
+        wd = data.get("WorkingDirectory")
+        if not wd:
+            return False
+        return Path(str(wd)).resolve() == project_root.resolve()
+    except Exception:
+        return False
+
+
 @app.command()
-def stop() -> None:
+def stop(
+    host: str = typer.Option("127.0.0.1", "--host", help="Host used for residual port checks"),
+    port: int = typer.Option(_default_api_port, "--port", help="API port / launchd label port (default: AW_API_PORT or 8085)"),
+) -> None:
     """Stop the background Awareness API server (which also stops the tail daemon)."""
     settings = get_settings()
     pid_file = settings.data_dir / "state" / "api.pid"
+    label = _launchd_label(port)
+    plist_path = _launchd_plist_path(port)
 
     launchd_active = False
-    try:
-        res = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
-        if "com.awareness.api.8085" in res.stdout:
-            launchd_active = True
-    except Exception:
-        pass
+    # Only manage launchd for THIS project root — never unload a foreign install.
+    if _launchd_belongs_to_project(plist_path, settings.project_root):
+        try:
+            res = subprocess.run(["launchctl", "list"], capture_output=True, text=True, check=False)
+            if label in (res.stdout or ""):
+                launchd_active = True
+        except Exception:
+            pass
 
     if launchd_active:
-        rprint("[yellow]Detected com.awareness.api.8085 running via launchd. Unloading it to stop completely...[/yellow]")
-        plist_path = Path.home() / "Library" / "LaunchAgents" / "com.awareness.api.8085.plist"
+        rprint(
+            f"[yellow]Detected {label} running via launchd for this project. "
+            "Unloading it to stop completely...[/yellow]"
+        )
         if plist_path.exists():
-            subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+            subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True, check=False)
         else:
-            subprocess.run(["launchctl", "stop", "com.awareness.api.8085"])
+            subprocess.run(["launchctl", "stop", label], capture_output=True, check=False)
         rprint("[green]✔ Stopped and unloaded launchd service[/green]")
 
     if not pid_file.exists():
         if not launchd_active:
             rprint("[yellow]No background API server process found (PID file does not exist).[/yellow]")
-            if _is_port_active("127.0.0.1", 8085):
-                rprint("[yellow]Note: Port 8085 is active. Another process might be holding it.[/yellow]")
+            if _is_port_active(host, port):
+                rprint(f"[yellow]Note: Port {port} is active. Another process might be holding it.[/yellow]")
         return
 
     try:
@@ -561,7 +619,7 @@ def stop() -> None:
 @app.command()
 def dashboard(
     host: str = typer.Option("127.0.0.1", "--host", help="Host address"),
-    port: int = typer.Option(8085, "--port", help="Port"),
+    port: int = typer.Option(_default_api_port, "--port", help="Port (default: AW_API_PORT or 8085)"),
 ) -> None:
     """Open the Awareness dashboard in your default browser."""
     url = f"http://{host}:{port}/"
@@ -616,33 +674,40 @@ def logs(
 
 
 @service_app.command("install")
-def service_install() -> None:
+def service_install(
+    port: int = typer.Option(_default_api_port, "--port", help="API port for the LaunchAgent label (default: AW_API_PORT or 8085)"),
+) -> None:
     """Install and load the API server as a macOS Launch Agent."""
     import plistlib
+
     settings = get_settings()
-    root = settings.project_root
-    plist_dir = Path.home() / "Library" / "LaunchAgents"
-    plist_path = plist_dir / "com.awareness.api.8085.plist"
+    root = settings.project_root.resolve()
+    label = _launchd_label(port)
+    plist_path = _launchd_plist_path(port)
+    plist_dir = plist_path.parent
 
     venv_python = root / ".venv" / "bin" / "python"
     if not venv_python.exists():
         venv_python = Path(sys.executable)
 
     plist_data = {
-        "Label": "com.awareness.api.8085",
+        "Label": label,
         "WorkingDirectory": str(root),
         "EnvironmentVariables": {
-            "PYTHONPATH": str(root / "src")
+            "PYTHONPATH": str(root / "src"),
+            "AW_API_HOST": "127.0.0.1",
+            "AW_API_PORT": str(port),
+            "AW_PROJECT_ROOT": str(root),
         },
         "ProgramArguments": [
             str(venv_python),
             "-c",
-            "from awareness.api.server import run; run()"
+            "from awareness.api.server import run; run()",
         ],
         "RunAtLoad": True,
         "KeepAlive": True,
-        "StandardOutPath": "/tmp/awareness-api-8085.launch.out",
-        "StandardErrorPath": "/tmp/awareness-api-8085.launch.err"
+        "StandardOutPath": f"/tmp/{label}.launch.out",
+        "StandardErrorPath": f"/tmp/{label}.launch.err",
     }
 
     try:
@@ -651,26 +716,29 @@ def service_install() -> None:
             plistlib.dump(plist_data, f)
         rprint(f"[green]✔ Plist file created at: {plist_path}[/green]")
         subprocess.run(["launchctl", "load", str(plist_path)], check=True)
-        rprint("[green]✔ Service loaded successfully via launchctl.[/green]")
+        rprint(f"[green]✔ Service {label} loaded successfully via launchctl.[/green]")
     except Exception as e:
         rprint(f"[red]Error installing service: {e}[/red]")
 
 
 @service_app.command("uninstall")
-def service_uninstall() -> None:
+def service_uninstall(
+    port: int = typer.Option(_default_api_port, "--port", help="API port for the LaunchAgent label (default: AW_API_PORT or 8085)"),
+) -> None:
     """Unload and remove the macOS Launch Agent plist."""
-    plist_path = Path.home() / "Library" / "LaunchAgents" / "com.awareness.api.8085.plist"
+    plist_path = _launchd_plist_path(port)
+    label = _launchd_label(port)
 
     if plist_path.exists():
         try:
-            subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
-            rprint("[green]✔ Service unloaded via launchctl.[/green]")
+            subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True, check=False)
+            rprint(f"[green]✔ Service {label} unloaded via launchctl.[/green]")
             plist_path.unlink()
             rprint("[green]✔ Plist file removed.[/green]")
         except Exception as e:
             rprint(f"[red]Error uninstalling service: {e}[/red]")
     else:
-        rprint("[yellow]Service plist file not found.[/yellow]")
+        rprint(f"[yellow]Service plist file not found for {label}.[/yellow]")
 
 
 @service_app.command("schedule-compaction")
@@ -851,6 +919,11 @@ def status(
     """Show overall system status: tail + recent jobs."""
     state, _ = _bootstrap()
     settings = get_settings()
+    # Clear phantom RUNNING tail jobs left by crashed processes.
+    try:
+        state.reconcile_orphan_tail_jobs()
+    except Exception:
+        pass
     jobs = state.list_jobs(limit=10)
 
     rprint("[bold]Recent Jobs:[/bold]")
@@ -869,12 +942,13 @@ def status(
     rprint(f"[bold]Tail DB Status:[/bold] {state.get_tail()}")
 
     rprint("\n[bold]Service Status:[/bold]")
+    api_port = _default_api_port()
     pid = _get_api_pid()
     if pid:
-        rprint(f"  API Server:  [green]RUNNING[/green] (PID {pid}) on http://127.0.0.1:8085")
+        rprint(f"  API Server:  [green]RUNNING[/green] (PID {pid}) on http://127.0.0.1:{api_port}")
     else:
-        if _is_port_active("127.0.0.1", 8085):
-            rprint("  API Server:  [green]RUNNING[/green] (Port 8085 active, managed externally)")
+        if _is_port_active("127.0.0.1", api_port):
+            rprint(f"  API Server:  [green]RUNNING[/green] (Port {api_port} active, managed externally)")
         else:
             rprint("  API Server:  [red]STOPPED[/red]")
 
@@ -2145,20 +2219,24 @@ def tui(
         else:
             try:
                 env = os.environ.copy()
+                api_port = _default_api_port()
                 env["AW_API_HOST"] = "127.0.0.1"
-                env["AW_API_PORT"] = "8085"
+                env["AW_API_PORT"] = str(api_port)
                 log_dir = settings.log_dir
                 log_dir.mkdir(parents=True, exist_ok=True)
                 api_log_path = log_dir / "api.log"
+                state_dir = settings.data_dir / "state"
+                state_dir.mkdir(parents=True, exist_ok=True)
                 with open(api_log_path, "a", encoding="utf-8") as lf:
-                    subprocess.Popen(
+                    proc = subprocess.Popen(
                         [sys.executable, "-c", "from awareness.api.server import run; run()"],
                         env=env,
                         stdout=lf,
                         stderr=subprocess.STDOUT,
                         start_new_session=True
                     )
-                return "[green]Spawning API server on http://127.0.0.1:8085...[/green]"
+                (state_dir / "api.pid").write_text(str(proc.pid), encoding="utf-8")
+                return f"[green]Spawning API server on http://127.0.0.1:{api_port}...[/green]"
             except Exception as e:
                 return f"[red]Failed to start API: {e}[/red]"
                 
@@ -2457,7 +2535,7 @@ def highlight_tokens(text: str, query: str) -> str:
 
 @app.command(name="browse")
 def browse(
-    start: str = typer.Option("30 days ago", "--start", help="Start date range"),
+    start: str = typer.Option("", "--start", help="Start date range (empty = beginning of corpus)"),
     end: str = typer.Option("now", "--end", help="End date range"),
     domain: str = typer.Option("", "--domain", help="Filter by domain"),
     source: str = typer.Option("", "--source", help="Filter by source"),
@@ -2472,7 +2550,8 @@ def browse(
         iceberg_warehouse=settings.iceberg_warehouse,
     )
     
-    start_dt = to_utc(start)
+    # Empty start means no lower bound so historical backfills remain visible.
+    start_dt = to_utc(start) if (start or "").strip() else None
     end_dt = coerce_relative_end(end)
     
     # Clear screen
@@ -2521,7 +2600,13 @@ def browse(
             
         if not rows:
             if offset == 0:
-                rprint("[yellow]No captures found in this range.[/yellow]")
+                range_hint = ""
+                if start_dt is not None or end_dt is not None:
+                    range_hint = (
+                        f" (filters: start={start_dt or '−∞'}, end={end_dt}; "
+                        "try widening --start/--end)"
+                    )
+                rprint(f"[yellow]No captures found in this range.{range_hint}[/yellow]")
                 break
             else:
                 rprint("[yellow]No more pages. Going back...[/yellow]")
@@ -2592,7 +2677,7 @@ def browse(
 @app.command(name="search")
 def search(
     query: str = typer.Argument(..., help="Search query (BM25 ranked when the term is present; stem-prefix fallback otherwise)"),
-    start: str = typer.Option("30 days ago", "--start", help="Start date range"),
+    start: str = typer.Option("", "--start", help="Start date range (empty = beginning of corpus)"),
     end: str = typer.Option("now", "--end", help="End date range"),
     domain: str = typer.Option("", "--domain", help="Filter by domain"),
     source: str = typer.Option("", "--source", help="Filter by source"),
@@ -2626,7 +2711,8 @@ def search(
     limit = limit if limit > 0 else settings.search_default_limit
     max_results = max_results if max_results > 0 else settings.search_max_results
 
-    start_dt = to_utc(start)
+    # Empty start means no lower bound so historical backfills remain searchable.
+    start_dt = to_utc(start) if (start or "").strip() else None
     end_dt = coerce_relative_end(end)
 
     if not interactive or not sys.stdin.isatty():
@@ -2690,7 +2776,10 @@ def search(
 
         if not rows:
             if offset == 0:
-                rprint(f"[yellow]No documents matched query '{query}'.[/yellow]")
+                range_hint = ""
+                if start_dt is not None:
+                    range_hint = f" (start={start_dt}; try --start '' or an earlier date)"
+                rprint(f"[yellow]No documents matched query '{query}'.{range_hint}[/yellow]")
                 break
             else:
                 rprint("[yellow]No more pages. Going back...[/yellow]")
@@ -4191,18 +4280,22 @@ def commands_map() -> None:
 @app.command()
 def restart(
     host: str = typer.Option("127.0.0.1", "--host", help="Host address to bind to"),
-    port: int = typer.Option(8085, "--port", help="Port to bind to"),
+    port: int = typer.Option(_default_api_port, "--port", help="Port to bind to (default: AW_API_PORT or 8085)"),
+    tail: bool = typer.Option(True, "--tail/--no-tail", help="Start the live tail daemon in-process after restart"),
 ) -> None:
     """Restart the background Awareness API server (stop, then start)."""
     import time
 
     rprint("[cyan]Restarting Awareness API…[/cyan]")
     try:
-        stop()
+        # Invoke stop with the same port so launchd labels stay consistent.
+        stop(host=host, port=port)
     except Exception as exc:  # restart should proceed even if stop() hiccups
         rprint(f"[yellow]stop() reported: {escape(str(exc))}[/yellow]")
     time.sleep(1.0)
-    _shell_dispatch(_shell_click_command(), ["start", "--host", host, "--port", str(port)])
+    start_args = ["start", "--host", host, "--port", str(port)]
+    start_args.append("--tail" if tail else "--no-tail")
+    _shell_dispatch(_shell_click_command(), start_args)
 
 
 if __name__ == "__main__":

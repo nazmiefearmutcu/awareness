@@ -114,20 +114,23 @@ async def test_pipeline_runs_dedup_and_writes_storage(tmp_project: Path) -> None
     assert engine._total_bytes_processed > 0
 
     status = planner.status(job_id)
-    assert status["docs_emitted"] >= len(_DOCS)
+    # EXACT_DUP and REVISION are not stored; only NEW docs count as emitted.
+    # Fixture: id=1 NEW, id=2 NEW, id=3 EXACT_DUP, id=4 REVISION → 2 emitted.
+    assert status["docs_emitted"] >= 2
     # Dedup should flag at least the two duplicates (id=3 EXACT_DUP, id=4 REVISION).
     assert status["docs_dedup_dropped"] >= 2
 
-    # Read back via DuckDB.
+    # Read back via DuckDB. EXACT_DUP + REVISION rows are skipped at storage time.
     idx = DuckDbIndex(
         db_path=settings.duckdb_path(),
         jsonl_dir=settings.staging_jsonl_dir(),
         iceberg_warehouse=settings.iceberg_warehouse,
     )
     rows = idx.execute("SELECT count(*) AS n FROM captures WHERE source_type = $st", {"st": "local_fixture"})
-    assert rows[0]["n"] >= len(_DOCS)
+    assert rows[0]["n"] >= 2  # id=1 NEW, id=2 NEW
+    assert rows[0]["n"] < len(_DOCS) + 5  # sanity: not exploding
 
-    # Range filter works.
+    # Range filter works (day-1 window: id=1 and id=2; id=3 EXACT_DUP not stored).
     rng = idx.execute(
         "SELECT count(*) AS n FROM captures WHERE fetch_ts BETWEEN $a AND $b AND source_type = $st",
         {
@@ -136,4 +139,4 @@ async def test_pipeline_runs_dedup_and_writes_storage(tmp_project: Path) -> None
             "st": "local_fixture",
         },
     )
-    assert rng[0]["n"] >= 3  # docs 1, 2, 3 fall in this window
+    assert rng[0]["n"] >= 2  # docs 1, 2 fall in this window; 3 skipped as EXACT_DUP

@@ -34,6 +34,17 @@ reader enumerates `*.jsonl` files explicitly rather than using a glob, so
 this should only surface when the data dir was moved or pruned mid-query.
 Restart the CLI / refresh the index.
 
+## Search / browse returns nothing even though captures exist
+
+1. Confirm the DuckDB view sees them: `awareness shell` then a SQL peek, or
+   open the workbench Captures tab.
+2. `search` / `browse` default to **no lower start bound** and `end=now`.
+   If you narrowed with `--start` / `--end`, widen or omit `--start`.
+3. Relative windows like `--start "30 days ago"` exclude older backfills on
+   purpose — pass an absolute date or leave `--start` empty for the full corpus.
+4. Small corpora used to drop every BM25 term via the IDF threshold; that
+   prune is now skipped until the index has ≥20 documents.
+
 ## Worker pool isn't draining
 
 - Look at the `tasks` table: `SELECT status, count(*) FROM tasks GROUP BY 1`.

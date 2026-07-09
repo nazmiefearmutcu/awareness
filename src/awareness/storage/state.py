@@ -10,6 +10,7 @@ at Postgres in production without code changes.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -175,6 +176,9 @@ class TailRow(Base):
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     job_id: Mapped[str | None] = mapped_column(String, nullable=True)
     notes: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Owning OS process. Used by get_tail(reconcile=True) to detect orphans
+    # after a crash/kill that never called set_tail(False).
+    pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class RobotsCacheRow(Base):
@@ -246,12 +250,35 @@ class StateDB:
             # Simple automatic schema migration for legacy databases (SQLite only)
             if self._engine.dialect.name == "sqlite":
                 from sqlalchemy import inspect, text
+
                 try:
                     inspector = inspect(self._engine)
-                    columns = [c["name"] for c in inspector.get_columns("dedup_near")]
-                    if columns and "sig_hex" not in columns:
+                    try:
+                        near_cols = [c["name"] for c in inspector.get_columns("dedup_near")]
+                    except Exception:
+                        near_cols = []
+                    if near_cols and "sig_hex" not in near_cols:
                         with self._engine.begin() as conn:
                             conn.execute(text("ALTER TABLE dedup_near ADD COLUMN sig_hex VARCHAR"))
+                    try:
+                        tail_cols = [c["name"] for c in inspector.get_columns("tail_state")]
+                    except Exception:
+                        tail_cols = []
+                    if tail_cols and "pid" not in tail_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE tail_state ADD COLUMN pid INTEGER"))
+                except Exception as e:
+                    logger.warning("migration_failed", error=str(e))
+            else:
+                # Non-SQLite: best-effort ADD COLUMN if missing (Postgres etc.).
+                from sqlalchemy import inspect, text
+
+                try:
+                    inspector = inspect(self._engine)
+                    tail_cols = [c["name"] for c in inspector.get_columns("tail_state")]
+                    if tail_cols and "pid" not in tail_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE tail_state ADD COLUMN pid INTEGER"))
                 except Exception as e:
                     logger.warning("migration_failed", error=str(e))
 
@@ -878,7 +905,23 @@ class StateDB:
             s.commit()
 
     # ── tail state ───────────────────────────────────────────────────────
-    def set_tail(self, running: bool, job_id: str | None = None, note: str | None = None) -> None:
+    @staticmethod
+    def _pid_alive(pid: int | None) -> bool:
+        if pid is None or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def set_tail(
+        self,
+        running: bool,
+        job_id: str | None = None,
+        note: str | None = None,
+        pid: int | None = None,
+    ) -> None:
         with self.session() as s:
             row = s.get(TailRow, 1)
             now = _utcnow()
@@ -890,24 +933,144 @@ class StateDB:
                 row.started_at = now
                 row.stopped_at = None
                 row.job_id = job_id
+                # Default to the calling process when starting so crashes are detectable.
+                row.pid = int(pid) if pid is not None else os.getpid()
             else:
                 row.stopped_at = now
+                row.pid = None
+                if job_id is not None:
+                    row.job_id = job_id
             if note:
                 row.notes = note
             s.commit()
 
-    def get_tail(self) -> dict[str, Any]:
+    def _tail_info_from_row(self, row: TailRow | None) -> dict[str, Any]:
+        if row is None:
+            return {
+                "running": False,
+                "job_id": None,
+                "started_at": None,
+                "stopped_at": None,
+                "pid": None,
+            }
+        return {
+            "running": bool(row.running),
+            "job_id": row.job_id,
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "stopped_at": row.stopped_at.isoformat() if row.stopped_at else None,
+            "notes": row.notes,
+            "pid": int(row.pid) if row.pid is not None else None,
+        }
+
+    def get_tail(self, *, reconcile: bool = True) -> dict[str, Any]:
+        """Return tail daemon status.
+
+        When ``reconcile`` is True (default), a ``running=true`` row whose
+        owning PID is dead (or was never recorded — legacy) is marked stopped
+        so CLI/API status never lies after a crash.
+
+        Reconciliation uses a conditional UPDATE so a concurrent
+        ``set_tail(True)`` restart cannot be clobbered.
+        """
         with self.session() as s:
             row = s.get(TailRow, 1)
-            if row is None:
-                return {"running": False, "job_id": None, "started_at": None, "stopped_at": None}
-            return {
-                "running": bool(row.running),
-                "job_id": row.job_id,
-                "started_at": row.started_at.isoformat() if row.started_at else None,
-                "stopped_at": row.stopped_at.isoformat() if row.stopped_at else None,
-                "notes": row.notes,
-            }
+            info = self._tail_info_from_row(row)
+            if not reconcile or not info["running"]:
+                return info
+
+            observed_pid = info.get("pid")
+            alive = self._pid_alive(observed_pid if isinstance(observed_pid, int) else None)
+            if alive:
+                return info
+
+            stale_job = info.get("job_id")
+            reason = (
+                "reconciled-stale-no-pid"
+                if observed_pid is None
+                else f"reconciled-dead-pid:{observed_pid}"
+            )
+            now = _utcnow()
+            # Atomic conditional clear of the exact orphan we observed.
+            stmt = (
+                update(TailRow)
+                .where(TailRow.id == 1, TailRow.running == 1)
+                .values(running=0, stopped_at=now, pid=None, notes=reason)
+            )
+            if observed_pid is None:
+                stmt = stmt.where(TailRow.pid.is_(None))
+            else:
+                stmt = stmt.where(TailRow.pid == observed_pid)
+            result = s.execute(stmt)
+            s.commit()
+            cleared = int(result.rowcount or 0) > 0
+            cancelled_job = stale_job if cleared and isinstance(stale_job, str) else None
+
+        if cancelled_job:
+            try:
+                from awareness.schemas.jobs import JobStatus  # local import
+
+                self.set_job_status(cancelled_job, JobStatus.CANCELLED, note="orphaned-by-process-exit")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("tail_reconcile_job_status_failed", job_id=cancelled_job, error=str(exc))
+
+        return self.get_tail(reconcile=False)
+
+    def abandon_inflight_tasks(self, job_id: str, *, note: str = "orphaned-process-exit") -> int:
+        """Mark PENDING/RUNNING tasks for a dead job as SKIPPED so the UI stops lying."""
+        with self.session() as s:
+            now = _utcnow()
+            stmt = (
+                update(TaskRow)
+                .where(
+                    TaskRow.job_id == job_id,
+                    TaskRow.status.in_(
+                        [TaskStatus.PENDING.value, TaskStatus.RUNNING.value]
+                    ),
+                )
+                .values(
+                    status=TaskStatus.SKIPPED.value,
+                    completed_at=now,
+                    last_error=note[:4000] if note else None,
+                )
+            )
+            res = s.execute(stmt)
+            s.commit()
+            n = int(res.rowcount or 0)
+            if n:
+                logger.info("inflight_tasks_abandoned", job_id=job_id, count=n, note=note)
+            return n
+
+    def reconcile_orphan_tail_jobs(self, *, limit: int = 200) -> int:
+        """Cancel TAIL jobs stuck in RUNNING that are not the live tail owner.
+
+        Historical crashes left ``jobs.status='running'`` while ``tail_state``
+        was cleared. Status/UI then listed phantom jobs forever. Also abandons
+        PENDING/RUNNING tasks so Tail page counters go quiet.
+        """
+        from awareness.schemas.jobs import JobKind, JobStatus  # local import
+
+        info = self.get_tail(reconcile=True)
+        active_id = info.get("job_id") if info.get("running") else None
+        cancelled = 0
+        for job in self.list_jobs(kind=JobKind.TAIL, limit=limit):
+            if job.status == JobStatus.RUNNING:
+                if active_id is not None and job.job_id == active_id:
+                    continue
+                self.set_job_status(job.job_id, JobStatus.CANCELLED, note="orphaned-reconcile-sweep")
+                self.abandon_inflight_tasks(job.job_id, note="orphaned-reconcile-sweep")
+                cancelled += 1
+            elif job.status in (JobStatus.CANCELLED, JobStatus.COMPLETED, JobStatus.FAILED):
+                # Tasks may still be PENDING/RUNNING after a crash mid-stop.
+                if active_id is not None and job.job_id == active_id:
+                    continue
+                abandoned = self.abandon_inflight_tasks(
+                    job.job_id, note="stale-tasks-on-terminal-job"
+                )
+                if abandoned:
+                    cancelled += 1  # count as reconcile work units
+        if cancelled:
+            logger.info("orphan_tail_jobs_reconciled", count=cancelled, active=active_id)
+        return cancelled
 
     # ── database reaper / cleanup ────────────────────────────────────────
     def cleanup_old_tasks(self, retention_days: int) -> int:

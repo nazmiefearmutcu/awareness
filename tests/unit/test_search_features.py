@@ -98,10 +98,11 @@ def test_idf_threshold_filtering(tmp_path: Path, caplog: pytest.LogCaptureFixtur
     jsonl_dir = tmp_path / "jsonl"
     db_path = tmp_path / "duckdb" / "metadata.duckdb"
 
-    # Create corpus where "apples" is common (low IDF) and "mango" is rare (high IDF)
-    for i in range(1, 6):
+    # Need N >= 20 so IDF pruning is enabled (tiny corpora skip the filter).
+    # "apples" is common (low IDF); "mango" is rare (high IDF).
+    for i in range(1, 25):
         _write_doc(jsonl_dir, i, title="Fruit post", text="We love eating apples.")
-    _write_doc(jsonl_dir, 6, title="Special fruit post", text="We love eating mango.")
+    _write_doc(jsonl_dir, 25, title="Special fruit post", text="We love eating mango.")
 
     idx = DuckDbIndex(db_path, jsonl_dir, None)
     try:
@@ -115,6 +116,8 @@ def test_idf_threshold_filtering(tmp_path: Path, caplog: pytest.LogCaptureFixtur
                 res = idx.search("apples mango", mode="fts")
                 # Assert warning / info log was emitted
                 assert any("bm25f_low_idf_terms_dropped" in rec.message for rec in caplog.records)
+                # Query still returns the rare-term document.
+                assert res["total"] >= 1
     finally:
         idx.close()
 
