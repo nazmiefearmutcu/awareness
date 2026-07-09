@@ -481,11 +481,46 @@ def create_app() -> FastAPI:
     # ── static dashboard ─────────────────────────────────────────────────
     web_dir = Path(__file__).resolve().parent / "web"
     if web_dir.exists():
+        # Cache-bust version from file mtimes so UI refreshes after deploys.
+        def _asset_ver() -> str:
+            try:
+                m = max(
+                    (web_dir / n).stat().st_mtime_ns
+                    for n in ("style.css", "app.js", "index.html")
+                    if (web_dir / n).exists()
+                )
+                return str(m)
+            except OSError:
+                return "1"
+
         app.mount("/static", StaticFiles(directory=str(web_dir)), name="static")
 
         @app.get("/", include_in_schema=False)
         def root_index() -> FileResponse:
-            return FileResponse(str(web_dir / "index.html"))
+            # Serve HTML with no-store so browsers always pick up new asset URLs.
+            html_path = web_dir / "index.html"
+            text = html_path.read_text(encoding="utf-8")
+            ver = _asset_ver()
+            text = text.replace("/static/style.css", f"/static/style.css?v={ver}")
+            text = text.replace("/static/app.js", f"/static/app.js?v={ver}")
+            from fastapi.responses import HTMLResponse  # noqa: PLC0415
+
+            return HTMLResponse(
+                content=text,
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                },
+            )
+
+        @app.middleware("http")
+        async def _no_cache_static(request, call_next):  # type: ignore[no-untyped-def]
+            response = await call_next(request)
+            path = request.url.path
+            if path == "/" or path.startswith("/static/"):
+                response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+                response.headers["Pragma"] = "no-cache"
+            return response
 
     return app
 

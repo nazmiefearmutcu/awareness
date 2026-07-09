@@ -1,30 +1,30 @@
 /*
- * Awareness UI — clean dark console
- * High contrast, no serif drama, readable 15px base.
+ * Awareness UI v2 — cool readable console
+ * Zinc base + electric cyan. No serif, high contrast, 15px body.
  */
 
 :root {
-  --bg: #09090b;
-  --bg-1: #0c0c0f;
-  --bg-2: #121216;
-  --bg-3: #1a1a20;
-  --bg-rail: #0c0c0f;
-  --surface: #121216;
-  --surface-hi: #1c1c24;
-  --border: #27272f;
-  --border-soft: #1e1e26;
-  --border-strong: #3f3f4a;
+  --bg: #070a12;
+  --bg-1: #0b1020;
+  --bg-2: #111827;
+  --bg-3: #1a2336;
+  --bg-rail: #0b1020;
+  --surface: #0f1628;
+  --surface-hi: #172033;
+  --border: #243044;
+  --border-soft: #1a2436;
+  --border-strong: #334155;
 
-  --fg: #e4e4e7;
-  --fg-strong: #fafafa;
-  --fg-mid: #a1a1aa;
-  --fg-dim: #71717a;
-  --fg-subtle: #52525b;
+  --fg: #e8eef8;
+  --fg-strong: #ffffff;
+  --fg-mid: #a8b6cc;
+  --fg-dim: #7b8ba3;
+  --fg-subtle: #5b6b82;
 
-  --accent: #34d399;
-  --accent-soft: #6ee7b7;
-  --accent-deep: #059669;
-  --accent-glow: rgba(52, 211, 153, 0.15);
+  --accent: #22d3ee;
+  --accent-soft: #67e8f9;
+  --accent-deep: #0891b2;
+  --accent-glow: rgba(34, 211, 238, 0.18);
 
   --blue: #60a5fa;
   --amber: #fbbf24;
@@ -111,7 +111,26 @@ input, button, select, textarea {
   color: inherit;
 }
 
-::selection { background: var(--accent); color: #052e1c; }
+::selection { background: var(--accent); color: #042f3a; }
+
+/* Visible v2 marker so cache misses are obvious */
+body.ui-v2::before {
+  content: "UI v2";
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 90;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: #042f3a;
+  background: var(--accent);
+  padding: 4px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
 
 :focus-visible {
   outline: 2px solid var(--accent);
@@ -199,23 +218,24 @@ code {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: transparent;
-  border: 2.5px solid var(--accent);
+  background: linear-gradient(145deg, var(--accent), #3b82f6);
   box-shadow: 0 0 0 3px var(--accent-glow);
+  border: none;
 }
 .brand-text { line-height: 1.2; }
 .brand-name {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 700;
   color: var(--fg-strong);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
 }
 .brand-sub {
   font-family: var(--mono);
   font-size: 11px;
-  color: var(--fg-dim);
-  letter-spacing: 0.02em;
-  margin-top: 1px;
+  color: var(--accent-soft);
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+  text-transform: uppercase;
 }
 
 .nav {
@@ -469,10 +489,10 @@ code {
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn-primary {
   background: var(--accent);
-  color: #052e1c;
+  color: #042f3a;
   border-color: transparent;
 }
-.btn-primary:hover { background: var(--accent-soft); }
+.btn-primary:hover { background: var(--accent-soft); color: #042f3a; }
 .btn-ghost {
   background: transparent;
   border-color: var(--border);
