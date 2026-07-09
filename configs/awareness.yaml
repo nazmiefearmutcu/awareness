@@ -14,7 +14,7 @@ per_domain_delay_sec: 1.0
 robots_cache_ttl_sec: 3600
 storage_flush_records: 200
 storage_flush_seconds: 10
-tail_poll_seconds: 60
+tail_poll_seconds: 60.0
 terminal_mute_duplicates: true
 text_max_chars: 1500000
 text_min_chars: 200

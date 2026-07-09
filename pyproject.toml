@@ -1,6 +1,6 @@
 [project]
 name = "awareness"
-version = "0.1.0"
+version = "0.2.0"
 description = "Public text internet awareness engine — BODY backfill and TAIL live capture of the public text web."
 requires-python = ">=3.11"
 license = { text = "MIT" }

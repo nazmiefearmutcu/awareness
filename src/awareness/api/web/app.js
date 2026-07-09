@@ -165,7 +165,7 @@ function setKPI(id, target, opts = {}) {
 }
 
 // ── Router ────────────────────────────────────────────────────
-const ROUTES = ["dashboard", "captures", "jobs", "tail", "settings"];
+const ROUTES = ["dashboard", "captures", "work", "jobs", "tail", "settings"];
 let currentRoute = "dashboard";
 function navigate(route, { push = true } = {}) {
   if (!ROUTES.includes(route)) route = "dashboard";
@@ -189,6 +189,7 @@ function navigate(route, { push = true } = {}) {
 
   // Lazy-load views' data on activation.
   if (route === "captures") void loadCaptures(true);
+  if (route === "work") void initWork();
   if (route === "jobs") void loadJobs();
   if (route === "tail") startTailPolling();
   if (route === "settings") void loadSettings();
@@ -789,27 +790,362 @@ for (const id of ["tail-stop-btn", "tail-big-stop"]) {
 }
 
 // ── Settings ──────────────────────────────────────────────────
+let settingsReady = false;
+let engineSchemaCache = null;
+
 async function loadSettings() {
+  const banner = $("#set-banner");
+  if (banner) { banner.hidden = true; banner.textContent = ""; }
+  try {
+    const [schema, seeds, catalog, profile, health, dedup] = await Promise.all([
+      api("/settings/schema"),
+      api("/settings/tail-seeds"),
+      api("/jobsearch/sources"),
+      api("/jobsearch/profile"),
+      api("/healthz"),
+      api("/dedup-stats"),
+    ]);
+    engineSchemaCache = schema;
+    renderEngineSchema(schema);
+    fillTailSeeds(seeds);
+    renderJobBoards(catalog.sources || [], profile.sources || []);
+    fillJobProfile(profile);
+    cachedJobProfile = profile;
+    updateWorkPrefsSummary(profile);
+    renderRuntimeStatus(health, dedup);
+    buildSettingsToc();
+    settingsReady = true;
+  } catch (err) {
+    console.error(err);
+    toast("Settings load failed: " + (err.message || err), "err");
+  }
+}
+
+function buildSettingsToc() {
+  const toc = $("#set-toc");
+  if (!toc) return;
+  clear(toc);
+  const links = [
+    ["#set-sec-work", "Work profile"],
+    ["#set-sec-boards", "Job boards"],
+    ["#set-sec-seeds", "Tail seeds"],
+  ];
+  (engineSchemaCache?.sections || []).forEach((sec, i) => {
+    links.push(["#set-engine-" + i, sec.name]);
+  });
+  links.push(["#set-sec-status", "Runtime status"]);
+  for (const [href, label] of links) {
+    const a = el("a", { href, text: label });
+    a.addEventListener("click", (e) => {
+      const t = $(href);
+      if (t) { e.preventDefault(); t.scrollIntoView({ behavior: "smooth", block: "start" }); }
+    });
+    toc.appendChild(a);
+  }
+}
+
+function renderEngineSchema(schema) {
+  const root = $("#set-engine-root");
+  if (!root) return;
+  clear(root);
+  const note = el("p", { class: "set-banner-static", text: schema.note || "" });
+  if (schema.config_path) {
+    note.textContent = (schema.note || "") + "  File: " + schema.config_path;
+  }
+  root.appendChild(note);
+
+  (schema.sections || []).forEach((sec, i) => {
+    const section = el("section", {
+      class: "set-sec",
+      id: "set-engine-" + i,
+    });
+    const head = el("header", { class: "set-sec-head" });
+    head.appendChild(el("h2", { class: "set-sec-title", text: sec.name }));
+    head.appendChild(el("p", {
+      class: "set-sec-desc",
+      text: (sec.fields || []).length + " knobs · written to awareness.yaml",
+    }));
+    section.appendChild(head);
+
+    const grid = el("div", { class: "set-engine-grid" });
+    for (const f of sec.fields || []) {
+      grid.appendChild(renderEngineField(f));
+    }
+    section.appendChild(grid);
+    root.appendChild(section);
+  });
+}
+
+function renderEngineField(f) {
+  const wrap = el("label", {
+    class: "set-efield" + (f.env_locked ? " is-locked" : ""),
+    for: "cfg-" + f.key,
+  });
+  const top = el("div", { class: "set-efield-top" });
+  top.appendChild(el("span", { class: "set-efield-key", text: f.key }));
+  const src = el("span", {
+    class: "set-efield-src src-" + (f.source || "default"),
+    text: f.env_locked ? "env" : (f.source || "default"),
+    title: f.env_var || "",
+  });
+  top.appendChild(src);
+  wrap.appendChild(top);
+  wrap.appendChild(el("p", { class: "set-efield-desc", text: f.description || "" }));
+
+  let input;
+  const id = "cfg-" + f.key;
+  if (f.kind === "bool") {
+    input = el("input", { type: "checkbox", id, dataset: { key: f.key, kind: "bool" } });
+    input.checked = !!f.value;
+    if (f.env_locked) input.disabled = true;
+    const row = el("div", { class: "set-efield-bool" });
+    row.appendChild(input);
+    row.appendChild(el("span", { text: input.checked ? "on" : "off" }));
+    input.addEventListener("change", () => {
+      row.querySelector("span").textContent = input.checked ? "on" : "off";
+    });
+    wrap.appendChild(row);
+  } else if (f.kind === "choice" && f.choices?.length) {
+    input = el("select", { id, dataset: { key: f.key, kind: "choice" } });
+    for (const c of f.choices) {
+      const opt = el("option", { value: c, text: c });
+      if (String(f.value) === c) opt.selected = true;
+      input.appendChild(opt);
+    }
+    if (f.env_locked) input.disabled = true;
+    wrap.appendChild(input);
+  } else {
+    const type = f.kind === "int" || f.kind === "float" ? "number" : "text";
+    input = el("input", {
+      type,
+      id,
+      dataset: { key: f.key, kind: f.kind },
+      value: f.value == null ? "" : String(f.value),
+      placeholder: f.example || (f.default != null ? String(f.default) : ""),
+    });
+    if (f.kind === "int" || f.kind === "float") {
+      if (f.minimum != null) input.min = f.minimum;
+      if (f.maximum != null) input.max = f.maximum;
+      if (f.kind === "float") input.step = "any";
+    }
+    if (f.env_locked) input.disabled = true;
+    wrap.appendChild(input);
+  }
+  return wrap;
+}
+
+function collectEngineValues() {
+  const out = {};
+  const root = $("#set-engine-root");
+  if (!root) return out;
+  root.querySelectorAll("[data-key]").forEach((node) => {
+    const key = node.dataset.key;
+    if (!key) return;
+    const kind = node.dataset.kind;
+    if (node.disabled) return;
+    if (kind === "bool") {
+      out[key] = !!node.checked;
+    } else if (kind === "int") {
+      const v = node.value.trim();
+      if (v === "") return;
+      out[key] = Number(v);
+    } else if (kind === "float") {
+      const v = node.value.trim();
+      if (v === "") return;
+      out[key] = Number(v);
+    } else {
+      out[key] = node.value;
+    }
+  });
+  return out;
+}
+
+function fillTailSeeds(seeds) {
+  const feeds = (seeds.feeds || []).join("\n");
+  const maps = (seeds.sitemaps || []).join("\n");
+  if ($("#set-feeds")) $("#set-feeds").value = feeds;
+  if ($("#set-sitemaps")) $("#set-sitemaps").value = maps;
+  if ($("#set-seeds-path")) {
+    $("#set-seeds-path").textContent = seeds.path
+      ? "File: " + seeds.path
+      : "";
+  }
+}
+
+function readTailSeedsForm() {
+  const lines = (ta) =>
+    String(ta?.value || "")
+      .split(/[\n,;]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  return {
+    feeds: lines($("#set-feeds")),
+    atom: [],
+    sitemaps: lines($("#set-sitemaps")),
+  };
+}
+
+function renderRuntimeStatus(health, dedup) {
   const root = $("#settings-block");
   clear(root);
+  for (const [k, v] of Object.entries(health || {})) {
+    const row = el("div", { class: "kv-row" });
+    row.appendChild(el("div", { class: "kv-key", text: k }));
+    row.appendChild(el("div", { class: "kv-val", text: typeof v === "object" ? JSON.stringify(v) : String(v) }));
+    root.appendChild(row);
+  }
+  const dblock = $("#dedup-block");
+  clear(dblock);
+  for (const [k, v] of Object.entries(dedup || {})) {
+    const row = el("div", { class: "kv-row" });
+    row.appendChild(el("div", { class: "kv-key", text: k }));
+    row.appendChild(el("div", { class: "kv-val", text: String(v) }));
+    dblock.appendChild(row);
+  }
+}
+
+function readJobProfile() {
+  const sources = $$('#set-sources input[type="checkbox"]:checked').map((c) => c.value);
+  const minRaw = ($("#set-min-salary")?.value || "").trim();
+  return {
+    titles: csvList($("#set-titles")?.value),
+    skills: csvList($("#set-skills")?.value),
+    locations: csvList($("#set-locations")?.value),
+    exclude: csvList($("#set-exclude")?.value),
+    remote_only: !!$("#set-remote-only")?.checked,
+    min_salary: minRaw ? Number(minRaw) : null,
+    notes: ($("#set-notes")?.value || "").trim(),
+    sources,
+  };
+}
+
+function fillJobProfile(p) {
+  if (!p) return;
+  if ($("#set-titles")) $("#set-titles").value = (p.titles || []).join(", ");
+  if ($("#set-skills")) $("#set-skills").value = (p.skills || []).join(", ");
+  if ($("#set-locations")) $("#set-locations").value = (p.locations || []).join(", ");
+  if ($("#set-exclude")) $("#set-exclude").value = (p.exclude || []).join(", ");
+  if ($("#set-notes")) $("#set-notes").value = p.notes || "";
+  if ($("#set-min-salary")) $("#set-min-salary").value = p.min_salary != null ? p.min_salary : "";
+  if ($("#set-remote-only")) $("#set-remote-only").checked = !!p.remote_only;
+  const selected = new Set(p.sources || []);
+  $$('#set-sources input[type="checkbox"]').forEach((c) => {
+    c.checked = selected.size ? selected.has(c.value) : true;
+    c.closest(".set-board")?.classList.toggle("is-on", c.checked);
+  });
+}
+
+function renderJobBoards(sources, selected) {
+  const box = $("#set-sources");
+  if (!box) return;
+  clear(box);
+  const sel = new Set(selected && selected.length ? selected : sources.map((s) => s.id));
+  for (const s of sources) {
+    const id = "set-src-" + s.id;
+    const lab = el("label", {
+      class: "set-board" + (sel.has(s.id) ? " is-on" : ""),
+      for: id,
+      title: s.note || s.url || s.label,
+    });
+    const cb = el("input", { type: "checkbox", id, value: s.id });
+    cb.checked = sel.has(s.id);
+    cb.addEventListener("change", () => lab.classList.toggle("is-on", cb.checked));
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(s.label));
+    box.appendChild(lab);
+  }
+}
+
+function updateWorkPrefsSummary(p) {
+  const node = $("#work-prefs-summary");
+  if (!node) return;
+  if (!p) {
+    node.textContent = "";
+    return;
+  }
+  const bits = [];
+  if (p.titles?.length) bits.push(p.titles.slice(0, 3).join(", "));
+  if (p.skills?.length) bits.push(p.skills.slice(0, 4).join(", "));
+  if (p.locations?.length) bits.push(p.locations.slice(0, 3).join(", "));
+  if (p.remote_only) bits.push("remote only");
+  if (p.sources?.length) bits.push(p.sources.length + " boards");
+  node.replaceChildren();
+  if (!bits.length) {
+    node.appendChild(el("span", { class: "muted", text: "No profile yet — " }));
+    node.appendChild(el("a", { href: "#settings", "data-route": "settings", text: "configure in Settings" }));
+    node.querySelector("a")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      navigate("settings");
+    });
+    return;
+  }
+  node.appendChild(el("span", { text: bits.join(" · ") + " · " }));
+  const link = el("a", { href: "#settings", text: "Edit in Settings" });
+  link.addEventListener("click", (e) => {
+    e.preventDefault();
+    navigate("settings");
+  });
+  node.appendChild(link);
+}
+
+async function saveAllSettings() {
+  const btn = $("#set-save-all");
+  if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+  const banner = $("#set-banner");
   try {
-    const [health, dedup] = await Promise.all([api("/healthz"), api("/dedup-stats")]);
-    for (const [k, v] of Object.entries(health)) {
-      const row = el("div", { class: "kv-row" });
-      row.appendChild(el("div", { class: "kv-key", text: k }));
-      row.appendChild(el("div", { class: "kv-val", text: typeof v === "object" ? JSON.stringify(v) : String(v) }));
-      root.appendChild(row);
+    // 1) Work profile + boards
+    const p = await api("/jobsearch/profile", {
+      method: "PUT",
+      body: JSON.stringify(readJobProfile()),
+    });
+    fillJobProfile(p);
+    cachedJobProfile = p;
+    updateWorkPrefsSummary(p);
+
+    // 2) Tail seeds
+    await api("/settings/tail-seeds", {
+      method: "PUT",
+      body: JSON.stringify(readTailSeedsForm()),
+    });
+
+    // 3) Engine knobs (schema)
+    const engineRes = await api("/settings/config", {
+      method: "PUT",
+      body: JSON.stringify({ values: collectEngineValues() }),
+    });
+
+    // Refresh schema display with new values / sources
+    const schema = await api("/settings/schema");
+    engineSchemaCache = schema;
+    renderEngineSchema(schema);
+    buildSettingsToc();
+
+    let msg = "Settings saved";
+    if (engineRes.errors && Object.keys(engineRes.errors).length) {
+      msg = "Saved with errors: " + Object.entries(engineRes.errors).map(([k, v]) => k + " (" + v + ")").join(", ");
+      if (banner) {
+        banner.hidden = false;
+        banner.textContent = msg;
+        banner.className = "set-banner is-err";
+      }
+      toast(msg, "err");
+    } else {
+      if (banner) {
+        banner.hidden = false;
+        banner.textContent = "Saved. Env-locked keys unchanged. Restart API if workers/tail knobs don't apply.";
+        banner.className = "set-banner is-ok";
+      }
+      toast("Settings saved", "ok");
     }
-    const dblock = $("#dedup-block");
-    clear(dblock);
-    for (const [k, v] of Object.entries(dedup)) {
-      const row = el("div", { class: "kv-row" });
-      row.appendChild(el("div", { class: "kv-key", text: k }));
-      row.appendChild(el("div", { class: "kv-val", text: String(v) }));
-      dblock.appendChild(row);
+  } catch (e) {
+    toast(String(e.message || e), "err");
+    if (banner) {
+      banner.hidden = false;
+      banner.textContent = String(e.message || e);
+      banner.className = "set-banner is-err";
     }
-  } catch (err) {
-    root.appendChild(el("p", { class: "muted", text: "failed: " + err.message }));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Save all"; }
   }
 }
 
@@ -868,6 +1204,189 @@ function renderFeed(rows) {
   }
 }
 
+// ── Work / career search ──────────────────────────────────────
+let workReady = false;
+let workSearching = false;
+let cachedJobProfile = null;
+
+function csvList(v) {
+  return String(v || "")
+    .split(/[,;]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function scoreClass(score) {
+  if (score >= 80) return "is-hi";
+  if (score >= 35) return "is-mid";
+  return "";
+}
+
+function snippetText(j) {
+  const d = String(j.description || "").replace(/\s+/g, " ").trim();
+  if (!d || d.length < 40) return "";
+  const stub = `${j.title || ""} at ${j.company || ""}`.toLowerCase();
+  if (d.toLowerCase().startsWith(stub.slice(0, Math.min(20, stub.length))) && d.length < 100) return "";
+  return d.length > 200 ? d.slice(0, 197) + "…" : d;
+}
+
+function prettyReason(r) {
+  const s = String(r || "");
+  // shorten noisy labels for UI
+  return s
+    .replace(/^query:/, "")
+    .replace(/^skill:/, "")
+    .replace(/^title:/, "")
+    .replace(/@description$/, "")
+    .replace(/@title$/, "")
+    .replace(/@tags$/, "")
+    .replace(/^phrase:/, "≈ ")
+    .slice(0, 28);
+}
+
+function renderWorkResults(payload) {
+  const list = $("#work-list");
+  const meta = $("#work-meta");
+  if (!list) return;
+  clear(list);
+  const results = payload.results || [];
+  const errKeys = Object.keys(payload.sources_err || {});
+  const sc = payload.source_counts || {};
+  const scParts = Object.keys(sc).map((k) => `${k} ${sc[k]}`).join(" · ");
+  let msg = `${results.length} roles`;
+  if (payload.raw_total) msg += ` from ${payload.raw_total}`;
+  if (payload.took_ms) msg += ` · ${(payload.took_ms / 1000).toFixed(1)}s`;
+  if (payload.enriched) msg += ` · ${payload.enriched} with full text`;
+  if (scParts) msg += ` · ${scParts}`;
+  if (errKeys.length) msg += ` · failed: ${errKeys.join(", ")}`;
+  if (meta) meta.textContent = results.length ? msg : "No results yet — search above, or edit prefs in Settings";
+
+  if (!results.length) {
+    list.appendChild(el("li", {
+      class: "work-empty",
+      text: "No matches. Broaden keywords or update your profile in Settings.",
+    }));
+    return;
+  }
+
+  for (const j of results) {
+    const li = el("li", { class: "work-card" });
+    const body = el("div", { class: "work-card-body" });
+
+    const top = el("div", { class: "work-card-top" });
+    const h = el("h3", { class: "work-card-title" });
+    const href = safeOutboundHref(j.url);
+    if (href) {
+      h.appendChild(el("a", {
+        href, target: "_blank", rel: "noopener noreferrer",
+        text: j.title || "Untitled",
+      }));
+    } else {
+      h.appendChild(document.createTextNode(j.title || "Untitled"));
+    }
+    top.appendChild(h);
+    top.appendChild(el("span", {
+      class: "work-score " + scoreClass(j.score || 0),
+      text: String(Math.round(j.score || 0)),
+      title: (j.score_reasons || []).join(", ") || "match score",
+    }));
+    body.appendChild(top);
+
+    const sub = el("div", { class: "work-card-sub" });
+    if (j.company) sub.appendChild(el("span", { text: j.company }));
+    if (j.location) sub.appendChild(el("span", { text: j.location }));
+    if (j.remote) sub.appendChild(el("span", { text: "Remote" }));
+    if (j.source_label || j.source) {
+      sub.appendChild(el("span", { class: "work-src", text: j.source_label || j.source }));
+    }
+    if (j.published_at) sub.appendChild(el("span", { text: ago(j.published_at, false) }));
+    if (j.salary) sub.appendChild(el("span", { text: j.salary }));
+    body.appendChild(sub);
+
+    const snip = snippetText(j);
+    if (snip) body.appendChild(el("p", { class: "work-card-snip", text: snip }));
+
+    const reasons = (j.score_reasons || []).slice(0, 4);
+    if (reasons.length) {
+      const chips = el("div", { class: "work-card-reasons" });
+      reasons.forEach((r) => chips.appendChild(el("span", {
+        class: "work-reason",
+        text: prettyReason(r),
+        title: String(r),
+      })));
+      body.appendChild(chips);
+    }
+
+    const actions = el("div", { class: "work-card-actions" });
+    if (href) {
+      actions.appendChild(el("a", {
+        class: "btn btn-ghost",
+        href,
+        target: "_blank",
+        rel: "noopener noreferrer",
+        text: "Open →",
+      }));
+    }
+
+    li.appendChild(body);
+    li.appendChild(actions);
+    list.appendChild(li);
+  }
+}
+
+async function initWork() {
+  try {
+    // Prefer live form if Settings already loaded; else fetch profile
+    if (settingsReady && $("#set-titles")) {
+      cachedJobProfile = readJobProfile();
+    } else {
+      cachedJobProfile = await api("/jobsearch/profile");
+    }
+    updateWorkPrefsSummary(cachedJobProfile);
+    workReady = true;
+  } catch (e) {
+    console.error(e);
+    toast("Could not load work prefs", "err");
+  }
+}
+
+async function runWorkSearch() {
+  if (workSearching) return;
+  workSearching = true;
+  const btn = $("#work-search-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Searching…"; }
+  const meta = $("#work-meta");
+  if (meta) meta.textContent = "Fetching public boards…";
+  try {
+    // Always use saved Settings profile (or current settings form if open)
+    let profile = cachedJobProfile;
+    if (settingsReady && $("#set-titles")) profile = readJobProfile();
+    if (!profile) profile = await api("/jobsearch/profile");
+    const body = {
+      q: ($("#work-q")?.value || "").trim(),
+      profile,
+      limit: 40,
+      save_profile: false,
+    };
+    const res = await api("/jobsearch/search", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (res.profile) {
+      cachedJobProfile = res.profile;
+      updateWorkPrefsSummary(res.profile);
+    }
+    renderWorkResults(res);
+  } catch (e) {
+    console.error(e);
+    if (meta) meta.textContent = "Search failed";
+    toast(String(e.message || e), "err");
+  } finally {
+    workSearching = false;
+    if (btn) { btn.disabled = false; btn.textContent = "Search"; }
+  }
+}
+
 // ── Command palette ───────────────────────────────────────────
 const cmdkOverlay = $("#cmdk");
 const cmdkInput = $("#cmdk-input");
@@ -880,17 +1399,20 @@ function buildCommands(query = "") {
   const sections = [
     { kind: "nav", icon: "◐", label: "Go to Dashboard", do: () => navigate("dashboard") },
     { kind: "nav", icon: "≡", label: "Go to Captures",  do: () => navigate("captures") },
-    { kind: "nav", icon: "▱", label: "Go to Jobs",      do: () => navigate("jobs") },
+    { kind: "nav", icon: "◇", label: "Go to Work",      do: () => navigate("work") },
+    { kind: "nav", icon: "▱", label: "Go to Pipeline",  do: () => navigate("jobs") },
     { kind: "nav", icon: "⟳", label: "Go to Tail",      do: () => navigate("tail") },
     { kind: "nav", icon: "⚙", label: "Go to Settings",  do: () => navigate("settings") },
     { kind: "action", icon: "▶", label: "Start tail",   do: async () => { await api("/tail/start", { method: "POST", body: "{}" }); toast("tail started", "ok"); void refreshDashboard(); } },
     { kind: "action", icon: "■", label: "Pause tail",   do: async () => { await api("/tail/stop", { method: "POST", body: "{}" }); toast("tail paused", "ok"); void refreshDashboard(); } },
     { kind: "action", icon: "⌕", label: "Search captures…", do: () => { navigate("captures"); setTimeout(() => $("#caps-search").focus(), 200); } },
+    { kind: "action", icon: "◇", label: "Find jobs…", do: () => { navigate("work"); setTimeout(() => $("#work-q")?.focus(), 200); } },
   ];
   if (!q) return sections;
   if (q.length >= 2) {
     // Local search shortcut → jump to captures with this query.
     sections.unshift({ kind: "search", icon: "⌕", label: `Search corpus for "${query}"`, do: () => { navigate("captures"); $("#caps-search").value = query; void loadCaptures(true); } });
+    sections.unshift({ kind: "search", icon: "◇", label: `Find jobs for "${query}"`, do: () => { navigate("work"); setTimeout(() => { if ($("#work-q")) $("#work-q").value = query; void runWorkSearch(); }, 120); } });
   }
   return sections.filter((c) => c.label.toLowerCase().includes(q) || c.kind.includes(q));
 }
@@ -942,8 +1464,8 @@ document.addEventListener("keydown", (e) => {
       setTimeout(() => $("#caps-search").focus(), 80);
     }
   }
-  // Number shortcuts 1..5 for routes (when not typing)
-  if (/^[1-5]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+  // Number shortcuts 1..6 for routes (when not typing)
+  if (/^[1-6]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
     const tag = (document.activeElement?.tagName || "").toLowerCase();
     if (tag !== "input" && tag !== "textarea" && tag !== "select") {
       navigate(ROUTES[parseInt(e.key, 10) - 1]);
@@ -987,6 +1509,14 @@ $("#caps-source")?.addEventListener("change", () => loadCaptures(true));
 $("#caps-prev")?.addEventListener("click", () => { caps.offset = Math.max(0, caps.offset - caps.limit); loadCaptures(false); });
 $("#caps-next")?.addEventListener("click", () => { caps.offset += caps.limit; loadCaptures(false); });
 $("#jobs-refresh")?.addEventListener("click", () => loadJobs());
+
+// Work / career search
+$("#work-search-btn")?.addEventListener("click", () => runWorkSearch());
+$("#work-q")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); void runWorkSearch(); }
+});
+$("#set-save-all")?.addEventListener("click", () => saveAllSettings());
+$("#set-reload")?.addEventListener("click", () => loadSettings());
 
 // Mobile nav
 $("#mobile-nav-btn")?.addEventListener("click", () => {

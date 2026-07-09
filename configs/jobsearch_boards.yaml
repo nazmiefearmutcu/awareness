@@ -1,0 +1,90 @@
+# Public ATS board tokens for Awareness job search.
+# Greenhouse: boards-api.greenhouse.io/v1/boards/{token}/jobs
+# Lever:     api.lever.co/v0/postings/{token}
+# Ashby:     api.ashbyhq.com/posting-api/job-board/{token}
+#
+# These are public board slugs, not secrets. Invalid/stale tokens fail soft at fetch.
+
+greenhouse:
+  - stripe
+  - airbnb
+  - figma
+  - notion
+  - cloudflare
+  - datadog
+  - discord
+  - gitlab
+  - hashicorp
+  - openai
+  - anthropic
+  - elastic
+  - mongodb
+  - snowflakecomputing
+  - twilio
+  - shopify
+  - reddit
+  - dropbox
+  - airtable
+  - asana
+  - doordash
+  - robinhood
+  - coinbase
+  - plaid
+  - brex
+  - ramp
+  - duolingo
+  - instacart
+  - lyft
+  - hubspot
+  - pinterest
+  - github
+  - mozilla
+  - intercom
+  - gusto
+  - calendly
+  - grammarly
+  - coursera
+  - affirm
+  - rivian
+  - anduril
+  - postman
+  - mixpanel
+  - nerdwallet
+  - square
+
+lever:
+  - netflix
+  - palantir
+  - twitch
+  - spotify
+  - box
+  - canva
+  - fingerfood
+  - activecampaign
+  - yelp
+  - loom
+  - wealthsimple
+  - eventbrite
+  - outreach
+  - buildkite
+  - coursehero
+  - gojek
+  - nylas
+  - lattice
+
+ashby:
+  - ashby
+  - linear
+  - retool
+  - vercel
+  - mercury
+  - runway
+  - perplexity
+  - clerk
+  - sourcegraph
+  - baseten
+  - sierra
+  - harvey
+  - cursor
+  - ramp
+  - notion

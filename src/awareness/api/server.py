@@ -19,6 +19,10 @@ Endpoints:
     GET  /search                 — BM25-ranked full-text search w/ snippets
     GET  /counts                 — counts grouped by source & domain
     GET  /dedup-stats            — dedup index stats
+    GET  /jobsearch/sources      — public job boards catalog
+    GET  /jobsearch/profile      — personalization profile
+    PUT  /jobsearch/profile      — save profile
+    POST /jobsearch/search       — personalized live job search
 
 Run with ``awareness-api`` script or ``uvicorn awareness.api.server:create_app``.
 """
@@ -477,6 +481,90 @@ def create_app() -> FastAPI:
             fields=field_list,
             max_results=s.search_max_results,
         )
+
+    # ── settings (engine config + tail seeds) ────────────────────────────
+    @app.get("/settings/schema")
+    def settings_schema() -> dict[str, Any]:
+        from awareness.config.persist import schema_payload
+
+        return schema_payload()
+
+    @app.put("/settings/config")
+    def settings_put_config(body: dict[str, Any]) -> dict[str, Any]:
+        from awareness.config.persist import apply_updates
+
+        # Accept {values: {...}} or flat map
+        values = body.get("values") if isinstance(body.get("values"), dict) else body
+        if not isinstance(values, dict):
+            raise HTTPException(400, "expected object of key → value")
+        # Strip meta keys if flat
+        values = {k: v for k, v in values.items() if k not in ("values", "note")}
+        return apply_updates(values)
+
+    @app.get("/settings/tail-seeds")
+    def settings_get_tail_seeds() -> dict[str, Any]:
+        from awareness.config.persist import read_tail_seeds
+
+        return read_tail_seeds()
+
+    @app.put("/settings/tail-seeds")
+    def settings_put_tail_seeds(body: dict[str, Any]) -> dict[str, Any]:
+        from awareness.config.persist import write_tail_seeds
+
+        return write_tail_seeds(body or {})
+
+    # ── job search (public boards + personalization) ─────────────────────
+    @app.get("/jobsearch/sources")
+    def jobsearch_sources() -> dict[str, Any]:
+        from awareness.jobsearch.engine import JobSearchEngine
+
+        s = get_settings()
+        eng = JobSearchEngine(s.data_dir)
+        return {"sources": eng.catalog()}
+
+    @app.get("/jobsearch/profile")
+    def jobsearch_get_profile() -> dict[str, Any]:
+        from awareness.jobsearch.engine import JobSearchEngine
+
+        s = get_settings()
+        eng = JobSearchEngine(s.data_dir)
+        return eng.get_profile().model_dump(mode="json")
+
+    @app.put("/jobsearch/profile")
+    def jobsearch_put_profile(body: dict[str, Any]) -> dict[str, Any]:
+        from awareness.jobsearch.engine import JobSearchEngine
+        from awareness.jobsearch.models import profile_from_flat
+
+        s = get_settings()
+        eng = JobSearchEngine(s.data_dir)
+        profile = profile_from_flat(body)
+        return eng.put_profile(profile).model_dump(mode="json")
+
+    @app.post("/jobsearch/search")
+    async def jobsearch_search(body: dict[str, Any]) -> dict[str, Any]:
+        from awareness.jobsearch.engine import JobSearchEngine
+        from awareness.jobsearch.models import JobSearchRequest, profile_from_flat
+
+        s = get_settings()
+        eng = JobSearchEngine(s.data_dir)
+        profile = None
+        if body.get("profile") is not None:
+            profile = profile_from_flat(body["profile"] if isinstance(body["profile"], dict) else body)
+        elif any(k in body for k in ("titles", "skills", "locations", "sources", "remote_only")):
+            profile = profile_from_flat(body)
+        try:
+            li_pages = int(body.get("linkedin_pages") or 3)
+        except (TypeError, ValueError):
+            li_pages = 3
+        req = JobSearchRequest(
+            q=str(body.get("q") or ""),
+            profile=profile,
+            limit=int(body.get("limit") or 40),
+            save_profile=bool(body.get("save_profile", False)),
+            linkedin_pages=max(1, min(li_pages, 5)),
+        )
+        result = await eng.search(req)
+        return result.model_dump(mode="json")
 
     # ── static dashboard ─────────────────────────────────────────────────
     web_dir = Path(__file__).resolve().parent / "web"
