@@ -60,6 +60,10 @@ public enum APIProcessResolver {
         if let startingAt {
             starts.append(startingAt)
         }
+        // Pinned by build-app.sh / install-app.sh inside the .app bundle.
+        if let pinned = readPinnedRepoRoot(fileManager: fileManager) {
+            starts.append(pinned)
+        }
         starts.append(fileManager.currentDirectoryPath)
         // GUI apps often launch with cwd=/; walk up from the executable
         // (…/dist/Awareness.app/Contents/MacOS → repo root with pyproject.toml).
@@ -67,9 +71,12 @@ public enum APIProcessResolver {
             starts.append(URL(fileURLWithPath: arg0).deletingLastPathComponent().path)
         }
         // Home symlink used on this machine: ~/awareness_dev
-        let homeDev = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("awareness_dev").path
-        starts.append(homeDev)
+        let home = fileManager.homeDirectoryForCurrentUser
+        starts.append(home.appendingPathComponent("awareness_dev").path)
+        // Common worktree location for this project.
+        starts.append(
+            home.appendingPathComponent("awareness_dev/.worktrees/feat-native-macos-app").path
+        )
 
         var seen = Set<String>()
         for start in starts {
@@ -79,6 +86,25 @@ public enum APIProcessResolver {
             }
         }
         return nil
+    }
+
+    /// Contents/Resources/AWARENESS_REPO.txt written at package time.
+    public static func readPinnedRepoRoot(fileManager: FileManager = .default) -> String? {
+        guard let arg0 = ProcessInfo.processInfo.arguments.first, !arg0.isEmpty else {
+            return nil
+        }
+        let file = URL(fileURLWithPath: arg0)
+            .deletingLastPathComponent() // MacOS
+            .deletingLastPathComponent() // Contents
+            .appendingPathComponent("Resources/AWARENESS_REPO.txt")
+        guard fileManager.fileExists(atPath: file.path),
+              let raw = try? String(contentsOf: file, encoding: .utf8)
+        else {
+            return nil
+        }
+        let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, fileManager.fileExists(atPath: path) else { return nil }
+        return path
     }
 
     private static func walkForRepoRoot(

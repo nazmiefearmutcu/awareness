@@ -351,7 +351,7 @@ COMMAND_CATEGORIES: list[tuple[str, list[tuple[str, str]]]] = [
         ("restart", "Stop then start the API server"),
         ("status", "Services, recent jobs & disk usage"),
         ("health", "Quick JSON liveness probe"),
-        ("dashboard", "Open the web dashboard in a browser"),
+        ("dashboard", "Open the native macOS Awareness app"),
         ("tui", "Live full-screen terminal dashboard"),
         ("logs", "View / follow API & app logs"),
         ("service …", "Install & manage the macOS launchd agent"),

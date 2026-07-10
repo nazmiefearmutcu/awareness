@@ -619,7 +619,7 @@ def stop(
 
 
 def _resolve_native_app_path() -> Path | None:
-    """Locate Awareness.app: AWARENESS_APP env, repo dist/, ~/Applications, /Applications."""
+    """Locate Awareness.app: AWARENESS_APP env, repo dist/, worktrees, ~/Applications, /Applications."""
     env = os.environ.get("AWARENESS_APP")
     if env:
         p = Path(env).expanduser()
@@ -630,8 +630,8 @@ def _resolve_native_app_path() -> Path | None:
 
     # Editable / source install: src/awareness/cli/main.py → parents[3] is repo root
     try:
-        repo_dist = Path(__file__).resolve().parents[3] / "dist" / "Awareness.app"
-        candidates.append(repo_dist)
+        repo_root = Path(__file__).resolve().parents[3]
+        candidates.append(repo_root / "dist" / "Awareness.app")
     except IndexError:
         pass
 
@@ -646,7 +646,20 @@ def _resolve_native_app_path() -> Path | None:
                 continue
             if "awareness" in text.lower():
                 candidates.append(parent / "dist" / "Awareness.app")
+                # Sibling worktrees (e.g. .worktrees/feat-native-macos-app/dist)
+                wt = parent / ".worktrees"
+                if wt.is_dir():
+                    for child in sorted(wt.iterdir()):
+                        candidates.append(child / "dist" / "Awareness.app")
                 break
+
+    # Home clone / symlink used on this machine
+    home_dev = Path.home() / "awareness_dev"
+    candidates.append(home_dev / "dist" / "Awareness.app")
+    wt_home = home_dev / ".worktrees"
+    if wt_home.is_dir():
+        for child in sorted(wt_home.iterdir()):
+            candidates.append(child / "dist" / "Awareness.app")
 
     candidates.extend(
         [
@@ -664,8 +677,31 @@ def _resolve_native_app_path() -> Path | None:
         if key in seen:
             continue
         seen.add(key)
-        if c.is_dir():
+        if c.is_dir() and (c / "Contents" / "MacOS").exists():
             return c
+    return None
+
+
+def _resolve_repo_root_for_app() -> Path | None:
+    """Best-effort path to the awareness git/checkout root for AWARENESS_REPO."""
+    try:
+        repo = Path(__file__).resolve().parents[3]
+        if (repo / "pyproject.toml").is_file():
+            return repo
+    except IndexError:
+        pass
+    here = Path(__file__).resolve().parent
+    for parent in [here, *here.parents]:
+        pyproject = parent / "pyproject.toml"
+        if pyproject.is_file():
+            try:
+                if "awareness" in pyproject.read_text(encoding="utf-8").lower():
+                    return parent
+            except OSError:
+                continue
+    home = Path.home() / "awareness_dev"
+    if (home / "pyproject.toml").is_file():
+        return home
     return None
 
 
@@ -695,12 +731,9 @@ def dashboard(
     env["AW_API_PORT"] = str(port)
     # Help the native app find .venv/awareness-api when launched from Dock-like cwd.
     if "AWARENESS_REPO" not in env:
-        try:
-            repo = Path(__file__).resolve().parents[3]
-            if (repo / "pyproject.toml").is_file():
-                env["AWARENESS_REPO"] = str(repo)
-        except IndexError:
-            pass
+        repo = _resolve_repo_root_for_app()
+        if repo is not None:
+            env["AWARENESS_REPO"] = str(repo)
 
     binary = app_path / "Contents" / "MacOS" / "Awareness"
     rprint(f"[green]Opening native app:[/green] {app_path}")
@@ -712,6 +745,7 @@ def dashboard(
         )
     else:
         # Bundle without a packaged binary (or incomplete build) — fall back to open(1)
+        # Note: open(1) does not forward env to GUI apps; prefer a full build.
         subprocess.Popen(
             ["open", str(app_path)],
             env=env,

@@ -8,11 +8,12 @@ Native SwiftUI shell that starts the Python `awareness-api` backend and loads th
 - Swift 5.9+ / Xcode command-line tools
 - Python project venv with `awareness-api` installable (repo root `uv` / `pip` env)
 
-## Build `.app` bundle
+## Build & install
 
 ```bash
 # from repo root
 ./macos/Awareness/Scripts/build-app.sh
+./macos/Awareness/Scripts/install-app.sh   # → ~/Applications/Awareness.app
 ```
 
 Produces:

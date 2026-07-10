@@ -34,6 +34,21 @@ if [[ -f "${ROOT}/Scripts/awareness-api-launcher.sh" ]]; then
   cp "${ROOT}/Scripts/awareness-api-launcher.sh" "${RESOURCES_DIR}/awareness-api-launcher.sh"
   chmod +x "${RESOURCES_DIR}/awareness-api-launcher.sh"
 fi
+# App icon
+if [[ ! -f "${ROOT}/Resources/AppIcon.icns" ]] && [[ -x "${ROOT}/Scripts/make-icon.sh" ]]; then
+  "${ROOT}/Scripts/make-icon.sh" || true
+fi
+if [[ -f "${ROOT}/Resources/AppIcon.icns" ]]; then
+  cp "${ROOT}/Resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
+fi
+# Pin repo root so Dock-launched app can find the venv/source tree.
+echo "${REPO}" > "${RESOURCES_DIR}/AWARENESS_REPO.txt"
 echo -n "APPL????" > "${CONTENTS}/PkgInfo"
 
+# ad-hoc codesign so Gatekeeper is less noisy for local builds
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --deep --sign - "${APP_DIR}" 2>/dev/null || true
+fi
+
 echo "OK: ${APP_DIR}"
+echo "Install to ~/Applications: ${ROOT}/Scripts/install-app.sh"
