@@ -47,6 +47,8 @@ from awareness.schemas.jobs import BackfillRequest
 from awareness.storage.duckdb_index import DuckDbIndex
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
+from datetime import datetime
+
 from awareness.util.timeutil import coerce_relative_end, to_utc
 from awareness.workers.engine import WorkerEngine
 

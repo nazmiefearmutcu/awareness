@@ -125,6 +125,9 @@ def create_app() -> FastAPI:
                 await _State.tail.stop(drain_seconds=10.0)
             for t in list(_State.background_tasks):
                 t.cancel()
+            if _State.index is not None:
+                _State.index.close()
+                _State.index = None
 
     app = FastAPI(title="Awareness", version="0.1.0", lifespan=lifespan)
 
@@ -312,12 +315,7 @@ def create_app() -> FastAPI:
         domain: str | None = Query(None),
         source: str | None = Query(None),
     ) -> list[dict[str, Any]]:
-        s = get_settings()
-        idx = DuckDbIndex(
-            db_path=s.duckdb_path(),
-            jsonl_dir=s.staging_jsonl_dir(),
-            iceberg_warehouse=s.iceberg_warehouse,
-        )
+        idx = _get_index()
         end_dt = to_utc(end) if end else coerce_relative_end("now")
         where = ["fetch_ts >= $start", "fetch_ts <= $end"]
         params: dict[str, Any] = {"start": to_utc(start), "end": end_dt}
@@ -368,12 +366,7 @@ def create_app() -> FastAPI:
         source: str | None = Query(None),
         search: str | None = Query(None),
     ) -> dict[str, Any]:
-        s = get_settings()
-        idx = DuckDbIndex(
-            db_path=s.duckdb_path(),
-            jsonl_dir=s.staging_jsonl_dir(),
-            iceberg_warehouse=s.iceberg_warehouse,
-        )
+        idx = _get_index()
         where: list[str] = []
         params: dict[str, Any] = {}
         if start is not None:
@@ -416,12 +409,7 @@ def create_app() -> FastAPI:
 
     @app.get("/captures/{capture_id}")
     def capture_detail(capture_id: str) -> dict[str, Any]:
-        s = get_settings()
-        idx = DuckDbIndex(
-            db_path=s.duckdb_path(),
-            jsonl_dir=s.staging_jsonl_dir(),
-            iceberg_warehouse=s.iceberg_warehouse,
-        )
+        idx = _get_index()
         rows = idx.execute(
             """
             SELECT * FROM captures WHERE capture_id = $cid LIMIT 1
@@ -434,16 +422,8 @@ def create_app() -> FastAPI:
 
     @app.get("/captures/{capture_id}/related")
     def capture_related(capture_id: str, limit: int = Query(12, ge=1, le=50)) -> dict[str, Any]:
-        from awareness.storage.duckdb_index import find_related_captures  # local import
-
-        s = get_settings()
-        idx = DuckDbIndex(
-            db_path=s.duckdb_path(),
-            jsonl_dir=s.staging_jsonl_dir(),
-            iceberg_warehouse=s.iceberg_warehouse,
-        )
-        conn = idx.connect()
-        siblings = find_related_captures(conn, capture_id, limit=limit)
+        idx = _get_index()
+        siblings = idx.related(capture_id, limit=limit)
         return {"capture_id": capture_id, "siblings": siblings}
 
     @app.get("/search")

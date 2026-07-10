@@ -18,7 +18,6 @@ from typing import Any
 
 from sqlalchemy import (
     DateTime,
-    Float,
     Integer,
     BigInteger,
     String,
@@ -89,6 +88,9 @@ class TaskRow(Base):
     docs_dedup_dropped: Mapped[int] = mapped_column(BigInteger, default=0)
     bytes_processed: Mapped[int] = mapped_column(BigInteger, default=0)
     checkpoint_json: Mapped[str] = mapped_column(String, default="{}")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     __table_args__ = (UniqueConstraint("job_id", "partition_key", name="uq_task_part"),)
 
 
@@ -536,12 +538,87 @@ class StateDB:
             stmt = stmt.limit(limit)
             rows = list(s.scalars(stmt))
             now = _utcnow()
-            for r in rows:
-                r.status = TaskStatus.RUNNING.value
-                r.started_at = now
-                r.attempts += 1
+            candidates = list(
+                s.scalars(
+                    select(TaskRow.task_id)
+                    .where(
+                        TaskRow.job_id == job_id,
+                        TaskRow.status == TaskStatus.PENDING.value,
+                        (TaskRow.next_attempt_at.is_(None)) | (TaskRow.next_attempt_at <= now),
+                    )
+                    .order_by(TaskRow.created_at)
+                    .limit(limit)
+                )
+            )
+            if not candidates:
+                return []
+            claimed_ids = list(
+                s.scalars(
+                    update(TaskRow)
+                    .where(
+                        TaskRow.task_id.in_(candidates),
+                        TaskRow.status == TaskStatus.PENDING.value,
+                    )
+                    .values(
+                        status=TaskStatus.RUNNING.value,
+                        started_at=now,
+                        attempts=TaskRow.attempts + 1,
+                    )
+                    .returning(TaskRow.task_id)
+                    .execution_options(synchronize_session=False)
+                )
+            )
             s.commit()
+            rows = (
+                list(s.scalars(select(TaskRow).where(TaskRow.task_id.in_(claimed_ids))))
+                if claimed_ids
+                else []
+            )
+            rows.sort(key=lambda r: (r.created_at, r.task_id))
             return [self._task_state_from_row(r) for r in rows]
+
+    def requeue_orphaned_running(
+        self, job_id: str, *, older_than_seconds: float, max_retries: int
+    ) -> int:
+        """Reset RUNNING tasks whose ``started_at`` is older than the lease back
+        to PENDING so a worker re-claims them after a crash/stop. Tasks that have
+        already exhausted ``max_retries`` are dead-lettered instead. Returns the
+        number of tasks requeued (not dead-lettered).
+        """
+        cutoff = _utcnow() - timedelta(seconds=older_than_seconds)
+        with self._lock, self.session() as s:
+            rows = list(
+                s.scalars(
+                    select(TaskRow).where(
+                        TaskRow.job_id == job_id,
+                        TaskRow.status == TaskStatus.RUNNING.value,
+                        TaskRow.started_at.is_not(None),
+                        TaskRow.started_at < cutoff,
+                    )
+                )
+            )
+            requeued = 0
+            dead = 0
+            for r in rows:
+                if r.attempts >= max(1, max_retries):
+                    r.status = TaskStatus.DEAD_LETTERED.value
+                    r.completed_at = _utcnow()
+                    r.last_error = "orphaned_running_exceeded_max_retries"
+                    dead += 1
+                else:
+                    r.status = TaskStatus.PENDING.value
+                    r.started_at = None
+                    requeued += 1
+            if dead:
+                s.execute(
+                    update(JobRow)
+                    .where(JobRow.job_id == job_id)
+                    .values(tasks_dead_lettered=JobRow.tasks_dead_lettered + dead)
+                )
+            s.commit()
+        if requeued or dead:
+            logger.info("orphaned_running_reaped", job_id=job_id, requeued=requeued, dead=dead)
+        return requeued
 
     def complete_task(
         self,
@@ -582,6 +659,7 @@ class StateDB:
                 row.completed_at = _utcnow()
             else:
                 row.status = TaskStatus.PENDING.value  # retry
+                row.next_attempt_at = _utcnow() + timedelta(seconds=_retry_delay_seconds(row.attempts))
             s.commit()
 
     def get_last_task_checkpoint(self, partition_key: str) -> dict[str, Any]:

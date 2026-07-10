@@ -40,6 +40,13 @@ from awareness.util.urls import canonical_url, domain_of
 logger = get_logger("sources.fineweb")
 
 
+class FineWebDependencyMissing(RuntimeError):
+    """FineWeb was explicitly requested but the optional `datasets` dep is missing.
+
+    Install it with `pip install 'awareness[hf]'` (adds datasets + huggingface-hub).
+    """
+
+
 class FineWebAdapter(Adapter):
     """Combined FineWeb + FineWeb2 adapter.
 
@@ -54,9 +61,17 @@ class FineWebAdapter(Adapter):
         self._rows = rows_per_partition
 
     def plan(self, request: BackfillRequest) -> list[PartitionSpec]:
+        explicitly_requested = bool(
+            {SourceKind.FINEWEB, SourceKind.FINEWEB_2} & set(request.sources or [])
+        )
         try:
             import datasets  # noqa: F401, PLC0415
-        except ImportError:
+        except ImportError as exc:
+            if explicitly_requested:
+                raise FineWebDependencyMissing(
+                    "FineWeb was requested but the 'datasets' package is not installed. "
+                    "Install it with: pip install 'awareness[hf]'"
+                ) from exc
             logger.info("fineweb_skipped_missing_datasets_lib")
             return []
         # Build candidate (dataset, dump) tuples.

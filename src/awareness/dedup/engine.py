@@ -28,6 +28,11 @@ from awareness.util.hashing import hamming128, simhash128
 
 logger = get_logger("dedup")
 
+# Default near-duplicate merge threshold in Hamming bits over the 128-bit
+# signature. Must stay <= (NEAR_DUP_SEGMENTS - 1) so the band index's pigeonhole
+# guarantee covers it — see tests/unit/test_dedup_invariant.py.
+DEFAULT_NEAR_THRESHOLD = 24
+
 
 class DedupDecision(str, Enum):
     NEW = "new"

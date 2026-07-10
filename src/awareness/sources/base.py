@@ -121,6 +121,10 @@ def _register_defaults(reg: AdapterRegistry) -> None:
         WarcRepairAdapter,
     ):
         try:
-            reg.register(cls())
+            if cls is CommonCrawlWetAdapter:
+                from awareness.config import get_settings
+                reg.register(cls(max_shards_per_crawl=get_settings().cc_wet_max_shards_per_crawl))
+            else:
+                reg.register(cls())
         except Exception as exc:
             logger.warning("adapter_register_failed", cls=cls.__name__, err=str(exc))

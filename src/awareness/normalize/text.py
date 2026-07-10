@@ -85,10 +85,25 @@ def normalize_text(
     )
 
 
-def detect_language(text: str) -> str | None:
-    """Best-effort language code (BCP-47 / ISO-639-1). Returns None on failure."""
-    if not text or len(text) < 80:
-        return None
+DEFAULT_LID_MIN_CHARS = 80
+DEFAULT_LID_MIN_CONFIDENCE = 0.50
+
+
+def detect_language_conf(
+    text: str,
+    *,
+    min_chars: int = DEFAULT_LID_MIN_CHARS,
+    min_confidence: float = 0.0,
+) -> tuple[str | None, float]:
+    """Best-effort ``(language, confidence)`` for ``text`` (ISO-639-1).
+
+    Returns ``(None, 0.0)`` when the text is shorter than ``min_chars`` or the
+    detector finds no language. When the top language's probability is below
+    ``min_confidence`` the language is suppressed to ``None`` but the measured
+    confidence is still returned, so callers can log or re-threshold it.
+    """
+    if not text or len(text) < min_chars:
+        return (None, 0.0)
     try:
         from langdetect import DetectorFactory, detect  # noqa: PLC0415
 
@@ -96,4 +111,26 @@ def detect_language(text: str) -> str | None:
         res = detect(text[:5000])
         return str(res) if res is not None else None
     except (ImportError, Exception):  # langdetect raises LangDetectException
-        return None
+        return (None, 0.0)
+    if not ranked:
+        return (None, 0.0)
+    top = ranked[0]
+    conf = float(top.prob)
+    if conf < min_confidence:
+        return (None, conf)
+    return (str(top.lang), conf)
+
+
+def detect_language(text: str, *, min_confidence: float = DEFAULT_LID_MIN_CONFIDENCE) -> str | None:
+    """Best-effort language code (ISO-639-1), confidence-gated. ``None`` on
+    failure or when detection is below ``min_confidence``.
+
+    Confidence-aware upgrade of the old top-1 ``langdetect.detect`` call: every
+    source that calls ``detect_language(text)`` now stores a language only when
+    the detector is at least ``DEFAULT_LID_MIN_CONFIDENCE`` sure, otherwise
+    ``None`` (ambiguous text no longer gets a confidently-wrong label).
+    """
+    lang, _conf = detect_language_conf(
+        text, min_chars=DEFAULT_LID_MIN_CHARS, min_confidence=min_confidence
+    )
+    return lang

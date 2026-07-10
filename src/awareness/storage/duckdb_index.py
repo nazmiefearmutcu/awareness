@@ -35,6 +35,85 @@ from awareness.obs.logging import get_logger
 
 logger = get_logger("storage.duckdb")
 
+# ── search configuration surface ─────────────────────────────────────────────
+# Columns the caller may point a search at. Mapped 1:1 onto the ``captures``
+# view so an attacker can never inject an arbitrary column name.
+ALLOWED_SEARCH_FIELDS: tuple[str, ...] = ("title", "text", "domain", "url")
+DEFAULT_SEARCH_FIELDS: tuple[str, ...] = ("title", "text")
+
+# Matching strategies, from strict to broad:
+#   fts       — BM25-ranked full-text (stemmed, stop-worded). Precise, fast.
+#   prefix    — stem-root substring per token (finance -> financ% -> financial).
+#   substring — raw ILIKE on the whole query string. No tokenization.
+#   auto      — FTS first; if it returns nothing, fall back to prefix. Default.
+SEARCH_MODES: tuple[str, ...] = ("auto", "fts", "prefix", "substring")
+DEFAULT_SEARCH_MODE = "auto"
+# Hard ceiling on rows materialized in a single search call (overload guard).
+DEFAULT_SEARCH_MAX_RESULTS = 200
+
+# ── re-rank (BM25F-style) tuning ──────────────────────────────────────────────
+# DuckDB FTS scores title+text as one blob, so it cannot field-boost. We re-rank
+# the top-`max_results` BM25 candidates with independent, bounded multiplicative
+# factors; all-neutral collapses to identity (pure BM25 order preserved).
+_RERANK_TITLE_BOOST = 0.5        # Wt: full title-term coverage multiplies score by 1+Wt
+_RERANK_LEN_PIVOT = 4000         # chars; docs up to here are not length-damped
+_RERANK_LEN_FLOOR = 0.75         # the most a very long doc can be damped to
+_RERANK_RECENCY_WEIGHT = 0.0     # Wr: 0 disables the recency prior (off by default)
+_RERANK_RECENCY_HALFLIFE_DAYS = 30.0
+
+# Canonical captures columns in UNION order. The staging projection is built
+# from this so a JSONL chunk missing any of these still yields a buildable
+# `captures` view (absent columns become typed NULLs) instead of Binder-erroring
+# the whole view out of existence.
+_CAPTURE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("doc_id", "VARCHAR"), ("capture_id", "VARCHAR"), ("parent_doc_or_dup_group", "VARCHAR"),
+    ("source_type", "VARCHAR"), ("source_name", "VARCHAR"), ("source_locator", "VARCHAR"),
+    ("source_shard", "VARCHAR"), ("source_offset_or_record_id", "VARCHAR"),
+    ("discovery_channel", "VARCHAR"), ("job_id", "VARCHAR"), ("batch_id", "VARCHAR"),
+    ("ingest_version", "VARCHAR"), ("url", "VARCHAR"), ("canonical_url", "VARCHAR"),
+    ("domain", "VARCHAR"),
+    ("fetch_ts", "TIMESTAMPTZ"), ("observed_ts", "TIMESTAMPTZ"),
+    ("published_ts", "TIMESTAMPTZ"), ("last_modified", "TIMESTAMPTZ"),
+    ("content_type", "VARCHAR"), ("http_status", "INTEGER"), ("etag", "VARCHAR"),
+    ("title", "VARCHAR"), ("text", "VARCHAR"), ("language", "VARCHAR"),
+    ("content_hash", "VARCHAR"), ("near_dup_hash", "BIGINT"),
+    ("robots_decision", "VARCHAR"), ("terms_note_if_relevant", "VARCHAR"),
+)
+_TS_COLUMNS = frozenset({"fetch_ts", "observed_ts", "published_ts", "last_modified"})
+
+
+def _staging_projection(present: set[str]) -> str:
+    """SELECT-list over staging_captures_raw that NULL-fills absent columns and
+    TRY_CASTs timestamps / near_dup_hash, matching the iceberg-union order."""
+    parts: list[str] = []
+    for name, typ in _CAPTURE_COLUMNS:
+        if name not in present:
+            parts.append(f"NULL::{typ} AS {name}")
+        elif name in _TS_COLUMNS:
+            parts.append(f"TRY_CAST({name} AS TIMESTAMPTZ) AS {name}")
+        elif name == "near_dup_hash":
+            parts.append(f"TRY_CAST({name} AS BIGINT) AS {name}")
+        else:
+            parts.append(name)
+    return ",\n                      ".join(parts)
+
+
+def _clean_fields(fields: list[str] | tuple[str, ...] | None) -> list[str]:
+    """Normalize + whitelist the requested search columns.
+
+    Unknown columns are dropped silently; an empty/None request falls back
+    to :data:`DEFAULT_SEARCH_FIELDS`. This is the *only* place a field name
+    reaches SQL, so the whitelist here is the injection boundary.
+    """
+    if not fields:
+        return list(DEFAULT_SEARCH_FIELDS)
+    seen: list[str] = []
+    for f in fields:
+        key = (f or "").strip().lower()
+        if key in ALLOWED_SEARCH_FIELDS and key not in seen:
+            seen.append(key)
+    return seen or list(DEFAULT_SEARCH_FIELDS)
+
 
 @contextlib.contextmanager
 def _file_lock(lock_path: Path, timeout: float = 60.0):
@@ -521,6 +600,18 @@ class DuckDbIndex:
             cols = [d[0] for d in cur.description] if cur.description else []
             return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
+    def related(self, capture_id: str, *, limit: int = 12) -> list[dict[str, Any]]:
+        """Sibling captures in the same dup-group, lock-guarded.
+
+        Wraps the module-level :func:`find_related_captures` under ``self._lock``
+        so a process-wide singleton can serve ``/related`` from FastAPI's
+        threadpool without ever touching the raw connection unsynchronized.
+        """
+        with self._lock:
+            conn = self.connect()
+            self._refresh_views_if_stale(conn)
+            return find_related_captures(conn, capture_id, limit=limit)
+
     # ── full-text search ────────────────────────────────────────────────
     def _ensure_fts(self, conn: duckdb.DuckDBPyConnection) -> bool:
         """Build/refresh the FTS index on a materialized captures table.
@@ -939,6 +1030,120 @@ def _tokenize_query(q: str) -> list[str]:
     import re
 
     return [t for t in re.findall(r"[A-Za-z0-9']+", q.lower()) if len(t) >= 2]
+
+
+def _title_hit_frac(title: str, terms: list[str]) -> float:
+    """Fraction of distinct query terms that occur in the title (case-insensitive)."""
+    if not terms:
+        return 0.0
+    low = (title or "").lower()
+    hits = sum(1 for t in terms if t and t in low)
+    return hits / len(terms)
+
+
+def _length_factor(text_len: int, *, pivot: int = _RERANK_LEN_PIVOT, floor: float = _RERANK_LEN_FLOOR) -> float:
+    """1.0 for docs up to `pivot` chars, decaying toward `floor` for longer ones.
+
+    Tames over-long blobs the single-field BM25 length-norm under-penalizes,
+    while never zeroing a document out (bounded in [floor, 1.0]).
+    """
+    if pivot <= 0 or text_len <= pivot:
+        return 1.0
+    over = text_len - pivot
+    return floor + (1.0 - floor) * (pivot / (pivot + over))
+
+
+def _to_epoch(ts: Any) -> float | None:
+    """Best-effort epoch-seconds from a datetime / number / ISO-8601 string."""
+    if ts is None:
+        return None
+    if isinstance(ts, datetime):
+        return ts.timestamp()
+    try:
+        return float(ts)  # already epoch seconds
+    except (TypeError, ValueError):
+        pass
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _recency_factor(
+    doc_epoch: float | None,
+    ref_epoch: float | None,
+    *,
+    halflife_days: float = _RERANK_RECENCY_HALFLIFE_DAYS,
+    weight: float = _RERANK_RECENCY_WEIGHT,
+) -> float:
+    """Bounded recency boost in [1.0, 1.0+weight]: newest≈1+weight, old→1.0.
+
+    Disabled (returns 1.0) when weight<=0, the half-life is non-positive, or a
+    timestamp is unavailable.
+    """
+    if weight <= 0 or halflife_days <= 0 or doc_epoch is None or ref_epoch is None:
+        return 1.0
+    age_days = max(0.0, (ref_epoch - doc_epoch) / 86400.0)
+    decay = 0.5 ** (age_days / halflife_days)
+    return 1.0 + weight * decay
+
+
+def _rerank(
+    candidates: list[dict[str, Any]],
+    terms: list[str],
+    *,
+    title_boost: float = _RERANK_TITLE_BOOST,
+    len_pivot: int = _RERANK_LEN_PIVOT,
+    len_floor: float = _RERANK_LEN_FLOOR,
+    recency_weight: float = _RERANK_RECENCY_WEIGHT,
+    recency_halflife_days: float = _RERANK_RECENCY_HALFLIFE_DAYS,
+    ref_epoch: float | None = None,
+) -> list[dict[str, Any]]:
+    """Re-rank BM25 candidates (already in raw-score DESC order) by multiplying
+    the min-max-normalized BM25 score with independent title / length / recency
+    factors. Returns a NEW ordered list; input row dicts are not mutated. Stable:
+    equal final scores keep the incoming BM25 order.
+
+    Each candidate dict carries ``score`` (raw BM25), ``title``, ``text`` and a
+    timestamp (``published_ts`` or ``fetch_ts``).
+    """
+    if len(candidates) <= 1:
+        return list(candidates)
+
+    scores = [float(c.get("score") or 0.0) for c in candidates]
+    max_score = max(scores) if scores else 0.0
+
+    # Recency is off by default; only parse timestamps when it is actually
+    # enabled — otherwise we'd _to_epoch every candidate on the search hot path
+    # only for _recency_factor to discard it (it short-circuits to 1.0).
+    recency_on = recency_weight > 0
+    if recency_on and ref_epoch is None:
+        epochs = [
+            e
+            for c in candidates
+            for e in (_to_epoch(c.get("published_ts") or c.get("fetch_ts")),)
+            if e is not None
+        ]
+        ref_epoch = max(epochs) if epochs else None
+
+    def final_score(c: dict[str, Any], raw: float) -> float:
+        norm = (raw / max_score) if max_score > 0 else 0.0
+        title_f = 1.0 + title_boost * _title_hit_frac(c.get("title") or "", terms)
+        len_f = _length_factor(len(c.get("text") or ""), pivot=len_pivot, floor=len_floor)
+        doc_epoch = _to_epoch(c.get("published_ts") or c.get("fetch_ts")) if recency_on else None
+        rec_f = _recency_factor(
+            doc_epoch,
+            ref_epoch,
+            halflife_days=recency_halflife_days,
+            weight=recency_weight,
+        )
+        return norm * title_f * len_f * rec_f
+
+    finals = [final_score(c, raw) for c, raw in zip(candidates, scores, strict=True)]
+    # Sort by descending final score; `(-final, i)` keeps the original BM25 order
+    # for ties (lower original index = higher BM25 = ranked first).
+    order = sorted(range(len(candidates)), key=lambda i: (-finals[i], i))
+    return [candidates[i] for i in order]
 
 
 def _snippet_for(text: str, title: str, terms: list[str]) -> tuple[str, list[tuple[int, int]]]:

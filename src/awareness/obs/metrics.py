@@ -6,11 +6,21 @@ A real deployment swaps this for Prometheus. The interface is the same:
 
 from __future__ import annotations
 
+import random
 import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
+
+
+def _percentile(sorted_vals: list[float], pct: float) -> float:
+    """Nearest-rank percentile of an already-sorted list (0.0 if empty)."""
+    if not sorted_vals:
+        return 0.0
+    n = len(sorted_vals)
+    idx = min(n - 1, max(0, int(round((pct / 100.0) * (n - 1)))))
+    return sorted_vals[idx]
 
 
 @dataclass
@@ -29,15 +39,26 @@ class _Histogram:
         self.max = max(self.max, v)
         if len(self.samples) < self.max_samples:
             self.samples.append(v)
+        else:
+            # Vitter Algorithm R: the count-th item replaces a uniformly chosen
+            # reservoir slot with probability max_samples/count, keeping the
+            # sample uniform over the whole stream.
+            j = random.randint(0, self.count - 1)  # noqa: S311
+            if j < self.max_samples:
+                self.samples[j] = v
 
     def as_dict(self) -> dict[str, Any]:
         avg = self.sum / self.count if self.count else 0.0
+        ordered = sorted(self.samples)
         return {
             "count": self.count,
             "sum": round(self.sum, 4),
             "min": round(self.min if self.count else 0.0, 4),
             "max": round(self.max, 4),
             "avg": round(avg, 4),
+            "p50": round(_percentile(ordered, 50), 4),
+            "p95": round(_percentile(ordered, 95), 4),
+            "p99": round(_percentile(ordered, 99), 4),
         }
 
 

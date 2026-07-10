@@ -38,6 +38,7 @@ from pathlib import Path
 import httpx
 
 from awareness.config import get_settings
+from awareness.normalize.quality import gopher_quality
 from awareness.normalize.text import detect_language, normalize_text, safe_title
 from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
@@ -108,10 +109,10 @@ def crawl_ids_for_range(start: datetime, end: datetime) -> list[str]:
 class CommonCrawlWetAdapter(Adapter):
     source_type = SourceKind.COMMON_CRAWL_WET
 
-    def __init__(self, max_shards_per_crawl: int = 1) -> None:
+    def __init__(self, max_shards_per_crawl: int = 4) -> None:
         super().__init__()
-        # Default to 1 shard per crawl for sanity in smoke tests. CLI/config can
-        # override via the ``BackfillRequest.notes`` payload or per-partition.
+        # Default to 4 shards per crawl (configurable via AW_CC_WET_MAX_SHARDS_PER_CRAWL).
+        # CLI/config can override via the ``BackfillRequest.notes`` payload or per-partition.
         self._max_shards_per_crawl = max(1, max_shards_per_crawl)
 
     # ── planner ──────────────────────────────────────────────────────────
@@ -166,14 +167,16 @@ class CommonCrawlWetAdapter(Adapter):
         url = f"{CC_BASE}/crawl-data/{crawl_id}/wet.paths.gz"
         logger.info("cc_wet_discovery_start", crawl_id=crawl_id, url=url)
 
+        from awareness.util.http import get_with_retries  # noqa: PLC0415
+
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            try:
-                resp = await client.get(url, headers={"User-Agent": context.user_agent})
-            except httpx.HTTPError as exc:
-                logger.warning("cc_wet_paths_fetch_failed", crawl_id=crawl_id, err=str(exc))
-                return
+            # Transient failures raise RetryableHTTPError (task retries with
+            # backoff); a genuine 404 means this crawl has no wet.paths — skip.
+            resp = await get_with_retries(
+                client, url, headers={"User-Agent": context.user_agent}
+            )
             if resp.status_code != 200:
-                logger.warning("cc_wet_paths_not_found", crawl_id=crawl_id, status=resp.status_code)
+                logger.info("cc_wet_paths_not_found", crawl_id=crawl_id, status=resp.status_code)
                 return
             try:
                 body = gzip.decompress(resp.content).decode("utf-8", "replace")
@@ -212,7 +215,7 @@ class CommonCrawlWetAdapter(Adapter):
     ) -> AsyncIterator[DocCapture]:
         crawl_id = partition.payload["crawl_id"]
         shard_path = partition.payload["shard_path"]
-        domains_filter = set(partition.payload.get("domains") or []) or None
+        domains_filter = _normalize_domain_filter(partition.payload.get("domains"))
         languages_filter = set(partition.payload.get("languages") or []) or None
 
         url = f"{CC_BASE}/{shard_path}"
@@ -332,6 +335,14 @@ def _parse_wet_to_captures(
                 continue
             lang = detect_language(norm.text) or None
             if languages_filter and lang not in languages_filter:
+                continue
+            # Quality gating runs DOWNSTREAM of language selection so the
+            # English-leaning Gopher gates only judge text the language filter
+            # has already admitted (see normalize/quality.py docstring).
+            if not _record_passes_quality(
+                norm.text, enabled=settings.wet_quality_filter, lang=lang
+            ):
+                get_metrics().inc("cc_wet.quality_filtered", labels={"crawl_id": crawl_id})
                 continue
 
             ch = compute_content_hash(norm.text)
