@@ -29,3 +29,8 @@ htmlcov/
 configs/awareness.local.yaml
 configs/tail_seeds.local.yaml
 .env
+
+# Isolated worktrees & macOS build products
+.worktrees/
+dist/
+macos/Awareness/.build/
