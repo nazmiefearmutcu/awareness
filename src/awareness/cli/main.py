@@ -618,15 +618,97 @@ def stop(
         rprint(f"[red]Error stopping process: {e}[/red]")
 
 
+def _resolve_native_app_path() -> Path | None:
+    """Locate Awareness.app: AWARENESS_APP env, repo dist/, ~/Applications, /Applications."""
+    env = os.environ.get("AWARENESS_APP")
+    if env:
+        p = Path(env).expanduser()
+        if p.exists():
+            return p
+
+    candidates: list[Path] = []
+
+    # Editable / source install: src/awareness/cli/main.py → parents[3] is repo root
+    try:
+        repo_dist = Path(__file__).resolve().parents[3] / "dist" / "Awareness.app"
+        candidates.append(repo_dist)
+    except IndexError:
+        pass
+
+    # Walk upward for a repo root that has pyproject.toml mentioning awareness
+    here = Path(__file__).resolve().parent
+    for parent in [here, *here.parents]:
+        pyproject = parent / "pyproject.toml"
+        if pyproject.is_file():
+            try:
+                text = pyproject.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if "awareness" in text.lower():
+                candidates.append(parent / "dist" / "Awareness.app")
+                break
+
+    candidates.extend(
+        [
+            Path.home() / "Applications" / "Awareness.app",
+            Path("/Applications/Awareness.app"),
+        ]
+    )
+
+    seen: set[Path] = set()
+    for c in candidates:
+        try:
+            key = c.resolve()
+        except OSError:
+            key = c
+        if key in seen:
+            continue
+        seen.add(key)
+        if c.is_dir():
+            return c
+    return None
+
+
 @app.command()
 def dashboard(
     host: str = typer.Option("127.0.0.1", "--host", help="Host address"),
     port: int = typer.Option(_default_api_port, "--port", help="Port (default: AW_API_PORT or 8085)"),
+    browser: bool = typer.Option(False, "--browser", help="Force open system browser (legacy SPA)"),
 ) -> None:
-    """Open the Awareness dashboard in your default browser."""
-    url = f"http://{host}:{port}/"
-    rprint(f"[green]Opening dashboard in browser: {url}[/green]")
-    webbrowser.open(url)
+    """Open the Awareness native macOS app (or browser with --browser)."""
+    if browser:
+        url = f"http://{host}:{port}/"
+        rprint(f"[yellow]Opening legacy browser UI: {url}[/yellow]")
+        webbrowser.open(url)
+        return
+
+    app_path = _resolve_native_app_path()
+    if app_path is None:
+        rprint("[red]Awareness.app not found.[/red]")
+        rprint("Build it: [bold]macos/Awareness/Scripts/build-app.sh[/bold]")
+        rprint("Or set [bold]AWARENESS_APP=/path/to/Awareness.app[/bold]")
+        rprint("Legacy: [bold]awareness dashboard --browser[/bold]")
+        raise typer.Exit(1)
+
+    env = os.environ.copy()
+    env["AW_API_HOST"] = host
+    env["AW_API_PORT"] = str(port)
+
+    binary = app_path / "Contents" / "MacOS" / "Awareness"
+    rprint(f"[green]Opening native app:[/green] {app_path}")
+    if binary.is_file():
+        subprocess.Popen(
+            [str(binary)],
+            env=env,
+            start_new_session=True,
+        )
+    else:
+        # Bundle without a packaged binary (or incomplete build) — fall back to open(1)
+        subprocess.Popen(
+            ["open", str(app_path)],
+            env=env,
+            start_new_session=True,
+        )
 
 
 @app.command()
