@@ -190,5 +190,9 @@ def _global_limiter(settings) -> PerDomainLimiter:
 def _global_robots(settings) -> RobotsCache:
     global _ROBOTS  # noqa: PLW0603
     if _ROBOTS is None:
-        _ROBOTS = RobotsCache(ttl=settings.robots_cache_ttl_sec)
+        from awareness.storage.state import StateDB
+        state_db = None
+        if settings.state_db_url:
+            state_db = StateDB(settings.state_db_url)
+        _ROBOTS = RobotsCache(state_db=state_db, ttl=settings.robots_cache_ttl_sec)
     return _ROBOTS

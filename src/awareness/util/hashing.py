@@ -22,7 +22,6 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import Counter
-from collections.abc import Callable
 
 import mmh3
 import numpy as np
@@ -72,11 +71,12 @@ def _bits_to_int(out_bits: np.ndarray) -> int:
 
 
 def simhash64(text: str, k: int = 3) -> int:
-    """Compute a 64-bit Charikar simhash (unsigned int).
+    """Compute a 64-bit Charikar simhash (signed int).
 
     Vectorized with NumPy but **bit-identical** to the original per-shingle
     accumulator: each shingle contributes +1/-1 per bit via mmh3's unsigned
     64-bit hash, and bit *i* is set when its signed sum is >= 0.
+    Values are returned as a signed 64-bit integer in [-2^63, 2^63 - 1].
     """
     grams = _grams_for(text, k)
     if not grams:
@@ -88,22 +88,19 @@ def simhash64(text: str, k: int = 3) -> int:
     )
     bits = ((hv[:, None] >> _ARANGE64) & np.uint64(1)).astype(np.int64)  # (n, 64)
     sums = (bits * 2 - 1).sum(axis=0)  # +1 if bit set, -1 otherwise
-    return _bits_to_int(sums >= 0) & _MASK64
+    val = _bits_to_int(sums >= 0)
+    if val >= (1 << 63):
+        val -= (1 << 64)
+    return val
 
 
-def simhash128(
-    text: str, k: int = 3, *, weighted: bool = True, idf: Callable[[str], float] | None = None
-) -> int:
+def simhash128(text: str, k: int = 3, *, weighted: bool = True) -> int:
     """Compute a 128-bit frequency-weighted Charikar simhash (unsigned int).
 
     The detection-grade fingerprint. mmh3's 128-bit hash supplies both 64-bit
     halves per shingle; when ``weighted`` each distinct shingle is scaled by
     ``1 + ln(1 + count)`` so a handful of boilerplate shingles cannot dominate
     the signature. Returns 0 for empty input.
-
-    When ``idf`` is given, each shingle's weight is additionally scaled by
-    ``idf(shingle)`` so corpus-common boilerplate can be down-weighted
-    (ignored when ``weighted=False``).
     """
     grams = _grams_for(text, k)
     if not grams:
@@ -112,12 +109,7 @@ def simhash128(
         counts = Counter(grams)
         uniq = list(counts.keys())
         weights = np.fromiter(
-            (
-                (1.0 + np.log1p(counts[g])) * (idf(g) if idf is not None else 1.0)
-                for g in uniq
-            ),
-            dtype=np.float64,
-            count=len(uniq),
+            (1.0 + np.log1p(counts[g]) for g in uniq), dtype=np.float64, count=len(uniq)
         )
     else:
         uniq = grams

@@ -106,6 +106,7 @@ class TailEngine:
             job_id = self._planner.submit_tail(seeds)
         else:
             self._state.set_job_status(job_id, JobStatus.RUNNING)
+            # set_tail defaults pid=os.getpid() so get_tail can detect orphans.
             self._state.set_tail(running=True, job_id=job_id, note="tail-active")
         self._job_id = job_id
         self._engine = WorkerEngine(self._state, self._planner, mute_duplicates=mute_duplicates)

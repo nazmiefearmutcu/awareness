@@ -105,10 +105,12 @@ if PyIceberg fails. The compaction path can lift JSONL → Iceberg later.
 - `near_dup_hash = simhash64(text)` — used with a 4×16-bit segment index
   (Manku/Jain pigeonhole) for O(1)-per-segment lookup of near-duplicates.
 
-Dedup decisions don't drop captures (provenance is sacred). They label them:
-`NEW`, `REVISION`, `EXACT_DUP`, `NEAR_DUP`. Downstream readers fold
-captures into canonical documents with
-`WHERE doc_id = parent_doc_or_dup_group`.
+Dedup labels captures `NEW`, `REVISION`, `EXACT_DUP`, `NEAR_DUP`. The worker
+skips durable storage for `EXACT_DUP` (same content already stored under
+another URL); `NEAR_DUP` / `REVISION` / `NEW` still persist for provenance.
+Downstream readers fold captures into canonical documents with
+`WHERE doc_id = parent_doc_or_dup_group`. Search collapses hits by
+`content_hash` so top-K never shows syndicated copies twice.
 
 ## Parallelism
 

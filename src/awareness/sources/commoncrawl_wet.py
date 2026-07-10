@@ -29,9 +29,10 @@ in ``run_partition`` so the planner stays cheap.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ProcessPoolExecutor
 import gzip
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -60,52 +61,49 @@ logger = get_logger("sources.cc_wet")
 CC_BASE = "https://data.commoncrawl.org"
 
 
+_PROCESS_POOL: ProcessPoolExecutor | None = None
+
+
+def _get_process_pool() -> ProcessPoolExecutor:
+    global _PROCESS_POOL
+    if _PROCESS_POOL is None:
+        _PROCESS_POOL = ProcessPoolExecutor()
+    return _PROCESS_POOL
+
+
+def _iso_year_weeks(start: datetime, end: datetime) -> list[tuple[int, int]]:
+    """Return ISO (year, week) tuples covering ``[start, end]``."""
+    cur = to_utc(start) or utcnow()
+    end_utc = to_utc(end) or utcnow()
+    if cur > end_utc:
+        cur, end_utc = end_utc, cur
+    seen: list[tuple[int, int]] = []
+    last_pair: tuple[int, int] | None = None
+    while cur <= end_utc:
+        iso = cur.isocalendar()
+        pair = (iso.year, iso.week)
+        if pair != last_pair:
+            seen.append(pair)
+            last_pair = pair
+        cur += timedelta(days=1)
+    return seen
+
 
 def crawl_ids_for_range(start: datetime, end: datetime) -> list[str]:
-    """Convert a date range to REAL crawl_ids (e.g. ``CC-MAIN-2024-26``).
-
-    Delegates to :func:`awareness.sources.cc_crawls.resolve_crawl_ids`, which
-    uses the authoritative collinfo.json catalog (cached, with a bundled
-    fallback) instead of the old odd-ISO-week heuristic that produced
-    non-existent crawl IDs.
-    """
-    from awareness.sources.cc_crawls import resolve_crawl_ids  # noqa: PLC0415
-
-    return resolve_crawl_ids(start, end)
-
-
-def _normalize_domain_filter(domains: list[str] | None) -> set[str] | None:
-    """Reduce requested domains to their registered eTLD+1 so a subdomain
-    request (news.bbc.co.uk) matches records whose domain_of is bbc.co.uk."""
-    if not domains:
-        return None
-    normalized = {domain_of(d) or domain_of(f"http://{d}") or d.lower() for d in domains}
-    return {d for d in normalized if d} or None
-
-
-def _record_passes_domain_filter(url: str, domains_filter: set[str] | None) -> bool:
-    if not domains_filter:
-        return True
-    cu = canonical_url(url)
-    dom = domain_of(cu) if cu else None
-    return dom in domains_filter
-
-
-def _record_passes_quality(text: str, *, enabled: bool, lang: str | None) -> bool:
-    """Drop WET records below Gopher/C4 content quality when ``enabled``.
-
-    ``gopher_quality`` carries English-leaning gates (the stopword signal, the
-    mean-word-length / alpha-fraction checks that misfire on non-space-delimited
-    or non-English scripts), so it may only judge English text — ``quality.py``
-    documents that non-English text is admitted by language selection, not
-    dropped here. Records the language filter has admitted in any *other*
-    language pass through unjudged rather than being silently discarded.
-    """
-    if not enabled:
-        return True
-    if lang != "en":
-        return True
-    return gopher_quality(text).ok
+    """Convert a date range to candidate crawl_ids like ``CC-MAIN-2024-26``."""
+    pairs = _iso_year_weeks(start, end)
+    # Common Crawl crawls span ~2 weeks; we coalesce to even-week starts.
+    seen: set[tuple[int, int]] = set()
+    out: list[str] = []
+    for year, week in pairs:
+        anchor_week = week if week % 2 == 1 else week - 1
+        anchor_week = max(anchor_week, 1)
+        key = (year, anchor_week)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(f"CC-MAIN-{year}-{anchor_week:02d}")
+    return out
 
 
 class CommonCrawlWetAdapter(Adapter):
@@ -264,8 +262,9 @@ class CommonCrawlWetAdapter(Adapter):
         )
 
         # Yield captures parsed from the cached file.
-        for cap in await asyncio.get_event_loop().run_in_executor(
-            None,
+        loop = asyncio.get_event_loop()
+        caps = await loop.run_in_executor(
+            _get_process_pool(),
             _parse_wet_to_captures,
             local,
             crawl_id,
@@ -277,7 +276,8 @@ class CommonCrawlWetAdapter(Adapter):
             context.task_id,
             context.batch_id,
             context.ingest_version,
-        ):
+        )
+        for cap in caps:
             if context.is_stopping():
                 return
             yield cap

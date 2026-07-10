@@ -1,0 +1,256 @@
+{
+  "ts": "2026-07-09T15:15:10.284525+00:00",
+  "api": "http://127.0.0.1:8085",
+  "search_precision": [
+    {
+      "q": "neural",
+      "n": 20,
+      "hits": 20,
+      "precision": 1.0,
+      "exact_dups_in_page": 0,
+      "mode": "fts",
+      "total": 41
+    },
+    {
+      "q": "climate",
+      "n": 20,
+      "hits": 20,
+      "precision": 1.0,
+      "exact_dups_in_page": 0,
+      "mode": "fts",
+      "total": 69
+    },
+    {
+      "q": "quantum",
+      "n": 19,
+      "hits": 19,
+      "precision": 1.0,
+      "exact_dups_in_page": 0,
+      "mode": "fts",
+      "total": 19
+    },
+    {
+      "q": "market",
+      "n": 20,
+      "hits": 20,
+      "precision": 1.0,
+      "exact_dups_in_page": 0,
+      "mode": "fts",
+      "total": 211
+    },
+    {
+      "q": "python",
+      "n": 20,
+      "hits": 20,
+      "precision": 1.0,
+      "exact_dups_in_page": 0,
+      "mode": "fts",
+      "total": 22
+    },
+    {
+      "q": "security",
+      "n": 20,
+      "hits": 19,
+      "precision": 0.95,
+      "exact_dups_in_page": 0,
+      "mode": "fts",
+      "total": 386
+    },
+    {
+      "q": "health",
+      "n": 20,
+      "hits": 20,
+      "precision": 1.0,
+      "exact_dups_in_page": 0,
+      "mode": "fts",
+      "total": 189
+    },
+    {
+      "q": "space",
+      "n": 20,
+      "hits": 20,
+      "precision": 1.0,
+      "exact_dups_in_page": 0,
+      "mode": "fts",
+      "total": 208
+    }
+  ],
+  "avg_precision": 0.9938,
+  "gates": [
+    {
+      "name": "api_health",
+      "passed": true,
+      "detail": "code=200 body={'ok': True, 'state_db': 'sqlite:////Users/nazmi/awareness_dev/data/state/awareness.sqlite', 'data_dir': '/Users/nazmi/awareness_dev/data'}",
+      "hard": true,
+      "metrics": {}
+    },
+    {
+      "name": "corpus_readable",
+      "passed": true,
+      "detail": "captures=1990",
+      "hard": true,
+      "metrics": {
+        "n": 1990
+      }
+    },
+    {
+      "name": "search_returns_results",
+      "passed": true,
+      "detail": "8/8 queries returned rows",
+      "hard": true,
+      "metrics": {
+        "nonempty": 8
+      }
+    },
+    {
+      "name": "search_precision_avg",
+      "passed": true,
+      "detail": "avg precision@20 = 99.38% (threshold 70%)",
+      "hard": true,
+      "metrics": {
+        "avg_precision": 0.9938
+      }
+    },
+    {
+      "name": "search_no_exact_dups_in_page",
+      "passed": true,
+      "detail": "exact title/hash duplicates in top pages = 0 (should be 0)",
+      "hard": true,
+      "metrics": {
+        "exact_dups": 0
+      }
+    },
+    {
+      "name": "quality_empty_title_rate",
+      "passed": true,
+      "detail": "0/200 empty titles (0.0%)",
+      "hard": true,
+      "metrics": {
+        "rate": 0.0
+      }
+    },
+    {
+      "name": "quality_short_text_rate",
+      "passed": true,
+      "detail": "0/200 texts <80 chars (0.0%)",
+      "hard": true,
+      "metrics": {
+        "rate": 0.0
+      }
+    },
+    {
+      "name": "quality_missing_domain_url",
+      "passed": true,
+      "detail": "no_domain=0 no_url=0 of 200",
+      "hard": true,
+      "metrics": {}
+    },
+    {
+      "name": "quality_sample_hash_dups",
+      "passed": false,
+      "detail": "25/200 exact content_hash collisions in sample (12.5%) [historical leakage OK soft if search/live gates pass]",
+      "hard": false,
+      "metrics": {
+        "rate": 0.125
+      }
+    },
+    {
+      "name": "quality_junkish_rate",
+      "passed": true,
+      "detail": "0/200 junk-ish short docs (0.0%)",
+      "hard": false,
+      "metrics": {
+        "rate": 0.0
+      }
+    },
+    {
+      "name": "dedup_index_populated",
+      "passed": true,
+      "detail": "distinct=1151 seen=2317 fold_rate=50.3%",
+      "hard": true,
+      "metrics": {
+        "distinct": 1151,
+        "seen": 2317,
+        "fold_rate": 0.5032
+      }
+    },
+    {
+      "name": "dedup_is_recording",
+      "passed": true,
+      "detail": "captures_seen (2317) >= distinct hashes (1151)",
+      "hard": true,
+      "metrics": {}
+    },
+    {
+      "name": "corpus_exact_hash_multiplicity",
+      "passed": true,
+      "detail": "top multi-hash groups=20, extra copies in top20=291",
+      "hard": false,
+      "metrics": {
+        "multi_groups": 20,
+        "multi_extra": 291
+      }
+    },
+    {
+      "name": "live_fetch_runs",
+      "passed": true,
+      "detail": "job=tail-5b932c298892 duration=19.1s emitted=0 folded=0 new_rows=0",
+      "hard": true,
+      "metrics": {
+        "job_id": "tail-5b932c298892",
+        "emitted": 0,
+        "folded": 0,
+        "new_rows": 0
+      }
+    },
+    {
+      "name": "live_fetch_activity",
+      "passed": true,
+      "detail": "tasks_completed=1 docs_emitted=0 folded=0 delta_captures=0",
+      "hard": true,
+      "metrics": {
+        "tasks_completed": 1
+      }
+    },
+    {
+      "name": "dedup_refetch_runs",
+      "passed": true,
+      "detail": "job=tail-ff2523ad9789 emitted=0 folded=0 fold_ratio=0.0% corpus_delta=0",
+      "hard": true,
+      "metrics": {
+        "emitted": 0,
+        "folded": 0,
+        "fold_ratio": 0.0,
+        "corpus_delta": 0
+      }
+    },
+    {
+      "name": "dedup_prevents_dup_flood",
+      "passed": true,
+      "detail": "corpus grew by 0 while emitted=0 folded=0",
+      "hard": true,
+      "metrics": {
+        "corpus_delta": 0
+      }
+    },
+    {
+      "name": "dedup_fold_ratio_on_refetch",
+      "passed": true,
+      "detail": "low volume total_out=0; skip strict fold ratio",
+      "hard": false,
+      "metrics": {}
+    },
+    {
+      "name": "search_post_live_no_title_dups",
+      "passed": true,
+      "detail": "title dups in neural top10 = 0",
+      "hard": true,
+      "metrics": {
+        "title_dups": 0
+      }
+    }
+  ],
+  "hard_pass": true,
+  "live_job": "tail-5b932c298892",
+  "refetch_job": "tail-ff2523ad9789"
+}

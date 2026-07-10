@@ -89,11 +89,15 @@ def domain_of(url: str | None) -> str | None:
         ext = _TLD_EXTRACT(url)
     except (ValueError, AttributeError):
         return None
-    # ``top_domain_under_public_suffix`` is the modern alias for the deprecated
-    # ``registered_domain`` attribute; fall back for older tldextract versions.
-    primary = getattr(ext, "top_domain_under_public_suffix", None) or ext.registered_domain
+    # Prefer the modern attribute. Do NOT ``or`` into ``registered_domain``:
+    # empty string is a valid "no eTLD+1" result (localhost, bare IPs) and
+    # accessing the deprecated property emits DeprecationWarning on every call.
+    if hasattr(ext, "top_domain_under_public_suffix"):
+        primary = ext.top_domain_under_public_suffix
+    else:
+        primary = getattr(ext, "registered_domain", None)
     if primary:
-        return primary.lower()
+        return str(primary).lower()
     if ext.domain:
         return ext.domain.lower()
     return None

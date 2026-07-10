@@ -19,6 +19,10 @@ Endpoints:
     GET  /search                 — BM25-ranked full-text search w/ snippets
     GET  /counts                 — counts grouped by source & domain
     GET  /dedup-stats            — dedup index stats
+    GET  /jobsearch/sources      — public job boards catalog
+    GET  /jobsearch/profile      — personalization profile
+    PUT  /jobsearch/profile      — save profile
+    POST /jobsearch/search       — personalized live job search
 
 Run with ``awareness-api`` script or ``uvicorn awareness.api.server:create_app``.
 """
@@ -27,7 +31,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -82,33 +85,7 @@ class _State:
     state: StateDB | None = None
     planner: Planner | None = None
     tail: TailEngine | None = None
-    index: DuckDbIndex | None = None
     background_tasks: set[asyncio.Task[Any]] = set()
-
-
-_index_lock = threading.Lock()
-
-
-def _build_index() -> DuckDbIndex:
-    s = get_settings()
-    return DuckDbIndex(
-        db_path=s.duckdb_path(),
-        jsonl_dir=s.staging_jsonl_dir(),
-        iceberg_warehouse=s.iceberg_warehouse,
-    )
-
-
-def _get_index() -> DuckDbIndex:
-    """Process-wide DuckDbIndex (double-checked locking). One instance memoizes
-    the DuckDB connection + FTS-build signature and serializes access behind its
-    own RLock, so FTS is built once and concurrent searches don't collide."""
-    idx = _State.index
-    if idx is not None:
-        return idx
-    with _index_lock:
-        if _State.index is None:
-            _State.index = _build_index()
-        return _State.index
 
 
 def create_app() -> FastAPI:
@@ -122,19 +99,28 @@ def create_app() -> FastAPI:
         # Reconcile phantom "running" tail state from a previous process that
         # didn't clean up. Whatever was running in another Python process is
         # not running here. Mark it cancelled so the UI doesn't lie.
-        tail = state.get_tail()
-        if tail.get("running"):
-            stale_job = tail.get("job_id")
-            state.set_tail(running=False, job_id=stale_job, note="reconciled-on-startup")
-            if stale_job:
-                from awareness.schemas.jobs import JobStatus  # local import
-                state.set_job_status(stale_job, JobStatus.CANCELLED, note="orphaned-by-process-exit")
+        # get_tail(reconcile=True) clears phantom running rows; then sweep
+        # any TAIL jobs still stuck in RUNNING that aren't a live owner.
+        state.get_tail(reconcile=True)
+        try:
+            state.reconcile_orphan_tail_jobs()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("orphan_tail_reconcile_failed", error=str(exc))
         _State.state = state
         _State.planner = Planner(state)
         _State.tail = TailEngine(state, _State.planner)
+
+        reaper = None
+        if settings.reaper_enabled:
+            from awareness.workers.engine import DatabaseReaper
+            reaper = DatabaseReaper(state)
+            await reaper.start()
+
         try:
             yield
         finally:
+            if reaper:
+                await reaper.stop()
             if _State.tail and _State.tail.running:
                 await _State.tail.stop(drain_seconds=10.0)
             for t in list(_State.background_tasks):
@@ -297,13 +283,27 @@ def create_app() -> FastAPI:
                 "recent_chunks": [],
             }
         job = state.get_job(job_id)
+        # When tail is not live, never present PENDING/RUNNING tasks as
+        # "now fetching" — those rows are leftovers from a crashed process.
+        live = bool(tail_info.get("running")) or bool(engine_info.get("in_process_running"))
+        if not live:
+            # Best-effort cleanup so subsequent reads stay quiet.
+            try:
+                state.abandon_inflight_tasks(job_id, note="stale-tasks-on-stopped-tail")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("abandon_inflight_on_tail_status_failed", error=str(exc))
+        counts = state.task_status_counts(job_id)
+        if not live:
+            # UI queue panel should not show zombie in-flight buckets.
+            for k in ("pending", "running"):
+                counts.pop(k, None)
         return {
             **base,
             "job": job.model_dump(mode="json") if job else None,
-            "task_status_counts": state.task_status_counts(job_id),
-            "running_tasks": state.list_running_tasks(job_id, limit=12),
+            "task_status_counts": counts,
+            "running_tasks": state.list_running_tasks(job_id, limit=12) if live else [],
             "recent_completed": state.list_recent_completed_tasks(job_id, limit=10),
-            "per_seed": state.per_seed_progress(job_id),
+            "per_seed": state.per_seed_progress(job_id) if live else {"feeds": [], "fetch": {}},
             "recent_chunks": state.list_recent_manifests(limit=8),
         }
 
@@ -337,7 +337,12 @@ def create_app() -> FastAPI:
 
     @app.get("/counts")
     def counts(start: datetime, end: datetime | None = None) -> dict[str, Any]:
-        idx = _get_index()
+        s = get_settings()
+        idx = DuckDbIndex(
+            db_path=s.duckdb_path(),
+            jsonl_dir=s.staging_jsonl_dir(),
+            iceberg_warehouse=s.iceberg_warehouse,
+        )
         end_dt = to_utc(end) if end else coerce_relative_end("now")
         p = {"start": to_utc(start), "end": end_dt}
         total = idx.execute("SELECT COUNT(*) AS n FROM captures WHERE fetch_ts BETWEEN $start AND $end", p)
@@ -434,7 +439,11 @@ def create_app() -> FastAPI:
         fields: str | None = Query(None, description="comma-list: title,text,domain,url"),
     ) -> dict[str, Any]:
         s = get_settings()
-        idx = _get_index()
+        idx = DuckDbIndex(
+            db_path=s.duckdb_path(),
+            jsonl_dir=s.staging_jsonl_dir(),
+            iceberg_warehouse=s.iceberg_warehouse,
+        )
         field_list = [
             f.strip().lower()
             for f in (fields or s.search_default_fields).split(",")
@@ -453,14 +462,133 @@ def create_app() -> FastAPI:
             max_results=s.search_max_results,
         )
 
+    # ── settings (engine config + tail seeds) ────────────────────────────
+    @app.get("/settings/schema")
+    def settings_schema() -> dict[str, Any]:
+        from awareness.config.persist import schema_payload
+
+        return schema_payload()
+
+    @app.put("/settings/config")
+    def settings_put_config(body: dict[str, Any]) -> dict[str, Any]:
+        from awareness.config.persist import apply_updates
+
+        # Accept {values: {...}} or flat map
+        values = body.get("values") if isinstance(body.get("values"), dict) else body
+        if not isinstance(values, dict):
+            raise HTTPException(400, "expected object of key → value")
+        # Strip meta keys if flat
+        values = {k: v for k, v in values.items() if k not in ("values", "note")}
+        return apply_updates(values)
+
+    @app.get("/settings/tail-seeds")
+    def settings_get_tail_seeds() -> dict[str, Any]:
+        from awareness.config.persist import read_tail_seeds
+
+        return read_tail_seeds()
+
+    @app.put("/settings/tail-seeds")
+    def settings_put_tail_seeds(body: dict[str, Any]) -> dict[str, Any]:
+        from awareness.config.persist import write_tail_seeds
+
+        return write_tail_seeds(body or {})
+
+    # ── job search (public boards + personalization) ─────────────────────
+    @app.get("/jobsearch/sources")
+    def jobsearch_sources() -> dict[str, Any]:
+        from awareness.jobsearch.engine import JobSearchEngine
+
+        s = get_settings()
+        eng = JobSearchEngine(s.data_dir)
+        return {"sources": eng.catalog()}
+
+    @app.get("/jobsearch/profile")
+    def jobsearch_get_profile() -> dict[str, Any]:
+        from awareness.jobsearch.engine import JobSearchEngine
+
+        s = get_settings()
+        eng = JobSearchEngine(s.data_dir)
+        return eng.get_profile().model_dump(mode="json")
+
+    @app.put("/jobsearch/profile")
+    def jobsearch_put_profile(body: dict[str, Any]) -> dict[str, Any]:
+        from awareness.jobsearch.engine import JobSearchEngine
+        from awareness.jobsearch.models import profile_from_flat
+
+        s = get_settings()
+        eng = JobSearchEngine(s.data_dir)
+        profile = profile_from_flat(body)
+        return eng.put_profile(profile).model_dump(mode="json")
+
+    @app.post("/jobsearch/search")
+    async def jobsearch_search(body: dict[str, Any]) -> dict[str, Any]:
+        from awareness.jobsearch.engine import JobSearchEngine
+        from awareness.jobsearch.models import JobSearchRequest, profile_from_flat
+
+        s = get_settings()
+        eng = JobSearchEngine(s.data_dir)
+        profile = None
+        if body.get("profile") is not None:
+            profile = profile_from_flat(body["profile"] if isinstance(body["profile"], dict) else body)
+        elif any(k in body for k in ("titles", "skills", "locations", "sources", "remote_only")):
+            profile = profile_from_flat(body)
+        try:
+            li_pages = int(body.get("linkedin_pages") or 3)
+        except (TypeError, ValueError):
+            li_pages = 3
+        req = JobSearchRequest(
+            q=str(body.get("q") or ""),
+            profile=profile,
+            limit=int(body.get("limit") or 40),
+            save_profile=bool(body.get("save_profile", False)),
+            linkedin_pages=max(1, min(li_pages, 5)),
+        )
+        result = await eng.search(req)
+        return result.model_dump(mode="json")
+
     # ── static dashboard ─────────────────────────────────────────────────
     web_dir = Path(__file__).resolve().parent / "web"
     if web_dir.exists():
+        # Cache-bust version from file mtimes so UI refreshes after deploys.
+        def _asset_ver() -> str:
+            try:
+                m = max(
+                    (web_dir / n).stat().st_mtime_ns
+                    for n in ("style.css", "app.js", "index.html")
+                    if (web_dir / n).exists()
+                )
+                return str(m)
+            except OSError:
+                return "1"
+
         app.mount("/static", StaticFiles(directory=str(web_dir)), name="static")
 
         @app.get("/", include_in_schema=False)
         def root_index() -> FileResponse:
-            return FileResponse(str(web_dir / "index.html"))
+            # Serve HTML with no-store so browsers always pick up new asset URLs.
+            html_path = web_dir / "index.html"
+            text = html_path.read_text(encoding="utf-8")
+            ver = _asset_ver()
+            text = text.replace("/static/style.css", f"/static/style.css?v={ver}")
+            text = text.replace("/static/app.js", f"/static/app.js?v={ver}")
+            from fastapi.responses import HTMLResponse  # noqa: PLC0415
+
+            return HTMLResponse(
+                content=text,
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                },
+            )
+
+        @app.middleware("http")
+        async def _no_cache_static(request, call_next):  # type: ignore[no-untyped-def]
+            response = await call_next(request)
+            path = request.url.path
+            if path == "/" or path.startswith("/static/"):
+                response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+                response.headers["Pragma"] = "no-cache"
+            return response
 
     return app
 

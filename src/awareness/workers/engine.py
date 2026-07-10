@@ -34,12 +34,27 @@ from awareness.sources.base import AdapterContext, PartitionSpec
 from awareness.storage.iceberg import IcebergWriter
 from awareness.storage.jsonl import JsonlStagingWriter
 from awareness.storage.state import StateDB
+from awareness.util.robots import RobotsCache
 
 logger = get_logger("workers")
 
 # How long a task may sit RUNNING before a (re)started run_job treats it as
 # orphaned and requeues it. Comfortably longer than any single partition fetch.
 ORPHAN_LEASE_SECONDS = 900
+
+
+def _format_size(size_bytes: int) -> str:
+    if size_bytes == 0:
+        return "0 B"
+    size_name = ("B", "KB", "MB", "GB", "TB")
+    import math
+    try:
+        i = int(math.floor(math.log(size_bytes, 1024)))
+        p = math.pow(1024, i)
+        s = round(size_bytes / p, 2)
+        return f"{s} {size_name[i]}"
+    except Exception:
+        return f"{size_bytes} B"
 
 
 def _format_size(size_bytes: int) -> str:
@@ -76,6 +91,7 @@ class WorkerEngine:
         self._dedup = DedupEngine(state)
         settings = get_settings()
         self._concurrency = concurrency or settings.worker_concurrency
+        self._robots = RobotsCache(state_db=state, ttl=settings.robots_cache_ttl_sec)
         self._jsonl = jsonl_writer or JsonlStagingWriter(
             root=settings.staging_jsonl_dir(),
             flush_seconds=settings.storage_flush_seconds,
@@ -149,6 +165,7 @@ class WorkerEngine:
         self._jsonl.close()
         if self._iceberg is not None:
             self._iceberg.close()
+        await self._robots.aclose()
 
     # ── public: run a job to completion ──────────────────────────────────
     async def run_job(self, job_id: str, *, poll_seconds: float = 0.5) -> None:
@@ -341,6 +358,7 @@ class WorkerEngine:
             ingest_version=settings.ingest_version,
             checkpoint=init_checkpoint,
             is_stopping=self.is_stopping,
+            extras={"robots": self._robots},
         )
         partition = PartitionSpec(
             source_type=task.source_type,
@@ -361,19 +379,27 @@ class WorkerEngine:
                     get_metrics().inc("docs.filtered", labels={"source": task.source_type.value})
                     continue
                 outcome = self._dedup.evaluate(cap)
-                # Persist all captures (provenance), but track stats.
-                async with self._buffer_lock:
-                    self._batch_buffer.append(cap)
-                docs_emitted += 1
-                bytes_processed += len(cap.text)
-                self._total_bytes_processed += len(cap.text)
-                self._total_docs_processed += 1
-                if outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.NEAR_DUP, DedupDecision.REVISION):
-                    dedup_dropped += 1
                 get_metrics().inc(
                     "dedup.decisions",
                     labels={"decision": outcome.decision.value, "source": task.source_type.value},
                 )
+                # EXACT_DUP / REVISION: skip durable storage — same bytes already
+                # on disk (different URL or same URL re-fetch). NEAR_DUP still
+                # persists for provenance of near-matches. Stats track the fold.
+                if outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.REVISION):
+                    dedup_dropped += 1
+                    self._total_docs_processed += 1
+                    bytes_processed += len(cap.text)
+                    self._total_bytes_processed += len(cap.text)
+                else:
+                    async with self._buffer_lock:
+                        self._batch_buffer.append(cap)
+                    docs_emitted += 1
+                    bytes_processed += len(cap.text)
+                    self._total_bytes_processed += len(cap.text)
+                    self._total_docs_processed += 1
+                    if outcome.decision == DedupDecision.NEAR_DUP:
+                        dedup_dropped += 1
                 is_unique = outcome.decision == DedupDecision.NEW
                 show_dup = not self._mute_duplicates
                 if self._is_tty and not self._silent_progress and (is_unique or show_dup):
@@ -544,3 +570,57 @@ class WorkerEngine:
                 logger.warning("iceberg_append_failed", err=str(exc))
 
         get_metrics().add("flushes.records", written or n)
+
+
+class DatabaseReaper:
+    """Background asyncio daemon job that periodically cleans up old completed tasks and vacuums the DB."""
+
+    def __init__(self, state: StateDB, interval_seconds: int | None = None, retention_days: int | None = None) -> None:
+        self._state = state
+        self._settings = get_settings()
+        self._interval_seconds = interval_seconds if interval_seconds is not None else self._settings.reaper_interval_seconds
+        self._retention_days = retention_days if retention_days is not None else self._settings.reaper_retention_days
+        self._task: asyncio.Task | None = None
+        self._stop_event = asyncio.Event()
+
+    async def start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        self._stop_event.clear()
+        self._task = asyncio.create_task(self._run_loop())
+        logger.info("reaper_started", interval_seconds=self._interval_seconds, retention_days=self._retention_days)
+
+    async def stop(self) -> None:
+        if self._task is None:
+            return
+        self._stop_event.set()
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        self._task = None
+        logger.info("reaper_stopped")
+
+    async def _run_loop(self) -> None:
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    logger.info("reaper_run_started")
+                    # Run cleanup in a thread to keep the event loop responsive
+                    deleted_count = await asyncio.to_thread(self._state.cleanup_old_tasks, self._retention_days)
+                    logger.info("reaper_cleanup_done", deleted_tasks=deleted_count)
+                    
+                    # Run vacuum in a thread
+                    await asyncio.to_thread(self._state.vacuum_database)
+                    logger.info("reaper_run_completed")
+                except Exception as e:
+                    logger.exception("reaper_run_failed", err=str(e))
+
+                # Sleep in increments so cancellation responds quickly
+                elapsed = 0
+                while elapsed < self._interval_seconds and not self._stop_event.is_set():
+                    await asyncio.sleep(min(10.0, self._interval_seconds - elapsed))
+                    elapsed += 10.0
+        except asyncio.CancelledError:
+            pass

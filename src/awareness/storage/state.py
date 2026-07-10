@@ -10,15 +10,16 @@ at Postgres in production without code changes.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
-    BigInteger,
     DateTime,
     Integer,
+    BigInteger,
     String,
     UniqueConstraint,
     create_engine,
@@ -47,23 +48,6 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def _verify_dedup_schema(inspector: Any) -> None:
-    """Raise if the dedup_near table exists but lacks the sig_hex column.
-
-    The migration in init() adds sig_hex to legacy tables; if that ALTER
-    silently failed (locked/partial/read-only DB), surface it loudly here
-    instead of deferring to a confusing 'no such column: sig_hex' on every
-    later dedup write.
-    """
-    cols = [c["name"] for c in inspector.get_columns("dedup_near")]
-    if cols and "sig_hex" not in cols:
-        raise RuntimeError(
-            "dedup_near.sig_hex is missing after migration — the DB may be "
-            "read-only, locked, or partially migrated; near-dup indexing would "
-            "fail. Fix or recreate the state DB."
-        )
-
-
 class Base(DeclarativeBase):
     pass
 
@@ -81,9 +65,9 @@ class JobRow(Base):
     tasks_completed: Mapped[int] = mapped_column(Integer, default=0)
     tasks_failed: Mapped[int] = mapped_column(Integer, default=0)
     tasks_dead_lettered: Mapped[int] = mapped_column(Integer, default=0)
-    docs_emitted: Mapped[int] = mapped_column(Integer, default=0)
-    docs_dedup_dropped: Mapped[int] = mapped_column(Integer, default=0)
-    bytes_processed: Mapped[int] = mapped_column(Integer, default=0)
+    docs_emitted: Mapped[int] = mapped_column(BigInteger, default=0)
+    docs_dedup_dropped: Mapped[int] = mapped_column(BigInteger, default=0)
+    bytes_processed: Mapped[int] = mapped_column(BigInteger, default=0)
     notes: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
@@ -100,9 +84,9 @@ class TaskRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    docs_emitted: Mapped[int] = mapped_column(Integer, default=0)
-    docs_dedup_dropped: Mapped[int] = mapped_column(Integer, default=0)
-    bytes_processed: Mapped[int] = mapped_column(Integer, default=0)
+    docs_emitted: Mapped[int] = mapped_column(BigInteger, default=0)
+    docs_dedup_dropped: Mapped[int] = mapped_column(BigInteger, default=0)
+    bytes_processed: Mapped[int] = mapped_column(BigInteger, default=0)
     checkpoint_json: Mapped[str] = mapped_column(String, default="{}")
     next_attempt_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
@@ -130,10 +114,9 @@ class DedupNearRow(Base):
     To search for near-dupes for a 128-bit simhash ``H`` we split H into
     :data:`NEAR_DUP_SEGMENTS` bands of :data:`NEAR_DUP_SEG_BITS` bits and store
     rows keyed by ``(segment_index, segment_value)``. Two near-dupes share at
-    least one band exactly when their Hamming distance is at most bands−1
-    (Manku/Jain pigeonhole guarantee: ≤31 with the current 32×4-bit layout),
-    giving exact retrieval up to the engine's default merge threshold (24).
-    Query is ``WHERE seg = ? AND value = ?``.
+    least one band exactly when their Hamming distance is below the band count
+    (Manku/Jain pigeonhole), and probabilistically beyond it. Query is
+    ``WHERE seg = ? AND value = ?``.
 
     ``sig_hex`` holds the full 128-bit signature (32 hex chars); the legacy
     ``near_dup_hash`` int column is retained, nullable, for backward
@@ -144,32 +127,23 @@ class DedupNearRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     doc_id: Mapped[str] = mapped_column(String, index=True)
     sig_hex: Mapped[str | None] = mapped_column(String, nullable=True)
-    near_dup_hash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # 64-bit signed simhash
+    near_dup_hash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # legacy 64-bit signed
     seg: Mapped[int] = mapped_column(Integer, index=True)
     seg_value: Mapped[int] = mapped_column(Integer, index=True)
     __table_args__ = (UniqueConstraint("doc_id", "seg", name="uq_dedup_near"),)
 
 
-# 128 bits split into 32 bands of 4 bits. The Manku/Jain pigeonhole guarantee is
-# "a pair within Hamming <= (bands-1) shares >=1 identical band", so 32 bands give
-# an EXACT-retrieval guarantee up to Hamming <=31 — comfortably covering the
-# engine's default merge threshold (24), which 16x8 banding (guarantee <=15) did
-# not. Cost: 32 tiny index rows/doc. The 128-bit fingerprint is unchanged.
-NEAR_DUP_SEGMENTS = 32
-NEAR_DUP_SEG_BITS = 4
+# 128 bits split into 16 bands of 8 bits. Finer banding than the bit budget
+# strictly needs (it guarantees a shared band only up to Hamming < 16) but it
+# lifts *probabilistic* candidate retrieval far past that — end-to-end near-dup
+# recall roughly doubles vs an 8-band split at the same threshold, at the cost
+# of 16 (not 8) tiny index rows per document. Bands are byte-aligned.
+NEAR_DUP_SEGMENTS = 16
+NEAR_DUP_SEG_BITS = 8
 _NEAR_DUP_SEG_MASK = (1 << NEAR_DUP_SEG_BITS) - 1
 # Per-band candidate cap. Higher than the 64-bit era's 256 so moderate-scale
 # corpora don't silently truncate true near-dup candidates out of a hot band.
 NEAR_DUP_CANDIDATE_LIMIT = 1024
-
-# Exponential backoff for failed-task retries: base * 2**(attempts-1), capped.
-RETRY_BACKOFF_BASE_SECONDS = 30
-RETRY_BACKOFF_CAP_SECONDS = 3600
-
-
-def _retry_delay_seconds(attempts: int) -> float:
-    exp = max(0, attempts - 1)
-    return float(min(RETRY_BACKOFF_BASE_SECONDS * (2**exp), RETRY_BACKOFF_CAP_SECONDS))
 
 
 class ManifestRow(Base):
@@ -179,7 +153,7 @@ class ManifestRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     path: Mapped[str] = mapped_column(String, unique=True)
     records: Mapped[int] = mapped_column(Integer, default=0)
-    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     committed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
     compacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
@@ -204,29 +178,63 @@ class TailRow(Base):
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     job_id: Mapped[str | None] = mapped_column(String, nullable=True)
     notes: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Owning OS process. Used by get_tail(reconcile=True) to detect orphans
+    # after a crash/kill that never called set_tail(False).
+    pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class RobotsCacheRow(Base):
+    __tablename__ = "robots_cache"
+    site: Mapped[str] = mapped_column(String, primary_key=True)
+    robots_txt: Mapped[str | None] = mapped_column(String, nullable=True)
+    expires_at: Mapped[float] = mapped_column(Float)
+    crawl_delay: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class StateDB:
     """High-level state operations used by the planner/workers/tail."""
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, redis_url: str | None = None) -> None:
         # Strip ``+aiosqlite`` if present; we use sync.
         if url.startswith("sqlite+aiosqlite:"):
             url = "sqlite:" + url[len("sqlite+aiosqlite:") :]
+        
+        self._redis_url = redis_url
+        if url.startswith(("redis://", "rediss://", "redlock://", "redlocks://")):
+            self._redis_url = url
+            url = "sqlite:///awareness.sqlite"
+
+        if self._redis_url is None:
+            try:
+                from awareness.config import get_settings
+                self._redis_url = get_settings().redis_url
+            except Exception:
+                pass
+
         self._url = url
-        self._engine = create_engine(url, future=True)
-        if url.startswith("sqlite"):
-            # WAL + a busy timeout make concurrent readers/writers across
-            # processes (standalone worker + API + CLI) coexist without
-            # "database is locked", and underpin the atomic claim in
-            # claim_pending_tasks. synchronous=NORMAL is the safe WAL pairing.
+        
+        # SQLite-specific logic: enable WAL mode, timeouts, etc.
+        if url.startswith("sqlite:"):
+            self._engine = create_engine(
+                url,
+                future=True,
+                connect_args={"timeout": 30, "check_same_thread": False}
+            )
+
             @event.listens_for(self._engine, "connect")
-            def _set_sqlite_pragmas(dbapi_conn: Any, _record: Any) -> None:
-                cur = dbapi_conn.cursor()
-                cur.execute("PRAGMA journal_mode=WAL")
-                cur.execute("PRAGMA busy_timeout=5000")
-                cur.execute("PRAGMA synchronous=NORMAL")
-                cur.close()
+            def set_sqlite_pragma(dbapi_connection, connection_record):
+                cursor = dbapi_connection.cursor()
+                try:
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                    cursor.execute("PRAGMA synchronous=NORMAL")
+                    cursor.execute("PRAGMA foreign_keys=ON")
+                except Exception as e:
+                    logger.warning("failed_to_set_sqlite_pragmas", error=str(e))
+                finally:
+                    cursor.close()
+        else:
+            self._engine = create_engine(url, future=True)
+
         self._sessionmaker = sessionmaker(self._engine, expire_on_commit=False)
         self._lock = threading.RLock()
         self._initialized = False
@@ -241,25 +249,40 @@ class StateDB:
                 return
             Base.metadata.create_all(self._engine)
 
-            # Simple automatic schema migration for legacy databases.
-            from sqlalchemy import inspect, text
+            # Simple automatic schema migration for legacy databases (SQLite only)
+            if self._engine.dialect.name == "sqlite":
+                from sqlalchemy import inspect, text
 
-            try:
-                inspector = inspect(self._engine)
-                near_cols = [c["name"] for c in inspector.get_columns("dedup_near")]
-                if near_cols and "sig_hex" not in near_cols:
-                    with self._engine.begin() as conn:
-                        conn.execute(text("ALTER TABLE dedup_near ADD COLUMN sig_hex VARCHAR"))
-                task_cols = [c["name"] for c in inspector.get_columns("tasks")]
-                if task_cols and "next_attempt_at" not in task_cols:
-                    with self._engine.begin() as conn:
-                        conn.execute(text("ALTER TABLE tasks ADD COLUMN next_attempt_at TIMESTAMP"))
-            except Exception as e:
-                logger.warning("migration_failed", error=str(e))
+                try:
+                    inspector = inspect(self._engine)
+                    try:
+                        near_cols = [c["name"] for c in inspector.get_columns("dedup_near")]
+                    except Exception:
+                        near_cols = []
+                    if near_cols and "sig_hex" not in near_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE dedup_near ADD COLUMN sig_hex VARCHAR"))
+                    try:
+                        tail_cols = [c["name"] for c in inspector.get_columns("tail_state")]
+                    except Exception:
+                        tail_cols = []
+                    if tail_cols and "pid" not in tail_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE tail_state ADD COLUMN pid INTEGER"))
+                except Exception as e:
+                    logger.warning("migration_failed", error=str(e))
+            else:
+                # Non-SQLite: best-effort ADD COLUMN if missing (Postgres etc.).
+                from sqlalchemy import inspect, text
 
-            from sqlalchemy import inspect as _sa_inspect  # noqa: PLC0415
-
-            _verify_dedup_schema(_sa_inspect(self._engine))
+                try:
+                    inspector = inspect(self._engine)
+                    tail_cols = [c["name"] for c in inspector.get_columns("tail_state")]
+                    if tail_cols and "pid" not in tail_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE tail_state ADD COLUMN pid INTEGER"))
+                except Exception as e:
+                    logger.warning("migration_failed", error=str(e))
 
             self._initialized = True
 
@@ -383,6 +406,23 @@ class StateDB:
         materialized = list(tasks)
         if not materialized:
             return 0
+
+        if self._redis_url:
+            from awareness.util.lock import RedisLock
+            job_id = materialized[0].job_id
+            try:
+                with RedisLock(self._redis_url, f"add_tasks:{job_id}", expire_sec=30.0, timeout_sec=15.0):
+                    return self._do_add_tasks(materialized)
+            except ImportError:
+                logger.warning("redis_library_missing_falling_back_to_unlocked_add_tasks")
+                return self._do_add_tasks(materialized)
+            except Exception as e:
+                logger.warning("redis_lock_failed_falling_back_to_unlocked_add_tasks", error=str(e))
+                return self._do_add_tasks(materialized)
+        else:
+            return self._do_add_tasks(materialized)
+
+    def _do_add_tasks(self, materialized: list[TaskState]) -> int:
         added = 0
         rearmed = 0
         # Count re-arms by *previous status* so we can keep the job's status
@@ -471,16 +511,32 @@ class StateDB:
         return added
 
     def claim_pending_tasks(self, job_id: str, limit: int) -> list[TaskState]:
-        """Atomically transition up to ``limit`` PENDING tasks to RUNNING.
+        """Atomically transition PENDING tasks to RUNNING for processing."""
+        if self._redis_url:
+            from awareness.util.lock import RedisLock
+            try:
+                with RedisLock(self._redis_url, f"claim:{job_id}", expire_sec=30.0, timeout_sec=15.0):
+                    return self._do_claim_pending_tasks(job_id, limit)
+            except ImportError:
+                logger.warning("redis_library_missing_falling_back_to_unlocked_claims")
+                return self._do_claim_pending_tasks(job_id, limit)
+            except Exception as e:
+                logger.warning("redis_lock_failed_falling_back_to_unlocked_claims", error=str(e))
+                return self._do_claim_pending_tasks(job_id, limit)
+        else:
+            return self._do_claim_pending_tasks(job_id, limit)
 
-        Correctness rests on the conditional ``UPDATE ... WHERE status='pending'
-        RETURNING``: the status guard is re-evaluated at write time, so even if
-        two claimers race the (lock-free) candidate SELECT and pick overlapping
-        ids, only one UPDATE flips each row — the loser's guard no longer
-        matches and it claims nothing. ``self._lock`` serializes in-process
-        callers; WAL + busy_timeout keep cross-process writers from erroring.
-        """
-        with self._lock, self.session() as s:
+    def _do_claim_pending_tasks(self, job_id: str, limit: int) -> list[TaskState]:
+        with self.session() as s:
+            stmt = (
+                select(TaskRow)
+                .where(TaskRow.job_id == job_id, TaskRow.status == TaskStatus.PENDING.value)
+                .order_by(TaskRow.created_at)
+            )
+            if self._engine.dialect.name != "sqlite":
+                stmt = stmt.with_for_update(skip_locked=True)
+            stmt = stmt.limit(limit)
+            rows = list(s.scalars(stmt))
             now = _utcnow()
             candidates = list(
                 s.scalars(
@@ -756,12 +812,37 @@ class StateDB:
     # ── dedup ────────────────────────────────────────────────────────────
     def upsert_dedup(self, content_hash: str, doc_id: str) -> tuple[str, bool]:
         """Insert a new content_hash if absent. Returns (canonical_doc_id, was_new)."""
+        if self._redis_url:
+            from awareness.util.lock import RedisLock
+            try:
+                with RedisLock(self._redis_url, f"dedup:{content_hash}", expire_sec=10.0, timeout_sec=5.0):
+                    return self._do_upsert_dedup(content_hash, doc_id)
+            except ImportError:
+                return self._do_upsert_dedup(content_hash, doc_id)
+            except Exception as e:
+                logger.warning("redis_lock_failed_falling_back_to_unlocked_upsert_dedup", error=str(e))
+                return self._do_upsert_dedup(content_hash, doc_id)
+        else:
+            return self._do_upsert_dedup(content_hash, doc_id)
+
+    def _do_upsert_dedup(self, content_hash: str, doc_id: str) -> tuple[str, bool]:
+        from sqlalchemy.exc import IntegrityError
         with self.session() as s:
             row = s.get(DedupRow, content_hash)
             if row is None:
-                s.add(DedupRow(content_hash=content_hash, first_doc_id=doc_id))
-                s.commit()
-                return doc_id, True
+                try:
+                    s.add(DedupRow(content_hash=content_hash, first_doc_id=doc_id))
+                    s.commit()
+                    return doc_id, True
+                except IntegrityError:
+                    s.rollback()
+                    # Re-fetch since another worker inserted it concurrently
+                    row = s.get(DedupRow, content_hash)
+                    if row is not None:
+                        row.capture_count += 1
+                        s.commit()
+                        return row.first_doc_id, False
+                    return doc_id, True
             row.capture_count += 1
             s.commit()
             return row.first_doc_id, False
@@ -776,19 +857,47 @@ class StateDB:
         if legacy_hash >= (1 << 63):
             legacy_hash -= (1 << 64)
 
+        from sqlalchemy.exc import IntegrityError
         with self.session() as s:
             for seg in range(NEAR_DUP_SEGMENTS):
                 value = (simhash_unsigned >> (NEAR_DUP_SEG_BITS * seg)) & _NEAR_DUP_SEG_MASK
-                s.merge(
-                    DedupNearRow(
-                        doc_id=doc_id,
-                        sig_hex=sig_hex,
-                        near_dup_hash=legacy_hash,
-                        seg=seg,
-                        seg_value=value,
+                # Check by unique constraint (doc_id, seg)
+                row = s.execute(
+                    select(DedupNearRow).where(
+                        DedupNearRow.doc_id == doc_id,
+                        DedupNearRow.seg == seg,
                     )
-                )
-            s.commit()
+                ).scalar_one_or_none()
+                if row is None:
+                    try:
+                        s.add(
+                            DedupNearRow(
+                                doc_id=doc_id,
+                                sig_hex=sig_hex,
+                                near_dup_hash=legacy_hash,
+                                seg=seg,
+                                seg_value=value,
+                            )
+                        )
+                        s.commit()
+                    except IntegrityError:
+                        s.rollback()
+                        row = s.execute(
+                            select(DedupNearRow).where(
+                                DedupNearRow.doc_id == doc_id,
+                                DedupNearRow.seg == seg,
+                            )
+                        ).scalar_one_or_none()
+                        if row is not None:
+                            row.sig_hex = sig_hex
+                            row.near_dup_hash = legacy_hash
+                            row.seg_value = value
+                            s.commit()
+                else:
+                    row.sig_hex = sig_hex
+                    row.near_dup_hash = legacy_hash
+                    row.seg_value = value
+                    s.commit()
 
     def find_near_dup_candidates(self, simhash_unsigned: int) -> list[tuple[str, int]]:
         """Look up doc_ids that share at least one band with this 128-bit signature.
@@ -809,7 +918,7 @@ class StateDB:
                     if sig_hex:
                         out[did] = sig128_from_hex(sig_hex)
                     elif legacy is not None:
-                        out[did] = legacy if legacy >= 0 else legacy + (1 << 64)
+                        out[did] = legacy & 0xffffffffffffffff
         return list(out.items())
 
     def dedup_stats(self) -> dict[str, int]:
@@ -824,9 +933,25 @@ class StateDB:
 
     # ── manifests ────────────────────────────────────────────────────────
     def add_manifest(self, path: str, records: int, bytes_: int) -> None:
+        from sqlalchemy.exc import IntegrityError
         with self.session() as s:
-            s.merge(ManifestRow(path=path, records=records, bytes=bytes_))
-            s.commit()
+            row = s.execute(select(ManifestRow).where(ManifestRow.path == path)).scalar_one_or_none()
+            if row is None:
+                try:
+                    s.add(ManifestRow(path=path, records=records, bytes=bytes_))
+                    s.commit()
+                except IntegrityError:
+                    s.rollback()
+                    # Re-fetch and update
+                    row = s.execute(select(ManifestRow).where(ManifestRow.path == path)).scalar_one_or_none()
+                    if row is not None:
+                        row.records = records
+                        row.bytes = bytes_
+                        s.commit()
+            else:
+                row.records = records
+                row.bytes = bytes_
+                s.commit()
 
     def list_pending_manifests(self) -> list[dict[str, Any]]:
         with self.session() as s:
@@ -858,7 +983,23 @@ class StateDB:
             s.commit()
 
     # ── tail state ───────────────────────────────────────────────────────
-    def set_tail(self, running: bool, job_id: str | None = None, note: str | None = None) -> None:
+    @staticmethod
+    def _pid_alive(pid: int | None) -> bool:
+        if pid is None or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def set_tail(
+        self,
+        running: bool,
+        job_id: str | None = None,
+        note: str | None = None,
+        pid: int | None = None,
+    ) -> None:
         with self.session() as s:
             row = s.get(TailRow, 1)
             now = _utcnow()
@@ -870,21 +1011,198 @@ class StateDB:
                 row.started_at = now
                 row.stopped_at = None
                 row.job_id = job_id
+                # Default to the calling process when starting so crashes are detectable.
+                row.pid = int(pid) if pid is not None else os.getpid()
             else:
                 row.stopped_at = now
+                row.pid = None
+                if job_id is not None:
+                    row.job_id = job_id
             if note:
                 row.notes = note
             s.commit()
 
-    def get_tail(self) -> dict[str, Any]:
+    def _tail_info_from_row(self, row: TailRow | None) -> dict[str, Any]:
+        if row is None:
+            return {
+                "running": False,
+                "job_id": None,
+                "started_at": None,
+                "stopped_at": None,
+                "pid": None,
+            }
+        return {
+            "running": bool(row.running),
+            "job_id": row.job_id,
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "stopped_at": row.stopped_at.isoformat() if row.stopped_at else None,
+            "notes": row.notes,
+            "pid": int(row.pid) if row.pid is not None else None,
+        }
+
+    def get_tail(self, *, reconcile: bool = True) -> dict[str, Any]:
+        """Return tail daemon status.
+
+        When ``reconcile`` is True (default), a ``running=true`` row whose
+        owning PID is dead (or was never recorded — legacy) is marked stopped
+        so CLI/API status never lies after a crash.
+
+        Reconciliation uses a conditional UPDATE so a concurrent
+        ``set_tail(True)`` restart cannot be clobbered.
+        """
         with self.session() as s:
             row = s.get(TailRow, 1)
-            if row is None:
-                return {"running": False, "job_id": None, "started_at": None, "stopped_at": None}
-            return {
-                "running": bool(row.running),
-                "job_id": row.job_id,
-                "started_at": row.started_at.isoformat() if row.started_at else None,
-                "stopped_at": row.stopped_at.isoformat() if row.stopped_at else None,
-                "notes": row.notes,
-            }
+            info = self._tail_info_from_row(row)
+            if not reconcile or not info["running"]:
+                return info
+
+            observed_pid = info.get("pid")
+            alive = self._pid_alive(observed_pid if isinstance(observed_pid, int) else None)
+            if alive:
+                return info
+
+            stale_job = info.get("job_id")
+            reason = (
+                "reconciled-stale-no-pid"
+                if observed_pid is None
+                else f"reconciled-dead-pid:{observed_pid}"
+            )
+            now = _utcnow()
+            # Atomic conditional clear of the exact orphan we observed.
+            stmt = (
+                update(TailRow)
+                .where(TailRow.id == 1, TailRow.running == 1)
+                .values(running=0, stopped_at=now, pid=None, notes=reason)
+            )
+            if observed_pid is None:
+                stmt = stmt.where(TailRow.pid.is_(None))
+            else:
+                stmt = stmt.where(TailRow.pid == observed_pid)
+            result = s.execute(stmt)
+            s.commit()
+            cleared = int(result.rowcount or 0) > 0
+            cancelled_job = stale_job if cleared and isinstance(stale_job, str) else None
+
+        if cancelled_job:
+            try:
+                from awareness.schemas.jobs import JobStatus  # local import
+
+                self.set_job_status(cancelled_job, JobStatus.CANCELLED, note="orphaned-by-process-exit")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("tail_reconcile_job_status_failed", job_id=cancelled_job, error=str(exc))
+
+        return self.get_tail(reconcile=False)
+
+    def abandon_inflight_tasks(self, job_id: str, *, note: str = "orphaned-process-exit") -> int:
+        """Mark PENDING/RUNNING tasks for a dead job as SKIPPED so the UI stops lying."""
+        with self.session() as s:
+            now = _utcnow()
+            stmt = (
+                update(TaskRow)
+                .where(
+                    TaskRow.job_id == job_id,
+                    TaskRow.status.in_(
+                        [TaskStatus.PENDING.value, TaskStatus.RUNNING.value]
+                    ),
+                )
+                .values(
+                    status=TaskStatus.SKIPPED.value,
+                    completed_at=now,
+                    last_error=note[:4000] if note else None,
+                )
+            )
+            res = s.execute(stmt)
+            s.commit()
+            n = int(res.rowcount or 0)
+            if n:
+                logger.info("inflight_tasks_abandoned", job_id=job_id, count=n, note=note)
+            return n
+
+    def reconcile_orphan_tail_jobs(self, *, limit: int = 200) -> int:
+        """Cancel TAIL jobs stuck in RUNNING that are not the live tail owner.
+
+        Historical crashes left ``jobs.status='running'`` while ``tail_state``
+        was cleared. Status/UI then listed phantom jobs forever. Also abandons
+        PENDING/RUNNING tasks so Tail page counters go quiet.
+        """
+        from awareness.schemas.jobs import JobKind, JobStatus  # local import
+
+        info = self.get_tail(reconcile=True)
+        active_id = info.get("job_id") if info.get("running") else None
+        cancelled = 0
+        for job in self.list_jobs(kind=JobKind.TAIL, limit=limit):
+            if job.status == JobStatus.RUNNING:
+                if active_id is not None and job.job_id == active_id:
+                    continue
+                self.set_job_status(job.job_id, JobStatus.CANCELLED, note="orphaned-reconcile-sweep")
+                self.abandon_inflight_tasks(job.job_id, note="orphaned-reconcile-sweep")
+                cancelled += 1
+            elif job.status in (JobStatus.CANCELLED, JobStatus.COMPLETED, JobStatus.FAILED):
+                # Tasks may still be PENDING/RUNNING after a crash mid-stop.
+                if active_id is not None and job.job_id == active_id:
+                    continue
+                abandoned = self.abandon_inflight_tasks(
+                    job.job_id, note="stale-tasks-on-terminal-job"
+                )
+                if abandoned:
+                    cancelled += 1  # count as reconcile work units
+        if cancelled:
+            logger.info("orphan_tail_jobs_reconciled", count=cancelled, active=active_id)
+        return cancelled
+
+    # ── database reaper / cleanup ────────────────────────────────────────
+    def cleanup_old_tasks(self, retention_days: int) -> int:
+        """Delete completed tasks older than retention_days."""
+        from datetime import timedelta
+        from sqlalchemy import delete
+
+        threshold = _utcnow() - timedelta(days=retention_days)
+        with self.session() as s:
+            stmt = (
+                delete(TaskRow)
+                .where(TaskRow.completed_at.is_not(None))
+                .where(TaskRow.completed_at < threshold)
+            )
+            res = s.execute(stmt)
+            s.commit()
+            return res.rowcount
+
+    def vacuum_database(self) -> None:
+        """Run database VACUUM (or Postgres VACUUM/ANALYZE if configured)."""
+        from sqlalchemy import text
+
+        dialect_name = self._engine.dialect.name
+        try:
+            with self._engine.connect() as conn:
+                # Vacuum and Analyze commands cannot run inside a transaction block.
+                # Setting AUTOCOMMIT isolation level ensures they run outside a transaction.
+                conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+                if dialect_name == "postgresql":
+                    logger.info("vacuum_postgres_start")
+                    conn.execute(text("VACUUM"))
+                    conn.execute(text("ANALYZE"))
+                    logger.info("vacuum_postgres_success")
+                else:
+                    logger.info("vacuum_sqlite_start")
+                    conn.execute(text("VACUUM"))
+                    logger.info("vacuum_sqlite_success")
+        except Exception as e:
+            logger.warning("vacuum_failed", error=str(e))
+            raise
+
+    # ── robots cache ─────────────────────────────────────────────────────
+    def get_robots_cache(self, site: str) -> RobotsCacheRow | None:
+        with self.session() as s:
+            return s.get(RobotsCacheRow, site)
+
+    def set_robots_cache(self, site: str, robots_txt: str | None, expires_at: float, crawl_delay: float | None) -> None:
+        with self.session() as s:
+            s.merge(
+                RobotsCacheRow(
+                    site=site,
+                    robots_txt=robots_txt,
+                    expires_at=expires_at,
+                    crawl_delay=crawl_delay,
+                )
+            )
+            s.commit()

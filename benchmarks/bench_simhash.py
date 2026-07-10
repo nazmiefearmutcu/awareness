@@ -69,7 +69,9 @@ def _naive_simhash64(text: str, k: int = 3) -> int:
     for bit in range(64):
         if bit_sums[bit] >= 0:
             out |= 1 << bit
-    return out & 0xFFFFFFFFFFFFFFFF
+    if out >= (1 << 63):
+        out -= (1 << 64)
+    return out
 
 
 # ── popcount-based all-pairs Hamming over arbitrary-width signatures ─────────

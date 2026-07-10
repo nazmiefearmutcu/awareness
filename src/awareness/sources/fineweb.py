@@ -84,15 +84,35 @@ class FineWebAdapter(Adapter):
             datasets_to_use.append((self._default, SourceKind.FINEWEB))
 
         out: list[PartitionSpec] = []
+        seen_keys: set[str] = set()
+
         for ds_name, kind in datasets_to_use:
+            configs: list[str] = []
+            try:
+                from datasets import get_dataset_config_names  # noqa: PLC0415
+                configs = get_dataset_config_names(ds_name)
+            except Exception as exc:
+                logger.info("fineweb_failed_to_fetch_configs", ds=ds_name, err=str(exc))
+
             for crawl_id in crawls:
+                resolved_dump = crawl_id
+                if configs and crawl_id not in configs:
+                    fallback = "sample-10BT" if "sample-10BT" in configs else (configs[0] if configs else crawl_id)
+                    logger.warning("fineweb_crawl_id_mismatch", ds=ds_name, requested=crawl_id, fallback=fallback)
+                    resolved_dump = fallback
+
+                part_key = f"{ds_name}:{resolved_dump}"
+                if part_key in seen_keys:
+                    continue
+                seen_keys.add(part_key)
+
                 out.append(
                     PartitionSpec(
                         source_type=kind,
-                        partition_key=f"{ds_name}:{crawl_id}",
+                        partition_key=part_key,
                         payload={
                             "dataset": ds_name,
-                            "dump": crawl_id,
+                            "dump": resolved_dump,
                             "rows_per_partition": self._rows,
                             "languages": request.languages,
                             "domains": request.domains,

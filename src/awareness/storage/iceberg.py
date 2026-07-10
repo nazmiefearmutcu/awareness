@@ -77,8 +77,8 @@ def _to_arrow(rows: Iterable[dict[str, Any]], schema: pa.Schema) -> pa.Table:
                 cols[f.name].append(int(v))
                 continue
             if f.name in int64_fields and isinstance(v, int):
-                # Fold unsigned 64-bit values (e.g. simhash) into signed int64
-                # range expected by Arrow / Iceberg.
+                # SimHash is consistently signed 64-bit now. Fold fallback is kept
+                # for robustness with legacy staging JSONL files on disk.
                 if v >= (1 << 63):
                     v -= 1 << 64
                 cols[f.name].append(int(v))

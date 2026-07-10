@@ -64,7 +64,7 @@ mirrors this exactly.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `content_hash` | string (req) | `xxhash3_64_hexdigest` over `normalize_for_hash(text)` (lowercased, punctuation-stripped) |
-| `near_dup_hash` | int64 | 64-bit simhash. Stored as **signed** int64; values >= 2^63 are folded to negative |
+| `near_dup_hash` | int64 | 64-bit simhash. Stored as **signed** int64; values are consistently signed. |
 
 ## Compliance & notes
 
@@ -91,7 +91,8 @@ Same canonical_url, different content
 Different canonical_url, identical normalized text
   → different doc_id (URL is in the hash), but they share content_hash;
     dedup marks the second one EXACT_DUP and sets parent_doc_or_dup_group
-    to the first one's doc_id
+    to the first one's doc_id. The worker does **not** re-persist EXACT_DUP
+    captures (storage skip); search also collapses by content_hash.
 ```
 
 ## Folding captures into canonical docs

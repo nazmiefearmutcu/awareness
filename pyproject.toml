@@ -1,6 +1,6 @@
 [project]
 name = "awareness"
-version = "0.1.0"
+version = "0.2.0"
 description = "Public text internet awareness engine — BODY backfill and TAIL live capture of the public text web."
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -19,8 +19,8 @@ dependencies = [
   # storage / data
   "SQLAlchemy>=2.0",
   "numpy>=1.26",
-  "pyarrow>=24.0.0",
-  "duckdb>=1.5.3",
+  "pyarrow>=16.0",
+  "duckdb>=1.0.0",
   "pyiceberg[sql-sqlite]>=0.7.0",
   "pyiceberg-core>=0.6",
   # text extraction / language / dedup
@@ -39,7 +39,8 @@ dependencies = [
   "structlog>=24.1",
   "rich>=13.7",
   # time
-  "python-dateutil>=2.9.0.post0",
+  "python-dateutil>=2.9",
+  "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]
