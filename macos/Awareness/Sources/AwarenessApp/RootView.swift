@@ -31,8 +31,5 @@ struct RootView: View {
         .task {
             await manager.start()
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-            manager.stop()
-        }
     }
 }

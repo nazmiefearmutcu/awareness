@@ -29,6 +29,11 @@ cp "${BIN}" "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
 
 cp "${ROOT}/Resources/Info.plist" "${CONTENTS}/Info.plist"
+# Ship a signal-safe API launcher for when awareness-api is not on PATH.
+if [[ -f "${ROOT}/Scripts/awareness-api-launcher.sh" ]]; then
+  cp "${ROOT}/Scripts/awareness-api-launcher.sh" "${RESOURCES_DIR}/awareness-api-launcher.sh"
+  chmod +x "${RESOURCES_DIR}/awareness-api-launcher.sh"
+fi
 echo -n "APPL????" > "${CONTENTS}/PkgInfo"
 
 echo "OK: ${APP_DIR}"

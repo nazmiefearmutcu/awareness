@@ -13,6 +13,19 @@ public enum APIProcessResolver {
         }
         if let repo = config.repoRootOverride ?? detectRepoRoot(fileManager: fileManager) {
             out.append(URL(fileURLWithPath: repo).appendingPathComponent(".venv/bin/awareness-api"))
+            // Repo-local launcher (signal-safe shell wrapper).
+            out.append(
+                URL(fileURLWithPath: repo)
+                    .appendingPathComponent("macos/Awareness/Scripts/awareness-api-launcher.sh")
+            )
+        }
+        // Bundled launcher next to the .app binary: …/Awareness.app/Contents/Resources/
+        if let arg0 = ProcessInfo.processInfo.arguments.first, !arg0.isEmpty {
+            let resources = URL(fileURLWithPath: arg0)
+                .deletingLastPathComponent() // MacOS
+                .deletingLastPathComponent() // Contents
+                .appendingPathComponent("Resources/awareness-api-launcher.sh")
+            out.append(resources)
         }
         // Search PATH for awareness-api
         if let pathEnv {
@@ -43,7 +56,36 @@ public enum APIProcessResolver {
         fileManager: FileManager = .default,
         startingAt: String? = nil
     ) -> String? {
-        var dir = URL(fileURLWithPath: startingAt ?? fileManager.currentDirectoryPath)
+        var starts: [String] = []
+        if let startingAt {
+            starts.append(startingAt)
+        }
+        starts.append(fileManager.currentDirectoryPath)
+        // GUI apps often launch with cwd=/; walk up from the executable
+        // (…/dist/Awareness.app/Contents/MacOS → repo root with pyproject.toml).
+        if let arg0 = ProcessInfo.processInfo.arguments.first, !arg0.isEmpty {
+            starts.append(URL(fileURLWithPath: arg0).deletingLastPathComponent().path)
+        }
+        // Home symlink used on this machine: ~/awareness_dev
+        let homeDev = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("awareness_dev").path
+        starts.append(homeDev)
+
+        var seen = Set<String>()
+        for start in starts {
+            if !seen.insert(start).inserted { continue }
+            if let found = walkForRepoRoot(startingAt: start, fileManager: fileManager) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    private static func walkForRepoRoot(
+        startingAt: String,
+        fileManager: FileManager
+    ) -> String? {
+        var dir = URL(fileURLWithPath: startingAt)
         for _ in 0..<16 {
             let py = dir.appendingPathComponent("pyproject.toml")
             if fileManager.fileExists(atPath: py.path),

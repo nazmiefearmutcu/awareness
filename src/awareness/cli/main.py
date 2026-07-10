@@ -693,6 +693,14 @@ def dashboard(
     env = os.environ.copy()
     env["AW_API_HOST"] = host
     env["AW_API_PORT"] = str(port)
+    # Help the native app find .venv/awareness-api when launched from Dock-like cwd.
+    if "AWARENESS_REPO" not in env:
+        try:
+            repo = Path(__file__).resolve().parents[3]
+            if (repo / "pyproject.toml").is_file():
+                env["AWARENESS_REPO"] = str(repo)
+        except IndexError:
+            pass
 
     binary = app_path / "Contents" / "MacOS" / "Awareness"
     rprint(f"[green]Opening native app:[/green] {app_path}")

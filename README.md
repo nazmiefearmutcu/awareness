@@ -17,7 +17,21 @@ politeness applies to live fetches.
 
 ## Research Workbench (UI)
 
-Awareness ships with a built-in static SPA served from the FastAPI control surface at `/`. Start it with `awareness-api` (default port `8085`) and open `http://127.0.0.1:8085/` — no separate build step.
+The control surface is a **native macOS app** (`Awareness.app`). It hosts the existing SPA inside a native window (WKWebView) and **auto-starts** the local FastAPI process — no Safari/Chrome.
+
+```bash
+# Build the .app (requires Xcode/Swift toolchain)
+./macos/Awareness/Scripts/build-app.sh
+
+# Launch (native window — not a browser)
+open dist/Awareness.app
+# or:
+awareness dashboard
+```
+
+Details, env vars, and packaging: [`macos/README.md`](macos/README.md).
+
+Legacy browser UI (optional): start `awareness-api` and run `awareness dashboard --browser`, or open `http://127.0.0.1:8085/` directly.
 
 #### Dashboard
 ![Dashboard with KPI tiles for total captures, distinct hashes, dedup folds, recent jobs; live capture state pulse; recent backfill and tail runs with progress; live activity feed of newly captured documents](docs/screenshots/01-dashboard.png)

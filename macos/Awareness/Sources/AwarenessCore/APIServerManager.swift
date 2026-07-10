@@ -102,21 +102,41 @@ public final class APIServerManager {
         pollTask?.cancel()
         pollTask = nil
 
-        if let process, process.isRunning {
-            process.terminate()
-            // Brief grace; force-kill if still running.
-            let deadline = Date().addingTimeInterval(2)
-            while process.isRunning, Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.05)
-            }
-            if process.isRunning {
-                process.interrupt()
+        if let process {
+            let pid = process.processIdentifier
+            if pid > 0 {
+                // Kill descendants first (shell wrappers / uvicorn reloader kids),
+                // then the direct child.
+                Self.signalProcessTree(rootPid: pid, signal: SIGTERM)
                 process.terminate()
+                let deadline = Date().addingTimeInterval(2)
+                while process.isRunning, Date() < deadline {
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+                if process.isRunning {
+                    Self.signalProcessTree(rootPid: pid, signal: SIGKILL)
+                }
             }
         }
-        process = nil
+        self.process = nil
         closeLogHandle()
         state = .stopped
+    }
+
+    /// Best-effort recursive signal via `pkill -P` (macOS).
+    private static func signalProcessTree(rootPid: Int32, signal: Int32) {
+        let sigName = signal == SIGKILL ? "KILL" : "TERM"
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/bash")
+        task.arguments = [
+            "-c",
+            // Depth-first: kill children, then root.
+            "pkill -\(sigName) -P \(rootPid) 2>/dev/null; kill -\(sigName) \(rootPid) 2>/dev/null; true",
+        ]
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
+        try? task.run()
+        task.waitUntilExit()
     }
 
     // MARK: - Launch resolution
@@ -170,10 +190,22 @@ public final class APIServerManager {
 
     private func spawn(launch: Launch, port: Int) throws {
         let logURL = try prepareLogFile()
+        let repo = config.repoRootOverride ?? APIProcessResolver.detectRepoRoot()
 
         var env = ProcessInfo.processInfo.environment
         env["AW_API_HOST"] = config.preferredHost
         env["AW_API_PORT"] = String(port)
+        // GUI apps inherit a tiny PATH; expand so venv tools and Homebrew python resolve.
+        let guiPathExtras = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "\(FileManager.default.homeDirectoryForCurrentUser.path)/.local/bin",
+        ]
+        let existingPath = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        env["PATH"] = (guiPathExtras + [existingPath]).joined(separator: ":")
+        if let repo {
+            env["AWARENESS_REPO"] = repo
+        }
         for (k, v) in launch.extraEnv {
             env[k] = v
         }
@@ -182,6 +214,9 @@ public final class APIServerManager {
         proc.executableURL = launch.executable
         proc.arguments = launch.arguments
         proc.environment = env
+        if let repo {
+            proc.currentDirectoryURL = URL(fileURLWithPath: repo)
+        }
 
         let handle = try FileHandle(forWritingTo: logURL)
         // Append: seek to end.

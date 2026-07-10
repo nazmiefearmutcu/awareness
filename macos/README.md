@@ -24,6 +24,7 @@ dist/Awareness.app/
     PkgInfo
     MacOS/Awareness
     Resources/
+      awareness-api-launcher.sh   # signal-safe fallback API launcher
 ```
 
 Verify:
@@ -31,7 +32,14 @@ Verify:
 ```bash
 test -x dist/Awareness.app/Contents/MacOS/Awareness
 plutil -lint dist/Awareness.app/Contents/Info.plist
-open dist/Awareness.app
+open dist/Awareness.app   # native window — no Safari/Chrome
+```
+
+CLI (after build):
+
+```bash
+awareness dashboard          # opens Awareness.app
+awareness dashboard --browser  # legacy browser SPA
 ```
 
 ## Run (development)
@@ -65,12 +73,25 @@ open dist/Awareness.app
 
 ## Python backend
 
-The app spawns `awareness-api` on loopback. Install the package into a venv first:
+The app spawns the API on loopback. Resolution order:
+
+1. `AWARENESS_API_BIN` (explicit)
+2. `$AWARENESS_REPO/.venv/bin/awareness-api` (or inferred repo root)
+3. `awareness-api` on `PATH`
+4. Bundled `Resources/awareness-api-launcher.sh` (uses venv python + `PYTHONPATH=src`; reaps the API if the app dies)
+
+Install deps first:
 
 ```bash
 # from repo root
 uv sync   # or: python -m venv .venv && pip install -e .
-# ensure .venv/bin/awareness-api (or PATH) is available
 ```
 
-If resolution fails, set `AWARENESS_API_BIN` explicitly.
+If the app cannot find a venv, set:
+
+```bash
+export AWARENESS_REPO="$PWD"
+export AWARENESS_API_BIN="$PWD/.venv/bin/awareness-api"
+```
+
+Logs: `~/Library/Logs/Awareness/api.log`
