@@ -16,6 +16,19 @@ Native SwiftUI shell that starts the Python `awareness-api` backend and loads th
 ./macos/Awareness/Scripts/install-app.sh   # → ~/Applications/Awareness.app
 ```
 
+### DMG (redistributable)
+
+```bash
+# from repo root — ad-hoc signed arm64/x86_64 DMG for GitHub Releases
+./macos/Awareness/Scripts/make-dmg.sh
+# → dist/Awareness-<version>-<arch>.dmg
+# → dist/Awareness-<version>-<arch>.dmg.sha256
+```
+
+`make-dmg.sh` sets `RELEASE=1` so the package does **not** embed a machine-local
+`AWARENESS_REPO.txt` path. End users still need the Python engine (`uv sync` or
+`pip install -e .`); the app resolves `~/awareness_dev` or `awareness-api` on `PATH`.
+
 Produces:
 
 ```
@@ -26,6 +39,7 @@ dist/Awareness.app/
     MacOS/Awareness
     Resources/
       awareness-api-launcher.sh   # signal-safe fallback API launcher
+dist/Awareness-<ver>-arm64.dmg    # drag Awareness.app → Applications
 ```
 
 Verify:

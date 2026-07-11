@@ -41,8 +41,11 @@ fi
 if [[ -f "${ROOT}/Resources/AppIcon.icns" ]]; then
   cp "${ROOT}/Resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
 fi
-# Pin repo root so Dock-launched app can find the venv/source tree.
-echo "${REPO}" > "${RESOURCES_DIR}/AWARENESS_REPO.txt"
+# Pin repo root for local/dev installs so Dock-launched apps find the venv.
+# Release/DMG builds omit this so we never ship a machine-specific path.
+if [[ "${RELEASE:-0}" != "1" ]]; then
+  echo "${REPO}" > "${RESOURCES_DIR}/AWARENESS_REPO.txt"
+fi
 echo -n "APPL????" > "${CONTENTS}/PkgInfo"
 
 # ad-hoc codesign so Gatekeeper is less noisy for local builds
@@ -51,4 +54,8 @@ if command -v codesign >/dev/null 2>&1; then
 fi
 
 echo "OK: ${APP_DIR}"
-echo "Install to ~/Applications: ${ROOT}/Scripts/install-app.sh"
+if [[ "${RELEASE:-0}" == "1" ]]; then
+  echo "Release package (no AWARENESS_REPO pin). DMG: ${ROOT}/Scripts/make-dmg.sh"
+else
+  echo "Install to ~/Applications: ${ROOT}/Scripts/install-app.sh"
+fi
