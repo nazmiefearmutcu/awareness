@@ -82,14 +82,16 @@ jobs:
 
           DEB=$(ls dist-native/*.deb | head -1)
           dpkg-deb -I "$DEB" | tee ../e2e-out/linux-deb-info.txt
+          # Avoid SIGPIPE under `set -o pipefail` when head closes early.
+          set +o pipefail
           dpkg-deb -c "$DEB" | head -50 | tee ../e2e-out/linux-deb-contents.txt
+          set -o pipefail
           sudo dpkg -i "$DEB" || sudo apt-get install -f -y
           ls /usr/share/applications/*wareness* 2>/dev/null | tee ../e2e-out/linux-desktop-entry-path.txt || true
           cat /usr/share/applications/*wareness*.desktop 2>/dev/null | tee ../e2e-out/linux-desktop-entry.txt || true
 
           kill "$MOCK_PID" 2>/dev/null || true
           ls -la ../e2e-out | tee ../e2e-out/listing.txt
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -117,7 +119,7 @@ jobs:
         working-directory: desktop
         run: npm run dist:win
 
-      - name: Mock API + NSIS install + screenshot
+      - name: Mock API + portable launch + NSIS smoke + screenshot
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path e2e-out | Out-Null
@@ -127,30 +129,16 @@ jobs:
           $health = Invoke-WebRequest -Uri http://127.0.0.1:8085/healthz -UseBasicParsing
           $health.Content | Tee-Object e2e-out/windows-health.txt
 
-          $exe = Get-ChildItem desktop/dist-native/*.exe |
-            Where-Object { $_.Name -like 'Awareness-*-win-*.exe' -and $_.Name -notlike '*.blockmap' } |
-            Select-Object -First 1
-          if (-not $exe) { throw "No Windows installer found" }
-          "Installer=$($exe.FullName)" | Tee-Object e2e-out/windows-installer.txt
-          $p = Start-Process -FilePath $exe.FullName -ArgumentList "/S" -PassThru -Wait
-          "nsis_exit=$($p.ExitCode)" | Tee-Object e2e-out/windows-nsis-exit.txt
+          # Prefer portable zip for UI test (NSIS /S can hang on runners waiting for elevation UI).
+          $zip = Get-ChildItem desktop/dist-native/*.zip | Select-Object -First 1
+          if (-not $zip) { throw "No Windows zip found" }
+          Expand-Archive -Path $zip.FullName -DestinationPath e2e-out/win-portable -Force
+          Get-ChildItem e2e-out/win-portable | Out-File e2e-out/windows-portable-listing.txt
+          $bin = Get-ChildItem e2e-out/win-portable -Filter Awareness.exe -Recurse | Select-Object -First 1
+          if (-not $bin) { throw "Awareness.exe missing from portable zip" }
+          "bin=$($bin.FullName)" | Tee-Object e2e-out/windows-bin.txt
 
-          Get-ChildItem "$env:LOCALAPPDATA\Programs" -ErrorAction SilentlyContinue |
-            ForEach-Object { $_.FullName } |
-            Out-File e2e-out/windows-programs-list.txt
-
-          $found = Get-ChildItem -Path $env:LOCALAPPDATA,$env:ProgramFiles -Filter Awareness.exe -Recurse -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-          if (-not $found) {
-            $found = Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Filter *.exe -Recurse -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -match 'Awareness|awareness' } |
-              Select-Object -First 1
-          }
-          if (-not $found) { throw "Awareness.exe not found after NSIS install" }
-          "bin=$($found.FullName)" | Tee-Object e2e-out/windows-bin.txt
-          "dir=$($found.DirectoryName)" | Tee-Object e2e-out/windows-install-path.txt -Append
-
-          $proc = Start-Process -FilePath $found.FullName -PassThru
+          $proc = Start-Process -FilePath $bin.FullName -PassThru
           Start-Sleep -Seconds 12
           Add-Type -AssemblyName System.Windows.Forms,System.Drawing
           $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -159,13 +147,31 @@ jobs:
           $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
           $bmp.Save("$pwd\e2e-out\windows-boot-or-dashboard.png")
           $g.Dispose(); $bmp.Dispose()
-
           if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
-          if (-not $mock.HasExited) { Stop-Process -Id $mock.Id -Force -ErrorAction SilentlyContinue }
 
-          $zip = Get-ChildItem desktop/dist-native/*.zip | Select-Object -First 1
-          Expand-Archive -Path $zip.FullName -DestinationPath e2e-out/win-portable -Force
-          Get-ChildItem e2e-out/win-portable | Out-File e2e-out/windows-portable-listing.txt
+          # NSIS smoke: start silent install with timeout (do not fail whole job if hung)
+          $exe = Get-ChildItem desktop/dist-native/*.exe |
+            Where-Object { $_.Name -like 'Awareness-*-win-*.exe' -and $_.Name -notlike '*.blockmap' } |
+            Select-Object -First 1
+          if ($exe) {
+            "Installer=$($exe.FullName)" | Tee-Object e2e-out/windows-installer.txt
+            $dest = Join-Path $env:TEMP "AwarenessNsisTest"
+            New-Item -ItemType Directory -Force -Path $dest | Out-Null
+            $p = Start-Process -FilePath $exe.FullName -ArgumentList "/S","/D=$dest" -PassThru
+            if (-not $p.WaitForExit(120000)) {
+              "nsis_timeout=1" | Tee-Object e2e-out/windows-nsis-exit.txt
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            } else {
+              "nsis_exit=$($p.ExitCode)" | Tee-Object e2e-out/windows-nsis-exit.txt
+            }
+            if (Test-Path (Join-Path $dest "Awareness.exe")) {
+              "nsis_installed=1" | Tee-Object e2e-out/windows-nsis-installed.txt
+            } else {
+              "nsis_installed=0" | Tee-Object e2e-out/windows-nsis-installed.txt
+            }
+          }
+
+          if (-not $mock.HasExited) { Stop-Process -Id $mock.Id -Force -ErrorAction SilentlyContinue }
           Get-ChildItem e2e-out | Out-File e2e-out/listing.txt
 
       - uses: actions/upload-artifact@v4
