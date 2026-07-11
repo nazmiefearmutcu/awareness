@@ -1,0 +1,145 @@
+# Build Awareness desktop packages (Windows + Linux) and attach to a GitHub Release.
+# Triggers: tag v* push, or manual workflow_dispatch with optional tag input.
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to upload assets to (e.g. v0.3.0). Empty = build only."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: desktop unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci || npm install
+      - run: npm test
+
+  build-linux:
+    name: Linux (AppImage, deb, tar.gz)
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install system deps for electron-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm fakeroot dpkg
+      - run: npm ci || npm install
+      - run: npm run dist:linux
+      - name: Checksums
+        run: |
+          cd dist-native
+          sha256sum Awareness-* > SHA256SUMS-linux.txt || shasum -a 256 Awareness-* > SHA256SUMS-linux.txt
+          ls -lah
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          path: |
+            desktop/dist-native/Awareness-*
+            desktop/dist-native/SHA256SUMS-linux.txt
+          if-no-files-found: error
+
+  build-windows:
+    name: Windows (NSIS, portable, zip)
+    needs: test
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci || npm install
+      - run: npm run dist:win
+      - name: Checksums
+        shell: bash
+        run: |
+          cd dist-native
+          sha256sum Awareness-* > SHA256SUMS-windows.txt || shasum -a 256 Awareness-* > SHA256SUMS-windows.txt
+          ls -lah
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: |
+            desktop/dist-native/Awareness-*
+            desktop/dist-native/SHA256SUMS-windows.txt
+          if-no-files-found: error
+
+  publish:
+    name: Attach assets to GitHub Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-linux
+          path: out/linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-windows
+          path: out/windows
+      - name: List assets
+        run: find out -type f | sort
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          # Ensure release exists (no-op if already there)
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "$TAG — Desktop (Windows + Linux)" \
+              --notes "Desktop packages for Awareness. See release body for install notes." \
+              --latest=false
+          fi
+          # Upload all built artifacts
+          shopt -s nullglob
+          files=(out/linux/* out/windows/*)
+          if (( ${#files[@]} == 0 )); then
+            echo "No assets to upload" >&2
+            exit 1
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber
+          gh release view "$TAG"
