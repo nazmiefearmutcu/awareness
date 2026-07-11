@@ -1,0 +1,226 @@
+# Run Awareness desktop on real Windows + Linux runners and capture boot UI screenshots.
+# Also exercises NSIS silent install + AppImage launch (install/first-run path).
+name: Desktop E2E Screenshots
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/desktop-win-linux
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop-e2e-screenshots.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  linux-e2e:
+    name: Linux AppImage + tar boot UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop deps + xvfb tools
+        working-directory: desktop
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb x11-utils scrot imagemagick
+          npm ci || npm install
+
+      - name: Build Linux packages
+        working-directory: desktop
+        run: npm run dist:linux
+
+      - name: Mock awareness-api health server
+        run: |
+          python3 - <<'PY' &
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          class H(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  body = b'{"ok":true,"service":"mock-awareness-api"}'
+                  if self.path.startswith("/healthz"):
+                      self.send_response(200)
+                      self.send_header("Content-Type", "application/json")
+                      self.send_header("Content-Length", str(len(body)))
+                      self.end_headers()
+                      self.wfile.write(body)
+                  else:
+                      html = b"""<!doctype html><html><body style='background:#0c0c0e;color:#e8e8ea;font-family:system-ui;padding:40px'>
+                      <h1>Awareness mock dashboard</h1>
+                      <p>Desktop shell attached successfully.</p>
+                      <nav><a href='#'>Dashboard</a> · <a href='#'>Captures</a> · <a href='#'>Work</a> · <a href='#'>Settings</a></nav>
+                      </body></html>"""
+                      self.send_response(200)
+                      self.send_header("Content-Type", "text/html")
+                      self.send_header("Content-Length", str(len(html)))
+                      self.end_headers()
+                      self.wfile.write(html)
+              def log_message(self, *a):
+                  pass
+          HTTPServer(("127.0.0.1", 8085), H).serve_forever()
+          PY
+          sleep 1
+          curl -sf http://127.0.0.1:8085/healthz
+
+      - name: Launch AppImage under xvfb and screenshot
+        working-directory: desktop
+        env:
+          AWARENESS_API_BIN: /bin/true
+          # Force attach path via healthy mock — app still needs real API bin OR attach.
+          # We inject a tiny fake binary that exits; attach should win first.
+        run: |
+          set -euo pipefail
+          mkdir -p ../e2e-out
+          APPIMAGE=$(ls dist-native/*.AppImage | head -1)
+          chmod +x "$APPIMAGE"
+          # Prefer tar extract binary for more reliable headless launch
+          TAR=$(ls dist-native/*.tar.gz | head -1)
+          mkdir -p /tmp/aw-linux
+          tar -xzf "$TAR" -C /tmp/aw-linux
+          BIN=$(find /tmp/aw-linux -type f -name 'awareness-desktop' | head -1)
+          chmod +x "$BIN"
+          # clear AWARENESS_API_BIN so attach path is used when health OK
+          unset AWARENESS_API_BIN || true
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x800x24 &
+          sleep 1
+          # Launch app; allow attach to mock API
+          "$BIN" --no-sandbox --disable-gpu 2>../e2e-out/linux-app.log &
+          APP_PID=$!
+          sleep 8
+          scrot ../e2e-out/linux-boot-or-dashboard.png || import -window root ../e2e-out/linux-boot-or-dashboard.png
+          # Second shot after a bit more settle
+          sleep 3
+          scrot ../e2e-out/linux-ui-2.png || true
+          kill $APP_PID 2>/dev/null || true
+          # Also record AppImage is executable / not corrupt
+          ls -lah "$APPIMAGE" | tee ../e2e-out/linux-appimage-ls.txt
+          file "$APPIMAGE" | tee ../e2e-out/linux-appimage-file.txt
+
+      - name: Install .deb dry-run structure
+        working-directory: desktop
+        run: |
+          DEB=$(ls dist-native/*.deb | head -1)
+          dpkg-deb -I "$DEB" | tee ../e2e-out/linux-deb-info.txt
+          dpkg-deb -c "$DEB" | head -40 | tee ../e2e-out/linux-deb-contents.txt
+          # actual install for desktop entry
+          sudo dpkg -i "$DEB" || sudo apt-get install -f -y
+          ls /usr/share/applications/*wareness* 2>/dev/null | tee ../e2e-out/linux-desktop-entry-path.txt || true
+          cat /usr/share/applications/*wareness*.desktop 2>/dev/null | tee ../e2e-out/linux-desktop-entry.txt || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-linux-screenshots
+          path: e2e-out/**
+          if-no-files-found: warn
+
+  windows-e2e:
+    name: Windows NSIS install + boot UI
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm ci || npm install
+
+      - name: Build Windows packages
+        working-directory: desktop
+        run: npm run dist:win
+
+      - name: Mock API on 8085
+        shell: pwsh
+        run: |
+          $code = @'
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          class H(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path.startswith("/healthz"):
+                      b=b'{"ok":true}'
+                      self.send_response(200); self.send_header("Content-Type","application/json"); self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
+                  else:
+                      h=b"<html><body style='background:#0c0c0e;color:#eee;font-family:Segoe UI;padding:40px'><h1>Awareness mock dashboard</h1><p>Windows shell OK</p></body></html>"
+                      self.send_response(200); self.send_header("Content-Type","text/html"); self.send_header("Content-Length",str(len(h))); self.end_headers(); self.wfile.write(h)
+              def log_message(self,*a): pass
+          HTTPServer(("127.0.0.1",8085),H).serve_forever()
+          '@
+          $code | Set-Content -Encoding UTF8 mock_api.py
+          Start-Process python -ArgumentList "mock_api.py" -WindowStyle Hidden
+          Start-Sleep -Seconds 2
+          Invoke-WebRequest -Uri http://127.0.0.1:8085/healthz -UseBasicParsing | Select-Object -ExpandProperty Content
+
+      - name: NSIS silent install
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path e2e-out | Out-Null
+          $exe = Get-ChildItem desktop/dist-native/Awareness-*-win-x64.exe | Where-Object { $_.Name -notlike '*portable*' } | Select-Object -First 1
+          if (-not $exe) { $exe = Get-ChildItem desktop/dist-native/*.exe | Select-Object -First 1 }
+          Write-Host "Installer: $($exe.FullName)"
+          # electron-builder NSIS: /S silent
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList "/S" -PassThru -Wait
+          "exit=$($p.ExitCode)" | Tee-Object e2e-out/windows-nsis-exit.txt
+          # Common install locations
+          $candidates = @(
+            "$env:LOCALAPPDATA\Programs\awareness-desktop",
+            "$env:LOCALAPPDATA\Programs\Awareness",
+            "$env:ProgramFiles\Awareness",
+            "${env:ProgramFiles(x86)}\Awareness"
+          )
+          $installed = $null
+          foreach ($c in $candidates) {
+            if (Test-Path $c) { $installed = $c; break }
+            Get-ChildItem "$env:LOCALAPPDATA\Programs" -ErrorAction SilentlyContinue | Out-File e2e-out/windows-programs-list.txt -Append
+          }
+          if (-not $installed) {
+            # search for Awareness.exe
+            $found = Get-ChildItem -Path $env:LOCALAPPDATA,$env:ProgramFiles -Filter Awareness.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $installed = $found.DirectoryName }
+          }
+          "installed_dir=$installed" | Tee-Object e2e-out/windows-install-path.txt
+          if (-not $installed) { throw "NSIS install path not found" }
+          $bin = Join-Path $installed "Awareness.exe"
+          if (-not (Test-Path $bin)) { $bin = Get-ChildItem $installed -Filter *.exe | Select-Object -First 1 -ExpandProperty FullName }
+          "bin=$bin" | Tee-Object e2e-out/windows-bin.txt -Append
+
+      - name: Launch app and screenshot
+        shell: pwsh
+        run: |
+          $bin = (Get-Content e2e-out/windows-bin.txt | Where-Object { $_ -like 'bin=*' } | Select-Object -Last 1).Substring(4)
+          Write-Host "Launching $bin"
+          $proc = Start-Process -FilePath $bin -PassThru
+          Start-Sleep -Seconds 10
+          # Screenshot via .NET
+          Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+          $bmp.Save("e2e-out/windows-boot-or-dashboard.png")
+          $g.Dispose(); $bmp.Dispose()
+          Start-Sleep -Seconds 2
+          if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+          # Also unzip portable zip as alternate install path check
+          $zip = Get-ChildItem desktop/dist-native/*.zip | Select-Object -First 1
+          Expand-Archive -Path $zip.FullName -DestinationPath e2e-out/win-portable -Force
+          Get-ChildItem e2e-out/win-portable | Out-File e2e-out/windows-portable-listing.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-windows-screenshots
+          path: e2e-out/**
+          if-no-files-found: warn
