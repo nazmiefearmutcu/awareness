@@ -17,7 +17,11 @@ politeness applies to live fetches.
 
 ## Research Workbench (UI)
 
-The control surface is a **native macOS app** (`Awareness.app`). It hosts the existing SPA inside a native window (WKWebView) and **auto-starts** the local FastAPI process — no Safari/Chrome.
+The control surface is a **desktop app** that hosts the existing SPA in a native window and **auto-starts** the local FastAPI process — no system browser required for the chrome.
+
+### macOS
+
+Native SwiftUI shell (`Awareness.app` + WKWebView):
 
 ```bash
 # Build the .app (requires Xcode/Swift toolchain)
@@ -30,6 +34,28 @@ awareness dashboard
 ```
 
 Details, env vars, and packaging: [`macos/README.md`](macos/README.md).
+
+### Windows & Linux
+
+Electron shell (same lifecycle as macOS: resolve `awareness-api`, poll `/healthz`, load loopback dashboard):
+
+| Platform | Download (GitHub Releases) |
+|---|---|
+| Windows x64 | [NSIS installer / portable / zip](https://github.com/nazmiefearmutcu/awareness/releases) — `Awareness-*-win-x64.*` |
+| Linux x64 | [AppImage / deb / tar.gz](https://github.com/nazmiefearmutcu/awareness/releases) — `Awareness-*-linux-x64.*` |
+
+```bash
+# Development
+cd desktop && npm install && npm start
+
+# Package (on target OS or CI)
+npm run dist:win     # → desktop/dist-native/Awareness-0.3.0-win-x64.*
+npm run dist:linux   # → desktop/dist-native/Awareness-0.3.0-linux-x64.*
+```
+
+**Python prerequisite:** the shell does not bundle CPython. Install the project venv (`uv sync` / `pip install -e .`) or put `awareness-api` on `PATH`. See [`desktop/README.md`](desktop/README.md).
+
+Release assets ship with tag **v0.3.0** and later: [github.com/nazmiefearmutcu/awareness/releases](https://github.com/nazmiefearmutcu/awareness/releases).
 
 Legacy browser UI (optional): start `awareness-api` and run `awareness dashboard --browser`, or open `http://127.0.0.1:8085/` directly.
 
