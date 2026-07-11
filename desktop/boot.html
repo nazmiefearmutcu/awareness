@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Awareness</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0c0c0e;
+        --fg: #e8e8ea;
+        --muted: #8b8b93;
+        --border: #2a2a30;
+        --btn: #1c1c22;
+        --btn-hover: #2a2a32;
+        --accent: #d0d0d6;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      #root {
+        min-height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 32px;
+      }
+      .panel {
+        text-align: center;
+        max-width: 480px;
+      }
+      .spinner {
+        width: 36px;
+        height: 36px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        margin: 0 auto 16px;
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      h1 {
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin: 0 0 8px;
+        letter-spacing: -0.01em;
+      }
+      p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.95rem;
+        line-height: 1.5;
+        white-space: pre-wrap;
+      }
+      .icon {
+        font-size: 2rem;
+        margin-bottom: 12px;
+        color: var(--muted);
+        line-height: 1;
+      }
+      .actions {
+        display: flex;
+        gap: 10px;
+        justify-content: center;
+        margin-top: 20px;
+        flex-wrap: wrap;
+      }
+      button {
+        appearance: none;
+        border: 1px solid var(--border);
+        background: var(--btn);
+        color: var(--fg);
+        font: inherit;
+        font-size: 0.9rem;
+        padding: 8px 16px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: var(--btn-hover);
+      }
+      button.primary {
+        border-color: #3a3a44;
+        background: #24242c;
+        font-weight: 500;
+      }
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div id="starting" class="panel">
+        <div class="spinner" aria-hidden="true"></div>
+        <h1>Starting Awareness API…</h1>
+        <p>Looking for a local awareness-api process on loopback.</p>
+      </div>
+
+      <div id="error" class="panel hidden">
+        <div class="icon" aria-hidden="true">⚠</div>
+        <h1 id="error-title">API failed to start</h1>
+        <p id="error-detail"></p>
+        <div class="actions">
+          <button type="button" class="primary" id="btn-retry">Retry</button>
+          <button type="button" id="btn-log">Open API log</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      const startingEl = document.getElementById("starting");
+      const errorEl = document.getElementById("error");
+      const errorTitle = document.getElementById("error-title");
+      const errorDetail = document.getElementById("error-detail");
+
+      function showStarting() {
+        startingEl.classList.remove("hidden");
+        errorEl.classList.add("hidden");
+      }
+
+      function showError(title, detail) {
+        errorTitle.textContent = title;
+        errorDetail.textContent = detail || "";
+        startingEl.classList.add("hidden");
+        errorEl.classList.remove("hidden");
+      }
+
+      function applyState(state) {
+        if (!state || !state.status) {
+          showStarting();
+          return;
+        }
+        switch (state.status) {
+          case "stopped":
+          case "starting":
+            showStarting();
+            break;
+          case "ready":
+            // Main process loads the dashboard URL; keep spinner briefly.
+            showStarting();
+            break;
+          case "unhealthy":
+            showError("API unreachable", state.detail || "API is not responding.");
+            break;
+          case "failed":
+            showError(
+              "API failed to start",
+              state.detail || "Could not start awareness-api."
+            );
+            break;
+          default:
+            showStarting();
+        }
+      }
+
+      document.getElementById("btn-retry").addEventListener("click", () => {
+        if (window.awareness && window.awareness.retry) {
+          showStarting();
+          window.awareness.retry();
+        }
+      });
+      document.getElementById("btn-log").addEventListener("click", () => {
+        if (window.awareness && window.awareness.openLog) {
+          window.awareness.openLog();
+        }
+      });
+
+      if (window.awareness && window.awareness.onState) {
+        window.awareness.onState(applyState);
+      }
+      showStarting();
+    </script>
+  </body>
+</html>

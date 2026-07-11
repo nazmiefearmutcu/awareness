@@ -1,0 +1,84 @@
+{
+  "name": "awareness-desktop",
+  "version": "0.3.0",
+  "description": "Awareness — native desktop shell (Windows/Linux/macOS) for the local awareness-api dashboard",
+  "main": "main.cjs",
+  "author": {
+    "name": "Nazmi Efe Armutcu",
+    "email": "nazmiefearmutcu@users.noreply.github.com"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/nazmiefearmutcu/awareness",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --publish never",
+    "dist:win": "electron-builder --win --publish never",
+    "dist:linux": "electron-builder --linux --publish never",
+    "dist:mac": "electron-builder --mac --publish never",
+    "test:resolve": "node --test test/resolve-api.test.cjs",
+    "test:api-manager": "node --test test/api-manager.test.cjs",
+    "test": "node --test test/*.test.cjs"
+  },
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "dev.awareness.app",
+    "productName": "Awareness",
+    "copyright": "Copyright © Nazmi Efe Armutcu",
+    "directories": {
+      "output": "dist-native",
+      "buildResources": "icons"
+    },
+    "files": [
+      "main.cjs",
+      "api-manager.cjs",
+      "resolve-api.cjs",
+      "preload.cjs",
+      "boot.html",
+      "icons/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "main.cjs"
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] },
+        { "target": "zip", "arch": ["x64"] }
+      ],
+      "artifactName": "Awareness-${version}-win-${arch}.${ext}",
+      "icon": "icons/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "linux": {
+      "category": "Development",
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] },
+        { "target": "deb", "arch": ["x64"] },
+        { "target": "tar.gz", "arch": ["x64"] }
+      ],
+      "artifactName": "Awareness-${version}-linux-${arch}.${ext}",
+      "synopsis": "Local public-web awareness engine dashboard",
+      "description": "Native shell that starts awareness-api and opens the loopback dashboard.",
+      "icon": "icons"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": ["dmg", "zip"],
+      "artifactName": "Awareness-${version}-mac-${arch}.${ext}",
+      "identity": null,
+      "icon": "icons/icon.png"
+    }
+  }
+}
