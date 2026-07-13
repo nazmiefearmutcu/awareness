@@ -47,6 +47,7 @@ DEFAULT_SEARCH_FIELDS: tuple[str, ...] = ("title", "text")
 #   prefix    — stem-root substring per token (finance -> financ% -> financial).
 #   substring — raw ILIKE on the whole query string. No tokenization.
 #   auto      — FTS first; if it returns nothing, fall back to prefix. Default.
+# Quoted whole-query ("phrase") forces substring/phrase mode regardless of mode.
 SEARCH_MODES: tuple[str, ...] = ("auto", "fts", "prefix", "substring")
 DEFAULT_SEARCH_MODE = "auto"
 # Hard ceiling on rows materialized in a single search call (overload guard).
@@ -787,6 +788,12 @@ class DuckDbIndex:
         mode = (mode or DEFAULT_SEARCH_MODE).strip().lower()
         if mode not in SEARCH_MODES:
             mode = DEFAULT_SEARCH_MODE
+        # Quoted whole-query → exact phrase (ILIKE %phrase%), skip FTS/tokenization.
+        # Detect leading+trailing double quotes on the stripped query.
+        phrase_query = _phrase_query(query)
+        if phrase_query is not None:
+            query = phrase_query
+            mode = "substring"
         cols = _clean_fields(fields)
 
         # Clamp the page so a single call never materializes more than the cap.
@@ -1142,6 +1149,19 @@ class DuckDbIndex:
 
 
 # ── snippet helpers ────────────────────────────────────────────────────
+def _phrase_query(q: str) -> str | None:
+    """If *q* is a double-quoted whole-query phrase, return the inner text.
+
+    ``"machine learning"`` → ``machine learning``. Leading/trailing whitespace
+    on the outer query is already stripped by the caller; the inner phrase is
+    also stripped. Unbalanced quotes, mid-query quotes, or bare text → ``None``
+    (caller keeps normal tokenized/FTS behavior). Empty ``""`` → ``""``.
+    """
+    if len(q) >= 2 and q[0] == '"' and q[-1] == '"':
+        return q[1:-1].strip()
+    return None
+
+
 def _tokenize_query(q: str) -> list[str]:
     import re
 
