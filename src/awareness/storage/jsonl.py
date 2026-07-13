@@ -93,17 +93,41 @@ class JsonlStagingWriter:
         self._current_bytes = 0
         self._opened_at = time.time()
 
+    def _fsync_handle(self) -> None:
+        """Flush and fsync the open chunk (plain or gzip-wrapped).
+
+        Plain files use ``fileno()`` directly. ``gzip.GzipFile`` has no fileno
+        of its own — fsync the underlying file object so compressed staging is
+        crash-safe before the atomic rename.
+        """
+        fh = self._fh
+        if fh is None:
+            return
+        fh.flush()
+        raw = fh
+        if self._compress:
+            # CPython GzipFile: prefer .fileobj (read) / .myfileobj (write path).
+            raw = getattr(fh, "fileobj", None) or getattr(fh, "myfileobj", None) or fh
+        try:
+            if raw is not None and hasattr(raw, "fileno"):
+                if hasattr(raw, "flush"):
+                    raw.flush()
+                os.fsync(raw.fileno())
+        except (OSError, ValueError, AttributeError):
+            # Closed / non-file handles — best-effort only.
+            pass
+
     def _commit_current(self) -> Path | None:
         if self._fh is None or self._current_path is None:
             return None
         try:
-            self._fh.flush()
-            if not self._compress:
-                # GZipFile has no fileno; only fsync the plain file.
-                os.fsync(self._fh.fileno())
+            self._fsync_handle()
         except OSError:
             pass
-        self._fh.close()
+        try:
+            self._fh.close()
+        except OSError as exc:
+            logger.warning("jsonl_close_failed", err=str(exc))
         self._fh = None
 
         # Rename .tmp → final
@@ -115,6 +139,16 @@ class JsonlStagingWriter:
         except OSError as exc:
             logger.warning("jsonl_rename_failed", src=str(self._current_path), err=str(exc))
             finalized = self._current_path
+
+        # Durability: fsync the parent directory so the rename is durable.
+        try:
+            dir_fd = os.open(str(finalized.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
 
         self._committed_files.append(finalized)
         self._current_path = None
