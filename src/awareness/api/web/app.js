@@ -53,6 +53,8 @@ function formatSearchModeLabel(mode, ranked = false) {
   if (m === "fts") return ranked ? "FTS · ranked" : "FTS";
   if (m === "prefix") return "prefix fallback";
   if (m === "substring") return "substring";
+  // Quoted whole-query search (API mode=phrase after C2-T18).
+  if (m === "phrase") return "exact phrase";
   if (m === "auto") return ranked ? "auto · FTS ranked" : "auto";
   if (ranked) return "FTS · ranked";
   return m || "search";
