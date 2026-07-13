@@ -570,6 +570,75 @@ function summarizeFinewebMetrics(metricsSnap) {
 }
 
 /**
+ * FTS path metrics from /metrics (full rebuild / incremental / restore).
+ * Pure — no DOM. Used by dashboard KPIs so operators see whether search is
+ * paying for rematerialize vs fingerprint restore (not ranking-related).
+ */
+function summarizeFtsMetrics(metricsSnap) {
+  const empty = {
+    builds: 0,
+    full: 0,
+    incremental: 0,
+    restore: 0,
+    errors: 0,
+    buildP95: null,
+    indexedRows: 0,
+  };
+  if (!metricsSnap || typeof metricsSnap !== "object") return empty;
+  const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
+  let builds = 0;
+  let full = 0;
+  let incremental = 0;
+  let restore = 0;
+  let errors = 0;
+  for (const c of counters) {
+    if (!c) continue;
+    const v = Number(c.value) || 0;
+    if (c.name === "fts.builds") {
+      builds += v;
+      const mode = (c.labels || {}).mode;
+      if (mode === "full") full += v;
+      else if (mode === "incremental") incremental += v;
+      else if (mode === "restore") restore += v;
+    } else if (c.name === "fts.build_errors") {
+      errors += v;
+    }
+  }
+  const gauges = Array.isArray(metricsSnap.gauges) ? metricsSnap.gauges : [];
+  let indexedRows = 0;
+  for (const g of gauges) {
+    if (g && g.name === "fts.indexed_rows") {
+      const v = Number(g.value);
+      if (Number.isFinite(v)) indexedRows = v;
+    }
+  }
+  const hists = Array.isArray(metricsSnap.histograms) ? metricsSnap.histograms : [];
+  let weightedP95 = 0;
+  let histCount = 0;
+  for (const h of hists) {
+    if (!h || h.name !== "fts.build_seconds") continue;
+    // Success-path series are labeled by mode only; skip error outcome series.
+    const labels = h.labels || {};
+    if (labels.outcome === "error") continue;
+    const n = Number(h.count) || 0;
+    if (n <= 0) continue;
+    const p95 = Number(h.p95);
+    if (!Number.isFinite(p95)) continue;
+    histCount += n;
+    weightedP95 += p95 * n;
+  }
+  return {
+    builds,
+    full,
+    incremental,
+    restore,
+    errors,
+    buildP95: histCount > 0 ? weightedP95 / histCount : null,
+    indexedRows,
+  };
+}
+
+/**
  * Pull robots cache hit ratio + robots network fetch + Iceberg/JSONL counters
  * from /metrics. Pure — no DOM. Gauges for robots hit ratio; counters/histograms
  * for network robots probes and storage writes.
@@ -1099,6 +1168,40 @@ async function refreshDashboard() {
     } else {
       jsonlOrphSub.textContent = "promoted leftover .tmp chunks";
     }
+  }
+
+  const fts = summarizeFtsMetrics(metricsSnap);
+  setKPI("kpi-dash-fts-builds", fts.builds);
+  const ftsBuildsSub = $("#kpi-dash-fts-builds-sub");
+  if (ftsBuildsSub) {
+    if (fts.builds) {
+      const bits = [];
+      if (fts.full) bits.push(`${fmt(fts.full)} full`);
+      if (fts.incremental) bits.push(`${fmt(fts.incremental)} incr`);
+      if (fts.restore) bits.push(`${fmt(fts.restore)} restore`);
+      if (fts.errors) bits.push(`${fmt(fts.errors)} err`);
+      ftsBuildsSub.textContent = bits.join(" · ") || "path counters this process";
+    } else {
+      ftsBuildsSub.textContent = "full · incremental · restore";
+    }
+  }
+  const ftsP95Node = $("#kpi-dash-fts-p95");
+  if (ftsP95Node) {
+    ftsP95Node.textContent = formatFetchLatency(fts.buildP95);
+    ftsP95Node.classList.toggle("is-zero", !fts.builds && fts.buildP95 == null);
+  }
+  const ftsP95Sub = $("#kpi-dash-fts-p95-sub");
+  if (ftsP95Sub) {
+    ftsP95Sub.textContent = fts.builds
+      ? `${fmt(fts.builds)} builds · process`
+      : "index materialize latency";
+  }
+  setKPI("kpi-dash-fts-rows", fts.indexedRows);
+  const ftsRowsSub = $("#kpi-dash-fts-rows-sub");
+  if (ftsRowsSub) {
+    ftsRowsSub.textContent = fts.indexedRows
+      ? "captures_idx after last build"
+      : "no FTS materialize yet";
   }
 
   $("#kpi-captures-sub").textContent = (docsTotal ? `${fmt(docsTotal)} emitted across jobs` : "across the corpus");
