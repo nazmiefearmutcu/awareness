@@ -55,20 +55,42 @@ def _status_class(code: int) -> str:
     return f"{code // 100}xx"
 
 
+def _sitemap_probe_depth_label(depth: int) -> str:
+    """Map sitemap recursion depth to a low-cardinality probe label.
+
+    ``_read_sitemap`` starts at depth=1 (seed / robots-discovered index) and
+    decrements when following ``<sitemapindex>`` children. Root vs nested lets
+    operators separate index-list latency from leaf urlset probes without
+    exploding cardinality on URL or host.
+    """
+    return "root" if depth >= 1 else "nested"
+
+
 def _record_feed_fetch(
     *,
     kind: str,
     outcome: str,
     status_class: str,
     elapsed: float,
+    depth: int | None = None,
 ) -> None:
     """Emit process-local feed/sitemap fetch counters + latency histogram.
 
-    Labels stay low-cardinality (kind + outcome + status class) so dashboards
-    and ``metrics --prefix feeds`` stay readable under heavy discovery load.
+    Labels stay low-cardinality (kind + outcome + status class [+ depth for
+    sitemaps]) so dashboards and ``metrics --prefix feeds`` stay readable
+    under heavy discovery load.
     """
     m = get_metrics()
-    labels = {"kind": kind, "outcome": outcome, "status_class": status_class}
+    labels: dict[str, str] = {
+        "kind": kind,
+        "outcome": outcome,
+        "status_class": status_class,
+    }
+    # Sitemap probes only: root index vs nested child urlset/index.
+    if kind == "sitemap":
+        labels["depth"] = _sitemap_probe_depth_label(
+            1 if depth is None else int(depth)
+        )
     m.inc("feeds.fetch_attempts", labels=labels)
     m.observe("feeds.fetch_seconds", max(0.0, elapsed), labels=labels)
 
@@ -697,13 +719,18 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
             logger.warning("sitemap_fetch_non_200", url=url, status=r.status_code)
             get_metrics().inc(
                 "feeds.fetch_non_200",
-                labels={"kind": "sitemap", "status": str(r.status_code)},
+                labels={
+                    "kind": "sitemap",
+                    "status": str(r.status_code),
+                    "depth": _sitemap_probe_depth_label(depth),
+                },
             )
             _record_feed_fetch(
                 kind="sitemap",
                 outcome="http_error",
                 status_class=_status_class(r.status_code),
                 elapsed=elapsed,
+                depth=depth,
             )
             return []
         _record_feed_fetch(
@@ -711,6 +738,7 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
             outcome="ok",
             status_class=_status_class(r.status_code),
             elapsed=elapsed,
+            depth=depth,
         )
         if not r.content:
             return []
@@ -722,10 +750,11 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
             outcome="retry_exhausted",
             status_class="5xx",
             elapsed=time.perf_counter() - t0,
+            depth=depth,
         )
         get_metrics().inc(
             "feeds.retryable_http_error",
-            labels={"kind": "sitemap"},
+            labels={"kind": "sitemap", "depth": _sitemap_probe_depth_label(depth)},
         )
         raise
     except httpx.HTTPError as exc:
@@ -734,6 +763,7 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
             outcome="transport_error",
             status_class="unknown",
             elapsed=time.perf_counter() - t0,
+            depth=depth,
         )
         logger.warning("sitemap_fetch_failed", url=url, err=str(exc))
         return []

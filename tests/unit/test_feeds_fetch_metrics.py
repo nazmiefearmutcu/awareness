@@ -6,7 +6,13 @@ import httpx
 import pytest
 
 from awareness.obs.metrics import MetricsRegistry
-from awareness.sources.feeds import _read_feed, _read_sitemap, _record_feed_fetch, _status_class
+from awareness.sources.feeds import (
+    _read_feed,
+    _read_sitemap,
+    _record_feed_fetch,
+    _sitemap_probe_depth_label,
+    _status_class,
+)
 from awareness.util.http import RetryableHTTPError, get_with_retries, reset_global_fetch_semaphore, reset_shared_async_clients
 
 
@@ -70,6 +76,13 @@ def test_status_class() -> None:
     assert _status_class(50) == "unknown"
 
 
+def test_sitemap_probe_depth_label() -> None:
+    assert _sitemap_probe_depth_label(1) == "root"
+    assert _sitemap_probe_depth_label(2) == "root"
+    assert _sitemap_probe_depth_label(0) == "nested"
+    assert _sitemap_probe_depth_label(-1) == "nested"
+
+
 def test_record_feed_fetch_emits_counter_and_hist(metrics: MetricsRegistry) -> None:
     _record_feed_fetch(kind="rss", outcome="ok", status_class="2xx", elapsed=0.12)
     assert metrics.counter_sum("feeds.fetch_attempts") == 1.0
@@ -84,6 +97,56 @@ def test_record_feed_fetch_emits_counter_and_hist(metrics: MetricsRegistry) -> N
     hists = [h for h in snap["histograms"] if h["name"] == "feeds.fetch_seconds"]
     assert hists and hists[0]["count"] == 1
     assert hists[0]["sum"] == pytest.approx(0.12, abs=1e-6)
+
+
+def test_record_sitemap_fetch_includes_depth_label(metrics: MetricsRegistry) -> None:
+    _record_feed_fetch(
+        kind="sitemap",
+        outcome="ok",
+        status_class="2xx",
+        elapsed=0.05,
+        depth=1,
+    )
+    _record_feed_fetch(
+        kind="sitemap",
+        outcome="ok",
+        status_class="2xx",
+        elapsed=0.2,
+        depth=0,
+    )
+    assert (
+        metrics.counter_value(
+            "feeds.fetch_attempts",
+            labels={
+                "kind": "sitemap",
+                "outcome": "ok",
+                "status_class": "2xx",
+                "depth": "root",
+            },
+        )
+        == 1.0
+    )
+    assert (
+        metrics.counter_value(
+            "feeds.fetch_attempts",
+            labels={
+                "kind": "sitemap",
+                "outcome": "ok",
+                "status_class": "2xx",
+                "depth": "nested",
+            },
+        )
+        == 1.0
+    )
+    # RSS still omits depth (no label key explosion for non-sitemaps).
+    _record_feed_fetch(kind="rss", outcome="ok", status_class="2xx", elapsed=0.01)
+    assert (
+        metrics.counter_value(
+            "feeds.fetch_attempts",
+            labels={"kind": "rss", "outcome": "ok", "status_class": "2xx"},
+        )
+        == 1.0
+    )
 
 
 @pytest.mark.asyncio
@@ -168,6 +231,13 @@ async def test_read_feed_retry_exhausted_records_outcome(
     assert hists and hists[0]["count"] >= 1
 
 
+SITEMAP_INDEX = b"""<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://example.com/sitemap-child.xml</loc></sitemap>
+</sitemapindex>
+"""
+
+
 @pytest.mark.asyncio
 async def test_read_sitemap_ok_records_metrics(
     metrics: MetricsRegistry, monkeypatch: pytest.MonkeyPatch
@@ -181,7 +251,54 @@ async def test_read_sitemap_ok_records_metrics(
     assert (
         metrics.counter_value(
             "feeds.fetch_attempts",
-            labels={"kind": "sitemap", "outcome": "ok", "status_class": "2xx"},
+            labels={
+                "kind": "sitemap",
+                "outcome": "ok",
+                "status_class": "2xx",
+                "depth": "root",
+            },
         )
         == 1.0
     )
+
+
+@pytest.mark.asyncio
+async def test_read_sitemap_index_labels_root_and_nested(
+    metrics: MetricsRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("sitemap-index.xml"):
+            return httpx.Response(200, content=SITEMAP_INDEX)
+        return httpx.Response(200, content=SITEMAP_OK)
+
+    _patch_client(monkeypatch, handler)
+    urls = await _read_sitemap(
+        "https://example.com/sitemap-index.xml", "TestBot/1.0", depth=1
+    )
+    assert urls == ["https://example.com/page-a"]
+    assert (
+        metrics.counter_value(
+            "feeds.fetch_attempts",
+            labels={
+                "kind": "sitemap",
+                "outcome": "ok",
+                "status_class": "2xx",
+                "depth": "root",
+            },
+        )
+        == 1.0
+    )
+    assert (
+        metrics.counter_value(
+            "feeds.fetch_attempts",
+            labels={
+                "kind": "sitemap",
+                "outcome": "ok",
+                "status_class": "2xx",
+                "depth": "nested",
+            },
+        )
+        == 1.0
+    )
+    assert metrics.counter_sum("feeds.fetch_attempts") == 2.0
