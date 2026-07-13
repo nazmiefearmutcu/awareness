@@ -556,6 +556,85 @@ def test_canonical_url_unwraps_facebook_click_redirect() -> None:
     assert "l.facebook.com" in nested
 
 
+def test_canonical_url_unwraps_outlook_safelinks() -> None:
+    """Outlook Safe Links ``?url=…`` wrappers collapse onto the origin."""
+    assert (
+        canonical_url(
+            "https://nam01.safelinks.protection.outlook.com/?url="
+            "https%3A%2F%2Fwww.news.example%2Fworld%2Fstory&data=05%7C02"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://safelinks.protection.outlook.com/?url="
+            "http%3A%2F%2Fm.news.example%2Fstory%2Famp&data=x"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; Safe Links tracking params dropped.
+    assert (
+        canonical_url(
+            "https://nam12.safelinks.protection.outlook.com/?url="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Demail&data=y"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing url= → no unwrap.
+    bare = canonical_url(
+        "https://nam01.safelinks.protection.outlook.com/?data=only"
+    )
+    assert bare is not None
+    assert "safelinks.protection.outlook.com" in bare
+    # Nested Safe Links must not loop.
+    nested = canonical_url(
+        "https://nam01.safelinks.protection.outlook.com/?url="
+        "https%3A%2F%2Fnam02.safelinks.protection.outlook.com%2F%3Furl%3Dx"
+    )
+    assert nested is not None
+    assert "safelinks.protection.outlook.com" in nested
+
+
+def test_canonical_url_unwraps_duckduckgo_redirect() -> None:
+    """duckduckgo.com/l/?uddg=… click wrappers collapse onto the origin."""
+    assert (
+        canonical_url(
+            "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://www.duckduckgo.com/l/?kh=-1&uddg="
+            "http%3A%2F%2Fm.news.example%2Fstory%2Famp"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; DDG wrapper params dropped.
+    assert (
+        canonical_url(
+            "https://duckduckgo.com/l/?uddg="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dddg"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing uddg= → no unwrap.
+    bare = canonical_url("https://duckduckgo.com/l/?kh=-1")
+    assert bare is not None
+    assert "duckduckgo.com" in bare
+    # / search path is not a redirect.
+    searchish = canonical_url("https://duckduckgo.com/?q=bitcoin")
+    assert searchish is not None
+    assert "duckduckgo.com" in searchish
+    # Nested DDG redirect must not loop.
+    nested = canonical_url(
+        "https://duckduckgo.com/l/?uddg="
+        "https%3A%2F%2Fduckduckgo.com%2Fl%2F%3Fuddg%3Dx"
+    )
+    assert nested is not None
+    assert "duckduckgo.com" in nested
+
+
 def test_canonical_url_unwraps_google_url_redirect() -> None:
     """google.com/url?url=… (or q= absolute URL) collapses onto the origin."""
     assert (

@@ -174,6 +174,17 @@ _GOOGLE_URL_REDIRECT_HOSTS: frozenset[str] = frozenset(
     }
 )
 
+# DuckDuckGo click-through host (``duckduckgo.com/l/?uddg=…``).
+_DUCKDUCKGO_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "duckduckgo.com",
+    }
+)
+
+# Suffix for Microsoft Outlook Safe Links rewrite hosts
+# (``nam01.safelinks.protection.outlook.com``, ``*.safelinks.protection.outlook.com``).
+_OUTLOOK_SAFELINKS_SUFFIX = "safelinks.protection.outlook.com"
+
 # Path suffixes that mark mobile / lite / app CMS mirrors of the same article.
 # Applied after embed/comments so those wrappers still win when stacked;
 # only trailing whole-segment markers are stripped. Bare ``/mobile`` (root-only)
@@ -592,6 +603,76 @@ def _unwrap_google_url_redirect(netloc: str, path: str, query: str) -> str | Non
     return _validate_embedded_origin_url(origin, refuse_hosts=_GOOGLE_URL_REDIRECT_HOSTS)
 
 
+def _is_outlook_safelinks_host(host: str) -> bool:
+    """True for ``*.safelinks.protection.outlook.com`` (incl. bare suffix)."""
+    h = (host or "").lower()
+    if not h:
+        return False
+    return h == _OUTLOOK_SAFELINKS_SUFFIX or h.endswith("." + _OUTLOOK_SAFELINKS_SUFFIX)
+
+
+def _unwrap_outlook_safelinks(netloc: str, query: str) -> str | None:
+    """Extract the origin URL from an Outlook Safe Links ``url=`` wrapper.
+
+    Forms:
+
+    * ``https://nam01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://safelinks.protection.outlook.com/?url=http%3A%2F%2Fm.example.com%2Fx&data=…``
+
+    Nested Safe Links hosts refuse to loop. Returns the raw origin string or
+    ``None`` when not a Safe Links host / missing ``url=``.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None or not _is_outlook_safelinks_host(host):
+        return None
+    origin = _query_param(query, "url")
+    if not origin:
+        return None
+    # Refuse nested Safe Links hosts (cannot put suffix set in frozenset of
+    # exact hosts; validate host after parse).
+    origin = (origin or "").strip()
+    if not origin:
+        return None
+    if origin.startswith("//"):
+        origin = "https:" + origin
+    try:
+        op = urlsplit(origin)
+    except (ValueError, AttributeError):
+        return None
+    if op.scheme.lower() not in ("http", "https") or not op.netloc:
+        return None
+    origin_host = _host_without_port_or_userinfo(op.netloc.lower())
+    if origin_host is None or _is_outlook_safelinks_host(origin_host):
+        return None
+    return origin
+
+
+def _unwrap_duckduckgo_redirect(netloc: str, path: str, query: str) -> str | None:
+    """Extract the origin URL from a DuckDuckGo ``/l/?uddg=…`` click wrapper.
+
+    Forms:
+
+    * ``https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://www.duckduckgo.com/l/?kh=-1&uddg=http%3A%2F%2Fm.example.com%2Fx``
+
+    Only the ``/l`` path is treated as a redirector so ordinary search pages
+    are not rewritten.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _DUCKDUCKGO_REDIRECT_HOSTS:
+        return None
+    p = (path or "").rstrip("/") or "/"
+    if p.lower() != "/l":
+        return None
+    origin = _query_param(query, "uddg")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(origin, refuse_hosts=_DUCKDUCKGO_REDIRECT_HOSTS)
+
+
 def _normalize_path(path: str) -> str:
     """Normalize path for identity: empty → ``/``; strip AMP/print/index noise + slash."""
     if not path:
@@ -714,6 +795,8 @@ def canonical_url(url: str | None) -> str | None:
       - Google Translate ``u=`` wrappers rewritten to the origin article URL
       - Facebook ``l(m).facebook.com/l.php?u=…`` click redirects rewritten to origin
       - Google ``/url?url=…`` (or ``q=``) click redirects rewritten to origin
+      - Outlook Safe Links (``*.safelinks.protection.outlook.com/?url=…``) rewritten
+      - DuckDuckGo ``/l/?uddg=…`` click redirects rewritten to origin
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
@@ -758,8 +841,8 @@ def canonical_url(url: str | None) -> str | None:
             netloc = bracket
 
     # Share / cache wrappers → origin article before other host/path identity.
-    # Order: AMP CDN, AMP viewers, Wayback, Translate, Facebook click,
-    # Google /url redirect (query-based last).
+    # Order: AMP CDN, AMP viewers, Wayback, then query-embedded origins
+    # (Translate, Facebook, Google /url, Outlook Safe Links, DuckDuckGo /l).
     unwrapped = _unwrap_amp_cdn(netloc, path)
     if unwrapped is not None:
         netloc, path = unwrapped
@@ -775,11 +858,13 @@ def canonical_url(url: str | None) -> str | None:
                 # Origin query (wrapper query reattached when it belonged to origin).
                 parts = parts._replace(query=origin_q)
             else:
-                # Query-embedded origins: Translate, Facebook l.php, Google /url.
+                # Query-embedded origins (share / SERP / mail / DDG wrappers).
                 embedded = (
                     _unwrap_translate(netloc, parts.query)
                     or _unwrap_facebook_redirect(netloc, parts.query)
                     or _unwrap_google_url_redirect(netloc, path, parts.query)
+                    or _unwrap_outlook_safelinks(netloc, parts.query)
+                    or _unwrap_duckduckgo_redirect(netloc, path, parts.query)
                 )
                 if embedded is not None:
                     try:
