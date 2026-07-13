@@ -1,11 +1,11 @@
 {
-  "iteration": 6,
+  "iteration": 7,
   "phase": "systems",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "commits_ahead": 55,
-  "unit_suite": "414 green (not slow); datasets skipped as configured",
+  "commits_ahead": 80,
+  "unit_suite": "492 green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "C3 complete for FTS incremental, pagination, crawl-delay, sitemaps (C3-T1/T4/T5/T6). Next: streaming WET parse (C3-T3)."
+  "notes": "Landed feeds.fetch_non_200 metric + empty-search diagnostics.filters (domain/source) for CLI/SPA. Next: task retry visibility list on /tail/status, or streaming WET remaining polish."
 }
