@@ -150,6 +150,7 @@ async def test_gdelt_canonicalizes_and_skips_non_http() -> None:
     # Canonical key must match feeds for the same article.
     assert len(enqueued) == 1
     pk = enqueued[0].partition_key
-    assert pk == "tail:http://example.com/path?a=1&b=2"
+    # http→https identity upgrade + port/trackers stripped, query sorted.
+    assert pk == "tail:https://example.com/path?a=1&b=2"
     assert "tail-gdelt" not in pk
     assert pk == f"tail:{canonical_url(raw_url)}"

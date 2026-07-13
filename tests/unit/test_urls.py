@@ -13,7 +13,17 @@ from awareness.util.urls import (
 
 def test_canonical_url_lowercases_scheme_host_and_strips_default_port() -> None:
     assert canonical_url("HTTPS://Example.COM:443/foo") == "https://example.com/foo"
-    assert canonical_url("http://Example.COM:80/foo") == "http://example.com/foo"
+    # http upgrades to https for identity; :80 dropped with the upgrade.
+    assert canonical_url("http://Example.COM:80/foo") == "https://example.com/foo"
+    # Non-default ports survive the scheme upgrade.
+    assert canonical_url("http://Example.COM:8080/foo") == "https://example.com:8080/foo"
+
+
+def test_canonical_url_http_https_same_identity() -> None:
+    """Same article via http vs https must share one fetch-gate key."""
+    http_u = canonical_url("http://news.example/story/1")
+    https_u = canonical_url("https://news.example/story/1")
+    assert http_u == https_u == "https://news.example/story/1"
 
 
 def test_canonical_url_drops_tracking_params() -> None:
@@ -55,9 +65,48 @@ def test_canonical_url_strips_www_for_news_identity() -> None:
     assert with_www == without == "https://bbc.co.uk/news/world-123"
     # Case-insensitive www. after host lowercasing.
     assert canonical_url("https://WWW.Example.COM/story") == "https://example.com/story"
-    # Do not strip non-www labels.
+    # Do not strip non-alias labels (www2 is a real host).
     assert canonical_url("https://www2.example.com/x") == "https://www2.example.com/x"
-    assert canonical_url("https://m.example.com/x") == "https://m.example.com/x"
+
+
+def test_canonical_url_strips_mobile_and_amp_hosts() -> None:
+    """m./mobile./amp. subdomains are news aliases of the apex article."""
+    assert canonical_url("https://m.example.com/x") == "https://example.com/x"
+    assert canonical_url("https://mobile.example.com/x") == "https://example.com/x"
+    assert canonical_url("https://amp.example.com/x") == "https://example.com/x"
+    # Stacked aliases: www + mobile.
+    assert canonical_url("https://www.m.bbc.co.uk/news/1") == "https://bbc.co.uk/news/1"
+    # Non-prefix m. mid-label must not be stripped.
+    assert canonical_url("https://forum.example.com/x") == "https://forum.example.com/x"
+
+
+def test_canonical_url_strips_amp_path_and_query() -> None:
+    """Publisher AMP mirrors collapse onto the non-AMP article path."""
+    assert (
+        canonical_url("https://news.example/world/story/amp")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/amp.html")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/amp/world/story")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/story?amp=1&id=9")
+        == "https://news.example/story?id=9"
+    )
+    assert (
+        canonical_url("https://news.example/story?output=amp&id=9")
+        == "https://news.example/story?id=9"
+    )
+    # Non-AMP output= values must survive.
+    assert (
+        canonical_url("https://news.example/story?output=json&id=9")
+        == "https://news.example/story?id=9&output=json"
+    )
 
 
 def test_canonical_url_normalizes_trailing_slash() -> None:
@@ -73,11 +122,12 @@ def test_canonical_url_normalizes_trailing_slash() -> None:
 
 
 def test_canonical_url_www_and_trailing_slash_compose() -> None:
-    """Fetch-gate identity: www + slash + trackers collapse together."""
+    """Fetch-gate identity: www + slash + trackers + scheme collapse together."""
     variants = [
         "https://www.reuters.com/world/article-9/",
         "https://reuters.com/world/article-9",
-        "https://WWW.reuters.com/world/article-9/?utm_source=rss&fbclid=1",
+        "http://WWW.reuters.com/world/article-9/?utm_source=rss&fbclid=1",
+        "https://m.reuters.com/world/article-9/amp?amp=1",
     ]
     canonicals = {canonical_url(u) for u in variants}
     assert canonicals == {"https://reuters.com/world/article-9"}

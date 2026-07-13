@@ -248,3 +248,35 @@ async def test_www_and_trailing_slash_variants_share_fetch_gate(tmp_path) -> Non
     assert get_mock.await_count == 1  # no extra HTTP GETs
     assert get_metrics().counter_sum("tail.fetch_skipped_seen") == before_skip + len(variants)
 
+
+@pytest.mark.asyncio
+async def test_mobile_http_amp_variants_share_fetch_gate(tmp_path) -> None:
+    """m./http/AMP spellings of the same article share one fetch-gate key."""
+    state = _state(tmp_path)
+    adapter = TailRecrawlAdapter()
+    first = "https://www.news.example.com/world/story-9/"
+    variants = [
+        "http://news.example.com/world/story-9",
+        "https://m.news.example.com/world/story-9",
+        "https://news.example.com/world/story-9/amp",
+        "https://amp.news.example.com/world/story-9?amp=1",
+        "http://mobile.news.example.com/world/story-9/",
+    ]
+    expected_cu = canonical_url(first)
+    assert expected_cu == "https://news.example.com/world/story-9"
+    for v in variants:
+        assert canonical_url(v) == expected_cu, v
+
+    get_mock = AsyncMock(side_effect=lambda client, u, **kw: _ok_response(u))
+    caps1 = await _collect(adapter, _partition(first), _context(state), get_mock=get_mock)
+    assert len(caps1) == 1
+    assert get_mock.await_count == 1
+
+    before_skip = get_metrics().counter_sum("tail.fetch_skipped_seen")
+    for v in variants:
+        caps = await _collect(adapter, _partition(v), _context(state), get_mock=get_mock)
+        assert caps == [], f"expected skip for variant {v!r}"
+
+    assert get_mock.await_count == 1
+    assert get_metrics().counter_sum("tail.fetch_skipped_seen") == before_skip + len(variants)
+

@@ -56,7 +56,26 @@ _TRACKING_PARAMS: frozenset[str] = frozenset(
         "share",
         "trk",
         "spm",
+        # AMP / mobile-share wrappers that do not change article identity.
+        "amp",
+        "amp_js_v",
+        "amp_gsa",
+        "usqp",
+        "output",  # often output=amp
     }
+)
+
+# Host labels that are aliases of the apex host for the same article.
+# Applied repeatedly so ``www.m.example.com`` → ``example.com``.
+_ALIAS_HOST_PREFIXES: tuple[str, ...] = ("www.", "m.", "mobile.", "amp.")
+
+# Path suffixes that mark Google AMP / publisher AMP mirrors of the same doc.
+_AMP_PATH_SUFFIXES: tuple[str, ...] = (
+    "/amp",
+    "/amp.html",
+    "/amp.htm",
+    "/index.amp",
+    "/index.amp.html",
 )
 
 
@@ -68,24 +87,63 @@ def _is_tracking_param(key: str) -> bool:
     return kl in _TRACKING_PARAMS or kl.startswith("utm_")
 
 
-def _strip_www_host(netloc: str) -> str:
-    """Strip a leading ``www.`` label from host (preserve userinfo / port)."""
+def _is_noise_query_pair(key: str, value: str) -> bool:
+    """True for tracking keys or AMP-only query values (``output=amp``)."""
+    if _is_tracking_param(key):
+        # ``output`` is only noise when it marks AMP; keep other output= values.
+        if key.lower() == "output":
+            return value.strip().lower() in ("amp", "amphtml", "htmlamp")
+        return True
+    return False
+
+
+def _strip_alias_host(netloc: str) -> str:
+    """Strip leading www/m/mobile/amp labels from host (preserve userinfo / port).
+
+    News publishers re-host the same article under mobile and AMP subdomains;
+    the fetch gate and doc identity must collapse those to the apex host.
+    """
     if "@" in netloc:
         userinfo, _, hostport = netloc.rpartition("@")
-        return f"{userinfo}@{_strip_www_host(hostport)}"
-    # IPv6 literals are bracketed; never treat them as www hosts.
+        return f"{userinfo}@{_strip_alias_host(hostport)}"
+    # IPv6 literals are bracketed; never treat them as alias hosts.
     if netloc.startswith("["):
         return netloc
-    if netloc.startswith("www."):
-        return netloc[4:]
-    return netloc
+    # Split port so we only rewrite the hostname labels.
+    host, sep, port = netloc.partition(":")
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _ALIAS_HOST_PREFIXES:
+            if host.startswith(prefix) and len(host) > len(prefix):
+                host = host[len(prefix) :]
+                changed = True
+                break
+    return f"{host}{sep}{port}" if sep else host
+
+
+# Back-compat alias used by older call sites / tests that imported the name.
+_strip_www_host = _strip_alias_host
 
 
 def _normalize_path(path: str) -> str:
-    """Normalize path for identity: empty → ``/``; strip a single trailing slash."""
+    """Normalize path for identity: empty → ``/``; strip AMP suffixes + trailing slash."""
     if not path:
         return "/"
+    # Lowercase only for AMP suffix detection; rebuild with original casing
+    # collapsed via the trailing-slash rule. AMP markers are ASCII.
+    lower = path.lower()
+    for suffix in _AMP_PATH_SUFFIXES:
+        if lower.endswith(suffix) and len(path) > len(suffix):
+            path = path[: -len(suffix)]
+            lower = path.lower()
+            break
+    # Leading ``/amp/`` segment (``/amp/world/story`` → ``/world/story``).
+    if lower.startswith("/amp/") and len(path) > 5:
+        path = path[4:]  # drop leading "/amp"
     # Keep bare root as ``/``; collapse ``/foo/`` → ``/foo`` (and multi-segment).
+    if not path:
+        return "/"
     if len(path) > 1 and path.endswith("/"):
         return path[:-1]
     return path
@@ -96,12 +154,17 @@ def canonical_url(url: str | None) -> str | None:
 
     Operations:
       - scheme/host lowercased
+      - ``http`` upgraded to ``https`` for identity (same doc, different scheme)
       - default ports dropped
-      - leading ``www.`` stripped from host (common news alias)
+      - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
+      - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - path trailing slash normalized (``/`` kept; ``/foo/`` → ``/foo``)
-      - tracking query parameters stripped (incl. any ``utm_*``)
+      - tracking / AMP query parameters stripped (incl. any ``utm_*``)
       - remaining query keys sorted
       - fragment dropped
+
+    Identity only — callers still fetch the original URL; this value keys the
+    URL fetch gate, ``doc_id``, and feed seen-cursors.
     """
     if not url:
         return None
@@ -113,14 +176,22 @@ def canonical_url(url: str | None) -> str | None:
         return None
 
     scheme = parts.scheme.lower()
+    # Prefer https identity so http/https mirrors of the same article share a key.
+    if scheme == "http":
+        scheme = "https"
     netloc = parts.netloc.lower()
-    # Drop default ports.
-    if ":" in netloc:
+    # Drop default ports (both original http:80 and https:443 after upgrade).
+    if ":" in netloc and not netloc.startswith("["):
         host, _, port = netloc.rpartition(":")
-        if (scheme, port) in (("http", "80"), ("https", "443")):
+        if port in ("80", "443"):
             netloc = host
+    elif netloc.startswith("[") and "]:" in netloc:
+        # Rare IPv6 + port; strip :80/:443 only.
+        bracket, _, port = netloc.rpartition(":")
+        if port in ("80", "443"):
+            netloc = bracket
 
-    netloc = _strip_www_host(netloc)
+    netloc = _strip_alias_host(netloc)
 
     path = _normalize_path(parts.path or "/")
 
@@ -128,7 +199,7 @@ def canonical_url(url: str | None) -> str | None:
     pairs = [
         (k, v)
         for k, v in parse_qsl(parts.query, keep_blank_values=True)
-        if not _is_tracking_param(k)
+        if not _is_noise_query_pair(k, v)
     ]
     pairs.sort()
     query = urlencode(pairs, doseq=True)
