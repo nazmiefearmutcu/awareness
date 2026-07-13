@@ -399,6 +399,45 @@ def test_entry_primary_url_prefers_link_over_guid() -> None:
     assert entry_primary_url(entry) == "https://example.com/article"
 
 
+def test_entry_primary_url_prefers_feedburner_origlink() -> None:
+    """FeedBurner/syndication proxies: origLink is the real publisher URL."""
+    entry = SimpleNamespace(
+        link="https://feedproxy.google.com/~r/example/~3/abc",
+        links=[],
+        feedburner_origlink="https://example.com/real-article/1",
+    )
+    assert entry_primary_url(entry) == "https://example.com/real-article/1"
+
+
+def test_entry_primary_url_prefers_phoenix_origlink() -> None:
+    entry = SimpleNamespace(
+        link="https://rss.example.com/click/1",
+        links=[],
+        phoenix_origlink="https://news.example.com/story/9",
+    )
+    assert entry_primary_url(entry) == "https://news.example.com/story/9"
+
+
+def test_entry_primary_url_origlink_beats_guid() -> None:
+    entry = SimpleNamespace(
+        link=None,
+        links=[],
+        origlink="https://publisher.example/a",
+        id="https://guid.example/a",
+    )
+    assert entry_primary_url(entry) == "https://publisher.example/a"
+
+
+def test_entry_primary_url_ignores_non_http_origlink() -> None:
+    """Non-http origLink falls through to link/guid."""
+    entry = SimpleNamespace(
+        link="https://example.com/via-link",
+        links=[],
+        feedburner_origlink="urn:uuid:not-a-url",
+    )
+    assert entry_primary_url(entry) == "https://example.com/via-link"
+
+
 def test_dedupe_feed_urls_collapses_canonical_variants() -> None:
     urls = [
         "https://example.com/a",
@@ -476,3 +515,33 @@ async def test_read_sitemap_dedupes_canonical_variants(
     assert urls[0] == "https://example.com/page-a"
     assert "page-b" in urls[1]
 
+
+
+FEEDBURNER_RSS = b"""<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:feedburner="http://rssnamespace.org/feedburner/ext/1.0">
+  <channel>
+    <title>Example</title>
+    <item>
+      <title>Proxied story</title>
+      <link>https://feedproxy.google.com/~r/example/~3/xyz</link>
+      <feedburner:origLink>https://example.com/real-story/42</feedburner:origLink>
+      <guid isPermaLink="false">tag:example.com,2026:42</guid>
+    </item>
+  </channel>
+</rss>
+"""
+
+
+@pytest.mark.asyncio
+async def test_read_feed_uses_feedburner_origlink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: feedparser + entry_primary_url yield the publisher URL."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=FEEDBURNER_RSS)
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+
+    urls = await _read_feed("https://feeds.example.com/rss", "TestBot/1.0")
+    assert urls == ["https://example.com/real-story/42"]

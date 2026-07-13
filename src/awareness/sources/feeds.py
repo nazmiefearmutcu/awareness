@@ -65,16 +65,49 @@ def _is_http_url(value: Any) -> bool:
     return isinstance(value, str) and value.startswith(("http://", "https://"))
 
 
+def _entry_attr_http_url(entry: Any, *attrs: str) -> str | None:
+    """First http(s) URL found among named entry attributes (or nested dicts)."""
+    for attr in attrs:
+        value = getattr(entry, attr, None)
+        if value is None and isinstance(entry, dict):
+            value = entry.get(attr)
+        if isinstance(value, dict):
+            value = value.get("value") or value.get("href") or value.get("url")
+        if _is_http_url(value):
+            return str(value)
+    return None
+
+
 def entry_primary_url(entry: Any) -> str | None:
     """Best article URL from a feedparser entry (RSS link or Atom links[]).
 
-    Prefers ``entry.link`` when it is an http(s) URL. Otherwise scans
-    ``entry.links`` for ``rel=alternate`` (Atom default) then any http(s)
-    href. When those are missing, falls back to ``entry.id`` / ``entry.guid``
-    if that value is itself an http(s) URL (common when publishers put the
-    permalink only in ``guid`` / Atom ``id``). Returns ``None`` when no
-    usable URL is present.
+    Prefers publisher-original permalinks when present:
+
+    1. ``feedburner:origLink`` / ``phoenix:origLink`` / bare ``origlink``
+       (feedparser exposes these as ``feedburner_origlink`` etc.) — these
+       beat FeedBurner / syndication proxy ``link`` values so the fetch gate
+       keys the real article URL instead of a redirector.
+    2. ``entry.link`` when it is an http(s) URL.
+    3. ``entry.links`` for ``rel=alternate`` (Atom default) then any http(s)
+       href.
+    4. ``entry.id`` / ``entry.guid`` when that value is itself an http(s) URL
+       (common when publishers put the permalink only in ``guid`` / Atom
+       ``id``).
+
+    Returns ``None`` when no usable URL is present.
     """
+    # Syndication proxies (FeedBurner, etc.) put the real article URL in
+    # origLink while ``link`` points at feedproxy.google.com / similar.
+    orig = _entry_attr_http_url(
+        entry,
+        "feedburner_origlink",
+        "phoenix_origlink",
+        "origlink",
+        "feedburner:origLink",  # raw namespace form if present
+    )
+    if orig is not None:
+        return orig
+
     link = getattr(entry, "link", None)
     if _is_http_url(link):
         return str(link)
