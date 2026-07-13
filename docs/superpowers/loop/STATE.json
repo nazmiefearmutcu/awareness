@@ -1,11 +1,11 @@
 {
-  "iteration": 7,
+  "iteration": 8,
   "phase": "systems",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "commits_ahead": 80,
-  "unit_suite": "492 green (1 skipped datasets; not slow)",
+  "commits_ahead": 83,
+  "unit_suite": "505 green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed feeds.fetch_non_200 metric + empty-search diagnostics.filters (domain/source) for CLI/SPA. Next: task retry visibility list on /tail/status, or streaming WET remaining polish."
+  "notes": "Landed job/tail retry visibility (a2394d6), search recency_boost meta (d12d645), collapsible related panel (4aed851). Next: SPA Settings editable, metrics export, or Iceberg compaction."
 }
