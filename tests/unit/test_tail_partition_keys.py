@@ -74,12 +74,12 @@ async def _run_gdelt_with_urls(urls: list[str], *, max_urls: int | None = None) 
     mock_response.status_code = 200
     mock_response.content = zipped
 
-    with patch("awareness.sources.gdelt.httpx.AsyncClient") as client_cls:
-        client = AsyncMock()
-        client.get = AsyncMock(return_value=mock_response)
-        client.__aenter__ = AsyncMock(return_value=client)
-        client.__aexit__ = AsyncMock(return_value=None)
-        client_cls.return_value = client
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=mock_response)
+    with patch(
+        "awareness.sources.gdelt.get_shared_async_client",
+        new=AsyncMock(return_value=client),
+    ):
         async for _ in adapter.run_partition(partition, ctx):
             pass
     return list(ctx.extras.get("enqueue", []))

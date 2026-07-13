@@ -33,7 +33,11 @@ from awareness.util.hashing import (
 from awareness.util.hashing import (
     content_hash as compute_content_hash,
 )
-from awareness.util.http import RetryableHTTPError, get_with_retries
+from awareness.util.http import (
+    RetryableHTTPError,
+    get_shared_async_client,
+    get_with_retries,
+)
 from awareness.util.ratelimit import PerDomainLimiter
 from awareness.util.robots import RobotsCache
 from awareness.util.timeutil import parse_http_date, utcnow
@@ -132,15 +136,18 @@ class TailRecrawlAdapter(Adapter):
         # get_with_retries (process-wide fetch slot around each GET only).
         async with limiter.domain(dom, override_delay=crawl_delay):
             try:
-                async with httpx.AsyncClient(
+                # Pooled client; follow_redirects=False so each hop stays public.
+                # Per-request UA (not client defaults) keeps the pool shareable.
+                client = await get_shared_async_client(
                     timeout=settings.request_timeout_sec,
                     follow_redirects=False,
-                    headers={"User-Agent": context.user_agent},
-                ) as client:
-                    r = await _get_public_url(client, url)
-                    if r is None:
-                        get_metrics().inc("tail.blocked_internal_url", labels={"domain": dom})
-                        return
+                )
+                r = await _get_public_url(
+                    client, url, headers={"User-Agent": context.user_agent}
+                )
+                if r is None:
+                    get_metrics().inc("tail.blocked_internal_url", labels={"domain": dom})
+                    return
             except RetryableHTTPError:
                 # Transient failure exhausted retries — task layer requeues.
                 get_metrics().inc("tail.fetch_errors", labels={"domain": dom})
@@ -245,7 +252,13 @@ class TailRecrawlAdapter(Adapter):
         )
 
 
-async def _get_public_url(client: httpx.AsyncClient, url: str, *, max_redirects: int = 10) -> httpx.Response | None:
+async def _get_public_url(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    max_redirects: int = 10,
+) -> httpx.Response | None:
     """Fetch a public URL while validating every redirect target.
 
     ``httpx`` follows redirects transparently when ``follow_redirects=True``,
@@ -258,7 +271,7 @@ async def _get_public_url(client: httpx.AsyncClient, url: str, *, max_redirects:
         if not is_public_http_url(current_url):
             return None
         # get_with_retries acquires the global fetch slot per attempt (no outer slot).
-        response = await get_with_retries(client, current_url)
+        response = await get_with_retries(client, current_url, headers=headers)
         if not response.is_redirect:
             return response
 
@@ -268,7 +281,6 @@ async def _get_public_url(client: httpx.AsyncClient, url: str, *, max_redirects:
         current_url = urljoin(str(response.url), location)
 
     return None
-
 
 _LIMITER: PerDomainLimiter | None = None
 _ROBOTS: RobotsCache | None = None

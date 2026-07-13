@@ -29,7 +29,11 @@ from awareness.obs.metrics import get_metrics
 from awareness.schemas.doc import DocCapture, SourceKind
 from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
-from awareness.util.http import RetryableHTTPError, get_with_retries
+from awareness.util.http import (
+    RetryableHTTPError,
+    get_shared_async_client,
+    get_with_retries,
+)
 from awareness.util.robots import extract_sitemap_urls
 from awareness.util.urls import canonical_url, is_homepage_url, is_public_http_url
 
@@ -236,22 +240,23 @@ async def _enqueue_robots_sitemaps(seed_url: str, context: AdapterContext) -> in
 async def _read_feed(url: str, user_agent: str) -> list[str]:
     """RSS / Atom — fetch and parse."""
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            # Transient 429/5xx retried inside get_with_retries (global slot held
-            # only during each GET). Exhausted retries raise RetryableHTTPError.
-            r = await get_with_retries(
-                client, url, headers={"User-Agent": user_agent}
+        # Reuse process-wide pooled client (connection keep-alive across seeds).
+        client = await get_shared_async_client(timeout=30.0, follow_redirects=True)
+        # Transient 429/5xx retried inside get_with_retries (global slot held
+        # only during each GET). Exhausted retries raise RetryableHTTPError.
+        r = await get_with_retries(
+            client, url, headers={"User-Agent": user_agent}
+        )
+        if r.status_code != 200:
+            logger.warning("feed_fetch_non_200", url=url, status=r.status_code)
+            get_metrics().inc(
+                "feeds.fetch_non_200",
+                labels={"kind": "rss", "status": str(r.status_code)},
             )
-            if r.status_code != 200:
-                logger.warning("feed_fetch_non_200", url=url, status=r.status_code)
-                get_metrics().inc(
-                    "feeds.fetch_non_200",
-                    labels={"kind": "rss", "status": str(r.status_code)},
-                )
-                return []
-            if not r.content:
-                return []
-            body = _maybe_decompress_body(r.content)
+            return []
+        if not r.content:
+            return []
+        body = _maybe_decompress_body(r.content)
     except RetryableHTTPError:
         get_metrics().inc(
             "feeds.retryable_http_error",
@@ -273,21 +278,22 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
 async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
     """Parse a sitemap or sitemap-index. Follows one level of nesting by default."""
     try:
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            # Same retry policy as feeds / CC discovery: transient → retry/raise.
-            r = await get_with_retries(
-                client, url, headers={"User-Agent": user_agent}
+        # Longer timeout for large sitemap indexes; still pooled by timeout key.
+        client = await get_shared_async_client(timeout=60.0, follow_redirects=True)
+        # Same retry policy as feeds / CC discovery: transient → retry/raise.
+        r = await get_with_retries(
+            client, url, headers={"User-Agent": user_agent}
+        )
+        if r.status_code != 200:
+            logger.warning("sitemap_fetch_non_200", url=url, status=r.status_code)
+            get_metrics().inc(
+                "feeds.fetch_non_200",
+                labels={"kind": "sitemap", "status": str(r.status_code)},
             )
-            if r.status_code != 200:
-                logger.warning("sitemap_fetch_non_200", url=url, status=r.status_code)
-                get_metrics().inc(
-                    "feeds.fetch_non_200",
-                    labels={"kind": "sitemap", "status": str(r.status_code)},
-                )
-                return []
-            if not r.content:
-                return []
-            body = _maybe_decompress_body(r.content)
+            return []
+        if not r.content:
+            return []
+        body = _maybe_decompress_body(r.content)
     except RetryableHTTPError:
         get_metrics().inc(
             "feeds.retryable_http_error",

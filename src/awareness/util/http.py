@@ -4,9 +4,14 @@ Adapters should fetch through these helpers instead of bare ``client.get`` so
 that transient failures (timeouts, connection resets, 429/5xx) are retried with
 backoff and a genuine 404 is surfaced — not silently swallowed.
 
-Also exposes a process-wide :func:`acquire_fetch_slot` semaphore keyed off
-``settings.global_fetch_concurrency`` so concurrent adapters cannot open an
-unbounded number of sockets.
+Also exposes:
+
+* a process-wide :func:`acquire_fetch_slot` semaphore keyed off
+  ``settings.global_fetch_concurrency`` so concurrent adapters cannot open an
+  unbounded number of sockets;
+* a process-wide pooled :func:`get_shared_async_client` so adapters reuse TCP /
+  TLS connections instead of constructing a fresh ``httpx.AsyncClient`` per
+  feed/sitemap/fetch.
 """
 
 from __future__ import annotations
@@ -35,6 +40,11 @@ DEFAULT_MAX_DELAY = 30.0
 _fetch_sem: asyncio.Semaphore | None = None
 _fetch_sem_limit: int | None = None
 _fetch_sem_init = threading.Lock()
+
+# Process-wide pooled httpx clients keyed by (timeout, follow_redirects).
+# Reuse avoids per-request TCP/TLS setup across feed/sitemap/tail fetches.
+_shared_clients: dict[tuple[float, bool], httpx.AsyncClient] = {}
+_shared_clients_lock = threading.Lock()
 
 
 class RetryableHTTPError(Exception):
@@ -86,6 +96,83 @@ async def acquire_fetch_slot(limit: int | None = None) -> AsyncIterator[None]:
         yield
     finally:
         sem.release()
+
+
+def _pool_limits(max_connections: int | None = None) -> httpx.Limits:
+    """Connection-pool limits sized from ``global_fetch_concurrency``."""
+    if max_connections is None:
+        from awareness.config import get_settings  # noqa: PLC0415
+
+        max_connections = int(get_settings().global_fetch_concurrency)
+    max_connections = max(4, int(max_connections))
+    keepalive = max(2, max_connections // 2)
+    return httpx.Limits(
+        max_connections=max_connections,
+        max_keepalive_connections=keepalive,
+    )
+
+
+async def get_shared_async_client(
+    *,
+    timeout: float | None = None,
+    follow_redirects: bool = True,
+    max_connections: int | None = None,
+) -> httpx.AsyncClient:
+    """Return a long-lived process-wide ``AsyncClient`` (connection pool).
+
+    Clients are keyed by ``(timeout, follow_redirects)`` so callers that need
+    different redirect policy (e.g. tail recrawl with manual redirect checks)
+    do not clobber feed/sitemap clients. Do **not** close the returned client
+    after a single request — use :func:`aclose_shared_async_clients` at process
+    shutdown or in tests via :func:`reset_shared_async_clients`.
+
+    ``timeout`` defaults to ``settings.request_timeout_sec``.
+    """
+    if timeout is None:
+        from awareness.config import get_settings  # noqa: PLC0415
+
+        timeout = float(get_settings().request_timeout_sec)
+    timeout_f = float(timeout)
+    key = (timeout_f, bool(follow_redirects))
+    with _shared_clients_lock:
+        client = _shared_clients.get(key)
+        if client is not None and not client.is_closed:
+            return client
+        client = httpx.AsyncClient(
+            timeout=timeout_f,
+            follow_redirects=follow_redirects,
+            limits=_pool_limits(max_connections),
+        )
+        _shared_clients[key] = client
+        return client
+
+
+async def aclose_shared_async_clients() -> None:
+    """Close and drop every pooled client (graceful shutdown)."""
+    with _shared_clients_lock:
+        clients = list(_shared_clients.values())
+        _shared_clients.clear()
+    for client in clients:
+        try:
+            await client.aclose()
+        except Exception as exc:  # noqa: BLE001 — best-effort close
+            logger.warning("shared_http_client_close_failed", err=str(exc))
+
+
+def reset_shared_async_clients() -> None:
+    """Drop pooled clients without awaiting close (sync tests / reload).
+
+    Prefer :func:`aclose_shared_async_clients` when an event loop is available.
+    Remaining open sockets are GC'd with the client objects.
+    """
+    with _shared_clients_lock:
+        _shared_clients.clear()
+
+
+def shared_async_client_pool_size() -> int:
+    """Number of live pooled clients (tests / diagnostics)."""
+    with _shared_clients_lock:
+        return sum(1 for c in _shared_clients.values() if not c.is_closed)
 
 
 def _backoff_delay(attempt: int, base_delay: float, retry_after: float | None) -> float:

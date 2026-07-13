@@ -10,10 +10,14 @@ from awareness.util.http import (
     RETRYABLE_STATUS,
     RetryableHTTPError,
     _retry_after_seconds,
+    aclose_shared_async_clients,
     acquire_fetch_slot,
+    get_shared_async_client,
     get_with_retries,
     global_fetch_semaphore,
     reset_global_fetch_semaphore,
+    reset_shared_async_clients,
+    shared_async_client_pool_size,
 )
 
 
@@ -24,8 +28,10 @@ def _client_with_handler(handler) -> httpx.AsyncClient:
 @pytest.fixture(autouse=True)
 def _reset_fetch_sem() -> None:
     reset_global_fetch_semaphore()
+    reset_shared_async_clients()
     yield
     reset_global_fetch_semaphore()
+    reset_shared_async_clients()
 
 
 async def test_retries_then_succeeds_on_500() -> None:
@@ -197,3 +203,57 @@ def test_retry_after_http_date_past_is_zero(monkeypatch: pytest.MonkeyPatch) -> 
 def test_retry_after_garbage_returns_none() -> None:
     resp = httpx.Response(503, headers={"Retry-After": "not-a-date"})
     assert _retry_after_seconds(resp) is None
+
+
+@pytest.mark.asyncio
+async def test_shared_async_client_reuses_same_instance() -> None:
+    """Same (timeout, follow_redirects) key returns one pooled client."""
+    c1 = await get_shared_async_client(timeout=12.0, follow_redirects=True)
+    c2 = await get_shared_async_client(timeout=12.0, follow_redirects=True)
+    assert c1 is c2
+    assert shared_async_client_pool_size() == 1
+    await aclose_shared_async_clients()
+    assert shared_async_client_pool_size() == 0
+
+
+@pytest.mark.asyncio
+async def test_shared_async_client_keys_by_timeout_and_redirects() -> None:
+    """Different timeout or redirect policy → separate pool entries."""
+    a = await get_shared_async_client(timeout=10.0, follow_redirects=True)
+    b = await get_shared_async_client(timeout=60.0, follow_redirects=True)
+    c = await get_shared_async_client(timeout=10.0, follow_redirects=False)
+    assert a is not b
+    assert a is not c
+    assert b is not c
+    assert shared_async_client_pool_size() == 3
+    # Same key again reuses.
+    assert await get_shared_async_client(timeout=10.0, follow_redirects=True) is a
+    await aclose_shared_async_clients()
+
+
+@pytest.mark.asyncio
+async def test_shared_async_client_works_with_mock_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pool factory accepts limits; GET works through get_with_retries."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, content=b"pooled-ok")
+
+    original = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr("awareness.util.http.httpx.AsyncClient", factory)
+    client = await get_shared_async_client(timeout=5.0, follow_redirects=True)
+    # Second acquire must reuse the MockTransport client.
+    assert await get_shared_async_client(timeout=5.0, follow_redirects=True) is client
+    resp = await get_with_retries(client, "https://example.test/pooled", max_attempts=2, base_delay=0.0)
+    assert resp.status_code == 200
+    assert resp.content == b"pooled-ok"
+    assert calls["n"] == 1
+    await aclose_shared_async_clients()

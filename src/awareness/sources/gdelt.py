@@ -28,6 +28,7 @@ from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
 from awareness.schemas.doc import DocCapture, SourceKind
 from awareness.schemas.jobs import BackfillRequest
+from awareness.util.http import get_shared_async_client
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
 from awareness.util.timeutil import to_utc, utcnow
 from awareness.util.urls import canonical_url
@@ -87,8 +88,8 @@ class GdeltAdapter(Adapter):
         slot = partition.payload["slot"]
         url = f"{GDELT_BASE}/{slot}.gkg.csv.zip"
         try:
-            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                r = await client.get(url, headers={"User-Agent": context.user_agent})
+            client = await get_shared_async_client(timeout=60.0, follow_redirects=True)
+            r = await client.get(url, headers={"User-Agent": context.user_agent})
             if r.status_code != 200:
                 logger.info("gdelt_slot_missing", slot=slot, status=r.status_code)
                 return

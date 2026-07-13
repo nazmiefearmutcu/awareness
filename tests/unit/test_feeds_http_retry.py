@@ -14,14 +14,21 @@ from awareness.sources.feeds import (
     _read_sitemap,
     entry_primary_url,
 )
-from awareness.util.http import RetryableHTTPError, get_with_retries, reset_global_fetch_semaphore
+from awareness.util.http import (
+    RetryableHTTPError,
+    get_with_retries,
+    reset_global_fetch_semaphore,
+    reset_shared_async_clients,
+)
 
 
 @pytest.fixture(autouse=True)
 def _reset_fetch_sem() -> None:
     reset_global_fetch_semaphore()
+    reset_shared_async_clients()
     yield
     reset_global_fetch_semaphore()
+    reset_shared_async_clients()
 
 
 def _patch_client_and_retries(
@@ -30,13 +37,16 @@ def _patch_client_and_retries(
     *,
     module: str,
 ) -> None:
+    """Inject MockTransport via the shared pooled client + fast retries."""
     original = httpx.AsyncClient
+    # Fresh mock client each call is fine for unit tests; production pooling
+    # is covered in test_util_http.
+    mock_client = original(transport=httpx.MockTransport(handler))
 
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return original(*args, **kwargs)
+    async def fake_shared(**kwargs):
+        return mock_client
 
-    monkeypatch.setattr(f"{module}.httpx.AsyncClient", factory)
+    monkeypatch.setattr(f"{module}.get_shared_async_client", fake_shared)
 
     real = get_with_retries
 
@@ -90,13 +100,12 @@ async def test_read_feed_exhausted_503_raises(monkeypatch: pytest.MonkeyPatch) -
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)
 
-    original = httpx.AsyncClient
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return original(*args, **kwargs)
+    async def fake_shared(**kwargs):
+        return mock_client
 
-    monkeypatch.setattr("awareness.sources.feeds.httpx.AsyncClient", factory)
+    monkeypatch.setattr("awareness.sources.feeds.get_shared_async_client", fake_shared)
 
     real = get_with_retries
 
@@ -182,13 +191,12 @@ async def test_read_feed_retryable_error_increments_metric(
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)
 
-    original = httpx.AsyncClient
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return original(*args, **kwargs)
+    async def fake_shared(**kwargs):
+        return mock_client
 
-    monkeypatch.setattr("awareness.sources.feeds.httpx.AsyncClient", factory)
+    monkeypatch.setattr("awareness.sources.feeds.get_shared_async_client", fake_shared)
 
     real = get_with_retries
 
@@ -214,13 +222,12 @@ async def test_read_sitemap_retryable_error_increments_metric(
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)
 
-    original = httpx.AsyncClient
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return original(*args, **kwargs)
+    async def fake_shared(**kwargs):
+        return mock_client
 
-    monkeypatch.setattr("awareness.sources.feeds.httpx.AsyncClient", factory)
+    monkeypatch.setattr("awareness.sources.feeds.get_shared_async_client", fake_shared)
 
     real = get_with_retries
 
