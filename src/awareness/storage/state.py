@@ -49,6 +49,28 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _verify_dedup_schema(inspector: Any) -> None:
+    """Raise if the dedup_near table exists but lacks the sig_hex column.
+
+    The migration in init() adds sig_hex to legacy tables; if that ALTER
+    silently failed (locked/partial/read-only DB), surface it loudly here
+    instead of deferring to a confusing 'no such column: sig_hex' on every
+    later dedup write.
+    """
+    try:
+        cols = [c["name"] for c in inspector.get_columns("dedup_near")]
+    except Exception:
+        cols = []
+    if cols and "sig_hex" not in cols:
+        raise RuntimeError(
+            "dedup_near.sig_hex is missing after migration — the DB may be "
+            "read-only, locked, or partially migrated; near-dup indexing "
+            "would fail. Fix or recreate the state DB."
+        )
+
+
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -297,6 +319,10 @@ class StateDB:
                             conn.execute(text("ALTER TABLE tail_state ADD COLUMN pid INTEGER"))
                 except Exception as e:
                     logger.warning("migration_failed", error=str(e))
+
+            from sqlalchemy import inspect as _sa_inspect
+
+            _verify_dedup_schema(_sa_inspect(self._engine))
 
             self._initialized = True
 
