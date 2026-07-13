@@ -266,6 +266,7 @@ function formatFetchLatency(sec) {
 /**
  * Discovery + tail fetch counters from /metrics (process-local).
  * Pure — no DOM. Sums feeds/GDELT URL discovery and tail recrawl fetches.
+ * Also aggregates feed health (non-200, retries, charset, sitemaps).
  */
 function summarizeDiscoveryMetrics(metricsSnap) {
   const empty = {
@@ -276,6 +277,11 @@ function summarizeDiscoveryMetrics(metricsSnap) {
     gdeltFetchAttempts: 0,
     tailFetches: 0,
     discovered: 0,
+    feedNon200: 0,
+    feedRetryable: 0,
+    feedCharset: 0,
+    feedSitemaps: 0,
+    feedErrors: 0,
   };
   if (!metricsSnap || typeof metricsSnap !== "object") return empty;
   const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
@@ -285,6 +291,10 @@ function summarizeDiscoveryMetrics(metricsSnap) {
   let gdeltFetchOk = 0;
   let gdeltFetchAttempts = 0;
   let tailFetches = 0;
+  let feedNon200 = 0;
+  let feedRetryable = 0;
+  let feedCharset = 0;
+  let feedSitemaps = 0;
   for (const c of counters) {
     if (!c) continue;
     const n = c.name;
@@ -297,6 +307,10 @@ function summarizeDiscoveryMetrics(metricsSnap) {
       const labels = c.labels || {};
       if (labels.outcome === "ok") gdeltFetchOk += v;
     } else if (n === "tail.fetches") tailFetches += v;
+    else if (n === "feeds.fetch_non_200") feedNon200 += v;
+    else if (n === "feeds.retryable_http_error") feedRetryable += v;
+    else if (n === "feeds.decode_charset") feedCharset += v;
+    else if (n === "feeds.robots_sitemaps_discovered") feedSitemaps += v;
   }
   return {
     feedsUrls,
@@ -306,7 +320,46 @@ function summarizeDiscoveryMetrics(metricsSnap) {
     gdeltFetchAttempts,
     tailFetches,
     discovered: feedsUrls + gdeltUrls,
+    feedNon200,
+    feedRetryable,
+    feedCharset,
+    feedSitemaps,
+    feedErrors: feedNon200 + feedRetryable,
   };
+}
+
+/**
+ * Common Crawl WET quality filter counters from /metrics (process-local).
+ * Pure — no DOM. Sums quality drops (any reason) and admitted records.
+ */
+function summarizeWetQualityMetrics(metricsSnap) {
+  const empty = { filtered: 0, admitted: 0, topReason: null };
+  if (!metricsSnap || typeof metricsSnap !== "object") return empty;
+  const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
+  let filtered = 0;
+  let admitted = 0;
+  const byReason = Object.create(null);
+  for (const c of counters) {
+    if (!c) continue;
+    const n = c.name;
+    const v = Number(c.value) || 0;
+    if (n === "cc_wet.quality_filtered") {
+      filtered += v;
+      const reason = (c.labels && c.labels.reason) || "unknown";
+      byReason[reason] = (byReason[reason] || 0) + v;
+    } else if (n === "cc_wet.records_admitted") {
+      admitted += v;
+    }
+  }
+  let topReason = null;
+  let topVal = 0;
+  for (const [r, v] of Object.entries(byReason)) {
+    if (v > topVal) {
+      topVal = v;
+      topReason = r;
+    }
+  }
+  return { filtered, admitted, topReason };
 }
 
 /**
@@ -472,7 +525,7 @@ async function refreshDashboard() {
   setKPI("kpi-dash-discover", discovery.discovered);
   const discSub = $("#kpi-dash-discover-sub");
   if (discSub) {
-    if (discovery.discovered || discovery.gdeltFetchAttempts) {
+    if (discovery.discovered || discovery.gdeltFetchAttempts || discovery.feedSitemaps) {
       const bits = [];
       if (discovery.feedsUrls) bits.push(`${fmt(discovery.feedsUrls)} feeds`);
       if (discovery.gdeltUrls) bits.push(`${fmt(discovery.gdeltUrls)} gdelt`);
@@ -481,6 +534,8 @@ async function refreshDashboard() {
           `${fmt(discovery.gdeltFetchOk)}/${fmt(discovery.gdeltFetchAttempts)} slots ok`
         );
       }
+      if (discovery.feedSitemaps) bits.push(`${fmt(discovery.feedSitemaps)} sitemaps`);
+      if (discovery.feedCharset) bits.push(`${fmt(discovery.feedCharset)} charset`);
       discSub.textContent = bits.length ? bits.join(" · ") : "feeds + GDELT this process";
     } else {
       discSub.textContent = "feeds + GDELT this process";
@@ -492,6 +547,34 @@ async function refreshDashboard() {
     tailFetchSub.textContent = discovery.tailFetches
       ? "recrawl HTTP GETs this process"
       : "no recrawl fetches yet";
+  }
+
+  // Feed fetch health (non-200 + retryable errors).
+  setKPI("kpi-dash-feed-errors", discovery.feedErrors);
+  const feedErrSub = $("#kpi-dash-feed-errors-sub");
+  if (feedErrSub) {
+    if (discovery.feedErrors) {
+      const bits = [];
+      if (discovery.feedNon200) bits.push(`${fmt(discovery.feedNon200)} non-200`);
+      if (discovery.feedRetryable) bits.push(`${fmt(discovery.feedRetryable)} retryable`);
+      feedErrSub.textContent = bits.join(" · ");
+    } else {
+      feedErrSub.textContent = "non-200 + retries this process";
+    }
+  }
+
+  // WET Gopher/C4 quality filter (process-local).
+  const wetQ = summarizeWetQualityMetrics(metricsSnap);
+  setKPI("kpi-dash-wet-quality", wetQ.filtered);
+  const wetSub = $("#kpi-dash-wet-quality-sub");
+  if (wetSub) {
+    if (wetQ.filtered || wetQ.admitted) {
+      const bits = [`${fmt(wetQ.admitted)} admitted`];
+      if (wetQ.topReason) bits.push(`top: ${wetQ.topReason}`);
+      wetSub.textContent = bits.join(" · ");
+    } else {
+      wetSub.textContent = "Gopher/C4 filter this process";
+    }
   }
 
   $("#kpi-captures-sub").textContent = (docsTotal ? `${fmt(docsTotal)} emitted across jobs` : "across the corpus");
