@@ -78,12 +78,14 @@
 | C4+ | dedup | Unwrap Google AMP Cache hosts for fetch-gate identity | ✅ |
 | C4+ | search | Ordered title-phrase boost in BM25 re-rank | ✅ |
 | C4+ | dedup | Unwrap Bing/Google AMP viewers + SERP/CMS identity noise | ✅ |
+| C4+ | search | Ordered URL-slug phrase boost in BM25 re-rank | ✅ |
+| C4+ | dedup | Unwrap Wayback Machine + Google Translate for fetch-gate identity | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~137 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~141 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** title-phrase re-rank (`44283a5`), viewer AMP identity (`e4ad046`)
+- **Latest:** URL-slug phrase re-rank (`ccb9bcd`), Wayback/Translate identity (`d872bb5`)
 
 ## Rules
 

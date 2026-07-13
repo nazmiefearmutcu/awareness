@@ -1,12 +1,12 @@
 {
-  "iteration": 23,
-  "phase": "title_phrase_rerank_viewer_amp_identity",
+  "iteration": 24,
+  "phase": "url_phrase_rerank_wayback_translate_identity",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "e4ad0460ee40bdd3e58b36f955a2e0b659aa550d",
-  "commits_ahead": 137,
+  "head_sha": "d872bb514b98f20ef658f9ec270aced7216fee8b",
+  "commits_ahead": 142,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed title ordered-phrase re-rank (44283a5), Bing/Google AMP viewer unwrap + SERP/CMS noise (e4ad046). Next: Iceberg compaction / scrape reliability / more ranking signals / facets."
+  "notes": "Landed URL-slug ordered-phrase re-rank (ccb9bcd), Wayback + Google Translate unwrap for fetch-gate identity (d872bb5). Next: scrape reliability / more ranking signals / facets / Iceberg compaction."
 }
