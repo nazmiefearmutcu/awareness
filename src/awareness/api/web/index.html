@@ -105,7 +105,7 @@
         </div>
       </header>
 
-      <div class="kpi-grid">
+      <div class="kpi-grid" aria-label="Corpus KPIs">
         <article class="kpi" aria-labelledby="kpi-cap-label">
           <div class="kpi-label" id="kpi-cap-label">Captures</div>
           <div class="kpi-value" id="kpi-captures">—</div>
@@ -125,6 +125,18 @@
           <div class="kpi-label" id="kpi-job-label">Jobs</div>
           <div class="kpi-value" id="kpi-jobs">—</div>
           <div class="kpi-sub" id="kpi-jobs-sub">recent runs</div>
+        </article>
+      </div>
+      <div class="kpi-grid dedup-kpis" id="dash-skip-kpis" aria-label="Process skip counters">
+        <article class="kpi" aria-labelledby="kpi-dash-fetch-skip-label">
+          <div class="kpi-label" id="kpi-dash-fetch-skip-label">Fetch skipped (seen)</div>
+          <div class="kpi-value" id="kpi-dash-fetch-skipped">—</div>
+          <div class="kpi-sub" id="kpi-dash-fetch-skipped-sub">URLs already seen, not re-fetched</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-tight-near-label">
+          <div class="kpi-label" id="kpi-dash-tight-near-label">Tight near-dup skipped</div>
+          <div class="kpi-value" id="kpi-dash-tight-near">—</div>
+          <div class="kpi-sub" id="kpi-dash-tight-near-sub">near-dups below store threshold</div>
         </article>
       </div>
 

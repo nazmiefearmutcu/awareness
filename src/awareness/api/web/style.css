@@ -1711,10 +1711,17 @@ code {
   flex-direction: column;
   gap: 6px;
 }
-/* Settings skip-counter KPIs — monochrome, two-up */
+/* Skip-counter KPIs (Dashboard + Settings) — monochrome, two-up */
 .dedup-kpis {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin: 12px 0 0;
+}
+/* Dashboard row under corpus KPIs: keep bottom gap into dash-split */
+#dash-skip-kpis {
+  margin: 0 0 14px;
+}
+.kpi-grid + #dash-skip-kpis {
+  margin-top: -4px;
 }
 .dedup-kpis .kpi {
   background: var(--surface);

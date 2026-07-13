@@ -224,13 +224,22 @@ async function refreshDashboard() {
   const jobsTotal = (status.jobs || []).length;
   const docsTotal = (status.jobs || []).reduce((a, j) => a + (j.docs_emitted || 0), 0);
 
-  setKPI("kpi-captures", dedup.total_captures_seen || 0);
-  setKPI("kpi-distinct", dedup.distinct_content_hashes || 0);
-  setKPI("kpi-folds", Math.max(0, (dedup.total_captures_seen || 0) - (dedup.distinct_content_hashes || 0)));
+  // Corpus KPIs: folds = stored re-captures collapsed by content hash
+  // (not fetch-gate skips or tight near-dup pre-store drops — those are process counters below).
+  const captures = dedup.total_captures_seen || 0;
+  const distinct = dedup.distinct_content_hashes || 0;
+  const folds = Math.max(0, captures - distinct);
+  setKPI("kpi-captures", captures);
+  setKPI("kpi-distinct", distinct);
+  setKPI("kpi-folds", folds);
   setKPI("kpi-jobs", jobsTotal);
+  // Process-local skip counters (same source as Settings Runtime status).
+  setKPI("kpi-dash-fetch-skipped", Number(dedup.fetch_skipped_seen || 0));
+  setKPI("kpi-dash-tight-near", Number(dedup.tight_near_skipped || 0));
 
   $("#kpi-captures-sub").textContent = (docsTotal ? `${fmt(docsTotal)} emitted across jobs` : "across the corpus");
   $("#kpi-distinct-sub").textContent = "unique content";
+  // Folds stay hash-level among stored captures (distinct from process skip counters).
   $("#kpi-folds-sub").textContent = `${fmt(dedup.near_dup_index_rows || 0)} simhash rows`;
   $("#kpi-jobs-sub").textContent = "backfill & tail runs";
 
