@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from awareness.storage.duckdb_index import (
+    _lead_phrase_frac,
     _length_factor,
     _recency_factor,
     _rerank,
@@ -84,6 +85,35 @@ def test_title_exact_frac_rejects_extra_or_missing_or_reorder() -> None:
     assert _title_exact_frac("Bitcoin", ["bitcoin", "price"]) == 0.0
     assert _title_exact_frac("Price bitcoin", ["bitcoin", "price"]) == 0.0
     assert _title_exact_frac("markets only", ["bitcoin"]) == 0.0
+
+
+# ── _lead_phrase_frac ────────────────────────────────────────────────────
+def test_lead_phrase_frac_requires_multi_term() -> None:
+    assert _lead_phrase_frac("Bitcoin price surges in Asia", ["bitcoin"]) == 0.0
+    assert _lead_phrase_frac("Anything", []) == 0.0
+
+
+def test_lead_phrase_frac_contiguous_in_lead_is_one() -> None:
+    assert _lead_phrase_frac("Bitcoin price surges in Asia", ["bitcoin", "price"]) == 1.0
+    assert _lead_phrase_frac("BITCOIN PRICE jumps", ["bitcoin", "price"]) == 1.0
+
+
+def test_lead_phrase_frac_ordered_gap_in_lead_is_half() -> None:
+    assert (
+        _lead_phrase_frac("Bitcoin overnight price surge", ["bitcoin", "price"]) == 0.5
+    )
+
+
+def test_lead_phrase_frac_ignores_matches_past_lead_window() -> None:
+    """Phrase only after the lead window must not score."""
+    buried = ("noise " * 80) + "bitcoin price later"
+    assert _lead_phrase_frac(buried, ["bitcoin", "price"], lead_chars=40) == 0.0
+    # Same text with a large enough window recovers the phrase.
+    assert _lead_phrase_frac(buried, ["bitcoin", "price"], lead_chars=2000) == 1.0
+
+
+def test_lead_phrase_frac_out_of_order_is_zero() -> None:
+    assert _lead_phrase_frac("Price of bitcoin jumps", ["bitcoin", "price"]) == 0.0
 
 
 # ── _url_hit_frac ────────────────────────────────────────────────────────
@@ -319,6 +349,7 @@ def test_rerank_title_exact_overrides_phrase_only() -> None:
         title_exact_boost=0.0,
         url_boost=0.0,
         url_phrase_boost=0.0,
+        lead_phrase_boost=0.0,
     )
     # Equal title_f + phrase_f, no exact → BM25 order (LONGER first).
     assert [c["capture_id"] for c in off] == ["LONGER", "EXACT"]
@@ -330,10 +361,50 @@ def test_rerank_title_exact_overrides_phrase_only() -> None:
         title_exact_boost=0.4,
         url_boost=0.0,
         url_phrase_boost=0.0,
+        lead_phrase_boost=0.0,
     )
     # EXACT final = 0.85 * 1.5 * 1.35 * 1.4 = 2.40975
     # LONGER final = 1.0 * 1.5 * 1.35 * 1.0 = 2.025
     assert [c["capture_id"] for c in on] == ["EXACT", "LONGER"]
+
+
+def test_rerank_lead_phrase_overrides_buried_body_match() -> None:
+    """Ordered phrase in the lead beats a buried body match with higher BM25.
+
+    Neutral titles/urls so only lead_f differs. BURIED has higher raw BM25
+    but the phrase appears only after the lead window; LEAD has lower BM25
+    with the contiguous phrase in the first sentence.
+    """
+    buried_text = ("x " * 200) + "bitcoin price later in the article"
+    lead_text = "Bitcoin price jumped as markets opened. " + ("y " * 50)
+    cands = [
+        _cand("BURIED", 1.0, title="n", text=buried_text),
+        _cand("LEAD", 0.85, title="n", text=lead_text),
+    ]
+    off = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        lead_phrase_boost=0.0,
+    )
+    assert [c["capture_id"] for c in off] == ["BURIED", "LEAD"]
+    on = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        lead_phrase_boost=0.2,
+        lead_chars=280,
+    )
+    # LEAD final = 0.85 * 1.2 = 1.02 > BURIED = 1.0 * 1.0
+    assert [c["capture_id"] for c in on] == ["LEAD", "BURIED"]
 
 
 def test_rerank_url_hit_overrides_higher_bm25() -> None:

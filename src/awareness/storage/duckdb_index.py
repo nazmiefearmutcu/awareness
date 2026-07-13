@@ -73,6 +73,8 @@ _RERANK_TITLE_PHRASE_BOOST = 0.35  # Wp: ordered multi-term title phrase multipl
 _RERANK_TITLE_EXACT_BOOST = 0.4  # We: title tokens == query terms multiplies by 1+We
 _RERANK_URL_BOOST = 0.25         # Wu: full url/domain term coverage multiplies by 1+Wu
 _RERANK_URL_PHRASE_BOOST = 0.2   # Wup: ordered multi-term URL-slug phrase multiplies by 1+Wup
+_RERANK_LEAD_PHRASE_BOOST = 0.2   # Wl: ordered multi-term phrase in lead text multiplies by 1+Wl
+_RERANK_LEAD_CHARS = 280         # news lede window (chars) for lead-phrase credit
 _RERANK_LEN_PIVOT = 4000         # chars; docs up to here are not length-damped
 _RERANK_LEN_FLOOR = 0.75         # the most a very long doc can be damped to
 _RERANK_RECENCY_WEIGHT = 0.0     # Wr: 0 disables the recency prior (off by default)
@@ -1779,6 +1781,45 @@ def _url_phrase_frac(url: str, domain: str, terms: list[str]) -> float:
     return 0.5
 
 
+def _lead_phrase_frac(
+    text: str,
+    terms: list[str],
+    *,
+    lead_chars: int = _RERANK_LEAD_CHARS,
+) -> float:
+    """Ordered multi-term phrase quality in the document lead (lede) ``[0, 1]``.
+
+    News articles put the answer in the first sentence/paragraph. A long body
+    that only mentions the query deep in the text is a weaker navigational
+    match than one whose lede forms the ordered phrase. Credit is computed on
+    the first ``lead_chars`` characters only so buried matches do not count.
+
+    * ``1.0`` — all terms appear as a contiguous space-joined substring in lead
+    * ``0.5`` — all terms appear in query order with gaps allowed in lead
+    * ``0.0`` — fewer than two terms, empty lead, missing terms, or out-of-order
+
+    Single-term queries return ``0.0`` so this does not double ordinary BM25.
+    """
+    cleaned = [t for t in terms if t]
+    if len(cleaned) < 2:
+        return 0.0
+    if lead_chars <= 0:
+        return 0.0
+    lead = (text or "")[:lead_chars].lower()
+    if not lead.strip():
+        return 0.0
+    phrase = " ".join(cleaned)
+    if phrase in lead:
+        return 1.0
+    pos = 0
+    for t in cleaned:
+        idx = lead.find(t, pos)
+        if idx < 0:
+            return 0.0
+        pos = idx + len(t)
+    return 0.5
+
+
 def _length_factor(text_len: int, *, pivot: int = _RERANK_LEN_PIVOT, floor: float = _RERANK_LEN_FLOOR) -> float:
     """1.0 for docs up to `pivot` chars, decaying toward `floor` for longer ones.
 
@@ -1835,6 +1876,8 @@ def _rerank(
     title_exact_boost: float = _RERANK_TITLE_EXACT_BOOST,
     url_boost: float = _RERANK_URL_BOOST,
     url_phrase_boost: float = _RERANK_URL_PHRASE_BOOST,
+    lead_phrase_boost: float = _RERANK_LEAD_PHRASE_BOOST,
+    lead_chars: int = _RERANK_LEAD_CHARS,
     len_pivot: int = _RERANK_LEN_PIVOT,
     len_floor: float = _RERANK_LEN_FLOOR,
     recency_weight: float = _RERANK_RECENCY_WEIGHT,
@@ -1843,9 +1886,9 @@ def _rerank(
 ) -> list[dict[str, Any]]:
     """Re-rank BM25 candidates (already in raw-score DESC order) by multiplying
     the min-max-normalized BM25 score with independent title / title-phrase /
-    title-exact / url / url-phrase / length / recency factors. Returns a NEW
-    ordered list; input row dicts are not mutated. Stable: equal final scores
-    keep the incoming BM25 order.
+    title-exact / url / url-phrase / lead-phrase / length / recency factors.
+    Returns a NEW ordered list; input row dicts are not mutated. Stable: equal
+    final scores keep the incoming BM25 order.
 
     Each candidate dict carries ``score`` (raw BM25), ``title``, ``text``,
     optional ``url`` / ``canonical_url`` / ``domain``, and a timestamp
@@ -1873,6 +1916,7 @@ def _rerank(
     def final_score(c: dict[str, Any], raw: float) -> float:
         norm = (raw / max_score) if max_score > 0 else 0.0
         title = c.get("title") or ""
+        text = c.get("text") or ""
         title_f = 1.0 + title_boost * _title_hit_frac(title, terms)
         phrase_f = 1.0 + title_phrase_boost * _title_phrase_frac(title, terms)
         exact_f = 1.0 + title_exact_boost * _title_exact_frac(title, terms)
@@ -1882,7 +1926,10 @@ def _rerank(
         url_phrase_f = 1.0 + url_phrase_boost * _url_phrase_frac(
             str(url_blob), str(domain_blob), terms
         )
-        len_f = _length_factor(len(c.get("text") or ""), pivot=len_pivot, floor=len_floor)
+        lead_f = 1.0 + lead_phrase_boost * _lead_phrase_frac(
+            str(text), terms, lead_chars=lead_chars
+        )
+        len_f = _length_factor(len(text), pivot=len_pivot, floor=len_floor)
         doc_epoch = _to_epoch(c.get("published_ts") or c.get("fetch_ts")) if recency_on else None
         rec_f = _recency_factor(
             doc_epoch,
@@ -1890,7 +1937,17 @@ def _rerank(
             halflife_days=recency_halflife_days,
             weight=recency_weight,
         )
-        return norm * title_f * phrase_f * exact_f * url_f * url_phrase_f * len_f * rec_f
+        return (
+            norm
+            * title_f
+            * phrase_f
+            * exact_f
+            * url_f
+            * url_phrase_f
+            * lead_f
+            * len_f
+            * rec_f
+        )
 
     finals = [final_score(c, raw) for c, raw in zip(candidates, scores, strict=True)]
     # Sort by descending final score; ties keep original BM25 order (lower index
