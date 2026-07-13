@@ -47,7 +47,7 @@ DEFAULT_SEARCH_FIELDS: tuple[str, ...] = ("title", "text")
 #   prefix    — stem-root substring per token (finance -> financ% -> financial).
 #   substring — raw ILIKE on the whole query string. No tokenization.
 #   auto      — FTS first; if it returns nothing, fall back to prefix. Default.
-# Quoted whole-query ("phrase") forces substring/phrase mode regardless of mode.
+# Quoted whole-query ("phrase") uses substring matching; response mode is "phrase".
 SEARCH_MODES: tuple[str, ...] = ("auto", "fts", "prefix", "substring")
 DEFAULT_SEARCH_MODE = "auto"
 # Hard ceiling on rows materialized in a single search call (overload guard).
@@ -790,8 +790,10 @@ class DuckDbIndex:
             mode = DEFAULT_SEARCH_MODE
         # Quoted whole-query → exact phrase (ILIKE %phrase%), skip FTS/tokenization.
         # Detect leading+trailing double quotes on the stripped query.
+        # Matching uses the substring path; response mode is labeled "phrase".
         phrase_query = _phrase_query(query)
-        if phrase_query is not None:
+        is_phrase = phrase_query is not None
+        if is_phrase:
             query = phrase_query
             mode = "substring"
         cols = _clean_fields(fields)
@@ -812,13 +814,14 @@ class DuckDbIndex:
         )
         candidate_cap = max(candidate_cap, offset + limit)
 
+        mode_label = "phrase" if is_phrase else mode
         empty = {
             "total": 0, "limit": limit, "offset": offset, "rows": [],
-            "ranked": False, "mode": mode, "fields": cols, "query": query,
+            "ranked": False, "mode": mode_label, "fields": cols, "query": query,
         }
         if not query:
             empty["diagnostics"] = build_search_diagnostics(
-                mode_used=mode,
+                mode_used=mode_label,
                 fts_available=bool(self._fts_available),
                 query_terms=[],
                 corpus_size=None,
@@ -1061,6 +1064,10 @@ class DuckDbIndex:
                     f"LIMIT {int(candidate_cap)}"
                 )
                 rows = self._rows(conn, sql, params)
+
+            # Quoted whole-query: keep substring matching, surface mode=phrase.
+            if is_phrase:
+                used_mode = "phrase"
 
             ranked = used_mode == "fts"
 

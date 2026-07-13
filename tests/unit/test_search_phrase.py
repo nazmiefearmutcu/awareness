@@ -96,7 +96,7 @@ def phrase_index(tmp_path: Path) -> DuckDbIndex:
 
 def test_quoted_phrase_requires_exact_substring(phrase_index: DuckDbIndex) -> None:
     res = phrase_index.search('"machine learning"', mode="auto")
-    assert res["mode"] == "substring"
+    assert res["mode"] == "phrase"
     assert res["ranked"] is False
     assert res["query"] == "machine learning"
     ids = {r["doc_id"] for r in res["rows"]}
@@ -111,7 +111,7 @@ def test_quoted_phrase_early_branch_for_all_modes(
 ) -> None:
     """Phrase detection is an early branch for auto/fts/prefix/substring."""
     res = phrase_index.search('"machine learning"', mode=mode)
-    assert res["mode"] == "substring"
+    assert res["mode"] == "phrase"
     ids = {r["doc_id"] for r in res["rows"]}
     assert ids == {"doc-1"}
 
@@ -129,7 +129,7 @@ def test_unquoted_multiword_unchanged(phrase_index: DuckDbIndex) -> None:
 
 def test_unbalanced_quotes_do_not_force_phrase(phrase_index: DuckDbIndex) -> None:
     res = phrase_index.search('"machine learning', mode="auto")
-    assert res["mode"] != "substring" or res["query"] == '"machine learning'
+    assert res["mode"] not in ("substring", "phrase") or res["query"] == '"machine learning'
     # Must not treat as exact phrase of machine learning alone.
     # Query still has leading quote; may return zero or token-ish results.
     # Primary assertion: not silently rewriting to unquoted phrase mode.
@@ -157,7 +157,7 @@ def test_quoted_phrase_matches_body_text(tmp_path: Path) -> None:
     )
     try:
         res = idx.search('"machine learning"', mode="fts")
-        assert res["mode"] == "substring"
+        assert res["mode"] == "phrase"
         assert {r["doc_id"] for r in res["rows"]} == {"doc-1"}
     finally:
         idx.close()

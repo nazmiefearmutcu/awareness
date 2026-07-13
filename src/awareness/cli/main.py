@@ -2715,7 +2715,10 @@ def _resolve_search_window(start: str, end: str) -> tuple[datetime | None, datet
 
 @app.command(name="search")
 def search(
-    query: str = typer.Argument(..., help="Search query (BM25 ranked when the term is present; stem-prefix fallback otherwise)"),
+    query: str = typer.Argument(
+        ...,
+        help='Search query (BM25 when present; stem-prefix fallback). Wrap the whole query in double quotes for exact phrase match, e.g. "machine learning".',
+    ),
     start: str = typer.Option("", "--start", help="Start date range (empty = beginning of corpus)"),
     end: str = typer.Option("now", "--end", help="End date range"),
     domain: str = typer.Option("", "--domain", help="Filter by domain"),
@@ -2730,9 +2733,11 @@ def search(
 
     Matching is configurable. ``auto`` (the default) runs ranked full-text
     search and, only when it finds nothing, retries with stem-root prefix
-    matching — so ``finance`` still surfaces ``financial``. ``--fields``
-    narrows what gets matched; ``--max-results`` caps how much comes back.
-    Defaults come from ``config`` (search_default_mode / _fields / _limit /
+    matching — so ``finance`` still surfaces ``financial``. Wrap the whole
+    query in double quotes for an exact phrase match (e.g. ``"machine
+    learning"``); results report ``mode=phrase``. ``--fields`` narrows what
+    gets matched; ``--max-results`` caps how much comes back. Defaults come
+    from ``config`` (search_default_mode / _fields / _limit /
     search_max_results) and can be overridden per-call here.
     """
     state, _ = _bootstrap()
