@@ -310,18 +310,48 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
         logger.warning("sitemap_parse_failed", url=url, err=str(exc))
         return []
 
-    ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
     out: list[str] = []
     tag = etree.QName(root.tag).localname
     if tag == "sitemapindex":
         if depth <= 0:
             return out
-        for child in root.findall(f"{ns}sitemap/{ns}loc"):
-            loc = (child.text or "").strip()
-            if loc:
-                out.extend(await _read_sitemap(loc, user_agent, depth=depth - 1))
+        for loc in _sitemap_loc_texts(root, parent_local="sitemap"):
+            out.extend(await _read_sitemap(loc, user_agent, depth=depth - 1))
     else:
-        for child in root.findall(f"{ns}url/{ns}loc"):
+        out.extend(_sitemap_loc_texts(root, parent_local="url"))
+    return out
+
+
+def _sitemap_loc_texts(root: Any, *, parent_local: str) -> list[str]:
+    """Collect ``<loc>`` text under ``parent_local`` elements, any namespace.
+
+    Standard sitemaps use ``{http://www.sitemaps.org/schemas/sitemap/0.9}``,
+    but many publishers emit un-namespaced or default-namespaced XML. Matching
+    on local-name keeps discovery working for both.
+    """
+    ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+    # Fast path: standard sitemap namespace.
+    found = [
+        (el.text or "").strip()
+        for el in root.findall(f"{ns}{parent_local}/{ns}loc")
+        if (el.text or "").strip()
+    ]
+    if found:
+        return found
+    # Namespace-agnostic fallback (no-ns, alternate default xmlns, etc.).
+    out: list[str] = []
+    for parent in root.iter():
+        try:
+            if etree.QName(parent.tag).localname != parent_local:
+                continue
+        except (ValueError, TypeError):
+            continue
+        for child in parent:
+            try:
+                if etree.QName(child.tag).localname != "loc":
+                    continue
+            except (ValueError, TypeError):
+                continue
             loc = (child.text or "").strip()
             if loc:
                 out.append(loc)

@@ -77,6 +77,20 @@ SITEMAP_OK = b"""<?xml version="1.0" encoding="UTF-8"?>
 </urlset>
 """
 
+# Many publishers omit the sitemap xmlns; local-name fallback must still work.
+SITEMAP_NO_NS = b"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset>
+  <url><loc>https://example.com/no-ns-a</loc></url>
+  <url><loc>https://example.com/no-ns-b</loc></url>
+</urlset>
+"""
+
+SITEMAP_INDEX_NO_NS = b"""<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex>
+  <sitemap><loc>https://example.com/child-sitemap.xml</loc></sitemap>
+</sitemapindex>
+"""
+
 
 @pytest.mark.asyncio
 async def test_read_feed_retries_on_503(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -135,6 +149,35 @@ async def test_read_sitemap_retries_on_503(monkeypatch: pytest.MonkeyPatch) -> N
     urls = await _read_sitemap("https://example.com/sitemap.xml", "TestBot/1.0")
     assert urls == ["https://example.com/page-a", "https://example.com/page-b"]
     assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_read_sitemap_without_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un-namespaced urlset still yields loc URLs (publisher quality gap)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=SITEMAP_NO_NS)
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+    urls = await _read_sitemap("https://example.com/sitemap-nons.xml", "TestBot/1.0")
+    assert urls == ["https://example.com/no-ns-a", "https://example.com/no-ns-b"]
+
+
+@pytest.mark.asyncio
+async def test_read_sitemap_index_without_namespace_follows_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un-namespaced sitemapindex still follows one level of nested sitemaps."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = str(request.url.path)
+        if path.endswith("child-sitemap.xml"):
+            return httpx.Response(200, content=SITEMAP_NO_NS)
+        return httpx.Response(200, content=SITEMAP_INDEX_NO_NS)
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+    urls = await _read_sitemap("https://example.com/sitemap-index.xml", "TestBot/1.0")
+    assert urls == ["https://example.com/no-ns-a", "https://example.com/no-ns-b"]
 
 
 @pytest.mark.asyncio
