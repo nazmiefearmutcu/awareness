@@ -74,6 +74,7 @@ _RERANK_TITLE_EXACT_BOOST = 0.4  # We: title tokens == query terms multiplies by
 _RERANK_URL_BOOST = 0.25         # Wu: full url/domain term coverage multiplies by 1+Wu
 _RERANK_URL_PHRASE_BOOST = 0.2   # Wup: ordered multi-term URL-slug phrase multiplies by 1+Wup
 _RERANK_URL_EXACT_BOOST = 0.3    # Wue: last path-slug tokens == query terms multiplies by 1+Wue
+_RERANK_DOMAIN_NAV_BOOST = 0.3   # Wd: domain-label term coverage multiplies by 1+Wd
 _RERANK_LEAD_HIT_BOOST = 0.15    # Wh: bag-of-words lead term coverage multiplies by 1+Wh
 _RERANK_LEAD_PHRASE_BOOST = 0.2   # Wl: ordered multi-term phrase in lead text multiplies by 1+Wl
 _RERANK_LEAD_CHARS = 280         # news lede window (chars) for lead hit/phrase credit
@@ -1833,6 +1834,40 @@ def _url_exact_frac(url: str, _domain: str, terms: list[str]) -> float:
     return 1.0 if tokens == cleaned else 0.0
 
 
+def _domain_labels(domain: str) -> set[str]:
+    """Alphanumeric host labels (len≥2) from a domain string.
+
+    ``news.bbc.co.uk`` → ``{news, bbc, co, uk}``. Hyphenated brands split so
+    ``the-verge.com`` → ``{the, verge, com}``. Used for navigational matching
+    where the query is a publisher name rather than an article topic.
+    """
+    import re
+
+    return {t for t in re.findall(r"[A-Za-z0-9]+", (domain or "").lower()) if len(t) >= 2}
+
+
+def _domain_nav_frac(domain: str, terms: list[str]) -> float:
+    """Fraction of query terms that equal a domain host label ``[0, 1]``.
+
+    Navigational queries (``reuters``, ``bbc news``) should promote captures
+    whose publisher domain carries those labels over body-only BM25 matches
+    on unrelated sites. Label match is *token equality* (not substring), so
+    ``bit`` does not credit ``bitcoinmagazine.com``.
+
+    * ``1.0`` — every query term is a domain label
+    * ``0.5`` — half the terms match (etc.)
+    * ``0.0`` — empty terms/domain, or zero label hits
+    """
+    cleaned = [t.lower() for t in terms if t]
+    if not cleaned:
+        return 0.0
+    labels = _domain_labels(domain)
+    if not labels:
+        return 0.0
+    hits = sum(1 for t in cleaned if t in labels)
+    return hits / len(cleaned)
+
+
 def _lead_hit_frac(
     text: str,
     terms: list[str],
@@ -1957,6 +1992,7 @@ def _rerank(
     url_boost: float = _RERANK_URL_BOOST,
     url_phrase_boost: float = _RERANK_URL_PHRASE_BOOST,
     url_exact_boost: float = _RERANK_URL_EXACT_BOOST,
+    domain_nav_boost: float = _RERANK_DOMAIN_NAV_BOOST,
     lead_hit_boost: float = _RERANK_LEAD_HIT_BOOST,
     lead_phrase_boost: float = _RERANK_LEAD_PHRASE_BOOST,
     lead_chars: int = _RERANK_LEAD_CHARS,
@@ -1968,9 +2004,10 @@ def _rerank(
 ) -> list[dict[str, Any]]:
     """Re-rank BM25 candidates (already in raw-score DESC order) by multiplying
     the min-max-normalized BM25 score with independent title / title-phrase /
-    title-exact / url / url-phrase / url-exact / lead-hit / lead-phrase /
-    length / recency factors. Returns a NEW ordered list; input row dicts are
-    not mutated. Stable: equal final scores keep the incoming BM25 order.
+    title-exact / url / url-phrase / url-exact / domain-nav / lead-hit /
+    lead-phrase / length / recency factors. Returns a NEW ordered list; input
+    row dicts are not mutated. Stable: equal final scores keep the incoming
+    BM25 order.
 
     Each candidate dict carries ``score`` (raw BM25), ``title``, ``text``,
     optional ``url`` / ``canonical_url`` / ``domain``, and a timestamp
@@ -2011,6 +2048,7 @@ def _rerank(
         url_exact_f = 1.0 + url_exact_boost * _url_exact_frac(
             str(url_blob), str(domain_blob), terms
         )
+        domain_nav_f = 1.0 + domain_nav_boost * _domain_nav_frac(str(domain_blob), terms)
         lead_hit_f = 1.0 + lead_hit_boost * _lead_hit_frac(
             str(text), terms, lead_chars=lead_chars
         )
@@ -2033,6 +2071,7 @@ def _rerank(
             * url_f
             * url_phrase_f
             * url_exact_f
+            * domain_nav_f
             * lead_hit_f
             * lead_f
             * len_f

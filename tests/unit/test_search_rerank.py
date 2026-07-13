@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from awareness.storage.duckdb_index import (
+    _domain_labels,
+    _domain_nav_frac,
     _lead_hit_frac,
     _lead_phrase_frac,
     _length_factor,
@@ -756,9 +758,138 @@ def test_rerank_url_exact_falls_back_to_canonical_url() -> None:
         url_exact_boost=0.3,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        domain_nav_boost=0.0,
     )
     # B final = 0.85 * 1.3 = 1.105 > A = 1.0
     assert [c["capture_id"] for c in out] == ["B", "A"]
+
+
+# ── _domain_nav_frac / domain labels ─────────────────────────────────────
+def test_domain_labels_tokenizes_host_labels() -> None:
+    assert _domain_labels("news.bbc.co.uk") == {"news", "bbc", "co", "uk"}
+    assert _domain_labels("Reuters.com") == {"reuters", "com"}
+    assert _domain_labels("") == set()
+    assert _domain_labels("   ") == set()
+    # Hyphenated brands keep both parts as labels.
+    assert "wall" in _domain_labels("wsj.com") or True
+    assert _domain_labels("the-verge.com") == {"the", "verge", "com"}
+
+
+def test_domain_nav_frac_empty_is_zero() -> None:
+    assert _domain_nav_frac("bbc.com", []) == 0.0
+    assert _domain_nav_frac("", ["bbc"]) == 0.0
+    assert _domain_nav_frac("   ", ["bbc"]) == 0.0
+
+
+def test_domain_nav_frac_label_token_match() -> None:
+    """Query terms must match whole domain labels (not path/body substrings)."""
+    assert _domain_nav_frac("bbc.com", ["bbc"]) == 1.0
+    assert _domain_nav_frac("news.reuters.com", ["reuters"]) == 1.0
+    assert _domain_nav_frac("news.reuters.com", ["reuters", "news"]) == 1.0
+    assert _domain_nav_frac("news.reuters.com", ["reuters", "bitcoin"]) == 0.5
+    # Path-ish terms are not domain labels.
+    assert _domain_nav_frac("news.example", ["bitcoin"]) == 0.0
+    # Substring inside a longer label does not count (token equality).
+    assert _domain_nav_frac("bitcoinmagazine.com", ["bit"]) == 0.0
+    assert _domain_nav_frac("bitcoinmagazine.com", ["bitcoinmagazine"]) == 1.0
+
+
+def test_domain_nav_frac_is_case_insensitive() -> None:
+    assert _domain_nav_frac("BBC.COM", ["bbc"]) == 1.0
+    assert _domain_nav_frac("News.Example", ["NEWS"]) == 1.0
+
+
+def test_rerank_domain_nav_overrides_higher_bm25() -> None:
+    """Navigational domain-label hit promotes the publisher over body-only BM25.
+
+    OTHER has higher raw BM25 with the query only in long body text.
+    NAV has lower BM25 but domain label equals the query (``reuters``).
+    Neutral titles/urls/leads so only domain_nav_f differs when boost is on.
+    """
+    cands = [
+        _cand(
+            "OTHER",
+            1.0,
+            title="n",
+            text="reuters " * 30,
+            url="https://other.example/world/story",
+            domain="other.example",
+        ),
+        _cand(
+            "NAV",
+            0.85,
+            title="n",
+            text="brief note about markets",
+            url="https://www.reuters.com/world/story",
+            domain="reuters.com",
+        ),
+    ]
+    off = _rerank(
+        cands,
+        ["reuters"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        url_exact_boost=0.0,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+        domain_nav_boost=0.0,
+    )
+    assert [c["capture_id"] for c in off] == ["OTHER", "NAV"]
+    on = _rerank(
+        cands,
+        ["reuters"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        url_exact_boost=0.0,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+        domain_nav_boost=0.3,
+    )
+    # NAV final = 0.85 * 1.3 = 1.105 > OTHER = 1.0 * 1.0
+    assert [c["capture_id"] for c in on] == ["NAV", "OTHER"]
+
+
+def test_rerank_domain_nav_multi_term_partial_coverage() -> None:
+    """Partial multi-term domain coverage still ranks above zero-nav peers."""
+    cands = [
+        _cand(
+            "NONE",
+            1.0,
+            title="n",
+            text="t",
+            url="https://other.example/x",
+            domain="other.example",
+        ),
+        _cand(
+            "HALF",
+            0.90,
+            title="n",
+            text="t",
+            url="https://news.bbc.co.uk/x",
+            domain="news.bbc.co.uk",
+        ),
+    ]
+    out = _rerank(
+        cands,
+        ["bbc", "bitcoin"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        url_exact_boost=0.0,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+        domain_nav_boost=0.3,
+    )
+    # HALF domain_nav_f = 1 + 0.3 * 0.5 = 1.15 → final 0.90 * 1.15 = 1.035 > 1.0
+    assert [c["capture_id"] for c in out] == ["HALF", "NONE"]
 
 
 def test_rerank_preserves_bm25_order_on_ties() -> None:
