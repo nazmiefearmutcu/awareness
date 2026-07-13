@@ -1998,6 +1998,37 @@ def dlq_replay(
     )
 
 
+@dlq_app.command("purge")
+def dlq_purge(
+    dlq_id: int = typer.Argument(..., help="DLQ row id (from `dlq list`)"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable JSON"),
+) -> None:
+    """Remove a DLQ entry without re-arming the task.
+
+    Use after manually resolving a failure (or when abandoning the task). The
+    task row stays ``DEAD_LETTERED`` (or whatever status it has); only the
+    queue entry is deleted so operators can keep the DLQ clean.
+    """
+    state, _ = _bootstrap()
+    result = state.purge_dlq(dlq_id)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        if not result.get("ok"):
+            raise typer.Exit(code=1)
+        return
+    if not result.get("ok"):
+        reason = result.get("reason") or "unknown"
+        rprint(f"[bold red]Purge failed[/bold red]: {reason} (dlq_id={dlq_id}).")
+        if reason == "dlq_missing":
+            rprint("[dim]Use `awareness dlq list` to see current ids.[/dim]")
+        raise typer.Exit(code=1)
+    rprint(
+        f"[bold green]Purged[/bold green] dlq #{result.get('dlq_id')} "
+        f"(task [cyan]{result.get('task_id') or '—'}[/cyan], "
+        f"job {result.get('job_id') or '—'}) — task not re-armed."
+    )
+
+
 # ── inspect ──────────────────────────────────────────────────────────────
 @app.command()
 def inspect(

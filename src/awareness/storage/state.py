@@ -1328,6 +1328,35 @@ class StateDB:
                 "reset_attempts": bool(reset_attempts),
             }
 
+    def purge_dlq(self, dlq_id: int) -> dict[str, Any]:
+        """Drop a DLQ row without re-arming the task.
+
+        Use when an operator has already handled the failure (or decided to
+        abandon the task) and only wants to clear the dead-letter queue entry.
+        Task status and job ``tasks_dead_lettered`` counters are left untouched.
+
+        Returns::
+
+            {"ok": True, "dlq_id": int, "task_id": str|None, "job_id": str|None,
+             "error": str}
+            {"ok": False, "reason": "dlq_missing", "dlq_id": int}
+        """
+        dlq_id = int(dlq_id)
+        with self.session() as s:
+            dlq = s.get(DLQRow, dlq_id)
+            if dlq is None:
+                return {"ok": False, "reason": "dlq_missing", "dlq_id": dlq_id}
+            result = {
+                "ok": True,
+                "dlq_id": dlq_id,
+                "task_id": dlq.task_id,
+                "job_id": dlq.job_id,
+                "error": dlq.error or "",
+            }
+            s.delete(dlq)
+            s.commit()
+            return result
+
     # ── tail state ───────────────────────────────────────────────────────
     @staticmethod
     def _pid_alive(pid: int | None) -> bool:
