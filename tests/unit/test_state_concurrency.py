@@ -12,4 +12,4 @@ def test_sqlite_uses_wal_and_busy_timeout(tmp_path) -> None:
         journal_mode = s.execute(text("PRAGMA journal_mode")).scalar()
         busy_timeout = s.execute(text("PRAGMA busy_timeout")).scalar()
     assert str(journal_mode).lower() == "wal"
-    assert int(busy_timeout) == 5000
+    assert int(busy_timeout) == 30000

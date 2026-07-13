@@ -13,7 +13,7 @@ import json
 import os
 import threading
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
@@ -168,6 +168,16 @@ _NEAR_DUP_SEG_MASK = (1 << NEAR_DUP_SEG_BITS) - 1
 # Per-band candidate cap. Higher than the 64-bit era's 256 so moderate-scale
 # corpora don't silently truncate true near-dup candidates out of a hot band.
 NEAR_DUP_CANDIDATE_LIMIT = 1024
+
+# Exponential backoff for failed-task retries: base * 2**(attempts-1), capped.
+RETRY_BACKOFF_BASE_SECONDS = 30
+RETRY_BACKOFF_CAP_SECONDS = 3600
+
+
+def _retry_delay_seconds(attempts: int) -> float:
+    exp = max(0, attempts - 1)
+    return float(min(RETRY_BACKOFF_BASE_SECONDS * (2**exp), RETRY_BACKOFF_CAP_SECONDS))
+
 
 
 class ManifestRow(Base):
@@ -568,28 +578,22 @@ class StateDB:
 
     def _do_claim_pending_tasks(self, job_id: str, limit: int) -> list[TaskState]:
         with self.session() as s:
-            stmt = (
-                select(TaskRow)
-                .where(TaskRow.job_id == job_id, TaskRow.status == TaskStatus.PENDING.value)
+            now = _utcnow()
+            # Candidate selection. For non-SQLite, skip-locked keeps concurrent
+            # claimers from racing on the same pending rows.
+            id_stmt = (
+                select(TaskRow.task_id)
+                .where(
+                    TaskRow.job_id == job_id,
+                    TaskRow.status == TaskStatus.PENDING.value,
+                    (TaskRow.next_attempt_at.is_(None)) | (TaskRow.next_attempt_at <= now),
+                )
                 .order_by(TaskRow.created_at)
+                .limit(limit)
             )
             if self._engine.dialect.name != "sqlite":
-                stmt = stmt.with_for_update(skip_locked=True)
-            stmt = stmt.limit(limit)
-            rows = list(s.scalars(stmt))
-            now = _utcnow()
-            candidates = list(
-                s.scalars(
-                    select(TaskRow.task_id)
-                    .where(
-                        TaskRow.job_id == job_id,
-                        TaskRow.status == TaskStatus.PENDING.value,
-                        (TaskRow.next_attempt_at.is_(None)) | (TaskRow.next_attempt_at <= now),
-                    )
-                    .order_by(TaskRow.created_at)
-                    .limit(limit)
-                )
-            )
+                id_stmt = id_stmt.with_for_update(skip_locked=True)
+            candidates = list(s.scalars(id_stmt))
             if not candidates:
                 return []
             claimed_ids = list(
@@ -610,7 +614,13 @@ class StateDB:
             )
             s.commit()
             rows = (
-                list(s.scalars(select(TaskRow).where(TaskRow.task_id.in_(claimed_ids))))
+                list(
+                    s.scalars(
+                        select(TaskRow)
+                        .where(TaskRow.task_id.in_(claimed_ids))
+                        .execution_options(populate_existing=True)
+                    )
+                )
                 if claimed_ids
                 else []
             )
