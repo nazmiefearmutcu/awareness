@@ -33,16 +33,33 @@
 | C1-T13 | search | Inclusive end-of-day windows | ✅ |
 | C1-T14 | chore | Version 0.2.0 + architecture banding docs | ✅ |
 
-## Next backlog (Cycle 2)
+## Completed (Cycle 2)
 
 | ID | Area | Task | Status |
 |----|------|------|--------|
-| C2-T1 | dedup | Optional skip-store for tight NEAR_DUP (Hamming ≤12) | pending |
-| C2-T2 | search | SPA mode/fields controls + real mode label | pending |
-| C2-T3 | systems | Long-lived DuckDB search connection pool | pending |
-| C2-T4 | systems | Incremental FTS (no full rebuild) | pending |
-| C2-T5 | dedup | Union-find cluster resolve for near-dups | pending |
-| C2-T6 | bug | Broader non-slow unit suite green | pending |
+| C2-T1 | dedup | Optional skip-store for tight NEAR_DUP (Hamming ≤12) | ✅ |
+| C2-T2 | search | SPA mode/fields controls + real mode label | ✅ |
+| C2-T3 | systems | Long-lived DuckDB search connection reuse (lock) | ✅ |
+| C2-T6 | bug | Broader non-slow unit suite green | ✅ |
+| C2-T7 | bug | Restore LID `detect_langs` + confidence gate | ✅ |
+| C2-T8 | search | NULL-fill missing staging columns in captures view | ✅ |
+| C2-T9 | config | `cc_wet_max_shards_per_crawl` so WET adapter registers | ✅ |
+| C2-T10 | state | Import `timedelta` for fail_task and reaper paths | ✅ |
+| C2-T11 | config | Align `user_agent` default schema vs Settings | ✅ |
+| C2-T12 | test | Skip Redis lock tests when Redis unavailable | ✅ |
+| C2-T13 | obs | Metrics for URL fetch skips and tight near-dup drops | ✅ |
+| C2-T14 | ui | Surface empty-search diagnostics hints in Captures | ✅ |
+| C2-T15 | search | Quoted queries match exact phrases | ✅ |
+| C2-T16 | ui | Highlight last search terms in capture reader | ✅ |
+| C2-T17 | api | Reset DuckDbIndex singleton after path-related settings | ✅ |
+| C2-T18 | search | Label quoted matches as `mode=phrase` | ✅ |
+
+## Next backlog (Cycle 3)
+
+| ID | Area | Task | Status |
+|----|------|------|--------|
+| C3-T1 | systems | Incremental FTS (no full rebuild) | pending |
+| C3-T2 | dedup | Union-find cluster resolve for near-dups | pending |
 
 ## Rules
 

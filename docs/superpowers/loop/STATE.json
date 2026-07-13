@@ -1,10 +1,11 @@
 {
-  "iteration": 2,
+  "iteration": 3,
   "phase": "features",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "current_task": "C2-T1",
-  "completed_count": 15,
+  "commits_ahead": 38,
+  "unit_suite": "356+ passed, 1 skipped (datasets), 0 failed",
+  "integration_suite": "2/2 passed",
   "stop": false,
-  "notes": "Cycle 1 complete. Search + dedup user priorities addressed. Continuing into Cycle 2."
+  "notes": "Cycle 2 complete (C2-T1/T2/T3/T6 + bugfixes/search/UI/obs). C3 backlog: incremental FTS, union-find near-dups. Continuous loop active."
 }
