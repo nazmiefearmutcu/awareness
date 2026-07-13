@@ -315,6 +315,37 @@ _FLIPBOARD_REDIRECT_PATH_PREFIXES: tuple[str, ...] = (
     "/share",
 )
 
+# Buffer compose / add share hosts that embed origin in ``url=``.
+_BUFFER_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "buffer.com",
+        "bufferapp.com",
+        "publish.buffer.com",
+    }
+)
+_BUFFER_REDIRECT_PATHS: frozenset[str] = frozenset(
+    {
+        "/add",
+        "/compose",
+    }
+)
+
+# Medium external-link interstitial hosts (``medium.com/m/global/external-link?url=…``).
+_MEDIUM_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "medium.com",
+        "link.medium.com",
+    }
+)
+_MEDIUM_REDIRECT_PATHS: frozenset[str] = frozenset(
+    {
+        "/m/global/external-link",
+        "/global/external-link",
+        "/external-link",
+        "/redirect",
+    }
+)
+
 # Suffix for Microsoft Outlook Safe Links rewrite hosts
 # (``nam01.safelinks.protection.outlook.com``, ``*.safelinks.protection.outlook.com``).
 _OUTLOOK_SAFELINKS_SUFFIX = "safelinks.protection.outlook.com"
@@ -1151,6 +1182,65 @@ def _unwrap_flipboard_redirect(netloc: str, path: str, query: str) -> str | None
     )
 
 
+def _unwrap_buffer_redirect(netloc: str, path: str, query: str) -> str | None:
+    """Extract the origin URL from a Buffer compose / add ``url=`` share wrapper.
+
+    Forms:
+
+    * ``https://buffer.com/add?url=https%3A%2F%2Fexample.com%2Fstory&text=…``
+    * ``https://bufferapp.com/add?url=http%3A%2F%2Fm.example.com%2Fx``
+    * ``https://publish.buffer.com/compose?url=https%3A%2F%2Fexample.com%2Fstory``
+
+    Only ``/add`` and ``/compose`` paths are rewritten so ordinary Buffer app
+    pages stay on Buffer identity. The origin lives in ``url=``.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _BUFFER_REDIRECT_HOSTS:
+        return None
+    p = (path or "").rstrip("/") or "/"
+    if p.lower() not in _BUFFER_REDIRECT_PATHS:
+        return None
+    origin = _query_param(query, "url")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(
+        origin, refuse_hosts=_BUFFER_REDIRECT_HOSTS
+    )
+
+
+def _unwrap_medium_redirect(netloc: str, path: str, query: str) -> str | None:
+    """Extract the origin URL from a Medium external-link interstitial.
+
+    Forms:
+
+    * ``https://medium.com/m/global/external-link?url=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://link.medium.com/redirect?url=http%3A%2F%2Fm.example.com%2Fx``
+    * ``https://link.medium.com/external-link?url=https%3A%2F%2Fexample.com%2Fstory``
+
+    Only known external-link / redirect paths are rewritten so ordinary Medium
+    posts (``/@author/slug``) stay on Medium identity. The origin lives in
+    ``url=`` (defensive ``sourceLink=`` alias also accepted).
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _MEDIUM_REDIRECT_HOSTS:
+        return None
+    p = (path or "").rstrip("/") or "/"
+    if p.lower() not in _MEDIUM_REDIRECT_PATHS:
+        return None
+    origin = _query_param(query, "url", "sourceLink")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(
+        origin, refuse_hosts=_MEDIUM_REDIRECT_HOSTS
+    )
+
+
 def _normalize_path(path: str) -> str:
     """Normalize path for identity: empty → ``/``; strip AMP/print/index noise + slash."""
     if not path:
@@ -1287,6 +1377,8 @@ def canonical_url(url: str | None) -> str | None:
       - Pocket ``getpocket.com/redirect?url=…`` save wrappers rewritten to origin
       - Pinterest pin-create / offsite ``url=`` share wrappers rewritten to origin
       - Flipboard share/bookmarklet ``url=`` wrappers rewritten to origin
+      - Buffer compose/add ``url=`` share wrappers rewritten to origin
+      - Medium external-link / redirect ``url=`` interstitials rewritten to origin
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
@@ -1335,7 +1427,8 @@ def canonical_url(url: str | None) -> str | None:
     # (Translate, Facebook, Google /url, Outlook Safe Links, DuckDuckGo /l,
     # Instagram, LinkedIn safety/redir, Reddit outbound, YouTube /redirect,
     # Slack redir, WhatsApp l.wl.co, Telegram share/iv, href.li, Tumblr
-    # redirect, Pocket redirect, Pinterest pin-create/offsite, Flipboard share).
+    # redirect, Pocket redirect, Pinterest pin-create/offsite, Flipboard share,
+    # Buffer compose/add, Medium external-link).
     unwrapped = _unwrap_amp_cdn(netloc, path)
     if unwrapped is not None:
         netloc, path = unwrapped
@@ -1370,6 +1463,8 @@ def canonical_url(url: str | None) -> str | None:
                     or _unwrap_pocket_redirect(netloc, path, parts.query)
                     or _unwrap_pinterest_redirect(netloc, path, parts.query)
                     or _unwrap_flipboard_redirect(netloc, path, parts.query)
+                    or _unwrap_buffer_redirect(netloc, path, parts.query)
+                    or _unwrap_medium_redirect(netloc, path, parts.query)
                 )
                 if embedded is not None:
                     try:

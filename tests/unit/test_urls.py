@@ -1180,6 +1180,95 @@ def test_canonical_url_unwraps_flipboard_redirect() -> None:
     assert "flipboard.com" in nested
 
 
+def test_canonical_url_unwraps_buffer_redirect() -> None:
+    """Buffer compose/add share wrappers collapse to the origin article URL."""
+    assert (
+        canonical_url(
+            "https://buffer.com/add?url="
+            "https%3A%2F%2Fexample.com%2Fstory&text=Hello"
+        )
+        == "https://example.com/story"
+    )
+    assert (
+        canonical_url(
+            "https://bufferapp.com/add?url="
+            "http%3A%2F%2Fm.example.com%2Fx"
+        )
+        == "https://example.com/x"
+    )
+    assert (
+        canonical_url(
+            "https://publish.buffer.com/compose?url="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dbuffer"
+            "&text=share"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing url= → no unwrap.
+    bare = canonical_url("https://buffer.com/add?text=x")
+    assert bare is not None
+    assert "buffer.com" in bare
+    # Ordinary Buffer app paths are not redirectors.
+    app = canonical_url("https://buffer.com/app/profile")
+    assert app is not None
+    assert "buffer.com" in app
+    # Nested Buffer wrapper must not loop.
+    nested = canonical_url(
+        "https://buffer.com/add?url="
+        "https%3A%2F%2Fbufferapp.com%2Fadd%3Furl%3Dx"
+    )
+    assert nested is not None
+    assert "buffer" in nested
+
+
+def test_canonical_url_unwraps_medium_redirect() -> None:
+    """Medium external-link interstitials collapse to the origin article URL."""
+    assert (
+        canonical_url(
+            "https://medium.com/m/global/external-link?url="
+            "https%3A%2F%2Fexample.com%2Fstory"
+        )
+        == "https://example.com/story"
+    )
+    assert (
+        canonical_url(
+            "https://link.medium.com/redirect?url="
+            "http%3A%2F%2Fm.example.com%2Fx"
+        )
+        == "https://example.com/x"
+    )
+    assert (
+        canonical_url(
+            "https://link.medium.com/external-link?url="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dmedium"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Defensive sourceLink= alias.
+    assert (
+        canonical_url(
+            "https://medium.com/m/global/external-link?sourceLink="
+            "https%3A%2F%2Fexample.com%2Falt"
+        )
+        == "https://example.com/alt"
+    )
+    # Missing url= → no unwrap.
+    bare = canonical_url("https://medium.com/m/global/external-link?ref=x")
+    assert bare is not None
+    assert "medium.com" in bare
+    # Ordinary Medium posts are not redirectors.
+    post = canonical_url("https://medium.com/@author/my-post-title-abc123")
+    assert post is not None
+    assert "medium.com" in post
+    # Nested Medium wrapper must not loop.
+    nested = canonical_url(
+        "https://medium.com/m/global/external-link?url="
+        "https%3A%2F%2Flink.medium.com%2Fredirect%3Furl%3Dx"
+    )
+    assert nested is not None
+    assert "medium.com" in nested
+
+
 def test_canonical_url_strips_search_and_cms_noise() -> None:
     """Google/MSN search wrappers and CMS feed/trackback paths are identity-noise."""
     assert (
