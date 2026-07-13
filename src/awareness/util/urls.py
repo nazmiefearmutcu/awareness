@@ -62,6 +62,19 @@ _TRACKING_PARAMS: frozenset[str] = frozenset(
         "amp_gsa",
         "usqp",
         "output",  # often output=amp
+        # Share / social / newsletter click wrappers (YouTube, Twitter, etc.).
+        "si",  # YouTube share identity
+        "feature",  # often feature=share on YT / CMS
+        "via",  # Twitter via=
+        "sref",
+        "sr_share",
+        "cmpid",
+        "s_cid",
+        "xtor",
+        # Print-view wrappers (value-gated below when ambiguous).
+        "print",
+        "printable",
+        "printview",
     }
 )
 
@@ -78,6 +91,24 @@ _AMP_PATH_SUFFIXES: tuple[str, ...] = (
     "/index.amp.html",
 )
 
+# Path suffixes that mark print-view mirrors of the same article.
+_PRINT_PATH_SUFFIXES: tuple[str, ...] = (
+    "/print",
+    "/print.html",
+    "/print.htm",
+)
+
+# Default document names that are identity-noise for CMS article paths.
+_INDEX_BASENAMES: tuple[str, ...] = (
+    "/index.html",
+    "/index.htm",
+    "/index.php",
+    "/index.aspx",
+    "/default.html",
+    "/default.htm",
+    "/default.aspx",
+)
+
 
 _TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
 
@@ -88,13 +119,37 @@ def _is_tracking_param(key: str) -> bool:
 
 
 def _is_noise_query_pair(key: str, value: str) -> bool:
-    """True for tracking keys or AMP-only query values (``output=amp``)."""
-    if _is_tracking_param(key):
-        # ``output`` is only noise when it marks AMP; keep other output= values.
-        if key.lower() == "output":
-            return value.strip().lower() in ("amp", "amphtml", "htmlamp")
-        return True
-    return False
+    """True for tracking keys or AMP/print-only query values.
+
+    Value-gated keys keep non-wrapper uses of the same name (e.g. ``output=json``,
+    ``feature=embed`` when it is not a pure share/print flag is still stripped
+    for ``feature`` because CMS share wrappers dominate in news crawls).
+    """
+    if not _is_tracking_param(key):
+        # ``view=print`` / ``display=print`` appear without being in the key set.
+        kl = key.lower()
+        if kl in ("view", "display", "mode", "format"):
+            return value.strip().lower() in (
+                "print",
+                "printable",
+                "printview",
+                "amp",
+                "amphtml",
+            )
+        return False
+    kl = key.lower()
+    # ``output`` is only noise when it marks AMP/print; keep other values.
+    if kl == "output":
+        return value.strip().lower() in (
+            "amp",
+            "amphtml",
+            "htmlamp",
+            "print",
+            "printable",
+        )
+    # Boolean-ish print flags: print=1 / printable=true — always strip the key
+    # when listed in _TRACKING_PARAMS (print / printable / printview).
+    return True
 
 
 def _strip_alias_host(netloc: str) -> str:
@@ -127,11 +182,11 @@ _strip_www_host = _strip_alias_host
 
 
 def _normalize_path(path: str) -> str:
-    """Normalize path for identity: empty → ``/``; strip AMP suffixes + trailing slash."""
+    """Normalize path for identity: empty → ``/``; strip AMP/print/index noise + slash."""
     if not path:
         return "/"
-    # Lowercase only for AMP suffix detection; rebuild with original casing
-    # collapsed via the trailing-slash rule. AMP markers are ASCII.
+    # Lowercase only for suffix detection; rebuild with original casing
+    # collapsed via the trailing-slash rule. Markers are ASCII.
     lower = path.lower()
     for suffix in _AMP_PATH_SUFFIXES:
         if lower.endswith(suffix) and len(path) > len(suffix):
@@ -141,6 +196,31 @@ def _normalize_path(path: str) -> str:
     # Leading ``/amp/`` segment (``/amp/world/story`` → ``/world/story``).
     if lower.startswith("/amp/") and len(path) > 5:
         path = path[4:]  # drop leading "/amp"
+        lower = path.lower()
+    # Print-view path mirrors (``/world/story/print`` → ``/world/story``).
+    # Also handle trailing slash forms (``/print/`` already in suffix set).
+    for suffix in _PRINT_PATH_SUFFIXES:
+        s = suffix.rstrip("/")
+        if not s:
+            continue
+        if lower.endswith(s) and len(path) > len(s):
+            path = path[: -len(s)]
+            lower = path.lower()
+            break
+        if lower.endswith(s + "/") and len(path) > len(s) + 1:
+            path = path[: -(len(s) + 1)]
+            lower = path.lower()
+            break
+    # CMS default document names: ``/world/story/index.html`` → ``/world/story``
+    # and ``/index.html`` → ``/``. Basename always starts with ``/`` so
+    # mid-segment names like ``/myindex.html`` are never stripped.
+    for basename in _INDEX_BASENAMES:
+        if lower.endswith(basename):
+            path = path[: -len(basename)] if len(path) > len(basename) else "/"
+            if not path:
+                path = "/"
+            lower = path.lower()
+            break
     # Keep bare root as ``/``; collapse ``/foo/`` → ``/foo`` (and multi-segment).
     if not path:
         return "/"
@@ -158,8 +238,10 @@ def canonical_url(url: str | None) -> str | None:
       - default ports dropped
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
+      - print-view path suffixes stripped (``/print``, ``/print.html``)
+      - CMS default basenames stripped (``/index.html``, ``/index.php``, …)
       - path trailing slash normalized (``/`` kept; ``/foo/`` → ``/foo``)
-      - tracking / AMP query parameters stripped (incl. any ``utm_*``)
+      - tracking / AMP / print / share query parameters stripped (incl. ``utm_*``)
       - remaining query keys sorted
       - fragment dropped
 

@@ -133,6 +133,74 @@ def test_canonical_url_www_and_trailing_slash_compose() -> None:
     assert canonicals == {"https://reuters.com/world/article-9"}
 
 
+def test_canonical_url_strips_print_path_and_query() -> None:
+    """Print-view mirrors collapse onto the non-print article path."""
+    assert (
+        canonical_url("https://news.example/world/story/print")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/print.html")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story?print=1&id=9")
+        == "https://news.example/world/story?id=9"
+    )
+    assert (
+        canonical_url("https://news.example/world/story?view=print&id=9")
+        == "https://news.example/world/story?id=9"
+    )
+    assert (
+        canonical_url("https://news.example/world/story?output=print&id=9")
+        == "https://news.example/world/story?id=9"
+    )
+    # Non-print view= values must survive.
+    assert (
+        canonical_url("https://news.example/world/story?view=desktop&id=9")
+        == "https://news.example/world/story?id=9&view=desktop"
+    )
+
+
+def test_canonical_url_strips_share_trackers() -> None:
+    """YouTube/Twitter/share wrappers must not create a second fetch-gate key."""
+    raw = (
+        "https://news.example/clip?v=abc"
+        "&si=sharetoken&feature=share&via=someone&xtor=RSS-1"
+    )
+    out = canonical_url(raw)
+    assert out == "https://news.example/clip?v=abc"
+
+
+def test_canonical_url_strips_index_basenames() -> None:
+    """CMS default documents are identity-noise for the same article."""
+    assert (
+        canonical_url("https://news.example/world/story/index.html")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/index.php")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/default.aspx")
+        == "https://news.example/world/story"
+    )
+    # Bare site root index collapses to ``/``.
+    assert canonical_url("https://news.example/index.html") == "https://news.example/"
+
+
+def test_canonical_url_print_share_index_compose() -> None:
+    """Print path + index basename + share trackers collapse with host aliases."""
+    variants = [
+        "https://www.news.example/world/story/index.html",
+        "https://m.news.example/world/story/print?print=1&si=x",
+        "http://news.example/world/story/?view=print&utm_source=share",
+        "https://news.example/world/story",
+    ]
+    assert {canonical_url(u) for u in variants} == {"https://news.example/world/story"}
+
+
 def test_domain_of_returns_etld_plus_one() -> None:
     assert domain_of("https://news.bbc.co.uk/x") == "bbc.co.uk"
     assert domain_of("https://example.com/y") == "example.com"
