@@ -238,6 +238,30 @@ _WHATSAPP_REDIRECT_HOSTS: frozenset[str] = frozenset(
     }
 )
 
+# Telegram share / Instant View hosts that embed the origin in a ``url=`` param
+# (``t.me/share/url?url=…``, ``t.me/iv?url=…``, ``telegram.me/…``).
+_TELEGRAM_SHARE_HOSTS: frozenset[str] = frozenset(
+    {
+        "t.me",
+        "telegram.me",
+        "telegram.dog",
+    }
+)
+_TELEGRAM_SHARE_PATHS: frozenset[str] = frozenset(
+    {
+        "/share/url",
+        "/iv",
+    }
+)
+
+# href.li privacy/outbound wrapper (``href.li/?https://origin…`` — origin is the
+# raw query string, not a key=value pair).
+_HREFLI_HOSTS: frozenset[str] = frozenset(
+    {
+        "href.li",
+    }
+)
+
 # Suffix for Microsoft Outlook Safe Links rewrite hosts
 # (``nam01.safelinks.protection.outlook.com``, ``*.safelinks.protection.outlook.com``).
 _OUTLOOK_SAFELINKS_SUFFIX = "safelinks.protection.outlook.com"
@@ -885,6 +909,80 @@ def _unwrap_whatsapp_redirect(netloc: str, query: str) -> str | None:
     return _validate_embedded_origin_url(origin, refuse_hosts=_WHATSAPP_REDIRECT_HOSTS)
 
 
+def _unwrap_telegram_share(netloc: str, path: str, query: str) -> str | None:
+    """Extract the origin URL from a Telegram share / Instant View wrapper.
+
+    Forms:
+
+    * ``https://t.me/share/url?url=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://telegram.me/share/url?url=http%3A%2F%2Fm.example.com%2Fx``
+    * ``https://t.me/iv?url=https%3A%2F%2Fexample.com%2Fstory`` (Instant View)
+
+    Only share/url and Instant View paths are rewritten so ordinary channel
+    posts (``t.me/channel/123``) stay on Telegram identity.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _TELEGRAM_SHARE_HOSTS:
+        return None
+    p = (path or "").rstrip("/") or "/"
+    if p.lower() not in _TELEGRAM_SHARE_PATHS:
+        return None
+    origin = _query_param(query, "url")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(origin, refuse_hosts=_TELEGRAM_SHARE_HOSTS)
+
+
+def _unwrap_href_li(netloc: str, query: str) -> str | None:
+    """Extract the origin URL from an ``href.li/?<origin>`` privacy wrapper.
+
+    Forms:
+
+    * ``https://href.li/?https://www.example.com/story``
+    * ``https://href.li/?https%3A%2F%2Fm.example.com%2Fstory``
+    * ``https://href.li/?url=https%3A%2F%2Fexample.com%2Fstory`` (defensive)
+
+    The classic form puts the absolute origin in the *raw* query string (not a
+    key=value pair). ``urlsplit`` keeps nested ``?`` of the origin inside the
+    query, so article query params survive. Ordinary non-URL queries stay put.
+    """
+    from urllib.parse import unquote
+
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _HREFLI_HOSTS:
+        return None
+    raw = (query or "").strip()
+    if not raw:
+        return None
+    candidates: list[str] = []
+    # Prefer explicit url= when present (defensive alias).
+    via_param = _query_param(raw, "url")
+    if via_param:
+        candidates.append(via_param)
+    # Classic form: entire query is the origin (optionally percent-encoded).
+    candidates.append(raw)
+    if "%" in raw:
+        candidates.append(unquote(raw))
+    for origin in candidates:
+        if not (
+            origin.lower().startswith(("http://", "https://"))
+            or origin.startswith("//")
+        ):
+            continue
+        validated = _validate_embedded_origin_url(
+            origin, refuse_hosts=_HREFLI_HOSTS
+        )
+        if validated is not None:
+            return validated
+    return None
+
+
 def _normalize_path(path: str) -> str:
     """Normalize path for identity: empty → ``/``; strip AMP/print/index noise + slash."""
     if not path:
@@ -1015,6 +1113,8 @@ def canonical_url(url: str | None) -> str | None:
       - YouTube ``/redirect?q=…`` external-link redirects rewritten to origin
       - Slack ``slack-redir.net/link?url=…`` outbound wrappers rewritten to origin
       - WhatsApp ``l.wl.co/?u=…`` click wrappers rewritten to origin
+      - Telegram ``t.me/share/url`` / ``t.me/iv`` ``url=`` wrappers rewritten to origin
+      - href.li privacy wrappers (``href.li/?https://…``) rewritten to origin
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
@@ -1062,7 +1162,7 @@ def canonical_url(url: str | None) -> str | None:
     # Order: AMP CDN, AMP viewers, Wayback, then query-embedded origins
     # (Translate, Facebook, Google /url, Outlook Safe Links, DuckDuckGo /l,
     # Instagram, LinkedIn safety/redir, Reddit outbound, YouTube /redirect,
-    # Slack redir, WhatsApp l.wl.co).
+    # Slack redir, WhatsApp l.wl.co, Telegram share/iv, href.li).
     unwrapped = _unwrap_amp_cdn(netloc, path)
     if unwrapped is not None:
         netloc, path = unwrapped
@@ -1091,6 +1191,8 @@ def canonical_url(url: str | None) -> str | None:
                     or _unwrap_youtube_redirect(netloc, path, parts.query)
                     or _unwrap_slack_redirect(netloc, path, parts.query)
                     or _unwrap_whatsapp_redirect(netloc, parts.query)
+                    or _unwrap_telegram_share(netloc, path, parts.query)
+                    or _unwrap_href_li(netloc, parts.query)
                 )
                 if embedded is not None:
                     try:

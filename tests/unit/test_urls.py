@@ -908,6 +908,96 @@ def test_canonical_url_unwraps_whatsapp_redirect() -> None:
     assert "chat.whatsapp.com" in invite
 
 
+def test_canonical_url_unwraps_telegram_share() -> None:
+    """t.me / telegram.me share and Instant View wrappers collapse to origin."""
+    assert (
+        canonical_url(
+            "https://t.me/share/url?url=https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://telegram.me/share/url?url=http%3A%2F%2Fm.news.example%2Fstory%2Famp"
+        )
+        == "https://news.example/story"
+    )
+    # Instant View path.
+    assert (
+        canonical_url(
+            "https://t.me/iv?url=https%3A%2F%2Fnews.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    # Origin query retained; Telegram wrapper text= dropped.
+    assert (
+        canonical_url(
+            "https://t.me/share/url?url="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dtg"
+            "&text=Check%20this"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing url= → no unwrap.
+    bare = canonical_url("https://t.me/share/url?text=hello")
+    assert bare is not None
+    assert "t.me" in bare
+    # Ordinary channel post is not a share wrapper.
+    channel = canonical_url("https://t.me/somechannel/12345")
+    assert channel is not None
+    assert "t.me" in channel
+    # Nested Telegram share must not loop.
+    nested = canonical_url(
+        "https://t.me/share/url?url="
+        "https%3A%2F%2Ft.me%2Fshare%2Furl%3Furl%3Dx"
+    )
+    assert nested is not None
+    assert "t.me" in nested
+
+
+def test_canonical_url_unwraps_href_li() -> None:
+    """href.li privacy wrappers collapse onto the origin article."""
+    assert (
+        canonical_url("https://href.li/?https://www.news.example/world/story")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://href.li/?http://m.news.example/story/amp")
+        == "https://news.example/story"
+    )
+    # Percent-encoded origin in the raw query.
+    assert (
+        canonical_url(
+            "https://href.li/?https%3A%2F%2Fnews.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    # Origin query retained inside the raw href.li query.
+    assert (
+        canonical_url(
+            "https://href.li/?https://news.example/story?id=9&utm_source=href"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Defensive url= form.
+    assert (
+        canonical_url(
+            "https://href.li/?url=https%3A%2F%2Fnews.example%2Fstory"
+        )
+        == "https://news.example/story"
+    )
+    # Non-URL query → no unwrap.
+    bare = canonical_url("https://href.li/?not-a-url")
+    assert bare is not None
+    assert "href.li" in bare
+    # Nested href.li must not loop.
+    nested = canonical_url("https://href.li/?https://href.li/?https://x.test/a")
+    assert nested is not None
+    # After refuse_hosts on nested href.li origin, wrapper stays or only first hop
+    # peels when outer validates; nested origin host is href.li so refused.
+    assert "href.li" in nested or nested == "https://x.test/a"
+
+
 def test_canonical_url_strips_search_and_cms_noise() -> None:
     """Google/MSN search wrappers and CMS feed/trackback paths are identity-noise."""
     assert (
