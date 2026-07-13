@@ -1176,31 +1176,42 @@ def metrics(
         "-n",
         help="Max rows per section in table mode (counters/gauges/histograms).",
     ),
+    prefix: str = typer.Option(
+        "",
+        "--prefix",
+        "-p",
+        help=(
+            "Only include metrics whose name starts with this prefix "
+            "(e.g. 'http.', 'gdelt.', 'jsonl.'). Applies to all formats."
+        ),
+    ),
 ) -> None:
     """Show in-process metrics (table, JSON snapshot, or Prometheus text).
 
     Interactive terminals default to a compact Rich table. Piped/non-TTY
     stdout defaults to JSON (backward-compatible for scripts). Force either
     with ``--format``; use ``prometheus`` for the same exposition as
-    ``GET /metrics?format=prometheus``.
+    ``GET /metrics?format=prometheus``. Pass ``--prefix`` to narrow output
+    (useful when scraping a single subsystem).
     """
     if format is None:
         fmt = "table" if sys.stdout.isatty() else "json"
     else:
         fmt = format.strip().lower()
     m = get_metrics()
+    pfx = prefix.strip() or None
     if fmt in ("prometheus", "prom", "text", "exposition"):
         # Trailing newline already included by render_prometheus.
-        sys.stdout.write(m.render_prometheus())
+        sys.stdout.write(m.render_prometheus(prefix=pfx))
         return
     if fmt in ("json", "snapshot", "raw"):
-        print(json.dumps(m.snapshot(), indent=2))
+        print(json.dumps(m.snapshot(prefix=pfx), indent=2))
         return
     if fmt not in ("table", "human", "pretty", "tui"):
         raise typer.BadParameter(
             f"Unknown --format {format!r}; use table, json, or prometheus"
         )
-    _print_metrics_table(m.snapshot(), limit=max(1, int(limit)))
+    _print_metrics_table(m.snapshot(prefix=pfx), limit=max(1, int(limit)))
 
 
 def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
@@ -1208,9 +1219,12 @@ def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
     uptime = float(snap.get("uptime_seconds") or 0.0)
     hours, rem = divmod(int(uptime), 3600)
     minutes, seconds = divmod(rem, 60)
+    pfx = snap.get("prefix")
+    pfx_note = f"  prefix={pfx!r}" if pfx else ""
     console.print(
-        f"[bold]Metrics[/bold]  uptime={hours:d}h {minutes:02d}m {seconds:02d}s  "
-        f"([dim]--format json|prometheus for machine output[/dim])"
+        f"[bold]Metrics[/bold]  uptime={hours:d}h {minutes:02d}m {seconds:02d}s"
+        f"{pfx_note}  "
+        f"([dim]--format json|prometheus · --prefix name.[/dim])"
     )
 
     counters = list(snap.get("counters") or [])

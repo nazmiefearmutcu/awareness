@@ -204,3 +204,39 @@ def test_metrics_format_rejects_unknown() -> None:
     result = runner.invoke(app, ["metrics", "--format", "yaml"])
     assert result.exit_code != 0
     assert "Unknown --format" in result.output or "Invalid" in result.output or result.exit_code == 2
+
+
+def test_metrics_prefix_filters_json_and_prometheus() -> None:
+    """--prefix keeps only matching series (all formats)."""
+    import json
+
+    from awareness.obs.metrics import get_metrics
+
+    m = get_metrics()
+    m.inc("http.fetch_attempts", value=3.0, labels={"outcome": "ok"})
+    m.inc("gdelt.urls_discovered", value=7.0, labels={"slot": "20260601113000"})
+    m.observe("http.fetch_seconds", 0.05, labels={"outcome": "ok"})
+    m.observe("gdelt.fetch_seconds", 0.2, labels={"outcome": "ok"})
+
+    js = runner.invoke(app, ["metrics", "--format", "json", "--prefix", "http."])
+    assert js.exit_code == 0, js.output
+    payload = json.loads(js.output[js.output.find("{") :])
+    assert payload.get("prefix") == "http."
+    cnames = {c["name"] for c in payload["counters"]}
+    hnames = {h["name"] for h in payload["histograms"]}
+    assert "http.fetch_attempts" in cnames
+    assert "gdelt.urls_discovered" not in cnames
+    assert "http.fetch_seconds" in hnames
+    assert "gdelt.fetch_seconds" not in hnames
+
+    prom = runner.invoke(app, ["metrics", "--format", "prometheus", "--prefix", "gdelt."])
+    assert prom.exit_code == 0, prom.output
+    assert "gdelt_urls_discovered_total" in prom.output or "gdelt_urls_discovered" in prom.output
+    assert "http_fetch_attempts" not in prom.output
+    # Uptime always present.
+    assert "awareness_uptime_seconds" in prom.output
+
+    table = runner.invoke(app, ["metrics", "--format", "table", "--prefix", "gdelt."])
+    assert table.exit_code == 0, table.output
+    assert "prefix=" in table.output
+    assert "gdelt" in table.output

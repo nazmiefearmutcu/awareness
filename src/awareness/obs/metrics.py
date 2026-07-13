@@ -104,7 +104,12 @@ class MetricsRegistry:
         with self._lock:
             self._hist[(name, self._labels_key(labels))].observe(value)
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, *, prefix: str | None = None) -> dict[str, Any]:
+        """Return counters/gauges/histograms; optional *prefix* filters by name.
+
+        *prefix* matches the start of the metric name (case-sensitive). Empty
+        or ``None`` returns the full snapshot. Uptime is always included.
+        """
         with self._lock:
             counters = [
                 {"name": n, "labels": dict(lbl), "value": round(v, 4)}
@@ -121,12 +126,29 @@ class MetricsRegistry:
                 {"name": n, "labels": dict(lbl), **h.as_dict()}
                 for (n, lbl), h in sorted(self._hist.items())
             ]
-            return {
+            snap = {
                 "uptime_seconds": round(time.time() - self._started_at, 2),
                 "counters": counters,
                 "gauges": gauges,
                 "histograms": histograms,
             }
+            return self.filter_snapshot(snap, prefix=prefix)
+
+    @staticmethod
+    def filter_snapshot(
+        snap: dict[str, Any], *, prefix: str | None = None
+    ) -> dict[str, Any]:
+        """Filter a snapshot dict by metric-name prefix (pure helper)."""
+        if not prefix:
+            return snap
+        p = str(prefix)
+        out = dict(snap)
+        for key in ("counters", "gauges", "histograms"):
+            rows = out.get(key) or []
+            out[key] = [r for r in rows if str(r.get("name") or "").startswith(p)]
+        if p:
+            out["prefix"] = p
+        return out
 
     @staticmethod
     def _prom_metric_name(name: str) -> str:
@@ -163,14 +185,22 @@ class MetricsRegistry:
         ]
         return "{" + ",".join(parts) + "}"
 
-    def render_prometheus(self) -> str:
+    def render_prometheus(self, *, prefix: str | None = None) -> str:
         """Render metrics in Prometheus text exposition format 0.0.4.
 
         Counters → ``_total`` suffix when missing; gauges as-is; histograms
         emit ``_count``, ``_sum``, and approximate ``_p50`` / ``_p95`` / ``_p99``
         from the reservoir (not true quantile streams). Process uptime is
         exported as ``awareness_uptime_seconds``.
+
+        *prefix* limits series to metric names starting with that string
+        (same semantics as :meth:`snapshot`). Uptime is always exported.
         """
+        pfx = str(prefix) if prefix else ""
+
+        def _match(name: str) -> bool:
+            return (not pfx) or name.startswith(pfx)
+
         with self._lock:
             self._refresh_robots_hit_ratio_unlocked()
             lines: list[str] = [
@@ -179,7 +209,7 @@ class MetricsRegistry:
                 f"awareness_uptime_seconds {round(time.time() - self._started_at, 2)}",
             ]
             # Group counter series by base name for one TYPE line each.
-            counter_names = sorted({n for (n, _) in self._counters})
+            counter_names = sorted({n for (n, _) in self._counters if _match(n)})
             for name in counter_names:
                 prom = self._prom_metric_name(name)
                 if not prom.endswith("_total"):
@@ -189,7 +219,7 @@ class MetricsRegistry:
                     if n != name:
                         continue
                     lines.append(f"{prom}{self._prom_labels(lbl)} {float(v)}")
-            gauge_names = sorted({n for (n, _) in self._gauges})
+            gauge_names = sorted({n for (n, _) in self._gauges if _match(n)})
             for name in gauge_names:
                 prom = self._prom_metric_name(name)
                 lines.append(f"# TYPE {prom} gauge")
@@ -197,7 +227,7 @@ class MetricsRegistry:
                     if n != name:
                         continue
                     lines.append(f"{prom}{self._prom_labels(lbl)} {float(v)}")
-            hist_names = sorted({n for (n, _) in self._hist})
+            hist_names = sorted({n for (n, _) in self._hist if _match(n)})
             for name in hist_names:
                 prom = self._prom_metric_name(name)
                 lines.append(f"# TYPE {prom} summary")
