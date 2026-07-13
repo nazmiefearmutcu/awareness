@@ -388,13 +388,17 @@ function summarizeWetQualityMetrics(metricsSnap) {
 }
 
 /**
- * Pull robots cache hit ratio + Iceberg append counters from /metrics.
- * Pure — no DOM. Gauges are preferred for robots; counters for iceberg rows.
+ * Pull robots cache hit ratio + robots network fetch + Iceberg/JSONL counters
+ * from /metrics. Pure — no DOM. Gauges for robots hit ratio; counters/histograms
+ * for network robots probes and storage writes.
  */
 function summarizeStorageObsMetrics(metricsSnap) {
   const empty = {
     robotsHitRatio: null,
     robotsResolutions: 0,
+    robotsFetchAttempts: 0,
+    robotsFetchOk: 0,
+    robotsFetchP95: null,
     icebergRows: 0,
     icebergBatches: 0,
     icebergAppendP95: null,
@@ -422,18 +426,31 @@ function summarizeStorageObsMetrics(metricsSnap) {
   let icebergBatches = 0;
   let jsonlRecords = 0;
   let jsonlChunks = 0;
+  let robotsFetchAttempts = 0;
+  let robotsFetchOk = 0;
   for (const c of counters) {
     if (!c) continue;
     if (c.name === "iceberg.appended_rows") icebergRows += Number(c.value) || 0;
     if (c.name === "iceberg.append_batches") icebergBatches += Number(c.value) || 0;
     if (c.name === "jsonl.records_committed") jsonlRecords += Number(c.value) || 0;
     if (c.name === "jsonl.chunks_committed") jsonlChunks += Number(c.value) || 0;
+    if (c.name === "robots.fetch_attempts") {
+      const v = Number(c.value) || 0;
+      robotsFetchAttempts += v;
+      const labels = c.labels || {};
+      // Successful policy resolution paths (body present, missing, or forbid-all).
+      if (labels.outcome === "ok" || labels.outcome === "missing" || labels.outcome === "forbidden") {
+        robotsFetchOk += v;
+      }
+    }
   }
   const hists = Array.isArray(metricsSnap.histograms) ? metricsSnap.histograms : [];
   let weightedP95 = 0;
   let histCount = 0;
   let jsonlWeightedP95 = 0;
   let jsonlHistCount = 0;
+  let robotsWeightedP95 = 0;
+  let robotsHistCount = 0;
   for (const h of hists) {
     if (!h) continue;
     const n = Number(h.count) || 0;
@@ -446,11 +463,17 @@ function summarizeStorageObsMetrics(metricsSnap) {
     } else if (h.name === "jsonl.commit_seconds") {
       jsonlHistCount += n;
       jsonlWeightedP95 += p95 * n;
+    } else if (h.name === "robots.fetch_seconds") {
+      robotsHistCount += n;
+      robotsWeightedP95 += p95 * n;
     }
   }
   return {
     robotsHitRatio,
     robotsResolutions,
+    robotsFetchAttempts,
+    robotsFetchOk,
+    robotsFetchP95: robotsHistCount > 0 ? robotsWeightedP95 / robotsHistCount : null,
     icebergRows,
     icebergBatches,
     icebergAppendP95: histCount > 0 ? weightedP95 / histCount : null,
@@ -515,7 +538,7 @@ async function refreshDashboard() {
       : "retries included";
   }
 
-  // Robots cache + Iceberg append observability (process-local).
+  // Robots cache + network robots fetch + Iceberg append observability (process-local).
   const storageObs = summarizeStorageObsMetrics(metricsSnap);
   const robotsNode = $("#kpi-dash-robots-hit");
   if (robotsNode) {
@@ -527,6 +550,24 @@ async function refreshDashboard() {
     robotsSub.textContent = storageObs.robotsResolutions
       ? `${fmt(storageObs.robotsResolutions)} resolutions`
       : "no robots lookups yet";
+  }
+  const robotsP95Node = $("#kpi-dash-robots-p95");
+  if (robotsP95Node) {
+    robotsP95Node.textContent = formatFetchLatency(storageObs.robotsFetchP95);
+    robotsP95Node.classList.toggle("is-zero", !storageObs.robotsFetchAttempts);
+  }
+  const robotsP95Sub = $("#kpi-dash-robots-p95-sub");
+  if (robotsP95Sub) {
+    robotsP95Sub.textContent = storageObs.robotsFetchAttempts
+      ? `${fmt(storageObs.robotsFetchOk)}/${fmt(storageObs.robotsFetchAttempts)} ok · network`
+      : "no robots network probes yet";
+  }
+  setKPI("kpi-dash-robots-attempts", storageObs.robotsFetchAttempts);
+  const robotsAttSub = $("#kpi-dash-robots-attempts-sub");
+  if (robotsAttSub) {
+    robotsAttSub.textContent = storageObs.robotsFetchAttempts
+      ? `${fmt(storageObs.robotsFetchOk)} resolved`
+      : "network probes this process";
   }
   setKPI("kpi-dash-iceberg-rows", storageObs.icebergRows);
   const iceSub = $("#kpi-dash-iceberg-rows-sub");
