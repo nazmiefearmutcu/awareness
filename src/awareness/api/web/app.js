@@ -263,6 +263,68 @@ function formatFetchLatency(sec) {
   return sec.toFixed(1) + "s";
 }
 
+/**
+ * Pull robots cache hit ratio + Iceberg append counters from /metrics.
+ * Pure — no DOM. Gauges are preferred for robots; counters for iceberg rows.
+ */
+function summarizeStorageObsMetrics(metricsSnap) {
+  const empty = {
+    robotsHitRatio: null,
+    robotsResolutions: 0,
+    icebergRows: 0,
+    icebergBatches: 0,
+    icebergAppendP95: null,
+  };
+  if (!metricsSnap || typeof metricsSnap !== "object") return empty;
+  const gauges = Array.isArray(metricsSnap.gauges) ? metricsSnap.gauges : [];
+  let robotsHitRatio = null;
+  let robotsResolutions = 0;
+  for (const g of gauges) {
+    if (!g) continue;
+    if (g.name === "robots.cache.hit_ratio") {
+      const v = Number(g.value);
+      if (Number.isFinite(v)) robotsHitRatio = v;
+    }
+    if (g.name === "robots.cache.resolutions") {
+      const v = Number(g.value);
+      if (Number.isFinite(v)) robotsResolutions = v;
+    }
+  }
+  const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
+  let icebergRows = 0;
+  let icebergBatches = 0;
+  for (const c of counters) {
+    if (!c) continue;
+    if (c.name === "iceberg.appended_rows") icebergRows += Number(c.value) || 0;
+    if (c.name === "iceberg.append_batches") icebergBatches += Number(c.value) || 0;
+  }
+  const hists = Array.isArray(metricsSnap.histograms) ? metricsSnap.histograms : [];
+  let weightedP95 = 0;
+  let histCount = 0;
+  for (const h of hists) {
+    if (!h || h.name !== "iceberg.append_seconds") continue;
+    const n = Number(h.count) || 0;
+    if (n <= 0) continue;
+    const p95 = Number(h.p95);
+    if (!Number.isFinite(p95)) continue;
+    histCount += n;
+    weightedP95 += p95 * n;
+  }
+  return {
+    robotsHitRatio,
+    robotsResolutions,
+    icebergRows,
+    icebergBatches,
+    icebergAppendP95: histCount > 0 ? weightedP95 / histCount : null,
+  };
+}
+
+/** Format 0–1 ratio as percent string. */
+function formatHitRatio(ratio) {
+  if (ratio == null || !Number.isFinite(ratio)) return "—";
+  return Math.round(ratio * 100) + "%";
+}
+
 async function refreshDashboard() {
   let status, dedup, metricsSnap;
   try {
@@ -310,6 +372,28 @@ async function refreshDashboard() {
     attSub.textContent = http.retries
       ? `${fmt(http.retries)} retries`
       : "retries included";
+  }
+
+  // Robots cache + Iceberg append observability (process-local).
+  const storageObs = summarizeStorageObsMetrics(metricsSnap);
+  const robotsNode = $("#kpi-dash-robots-hit");
+  if (robotsNode) {
+    robotsNode.textContent = formatHitRatio(storageObs.robotsHitRatio);
+    robotsNode.classList.toggle("is-zero", !storageObs.robotsResolutions);
+  }
+  const robotsSub = $("#kpi-dash-robots-hit-sub");
+  if (robotsSub) {
+    robotsSub.textContent = storageObs.robotsResolutions
+      ? `${fmt(storageObs.robotsResolutions)} resolutions`
+      : "no robots lookups yet";
+  }
+  setKPI("kpi-dash-iceberg-rows", storageObs.icebergRows);
+  const iceSub = $("#kpi-dash-iceberg-rows-sub");
+  if (iceSub) {
+    const p95 = formatFetchLatency(storageObs.icebergAppendP95);
+    iceSub.textContent = storageObs.icebergBatches
+      ? `${fmt(storageObs.icebergBatches)} batches · p95 ${p95}`
+      : "appended this process";
   }
 
   $("#kpi-captures-sub").textContent = (docsTotal ? `${fmt(docsTotal)} emitted across jobs` : "across the corpus");
