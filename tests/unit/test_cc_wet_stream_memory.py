@@ -85,12 +85,13 @@ def test_iter_wet_captures_is_streaming_generator(tmp_path: Path) -> None:
     )
     assert inspect.isgenerator(gen)
 
-    first = next(gen)
-    assert first.url == urls[0]
+    first_cap, first_off = next(gen)
+    assert first_cap.url == urls[0]
+    assert first_off == 1
     # Remaining records still unread: generator has not buffered them as a list.
     rest = list(gen)
     assert len(rest) == 4
-    assert [c.url for c in rest] == urls[1:]
+    assert [c.url for c, _off in rest] == urls[1:]
 
 
 def test_parse_wet_collects_multi_record_fixture(tmp_path: Path) -> None:

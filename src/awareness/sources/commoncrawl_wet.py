@@ -131,6 +131,34 @@ def _record_passes_quality(text: str, *, enabled: bool, lang: str | None = None)
     return gopher_quality(text).ok
 
 
+def _resume_cursors(checkpoint: dict | None) -> tuple[str | None, int | None]:
+    """Extract mid-shard resume cursors from ``context.checkpoint``.
+
+    ``last_record_id`` (WARC-Record-ID) is preferred; ``last_offset`` is the
+    1-based ArchiveIterator ordinal of the last fully processed record.
+    """
+    if not checkpoint:
+        return None, None
+    rid = checkpoint.get("last_record_id")
+    if rid is not None:
+        rid_s = str(rid).strip()
+        rid = rid_s or None
+    else:
+        rid = None
+    raw_off = checkpoint.get("last_offset")
+    offset: int | None
+    if raw_off is None or raw_off == "":
+        offset = None
+    else:
+        try:
+            offset = int(raw_off)
+        except (TypeError, ValueError):
+            offset = None
+        if offset is not None and offset < 0:
+            offset = None
+    return rid, offset
+
+
 class CommonCrawlWetAdapter(Adapter):
     source_type = SourceKind.COMMON_CRAWL_WET
 
@@ -298,6 +326,7 @@ class CommonCrawlWetAdapter(Adapter):
             ingest_version=context.ingest_version,
             is_stopping=context.is_stopping,
             queue_maxsize=max(1, int(settings.bounded_queue_size)),
+            checkpoint=context.checkpoint,
         ):
             yield cap
 
@@ -319,25 +348,51 @@ def _iter_wet_captures(
     ingest_version: str,
     *,
     should_stop: threading.Event | None = None,
-) -> Iterator[DocCapture]:
-    """Yield ``DocCapture`` one WARC conversion record at a time.
+    checkpoint: dict | None = None,
+    advance_checkpoint: bool = True,
+) -> Iterator[tuple[DocCapture, int]]:
+    """Yield ``(DocCapture, archive_offset)`` one WARC conversion record at a time.
 
     Uses ``warcio.ArchiveIterator`` over a file handle so the WET/WARC body is
     never loaded wholesale. Each record's payload is read, converted, and
     yielded; the caller (bounded queue consumer) decides retention. No list of
     captures is accumulated here.
+
+    When ``checkpoint`` is provided, resume past ``last_record_id`` (preferred)
+    or ``last_offset`` (1-based ArchiveIterator ordinal). When
+    ``advance_checkpoint`` is true, those keys are updated after each yield
+    (safe for sync callers). Streaming path advances on the consumer side so
+    a full queue cannot move the cursor past delivered captures.
     """
     from warcio.archiveiterator import ArchiveIterator  # noqa: PLC0415
 
     settings = get_settings()
     seen_in_shard = 0
     captures_emitted = 0
+    resume_record_id, resume_offset = _resume_cursors(checkpoint)
+    # Prefer record-id cursor when both are present.
+    skip_until_after_record = resume_record_id is not None
+    skip_until_after_offset = (not skip_until_after_record) and resume_offset is not None
+    resume_hit = False
 
     with open(path, "rb") as fh:
         for record in ArchiveIterator(fh):
             if should_stop is not None and should_stop.is_set():
                 break
             seen_in_shard += 1
+            rid_header = record.rec_headers.get_header("WARC-Record-ID") or ""
+
+            if skip_until_after_record:
+                if rid_header == resume_record_id:
+                    skip_until_after_record = False
+                    resume_hit = True
+                continue
+            if skip_until_after_offset:
+                if seen_in_shard <= int(resume_offset or 0):
+                    continue
+                skip_until_after_offset = False
+                resume_hit = True
+
             if record.rec_type != "conversion":
                 continue
             url = record.rec_headers.get_header("WARC-Target-URI")
@@ -383,7 +438,7 @@ def _iter_wet_captures(
             fetched_at = record.rec_headers.get_header("WARC-Date") or ""
             fetch_ts = to_utc(fetched_at) or utcnow()
             observed_ts = utcnow()
-            record_id = record.rec_headers.get_header("WARC-Record-ID") or ""
+            record_id = rid_header
 
             did = doc_id_for(cu, ch)
             cap = DocCapture(
@@ -415,7 +470,22 @@ def _iter_wet_captures(
                 http_status=200,
             )
             captures_emitted += 1
-            yield cap
+            if advance_checkpoint and checkpoint is not None:
+                if record_id:
+                    checkpoint["last_record_id"] = record_id
+                checkpoint["last_offset"] = seen_in_shard
+            yield cap, seen_in_shard
+
+    if (resume_record_id is not None or resume_offset is not None) and not resume_hit and seen_in_shard:
+        # Cursor pointed past the shard or at an unknown id — nothing to emit.
+        logger.info(
+            "cc_wet_resume_cursor_exhausted",
+            crawl_id=crawl_id,
+            shard=shard_path,
+            last_record_id=resume_record_id,
+            last_offset=resume_offset,
+            records_seen=seen_in_shard,
+        )
 
     logger.info(
         "cc_wet_shard_parsed",
@@ -443,8 +513,9 @@ def _parse_wet_to_captures(
     Production shard execution uses :func:`_stream_wet_captures` so memory stays
     bounded by ``settings.bounded_queue_size`` rather than shard length.
     """
-    return list(
-        _iter_wet_captures(
+    return [
+        cap
+        for cap, _offset in _iter_wet_captures(
             path,
             crawl_id,
             shard_path,
@@ -455,8 +526,9 @@ def _parse_wet_to_captures(
             task_id,
             batch_id,
             ingest_version,
+            checkpoint=None,
         )
-    )
+    ]
 
 
 async def _stream_wet_captures(
@@ -473,6 +545,7 @@ async def _stream_wet_captures(
     ingest_version: str,
     is_stopping,
     queue_maxsize: int = 1024,
+    checkpoint: dict | None = None,
 ) -> AsyncIterator[DocCapture]:
     """Parse a WET shard on a worker thread; yield via a bounded asyncio queue.
 
@@ -482,15 +555,20 @@ async def _stream_wet_captures(
     ``DocCapture`` objects never exceed the queue depth plus one in-flight put.
     ``None`` is the end sentinel. Early stop drains the queue so the producer
     cannot hang on a blocked put.
+
+    Checkpoint keys are advanced only when a capture is yielded to the caller,
+    so a stop/drain cannot leave ``last_record_id`` past delivered progress.
     """
-    queue: asyncio.Queue[DocCapture | None] = asyncio.Queue(maxsize=max(1, queue_maxsize))
+    queue: asyncio.Queue[tuple[DocCapture, int] | None] = asyncio.Queue(
+        maxsize=max(1, queue_maxsize)
+    )
     loop = asyncio.get_running_loop()
     stop = threading.Event()
     errors: list[BaseException] = []
 
     def _produce() -> None:
         try:
-            for cap in _iter_wet_captures(
+            for cap, offset in _iter_wet_captures(
                 path,
                 crawl_id,
                 shard_path,
@@ -502,11 +580,13 @@ async def _stream_wet_captures(
                 batch_id,
                 ingest_version,
                 should_stop=stop,
+                checkpoint=checkpoint,
+                advance_checkpoint=False,
             ):
                 if stop.is_set():
                     break
                 # Backpressure: block until the async consumer drains a slot.
-                fut = asyncio.run_coroutine_threadsafe(queue.put(cap), loop)
+                fut = asyncio.run_coroutine_threadsafe(queue.put((cap, offset)), loop)
                 fut.result()
         except BaseException as exc:
             errors.append(exc)
@@ -530,7 +610,13 @@ async def _stream_wet_captures(
             item = await queue.get()
             if item is None:
                 break
-            yield item
+            cap, offset = item
+            if checkpoint is not None:
+                rid = cap.source.source_offset_or_record_id
+                if rid:
+                    checkpoint["last_record_id"] = rid
+                checkpoint["last_offset"] = offset
+            yield cap
     finally:
         stop.set()
         # If the consumer aborted (GeneratorExit / cancel), keep draining so
