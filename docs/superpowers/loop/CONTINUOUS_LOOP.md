@@ -114,12 +114,15 @@
 | C4+ | cli/obs | `metrics --prefix` filter (table/json/prometheus) | ✅ |
 | C4+ | cli/storage | `dlq purge` drop entry without re-arm | ✅ |
 | C4+ | spa | Dashboard discovery + tail-fetch KPIs | ✅ |
+| C4+ | scrape/obs | WET quality filter reason labels + admitted counters | ✅ |
+| C4+ | cli/storage | `compact --status` / `--json` pending staging backlog | ✅ |
+| C4+ | spa | Dashboard WET quality drops + feed fetch error KPIs | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~188 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~192 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** Diverse wave — GDELT metrics (`4147f92`), metrics `--prefix` (`a8d698f`), DLQ purge (`b7b3932`), SPA discovery KPIs (`60933ab`)
+- **Latest:** Diverse wave — WET quality metrics (`dc24097`), compact `--status` (`1282532`), SPA WET/feed KPIs (`4a2b938`)
 
 ## Rules
 

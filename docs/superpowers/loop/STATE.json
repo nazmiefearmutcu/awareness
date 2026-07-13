@@ -1,18 +1,17 @@
 {
-  "iteration": 37,
-  "phase": "gdelt_metrics_prefix_dlq_purge_spa_discovery",
+  "iteration": 38,
+  "phase": "wet_quality_compact_status_spa_feed_kpis",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "60933ab",
+  "head_sha": "4a2b938",
   "product_shas": [
-    "4147f92",
-    "a8d698f",
-    "b7b3932",
-    "60933ab"
+    "dc24097",
+    "1282532",
+    "4a2b938"
   ],
-  "commits_ahead": 189,
+  "commits_ahead": 193,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): GDELT fetch metrics (4147f92); metrics --prefix (a8d698f); DLQ purge (b7b3932); SPA discovery KPIs (60933ab). Next: FTS polish, compact pending status, feed metrics SPA polish, WET quality KPI."
+  "notes": "DIVERSE wave (no ranking/unwrap): WET quality reason+admitted metrics (dc24097); compact --status (1282532); SPA WET quality + feed health KPIs (4a2b938). Next: FTS polish (non-ranking), feed fetch latency hist, DLQ bulk purge, Iceberg compact metrics."
 }
