@@ -127,7 +127,7 @@
           <div class="kpi-sub" id="kpi-jobs-sub">recent runs</div>
         </article>
       </div>
-      <div class="kpi-grid dedup-kpis" id="dash-skip-kpis" aria-label="Process skip counters">
+      <div class="kpi-grid dedup-kpis" id="dash-skip-kpis" aria-label="Process skip counters and fetch latency">
         <article class="kpi" aria-labelledby="kpi-dash-fetch-skip-label">
           <div class="kpi-label" id="kpi-dash-fetch-skip-label">Fetch skipped (seen)</div>
           <div class="kpi-value" id="kpi-dash-fetch-skipped">—</div>
@@ -137,6 +137,16 @@
           <div class="kpi-label" id="kpi-dash-tight-near-label">Tight near-dup skipped</div>
           <div class="kpi-value" id="kpi-dash-tight-near">—</div>
           <div class="kpi-sub" id="kpi-dash-tight-near-sub">near-dups below store threshold</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-http-p95-label">
+          <div class="kpi-label" id="kpi-dash-http-p95-label">HTTP fetch p95</div>
+          <div class="kpi-value" id="kpi-dash-http-p95">—</div>
+          <div class="kpi-sub" id="kpi-dash-http-p95-sub">shared GET latency (process)</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-http-attempts-label">
+          <div class="kpi-label" id="kpi-dash-http-attempts-label">HTTP attempts</div>
+          <div class="kpi-value" id="kpi-dash-http-attempts">—</div>
+          <div class="kpi-sub" id="kpi-dash-http-attempts-sub">retries included</div>
         </article>
       </div>
 

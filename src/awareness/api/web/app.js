@@ -214,10 +214,63 @@ window.addEventListener("popstate", (e) => {
 
 // ── Header / Dashboard refresh ────────────────────────────────
 let lastFeedCaptureId = null;
+
+/**
+ * Summarize process HTTP fetch metrics from GET /metrics snapshot.
+ * Pure — no DOM. Aggregates http.fetch_seconds histograms (all outcomes)
+ * and http.fetch_attempts / http.fetch_retries counters.
+ */
+function summarizeHttpFetchMetrics(metricsSnap) {
+  const empty = { p95Sec: null, count: 0, attempts: 0, retries: 0 };
+  if (!metricsSnap || typeof metricsSnap !== "object") return empty;
+  const hists = Array.isArray(metricsSnap.histograms) ? metricsSnap.histograms : [];
+  let weightedP95 = 0;
+  let totalCount = 0;
+  let maxP95 = 0;
+  for (const h of hists) {
+    if (!h || h.name !== "http.fetch_seconds") continue;
+    const c = Number(h.count) || 0;
+    if (c <= 0) continue;
+    const p95 = Number(h.p95);
+    if (!Number.isFinite(p95)) continue;
+    totalCount += c;
+    weightedP95 += p95 * c;
+    if (p95 > maxP95) maxP95 = p95;
+  }
+  // Prefer count-weighted average of per-series p95; fall back to max when empty math.
+  const p95Sec = totalCount > 0 ? weightedP95 / totalCount : null;
+  const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
+  let attempts = 0;
+  let retries = 0;
+  for (const c of counters) {
+    if (!c) continue;
+    if (c.name === "http.fetch_attempts") attempts += Number(c.value) || 0;
+    if (c.name === "http.fetch_retries") retries += Number(c.value) || 0;
+  }
+  return {
+    p95Sec: p95Sec != null ? p95Sec : (totalCount > 0 ? maxP95 : null),
+    count: totalCount,
+    attempts,
+    retries,
+  };
+}
+
+/** Format seconds as ms when small, else seconds — pure helper for KPIs. */
+function formatFetchLatency(sec) {
+  if (sec == null || !Number.isFinite(sec)) return "—";
+  if (sec < 1) return Math.round(sec * 1000) + "ms";
+  if (sec < 10) return sec.toFixed(2) + "s";
+  return sec.toFixed(1) + "s";
+}
+
 async function refreshDashboard() {
-  let status, dedup;
+  let status, dedup, metricsSnap;
   try {
-    [status, dedup] = await Promise.all([api("/status"), api("/dedup-stats")]);
+    [status, dedup, metricsSnap] = await Promise.all([
+      api("/status"),
+      api("/dedup-stats"),
+      api("/metrics").catch(() => null),
+    ]);
   } catch (e) { console.error(e); return; }
 
   const tail = status.tail || {};
@@ -236,6 +289,28 @@ async function refreshDashboard() {
   // Process-local skip counters (same source as Settings Runtime status).
   setKPI("kpi-dash-fetch-skipped", Number(dedup.fetch_skipped_seen || 0));
   setKPI("kpi-dash-tight-near", Number(dedup.tight_near_skipped || 0));
+
+  // HTTP fetch observability (shared get_with_retries path).
+  const http = summarizeHttpFetchMetrics(metricsSnap);
+  const p95Node = $("#kpi-dash-http-p95");
+  if (p95Node) {
+    // setKPI expects numeric targets; write formatted text directly for latency.
+    p95Node.textContent = formatFetchLatency(http.p95Sec);
+    p95Node.classList.toggle("is-zero", !http.count);
+  }
+  setKPI("kpi-dash-http-attempts", http.attempts);
+  const p95Sub = $("#kpi-dash-http-p95-sub");
+  if (p95Sub) {
+    p95Sub.textContent = http.count
+      ? `${fmt(http.count)} samples · process GET`
+      : "no samples yet";
+  }
+  const attSub = $("#kpi-dash-http-attempts-sub");
+  if (attSub) {
+    attSub.textContent = http.retries
+      ? `${fmt(http.retries)} retries`
+      : "retries included";
+  }
 
   $("#kpi-captures-sub").textContent = (docsTotal ? `${fmt(docsTotal)} emitted across jobs` : "across the corpus");
   $("#kpi-distinct-sub").textContent = "unique content";
