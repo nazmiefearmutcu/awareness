@@ -1,18 +1,17 @@
 {
-  "iteration": 46,
-  "phase": "fts_obs_warc_repair_spa_cli",
+  "iteration": 47,
+  "phase": "task_duration_warc_spa_cli",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "ba57dac",
+  "head_sha": "56aceed",
   "product_shas": [
-    "b594d06",
-    "d9ef922",
-    "d53ebc6",
-    "ba57dac"
+    "74639bd",
+    "5db8d4a",
+    "56aceed"
   ],
-  "commits_ahead": 221,
-  "unit_suite": "green (876 passed, 1 skipped datasets; not slow)",
+  "commits_ahead": 225,
+  "unit_suite": "green (886 passed, 1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): FTS full/incremental/restore metrics (b594d06 storage/obs); WARC repair range-fetch+parse metrics (d9ef922 scrape/obs); SPA FTS build KPIs (d53ebc6); CLI FTS metrics strip (ba57dac). Next: compact polish, task duration metrics, export/CLI storage gaps."
+  "notes": "DIVERSE wave (no ranking/unwrap): task wall-clock duration + failed outcome metrics (74639bd workers/obs); SPA WARC repair docs/fetch p95/attempts KPIs (5db8d4a); CLI WARC repair metrics strip (56aceed). Next: task duration SPA/CLI strips, compact polish, export/CLI storage gaps, streaming WET parse (C3-T3)."
 }

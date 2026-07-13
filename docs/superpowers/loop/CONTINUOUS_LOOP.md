@@ -138,12 +138,15 @@
 | C4+ | scrape/obs | WARC repair range-fetch + parse latency/outcome metrics | ✅ |
 | C4+ | spa | Dashboard FTS builds / p95 / indexed rows KPIs | ✅ |
 | C4+ | cli/obs | metrics table FTS build summary strip | ✅ |
+| C4+ | workers/obs | Task wall-clock duration hist + failed outcome counters | ✅ |
+| C4+ | spa | Dashboard WARC repair docs / fetch p95 / attempts KPIs | ✅ |
+| C4+ | cli/obs | metrics table WARC repair summary strip | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~221 commits ahead of `main`)
-- **Unit suite:** green (non-slow; datasets skip as configured) — **876 passed, 1 skipped**
-- **Latest:** Diverse wave — FTS metrics (`b594d06`), WARC repair scrape metrics (`d9ef922`), SPA FTS KPIs (`d53ebc6`), CLI FTS strip (`ba57dac`)
+- **Branch:** `loop/continuous-dev` (~225 commits ahead of `main`)
+- **Unit suite:** green (non-slow; datasets skip as configured) — **886 passed, 1 skipped**
+- **Latest:** Diverse wave — task duration metrics (`74639bd`), SPA WARC repair KPIs (`5db8d4a`), CLI WARC repair strip (`56aceed`)
 
 ## Rules
 
