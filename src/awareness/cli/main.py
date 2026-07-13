@@ -45,6 +45,7 @@ from awareness.planner.planner import Planner
 from awareness.schemas.doc import SourceKind
 from awareness.schemas.jobs import BackfillRequest
 from awareness.storage.duckdb_index import DuckDbIndex
+from awareness.dedup.engine import DEFAULT_NEAR_THRESHOLD
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
 from datetime import datetime
@@ -3136,13 +3137,19 @@ def dedup_check(
     url: str = typer.Option("", "--url", help="Canonical URL to check"),
     text: str = typer.Option("", "--text", help="Raw text snippet to check"),
     file_path: Path = typer.Option(None, "--file", help="Local file path to read text from"),
+    threshold: int = typer.Option(
+        DEFAULT_NEAR_THRESHOLD,
+        "--threshold",
+        min=0,
+        max=128,
+        help=f"Near-dup Hamming threshold (default: {DEFAULT_NEAR_THRESHOLD}, engine DEFAULT_NEAR_THRESHOLD)",
+    ),
 ) -> None:
     """Check if a URL or text has already been ingested (exact or near-duplicate check)."""
     state, _ = _bootstrap()
     from awareness.util.hashing import content_hash, simhash128, hamming128
     from awareness.storage.state import DedupRow
-    from sqlalchemy import select
-    
+
     if not url and not text and not file_path:
         rprint("[red]Error: You must provide either --url, --text, or --file to inspect.[/red]")
         return
@@ -3172,6 +3179,7 @@ def dedup_check(
                 
         sh = simhash128(text_content)
         rprint(f"Computed Simhash Value:     [bold cyan]{sh:032x}[/bold cyan]")
+        rprint(f"Near-dup Hamming threshold: [bold cyan]{threshold}[/bold cyan]")
 
         candidates = state.find_near_dup_candidates(sh)
         near_match = None
@@ -3179,7 +3187,7 @@ def dedup_check(
 
         for doc_id, other_sig in candidates:
             dist = hamming128(sh, other_sig)
-            if dist <= 6 and dist < min_dist:
+            if dist <= threshold and dist < min_dist:
                 min_dist = dist
                 near_match = doc_id
 
