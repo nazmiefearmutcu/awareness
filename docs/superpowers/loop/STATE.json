@@ -1,17 +1,17 @@
 {
-  "iteration": 40,
-  "phase": "robots_fetch_metrics_compact_age_spa_robots_kpis",
+  "iteration": 41,
+  "phase": "sitemap_depth_labels_staging_api_spa_compact_kpis",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "fb10cf0",
+  "head_sha": "d09402a",
   "product_shas": [
-    "eac80af",
-    "15943d6",
-    "fb10cf0"
+    "9a5fc69",
+    "948ab5d",
+    "d09402a"
   ],
-  "commits_ahead": 200,
+  "commits_ahead": 204,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): robots network fetch latency+outcomes (eac80af); compact --status oldest age + iceberg.compact_* metrics (15943d6); SPA robots fetch p95/attempts KPIs (fb10cf0). Next: Iceberg compact SPA KPI, sitemap probe latency labels, FTS polish (non-ranking), JSONL staging age API."
+  "notes": "DIVERSE wave (no ranking/unwrap): sitemap probe depth=root|nested on feeds.fetch_* (9a5fc69); GET /staging + status staging age line (948ab5d); SPA Iceberg compact p95/rows KPIs (d09402a). Next: GDELT SPA KPIs, fineweb stream metrics, FTS polish (non-ranking), staging age on dashboard."
 }

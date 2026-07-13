@@ -123,12 +123,15 @@
 | C4+ | scrape/obs | robots.txt network fetch latency + outcome counters | ✅ |
 | C4+ | cli/storage | compact `--status` oldest staging age + `iceberg.compact_*` metrics | ✅ |
 | C4+ | spa | Dashboard robots fetch p95 + attempts KPIs | ✅ |
+| C4+ | scrape/obs | Sitemap probe depth labels (root vs nested) on feed fetch metrics | ✅ |
+| C4+ | api/cli/storage | `GET /staging` backlog + age; `status` staging line | ✅ |
+| C4+ | spa | Dashboard Iceberg compact p95 + compacted rows KPIs | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~200 commits ahead of `main`)
-- **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** Diverse wave — robots fetch metrics (`eac80af`), compact age + compact metrics (`15943d6`), SPA robots fetch KPIs (`fb10cf0`)
+- **Branch:** `loop/continuous-dev` (~204 commits ahead of `main`)
+- **Unit suite:** green (non-slow; datasets skip as configured) — **829 passed, 1 skipped**
+- **Latest:** Diverse wave — sitemap depth labels (`9a5fc69`), GET /staging + status age (`948ab5d`), SPA compact KPIs (`d09402a`)
 
 ## Rules
 
