@@ -18,7 +18,7 @@ import gzip as _gzip
 from collections.abc import AsyncIterator, Iterable, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import feedparser
 import httpx
@@ -121,6 +121,88 @@ def _entry_attr_http_url(
     return None
 
 
+def _media_or_enclosure_urls(entry: Any, base_url: str | None = None) -> list[str]:
+    """Collect http(s) URLs from media:content / media:thumbnail / enclosures.
+
+    feedparser surfaces Media RSS as ``media_content`` / ``media_thumbnail``
+    (list of dicts with ``url``) and RSS ``<enclosure>`` as ``enclosures``
+    (list of dicts with ``href`` or ``url``). Order is preserved so callers
+    can prefer HTML pages over binary blobs when both appear.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _push(raw: Any) -> None:
+        coerced = _coerce_http_url(raw, base_url)
+        if coerced is None or coerced in seen:
+            return
+        seen.add(coerced)
+        out.append(coerced)
+
+    for attr in ("media_content", "media_thumbnail", "enclosures"):
+        items = getattr(entry, attr, None)
+        if items is None and isinstance(entry, dict):
+            items = entry.get(attr)
+        if not items:
+            continue
+        if not isinstance(items, (list, tuple)):
+            items = [items]
+        for item in items:
+            if isinstance(item, dict):
+                _push(item.get("url") or item.get("href"))
+            else:
+                _push(getattr(item, "url", None) or getattr(item, "href", None))
+    # Singular enclosure (some parsers).
+    enc = getattr(entry, "enclosure", None)
+    if enc is None and isinstance(entry, dict):
+        enc = entry.get("enclosure")
+    if isinstance(enc, dict):
+        _push(enc.get("url") or enc.get("href"))
+    elif enc is not None:
+        _push(getattr(enc, "url", None) or getattr(enc, "href", None))
+    return out
+
+
+def _prefer_html_media_url(urls: list[str]) -> str | None:
+    """Prefer a likely HTML page URL among media/enclosure candidates.
+
+    Many podcast/news feeds list the binary enclosure first and an HTML
+    landing page second (or vice versa). Prefer ``text/html``-looking paths
+    (no media extension, or ``.html``/``.htm``) so tail_recrawl fetches an
+    article rather than a naked MP3 when both are present.
+    """
+    if not urls:
+        return None
+    _media_ext = (
+        ".mp3",
+        ".mp4",
+        ".m4a",
+        ".wav",
+        ".ogg",
+        ".flac",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".webp",
+        ".pdf",
+        ".zip",
+        ".gz",
+        ".webm",
+        ".mov",
+    )
+
+    def _looks_html(u: str) -> bool:
+        path = urlsplit(u).path.lower() if u else ""
+        # Binary / asset extensions are not article pages.
+        return not any(path.endswith(ext) for ext in _media_ext)
+
+    for u in urls:
+        if _looks_html(u):
+            return u
+    return urls[0]
+
+
 def entry_primary_url(entry: Any, base_url: str | None = None) -> str | None:
     """Best article URL from a feedparser entry (RSS link or Atom links[]).
 
@@ -137,6 +219,9 @@ def entry_primary_url(entry: Any, base_url: str | None = None) -> str | None:
     4. ``entry.id`` / ``entry.guid`` when that value is itself an http(s) URL
        (common when publishers put the permalink only in ``guid`` / Atom
        ``id``).
+    5. ``media:content`` / ``media:thumbnail`` / RSS ``enclosure`` http(s)
+       URLs (podcasts and media-heavy feeds that omit ``link``). Prefer an
+       HTML-looking candidate when several are listed.
 
     Returns ``None`` when no usable URL is present.
     """
@@ -187,6 +272,13 @@ def entry_primary_url(entry: Any, base_url: str | None = None) -> str | None:
         coerced = _coerce_http_url(value, base_url)
         if coerced is not None:
             return coerced
+
+    # Media RSS / enclosure: last resort so podcast and media-only entries
+    # still enqueue a fetchable URL for the tail (avoids silent drop).
+    media_urls = _media_or_enclosure_urls(entry, base_url=base_url)
+    preferred = _prefer_html_media_url(media_urls)
+    if preferred is not None:
+        return preferred
     return None
 
 

@@ -487,6 +487,64 @@ def test_entry_primary_url_ignores_non_http_origlink() -> None:
     assert entry_primary_url(entry) == "https://example.com/via-link"
 
 
+def test_entry_primary_url_falls_back_to_media_content() -> None:
+    """Podcast/media RSS often puts the only http URL on media:content."""
+    entry = SimpleNamespace(
+        link=None,
+        links=[],
+        id="tag:example.com,2026:ep-1",
+        media_content=[{"url": "https://cdn.example.com/episodes/1.mp3", "type": "audio/mpeg"}],
+    )
+    assert entry_primary_url(entry) == "https://cdn.example.com/episodes/1.mp3"
+
+
+def test_entry_primary_url_falls_back_to_enclosure() -> None:
+    """RSS enclosure url is used when link/guid are missing or non-http."""
+    entry = SimpleNamespace(
+        link=None,
+        links=[],
+        id="urn:uuid:abcd",
+        enclosures=[{"href": "https://files.example.com/a.pdf", "type": "application/pdf"}],
+    )
+    assert entry_primary_url(entry) == "https://files.example.com/a.pdf"
+
+
+def test_entry_primary_url_media_prefers_html_over_media_blob() -> None:
+    """When media_content lists several URLs, prefer an HTML page if present."""
+    entry = SimpleNamespace(
+        link=None,
+        links=[],
+        media_content=[
+            {"url": "https://cdn.example.com/a.jpg", "type": "image/jpeg"},
+            {"url": "https://news.example.com/story/1", "type": "text/html"},
+        ],
+    )
+    assert entry_primary_url(entry) == "https://news.example.com/story/1"
+
+
+def test_entry_primary_url_link_beats_media_content() -> None:
+    """Article link always wins over media/enclosure fallbacks."""
+    entry = SimpleNamespace(
+        link="https://example.com/article",
+        links=[],
+        media_content=[{"url": "https://cdn.example.com/x.mp3"}],
+        enclosures=[{"href": "https://cdn.example.com/x.mp3"}],
+    )
+    assert entry_primary_url(entry) == "https://example.com/article"
+
+
+def test_entry_primary_url_media_resolves_relative_against_base() -> None:
+    entry = SimpleNamespace(
+        link=None,
+        links=[],
+        media_content=[{"url": "/media/story.mp3"}],
+    )
+    assert (
+        entry_primary_url(entry, base_url="https://podcast.example.com/feed.xml")
+        == "https://podcast.example.com/media/story.mp3"
+    )
+
+
 def test_dedupe_feed_urls_collapses_canonical_variants() -> None:
     urls = [
         "https://example.com/a",
