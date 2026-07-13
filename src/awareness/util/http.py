@@ -17,6 +17,7 @@ Also exposes:
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -30,6 +31,56 @@ from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
 
 logger = get_logger("util.http")
+
+# Charset sniffing: Content-Type header, HTML meta, then optional detector.
+_CHARSET_PARAM_RE = re.compile(
+    r"charset\s*=\s*['\"]?([a-zA-Z0-9_.:\-]+)",
+    re.IGNORECASE,
+)
+# HTML5 <meta charset="…"> and HTML4 http-equiv Content-Type.
+_META_CHARSET_RE = re.compile(
+    rb"""<meta\b[^>]*?\bcharset\s*=\s*['"]?\s*([a-zA-Z0-9_.:\-]+)""",
+    re.IGNORECASE,
+)
+_META_HTTP_EQUIV_RE = re.compile(
+    rb"""<meta\b[^>]*?\bhttp-equiv\s*=\s*['"]?\s*content-type['"]?[^>]*?\bcontent\s*=\s*['"][^'"]*?\bcharset\s*=\s*([a-zA-Z0-9_.:\-]+)""",
+    re.IGNORECASE,
+)
+# Alternate order: content= before http-equiv.
+_META_HTTP_EQUIV_RE_ALT = re.compile(
+    rb"""<meta\b[^>]*?\bcontent\s*=\s*['"][^'"]*?\bcharset\s*=\s*([a-zA-Z0-9_.:\-]+)[^'"]*['"][^>]*?\bhttp-equiv\s*=\s*['"]?\s*content-type""",
+    re.IGNORECASE,
+)
+# Aliases publishers still emit; map to codecs Python knows.
+_CHARSET_ALIASES: dict[str, str] = {
+    "utf8": "utf-8",
+    "utf-8": "utf-8",
+    "utf_8": "utf-8",
+    "ascii": "ascii",
+    "us-ascii": "ascii",
+    "latin1": "latin-1",
+    "latin-1": "latin-1",
+    "iso-8859-1": "latin-1",
+    "iso8859-1": "latin-1",
+    "iso_8859_1": "latin-1",
+    "iso-8859-9": "iso-8859-9",
+    "iso8859-9": "iso-8859-9",
+    "windows-1252": "cp1252",
+    "cp1252": "cp1252",
+    "win-1252": "cp1252",
+    "windows-1254": "cp1254",
+    "cp1254": "cp1254",
+    "gb2312": "gb18030",
+    "gbk": "gb18030",
+    "gb18030": "gb18030",
+    "big5": "big5",
+    "shift_jis": "shift_jis",
+    "shift-jis": "shift_jis",
+    "sjis": "shift_jis",
+    "euc-jp": "euc_jp",
+    "euc-kr": "euc_kr",
+    "koi8-r": "koi8-r",
+}
 
 # Status codes worth retrying (transient/overload). A 404/410 is permanent.
 # 408 Request Timeout is transient (client may retry with the same request).
@@ -338,3 +389,152 @@ async def get_with_retries(
         )
         return resp
     raise RetryableHTTPError(f"{url} failed transiently after {max_attempts} attempts: {last_exc}")
+
+
+def normalize_charset_label(label: str | None) -> str | None:
+    """Map a charset label to a Python codec name, or ``None`` if empty/unknown."""
+    if not label:
+        return None
+    raw = label.strip().strip("\"'").lower().replace("_", "-")
+    if not raw:
+        return None
+    # Normalize separators for alias table (utf_8 / utf-8 / utf8).
+    compact = raw.replace("-", "").replace("_", "")
+    for key, codec in _CHARSET_ALIASES.items():
+        if key.replace("-", "").replace("_", "") == compact:
+            return codec
+    # Accept labels Python codecs already know.
+    try:
+        import codecs  # noqa: PLC0415
+
+        codecs.lookup(raw)
+        return raw
+    except LookupError:
+        # Try underscore form (e.g. shift_jis).
+        underscored = raw.replace("-", "_")
+        try:
+            import codecs  # noqa: PLC0415
+
+            codecs.lookup(underscored)
+            return underscored
+        except LookupError:
+            return None
+
+
+def charset_from_content_type(content_type: str | None) -> str | None:
+    """Extract charset from a ``Content-Type`` header value."""
+    if not content_type:
+        return None
+    m = _CHARSET_PARAM_RE.search(content_type)
+    if not m:
+        return None
+    return normalize_charset_label(m.group(1))
+
+
+def charset_from_html_meta(body: bytes, *, peek: int = 8192) -> str | None:
+    """Extract charset from HTML ``<meta charset>`` / http-equiv in the document head.
+
+    Only the first ``peek`` bytes are scanned (default 8 KiB) so large bodies
+    do not pay a full scan. Returns a normalized codec name or ``None``.
+    """
+    if not body:
+        return None
+    head = body[: max(256, int(peek))]
+    for pattern in (_META_CHARSET_RE, _META_HTTP_EQUIV_RE, _META_HTTP_EQUIV_RE_ALT):
+        m = pattern.search(head)
+        if m:
+            try:
+                label = m.group(1).decode("ascii", errors="ignore")
+            except Exception:  # noqa: BLE001 — defensive
+                label = ""
+            codec = normalize_charset_label(label)
+            if codec:
+                return codec
+    return None
+
+
+def _try_decode(body: bytes, codec: str) -> str | None:
+    """Decode *body* with *codec*; return ``None`` on hard failure.
+
+    UTF-8 / ASCII use strict errors so we can fall through to other encodings
+    when the label is wrong. Other codecs use ``replace`` only after a strict
+    attempt fails? No — for declared charsets we prefer replace so pages still
+    yield text. Callers pass only labels they trust (header/meta).
+    """
+    try:
+        # Strict first: reject clearly-wrong labels for multi-byte families.
+        return body.decode(codec, errors="strict")
+    except UnicodeDecodeError:
+        try:
+            return body.decode(codec, errors="replace")
+        except (LookupError, ValueError):
+            return None
+    except (LookupError, ValueError):
+        return None
+
+
+def decode_http_text(
+    body: bytes,
+    *,
+    content_type: str | None = None,
+    peek_html_meta: bool = True,
+    use_detector: bool = True,
+) -> tuple[str, str]:
+    """Decode an HTTP response body to text with best-effort charset detection.
+
+    Priority:
+      1. ``Content-Type`` charset parameter
+      2. HTML ``<meta charset>`` / http-equiv (when ``peek_html_meta``)
+      3. Strict UTF-8 (BOM stripped) when the body is valid UTF-8
+      4. ``charset_normalizer`` detection (when ``use_detector`` and installed)
+      5. UTF-8 with ``errors=replace``
+
+    Returns ``(text, encoding_label)`` where *encoding_label* is the codec
+    actually used (or ``utf-8-replace`` for the final fallback). Empty bodies
+    return ``("", "utf-8")``.
+    """
+    if not body:
+        return "", "utf-8"
+
+    # Strip UTF-8 BOM early so meta/header paths see clean bytes.
+    if body.startswith(b"\xef\xbb\xbf"):
+        body = body[3:]
+        # BOM is a strong UTF-8 signal — try it first.
+        try:
+            return body.decode("utf-8"), "utf-8"
+        except UnicodeDecodeError:
+            pass
+
+    candidates: list[str] = []
+    for label in (
+        charset_from_content_type(content_type),
+        charset_from_html_meta(body) if peek_html_meta else None,
+    ):
+        if label and label not in candidates:
+            candidates.append(label)
+
+    for codec in candidates:
+        text = _try_decode(body, codec)
+        if text is not None:
+            return text, codec
+
+    # Prefer clean UTF-8 when the body is well-formed (common for modern sites
+    # that omit charset entirely).
+    try:
+        return body.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        pass
+
+    if use_detector:
+        try:
+            from charset_normalizer import from_bytes  # noqa: PLC0415
+
+            best = from_bytes(body).best()
+            if best is not None:
+                enc = normalize_charset_label(getattr(best, "encoding", None)) or "utf-8"
+                text = str(best)
+                return text, enc
+        except Exception as exc:  # noqa: BLE001 — detector is best-effort
+            logger.debug("charset_detect_failed", err=str(exc))
+
+    return body.decode("utf-8", errors="replace"), "utf-8-replace"

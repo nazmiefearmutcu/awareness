@@ -35,6 +35,7 @@ from awareness.util.hashing import (
 )
 from awareness.util.http import (
     RetryableHTTPError,
+    decode_http_text,
     get_shared_async_client,
     get_with_retries,
 )
@@ -167,7 +168,13 @@ class TailRecrawlAdapter(Adapter):
         if "html" not in ctype.lower() and "xml" not in ctype.lower() and "text" not in ctype.lower():
             return
 
-        html = r.text
+        # Prefer Content-Type / HTML meta charset over httpx's r.text heuristic
+        # so Latin-1 / Windows-125x / CJK pages extract without mojibake.
+        html, encoding = decode_http_text(r.content, content_type=ctype or None)
+        get_metrics().inc(
+            "tail.decode_charset",
+            labels={"encoding": (encoding or "unknown")[:32]},
+        )
         source_kind = partition.payload.get("source_kind")
         min_chars = resolve_text_min_chars(
             settings,
