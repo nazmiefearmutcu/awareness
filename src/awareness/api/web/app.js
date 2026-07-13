@@ -382,26 +382,27 @@ function renderCapsDiagnostics(data, isSearch) {
 }
 
 
-/** Domain facet chips under the search box (from search facets.domains). */
+/** Domain + source facet chips under the search box (facets.domains / facets.sources). */
 function renderCapsFacets(data, isSearch) {
   const box = $("#caps-facets");
   if (!box) return;
   clear(box);
-  const domains = isSearch && data && data.facets && Array.isArray(data.facets.domains)
-    ? data.facets.domains
-    : [];
-  if (!domains.length) {
+  const facets = isSearch && data && data.facets ? data.facets : null;
+  const domains = facets && Array.isArray(facets.domains) ? facets.domains : [];
+  const sources = facets && Array.isArray(facets.sources) ? facets.sources : [];
+  if (!domains.length && !sources.length) {
     box.hidden = true;
     return;
   }
-  const active = ($("#caps-domain")?.value || "").trim().toLowerCase();
+
+  const activeDomain = ($("#caps-domain")?.value || "").trim().toLowerCase();
   for (const item of domains) {
     const dom = String(item.domain || item.Domain || "").trim();
     if (!dom) continue;
     const n = item.n != null ? Number(item.n) : null;
     const chip = el("button", {
       type: "button",
-      class: "facet-chip" + (active && active === dom.toLowerCase() ? " is-active" : ""),
+      class: "facet-chip" + (activeDomain && activeDomain === dom.toLowerCase() ? " is-active" : ""),
       title: n != null ? `${dom} (${n} matches)` : dom,
       onclick: () => {
         const field = $("#caps-domain");
@@ -421,6 +422,44 @@ function renderCapsFacets(data, isSearch) {
     }
     box.appendChild(chip);
   }
+
+  const activeSource = ($("#caps-source")?.value || "").trim().toLowerCase();
+  for (const item of sources) {
+    const src = String(item.source_type || item.source || "").trim();
+    if (!src) continue;
+    const n = item.n != null ? Number(item.n) : null;
+    const chip = el("button", {
+      type: "button",
+      class: "facet-chip facet-chip-source"
+        + (activeSource && activeSource === src.toLowerCase() ? " is-active" : ""),
+      title: n != null ? `source ${src} (${n} matches)` : `source ${src}`,
+      onclick: () => {
+        const field = $("#caps-source");
+        if (!field) return;
+        // Ensure the select has an option for this source_type (API may return
+        // kinds not in the static list).
+        const hasOpt = Array.from(field.options || []).some(
+          (o) => (o.value || "").toLowerCase() === src.toLowerCase()
+        );
+        if (!hasOpt) {
+          field.appendChild(el("option", { value: src, text: src }));
+        }
+        // Toggle: second click on the active chip clears the source filter.
+        if ((field.value || "").trim().toLowerCase() === src.toLowerCase()) {
+          field.value = "";
+        } else {
+          field.value = src;
+        }
+        void loadCaptures(true);
+      },
+    });
+    chip.appendChild(document.createTextNode(src));
+    if (n != null && !Number.isNaN(n)) {
+      chip.appendChild(el("span", { class: "facet-n", text: String(n) }));
+    }
+    box.appendChild(chip);
+  }
+
   box.hidden = box.childNodes.length === 0;
 }
 

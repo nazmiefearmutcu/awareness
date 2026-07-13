@@ -754,6 +754,13 @@ code {
 }
 .facet-chip.is-active .facet-n { color: var(--fg-dim); }
 
+/* Source-type chips sit next to domain chips; subtle tint distinguishes kind. */
+.facet-chip-source {
+  border-style: dashed;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+}
+
 .filters {
   display: flex;
   flex-wrap: wrap;
