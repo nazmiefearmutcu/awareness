@@ -1,11 +1,11 @@
 {
-  "iteration": 5,
-  "phase": "scrape",
+  "iteration": 6,
+  "phase": "systems",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "commits_ahead": 54,
-  "unit_suite": "green (not slow); 1 skipped datasets",
+  "commits_ahead": 55,
+  "unit_suite": "414 green (not slow); datasets skipped as configured",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "C3-T5 crawl-delay/limiter race fixed via next_allowed_at; C3-T4 pagination landed. Next: streaming WET / seed discovery."
+  "notes": "C3 complete for FTS incremental, pagination, crawl-delay, sitemaps (C3-T1/T4/T5/T6). Next: streaming WET parse (C3-T3)."
 }

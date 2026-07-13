@@ -62,13 +62,19 @@
 | C3-T2 | dedup | Union-find cluster resolve for near-dups | ✅ |
 | C3-T4 | search | Pagination correctness after collapse/rerank | ✅ |
 | C3-T5 | scrape | Honor robots crawl-delay under concurrency (limiter race) | ✅ |
+| C3-T6 | scrape | Seed discovery (robots Sitemap: + feed probe) | ✅ |
 
 ## Next backlog (Cycle 3+)
 
 | ID | Area | Task | Status |
 |----|------|------|--------|
 | C3-T3 | systems | Streaming WET parse (bounded memory) | pending |
-| C3-T6 | scrape | Seed discovery (robots Sitemap: + feed probe) | pending |
+
+## Progress snapshot
+
+- **Branch:** `loop/continuous-dev` (~55 commits ahead of `main`)
+- **Unit suite:** 414 tests green (non-slow; datasets skip as configured)
+- **Cycle 3 landed:** FTS incremental (C3-T1), pagination (C3-T4), crawl-delay (C3-T5), sitemaps (C3-T6)
 
 ## Rules
 
