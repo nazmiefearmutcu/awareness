@@ -47,6 +47,17 @@ const ago = (iso, short = true) => {
 };
 const isoDay = (d) => new Date(d).toISOString().slice(0, 10);
 
+/** Human label for API search mode. Pure — no DOM. */
+function formatSearchModeLabel(mode, ranked = false) {
+  const m = String(mode || "").toLowerCase();
+  if (m === "fts") return ranked ? "FTS · ranked" : "FTS";
+  if (m === "prefix") return "prefix fallback";
+  if (m === "substring") return "substring";
+  if (m === "auto") return ranked ? "auto · FTS ranked" : "auto";
+  if (ranked) return "FTS · ranked";
+  return m || "search";
+}
+
 function isHttpUrl(url) {
   return url.protocol === "http:" || url.protocol === "https:";
 }
@@ -298,11 +309,13 @@ async function loadCaptures(reset = false) {
   if (start) params.set("start", start);
   if (end) params.set("end", end);
   const hideDups = !!$("#caps-unique")?.checked;
+  const modeSel = ($("#caps-mode")?.value || "auto").trim().toLowerCase();
 
   const isSearch = !!q;
   let url;
   if (isSearch) {
     params.set("q", q);
+    params.set("mode", modeSel || "auto");
     url = "/search?" + params.toString();
   } else {
     if (hideDups) params.set("unique", "group");
@@ -316,8 +329,8 @@ async function loadCaptures(reset = false) {
     const from = data.total ? caps.offset + 1 : 0;
     const to = Math.min(caps.offset + (data.rows || []).length, data.total);
     if (isSearch) {
-      const mode = data.ranked ? "BM25-ranked" : "fallback substring";
-      meta.textContent = `${from}–${to} of ${fmt(data.total)} matches · ${mode}`;
+      const modeLabel = formatSearchModeLabel(data.mode, !!data.ranked);
+      meta.textContent = `${from}–${to} of ${fmt(data.total)} matches · ${modeLabel}`;
     } else {
       const fold = hideDups ? " · unique groups" : "";
       meta.textContent = `${from}–${to} of ${fmt(data.total)} captures · chronological${fold}`;
@@ -1503,6 +1516,7 @@ $("#caps-reset")?.addEventListener("click", () => {
   $("#caps-start").value = "";
   $("#caps-end").value = "";
   if ($("#caps-unique")) $("#caps-unique").checked = false;
+  if ($("#caps-mode")) $("#caps-mode").value = "auto";
   loadCaptures(true);
 });
 $("#caps-search")?.addEventListener("input", () => {
@@ -1510,6 +1524,7 @@ $("#caps-search")?.addEventListener("input", () => {
   capsSearchTimer = setTimeout(() => loadCaptures(true), 300);
 });
 $("#caps-source")?.addEventListener("change", () => loadCaptures(true));
+$("#caps-mode")?.addEventListener("change", () => loadCaptures(true));
 $("#caps-unique")?.addEventListener("change", () => loadCaptures(true));
 $("#caps-prev")?.addEventListener("click", () => { caps.offset = Math.max(0, caps.offset - caps.limit); loadCaptures(false); });
 $("#caps-next")?.addEventListener("click", () => { caps.offset += caps.limit; loadCaptures(false); });

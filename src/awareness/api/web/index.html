@@ -202,6 +202,15 @@
           <span class="field-label">To</span>
           <input id="caps-end" type="date" />
         </label>
+        <label class="field">
+          <span class="field-label">Mode</span>
+          <select id="caps-mode" aria-label="Search mode">
+            <option value="auto">Auto</option>
+            <option value="fts">FTS</option>
+            <option value="prefix">Prefix</option>
+            <option value="substring">Substring</option>
+          </select>
+        </label>
         <label class="field field-check" title="Collapse near/exact duplicates (unique=group)">
           <input id="caps-unique" type="checkbox" />
           <span>Hide duplicates</span>
