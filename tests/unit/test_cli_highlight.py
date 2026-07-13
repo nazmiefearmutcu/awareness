@@ -281,9 +281,34 @@ def test_browse_source_filter_case_insensitive(tmp_project: Path) -> None:
     assert rss_upper.exit_code == 0
     assert "RSS climate brief" in rss_upper.output
     assert "GDELT markets brief" not in rss_upper.output
+    assert "source=rss" in rss_upper.output  # pager title surfaces active filter
 
     gdelt_mixed = runner.invoke(app, ["browse", "--source", "Gdelt"], input="q\n")
     assert gdelt_mixed.exit_code == 0
     assert "GDELT markets brief" in gdelt_mixed.output
     assert "RSS climate brief" not in gdelt_mixed.output
+    assert "source=gdelt" in gdelt_mixed.output
+
+
+def test_browse_domain_filter_surfaces_in_title(tmp_project: Path) -> None:
+    """browse --domain is case-insensitive and labels the pager title."""
+    _write_doc(
+        tmp_project,
+        40,
+        title="Example climate note",
+        text="Example body about climate.",
+        domain="example.com",
+    )
+    _write_doc(
+        tmp_project,
+        41,
+        title="Other markets note",
+        text="Other body about markets.",
+        domain="other.com",
+    )
+    result = runner.invoke(app, ["browse", "--domain", "Example.COM"], input="q\n")
+    assert result.exit_code == 0
+    assert "domain=example.com" in result.output
+    assert "Example climate note" in result.output
+    assert "Other markets note" not in result.output
 

@@ -2674,11 +2674,25 @@ def browse(
         if not rows:
             if offset == 0:
                 range_hint = ""
-                if start_dt is not None or end_dt is not None or lang_filter:
+                if (
+                    start_dt is not None
+                    or end_dt is not None
+                    or lang_filter
+                    or domain
+                    or source
+                ):
+                    extras = []
+                    if lang_filter:
+                        extras.append(f"lang={lang_filter}")
+                    if domain:
+                        extras.append(f"domain={str(domain).strip().lower()}")
+                    if source:
+                        extras.append(f"source={str(source).strip().lower()}")
+                    extra_sql = (", " + ", ".join(extras)) if extras else ""
                     range_hint = (
                         f" (filters: start={start_dt or '−∞'}, end={end_dt}"
-                        f"{f', lang={lang_filter}' if lang_filter else ''}; "
-                        "try widening --start/--end or --lang)"
+                        f"{extra_sql}; "
+                        "try widening --start/--end/--lang/--source/--domain)"
                     )
                 rprint(f"[yellow]No captures found in this range.{range_hint}[/yellow]")
                 break
@@ -2687,13 +2701,15 @@ def browse(
                 offset = max(0, offset - limit)
                 continue
                 
-        # Display table (surface active unique fold + language so operators see mode)
+        # Display table (surface active unique fold + filters so operators see mode)
         unique_label = f" unique={unique_mode}" if unique_mode != "none" else ""
         lang_label = f" lang={lang_filter}" if lang_filter else ""
+        domain_label = f" domain={str(domain).strip().lower()}" if domain else ""
+        source_label = f" source={str(source).strip().lower()}" if source else ""
         table = Table(
             title=(
                 f"Awareness Documents - Page {offset // limit + 1} "
-                f"(Offset: {offset}{unique_label}{lang_label})"
+                f"(Offset: {offset}{unique_label}{lang_label}{domain_label}{source_label})"
             )
         )
         table.add_column("#", justify="center", style="yellow")
