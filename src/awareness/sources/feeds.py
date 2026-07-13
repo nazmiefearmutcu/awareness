@@ -15,6 +15,7 @@ sub-partition that actually fetches the page (tail_recrawl).
 from __future__ import annotations
 
 import gzip as _gzip
+import json
 from collections.abc import AsyncIterator, Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -45,9 +46,10 @@ logger = get_logger("sources.feeds")
 SEEN_URLS_CAP = 5000
 
 # Content negotiation: many CDNs gate XML feeds without a sensible Accept.
+# Prefer RSS/Atom, then JSON Feed (https://www.jsonfeed.org/), then generic XML.
 FEED_ACCEPT = (
-    "application/rss+xml, application/atom+xml, application/xml;q=0.9, "
-    "text/xml;q=0.8, */*;q=0.1"
+    "application/rss+xml, application/atom+xml, application/feed+json;q=0.95, "
+    "application/json;q=0.9, application/xml;q=0.85, text/xml;q=0.8, */*;q=0.1"
 )
 SITEMAP_ACCEPT = "application/xml, text/xml, application/gzip, */*;q=0.1"
 
@@ -201,6 +203,80 @@ def _prefer_html_media_url(urls: list[str]) -> str | None:
         if _looks_html(u):
             return u
     return urls[0]
+
+
+def json_feed_item_url(item: Any, base_url: str | None = None) -> str | None:
+    """Best article URL from a JSON Feed 1.x item.
+
+    Preference order (JSON Feed 1.1):
+      1. ``url`` — primary permalink for the item
+      2. ``external_url`` — related/canonical page when the feed hosts a summary
+      3. ``id`` when that value is itself an http(s) URL
+
+    Returns ``None`` when no usable http(s) URL is present.
+    """
+    if not isinstance(item, dict):
+        return None
+    for key in ("url", "external_url", "id"):
+        coerced = _coerce_http_url(item.get(key), base_url)
+        if coerced is not None:
+            return coerced
+    return None
+
+
+def parse_json_feed_urls(body: bytes | str, base_url: str | None = None) -> list[str] | None:
+    """Extract item URLs from a JSON Feed document, or ``None`` if not JSON Feed.
+
+    Detects JSON Feed by a top-level ``version`` containing ``jsonfeed.org``
+    and/or an ``items`` array of objects. Plain JSON arrays/objects without
+    that shape return ``None`` so callers can fall through to feedparser.
+    Relative item URLs resolve against *base_url* (the feed document URL).
+    """
+    if not body:
+        return None
+    if isinstance(body, bytes):
+        # Skip obvious non-JSON (XML feeds start with ``<`` or whitespace+``<``).
+        sample = body.lstrip()[:1]
+        if sample and sample not in (b"{", b"["):
+            return None
+        try:
+            text = body.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = body.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                return None
+    else:
+        text = body
+    stripped = text.lstrip()
+    if not stripped or stripped[0] not in "{[":
+        return None
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    version = data.get("version")
+    items = data.get("items")
+    looks_json_feed = False
+    if isinstance(version, str) and "jsonfeed" in version.lower():
+        looks_json_feed = True
+    elif isinstance(items, list) and items and isinstance(items[0], dict):
+        # Heuristic: items look like JSON Feed entries (url/id/title keys).
+        sample_keys = set(items[0].keys())
+        if sample_keys & {"url", "external_url", "content_html", "content_text", "id"}:
+            looks_json_feed = True
+    if not looks_json_feed:
+        return None
+    if not isinstance(items, list):
+        return []
+    out: list[str] = []
+    for item in items:
+        link = json_feed_item_url(item, base_url=base_url)
+        if link:
+            out.append(link)
+    return out
 
 
 def entry_primary_url(entry: Any, base_url: str | None = None) -> str | None:
@@ -478,6 +554,13 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
     except httpx.HTTPError as exc:
         logger.warning("feed_fetch_failed", url=url, err=str(exc))
         return []
+    # JSON Feed (https://www.jsonfeed.org/) — try before feedparser so modern
+    # application/feed+json responses are not silently dropped as empty RSS.
+    json_urls = parse_json_feed_urls(body, base_url=url)
+    if json_urls is not None:
+        get_metrics().inc("feeds.json_feed_parsed", labels={"kind": "json"})
+        return dedupe_feed_urls(json_urls)
+
     parsed = feedparser.parse(body)
     out: list[str] = []
     for entry in parsed.entries:

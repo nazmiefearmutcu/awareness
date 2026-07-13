@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -17,6 +18,8 @@ from awareness.sources.feeds import (
     _read_sitemap,
     dedupe_feed_urls,
     entry_primary_url,
+    json_feed_item_url,
+    parse_json_feed_urls,
 )
 from awareness.util.http import (
     RetryableHTTPError,
@@ -387,6 +390,43 @@ async def test_read_feed_accepts_gzip_body(monkeypatch: pytest.MonkeyPatch) -> N
     assert urls == ["https://example.com/story/1"]
 
 
+JSON_FEED_OK = json.dumps(
+    {
+        "version": "https://jsonfeed.org/version/1.1",
+        "title": "Example JSON Feed",
+        "home_page_url": "https://example.com/",
+        "feed_url": "https://example.com/feed.json",
+        "items": [
+            {"id": "1", "url": "https://example.com/json-story/1", "title": "One"},
+            {"id": "2", "url": "https://example.com/json-story/2", "title": "Two"},
+            # Relative path resolves against the feed URL.
+            {"id": "3", "url": "/json-story/3", "title": "Three"},
+        ],
+    }
+).encode()
+
+
+@pytest.mark.asyncio
+async def test_read_feed_json_feed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """JSON Feed 1.x bodies yield item urls (not silently empty via feedparser)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=JSON_FEED_OK,
+            headers={"Content-Type": "application/feed+json"},
+        )
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+
+    urls = await _read_feed("https://example.com/feed.json", "TestBot/1.0")
+    assert urls == [
+        "https://example.com/json-story/1",
+        "https://example.com/json-story/2",
+        "https://example.com/json-story/3",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_read_sitemap_accepts_gzip_body(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
@@ -543,6 +583,81 @@ def test_entry_primary_url_media_resolves_relative_against_base() -> None:
         entry_primary_url(entry, base_url="https://podcast.example.com/feed.xml")
         == "https://podcast.example.com/media/story.mp3"
     )
+
+
+def test_json_feed_item_url_prefers_url_then_external() -> None:
+    assert (
+        json_feed_item_url({"url": "https://example.com/a", "external_url": "https://other.example/a"})
+        == "https://example.com/a"
+    )
+    assert (
+        json_feed_item_url({"external_url": "https://example.com/ext", "id": "https://example.com/id"})
+        == "https://example.com/ext"
+    )
+    assert json_feed_item_url({"id": "https://example.com/id-only"}) == "https://example.com/id-only"
+    assert json_feed_item_url({"id": "urn:uuid:abc"}) is None
+    assert json_feed_item_url({"title": "no url"}) is None
+    assert json_feed_item_url(None) is None  # type: ignore[arg-type]
+
+
+def test_json_feed_item_url_resolves_relative() -> None:
+    assert (
+        json_feed_item_url({"url": "/story/1"}, base_url="https://blog.example.com/feed.json")
+        == "https://blog.example.com/story/1"
+    )
+
+
+def test_parse_json_feed_urls_extracts_items() -> None:
+    body = json.dumps(
+        {
+            "version": "https://jsonfeed.org/version/1.1",
+            "title": "Example",
+            "items": [
+                {"id": "1", "url": "https://example.com/a"},
+                {"id": "2", "external_url": "https://example.com/b"},
+                {"id": "https://example.com/c"},
+                {"id": "urn:skip", "title": "no http"},
+            ],
+        }
+    ).encode()
+    assert parse_json_feed_urls(body) == [
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://example.com/c",
+    ]
+
+
+def test_parse_json_feed_urls_heuristic_without_version() -> None:
+    """Items with url keys count as JSON Feed even if version is omitted."""
+    body = json.dumps(
+        {
+            "title": "No version",
+            "items": [
+                {"id": "1", "url": "https://example.com/x", "content_text": "hi"},
+            ],
+        }
+    )
+    assert parse_json_feed_urls(body) == ["https://example.com/x"]
+
+
+def test_parse_json_feed_urls_rejects_non_feed_json() -> None:
+    assert parse_json_feed_urls(b'{"foo": 1}') is None
+    assert parse_json_feed_urls(b"[1, 2, 3]") is None
+    assert parse_json_feed_urls(b"<?xml version='1.0'?><rss/>") is None
+    assert parse_json_feed_urls(b"") is None
+    assert parse_json_feed_urls(b"not json at all") is None
+
+
+def test_parse_json_feed_urls_resolves_relative_against_base() -> None:
+    body = json.dumps(
+        {
+            "version": "https://jsonfeed.org/version/1",
+            "items": [{"id": "1", "url": "/posts/1"}],
+        }
+    ).encode()
+    assert parse_json_feed_urls(body, base_url="https://blog.example.com/feed.json") == [
+        "https://blog.example.com/posts/1"
+    ]
 
 
 def test_dedupe_feed_urls_collapses_canonical_variants() -> None:
@@ -719,4 +834,5 @@ async def test_read_sitemap_resolves_relative_locs(
 def test_feed_accept_headers_declare_xml_types() -> None:
     assert "rss" in FEED_ACCEPT.lower()
     assert "atom" in FEED_ACCEPT.lower()
+    assert "feed+json" in FEED_ACCEPT.lower() or "json" in FEED_ACCEPT.lower()
     assert "xml" in SITEMAP_ACCEPT.lower()
