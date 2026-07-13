@@ -12,6 +12,7 @@ Politeness:
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from urllib.parse import urljoin
 
@@ -135,6 +136,10 @@ class TailRecrawlAdapter(Adapter):
         crawl_delay = robots.crawl_delay(url)
         # Order: robots already checked → domain limiter (delay + slot) →
         # get_with_retries (process-wide fetch slot around each GET only).
+        metrics = get_metrics()
+        t_fetch = time.perf_counter()
+        fetch_outcome = "ok"
+        r: httpx.Response | None = None
         async with limiter.domain(dom, override_delay=crawl_delay):
             try:
                 # Pooled client; follow_redirects=False so each hop stays public.
@@ -147,21 +152,41 @@ class TailRecrawlAdapter(Adapter):
                     client, url, headers={"User-Agent": context.user_agent}
                 )
                 if r is None:
-                    get_metrics().inc("tail.blocked_internal_url", labels={"domain": dom})
-                    return
+                    fetch_outcome = "blocked_redirect"
+                    metrics.inc("tail.blocked_internal_url", labels={"domain": dom})
+                elif r.status_code >= 400 or not r.content:
+                    fetch_outcome = "non_200"
             except RetryableHTTPError:
                 # Transient failure exhausted retries — task layer requeues.
-                get_metrics().inc("tail.fetch_errors", labels={"domain": dom})
-                get_metrics().inc("tail.retryable_http_error", labels={"domain": dom})
+                fetch_outcome = "retryable_error"
+                metrics.inc("tail.fetch_errors", labels={"domain": dom})
+                metrics.inc("tail.retryable_http_error", labels={"domain": dom})
                 raise
             except httpx.HTTPError as exc:
+                fetch_outcome = "network_error"
                 logger.warning("tail_fetch_failed", url=url, err=str(exc))
-                get_metrics().inc("tail.fetch_errors", labels={"domain": dom})
-                return
+                metrics.inc("tail.fetch_errors", labels={"domain": dom})
+            finally:
+                fetch_elapsed = max(0.0, time.perf_counter() - t_fetch)
+                metrics.inc(
+                    "tail.fetch_attempts",
+                    labels={"outcome": fetch_outcome, "domain": dom},
+                )
+                metrics.observe(
+                    "tail.fetch_seconds",
+                    fetch_elapsed,
+                    labels={"outcome": fetch_outcome},
+                )
 
-        get_metrics().inc("tail.fetches", labels={"domain": dom})
-        if r.status_code >= 400 or not r.content:
-            get_metrics().inc("tail.fetch_non_200", labels={"domain": dom, "status": str(r.status_code)})
+        if r is None or fetch_outcome in ("blocked_redirect", "network_error"):
+            return
+
+        metrics.inc("tail.fetches", labels={"domain": dom})
+        if fetch_outcome == "non_200":
+            metrics.inc(
+                "tail.fetch_non_200",
+                labels={"domain": dom, "status": str(r.status_code)},
+            )
             return
 
         ctype = r.headers.get("Content-Type", "")
