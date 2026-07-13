@@ -1,12 +1,12 @@
 {
-  "iteration": 24,
-  "phase": "url_phrase_rerank_wayback_translate_identity",
+  "iteration": 25,
+  "phase": "title_exact_rerank_fb_google_redirect_identity",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "d872bb514b98f20ef658f9ec270aced7216fee8b",
-  "commits_ahead": 142,
+  "head_sha": "2396d36a7d4d2b0e3489a6560acd035a56c26b63",
+  "commits_ahead": 145,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed URL-slug ordered-phrase re-rank (ccb9bcd), Wayback + Google Translate unwrap for fetch-gate identity (d872bb5). Next: scrape reliability / more ranking signals / facets / Iceberg compaction."
+  "notes": "Landed exact-title re-rank boost (268c2bc), Facebook l.php + Google /url click-redirect unwrap for fetch-gate identity (ebc8ee0). Next: scrape reliability / more ranking signals / facets / Iceberg compaction."
 }
