@@ -1163,15 +1163,42 @@ class StateDB:
         """Aggregate counts for staging manifests not yet compacted into Iceberg.
 
         Used by ``awareness compact --status`` so operators can see backlog size
-        without starting a compaction pass.
+        without starting a compaction pass. Includes oldest commit age so lagging
+        compaction is visible without scanning the manifests list client-side.
         """
         pending = self.list_pending_manifests()
         total_records = sum(int(m.get("records") or 0) for m in pending)
         total_bytes = sum(int(m.get("bytes") or 0) for m in pending)
+        oldest_committed_at: str | None = None
+        oldest_age_seconds: float | None = None
+        oldest_dt: datetime | None = None
+        for m in pending:
+            raw = m.get("committed_at")
+            if not raw:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            else:
+                dt = dt.astimezone(UTC)
+            if oldest_dt is None or dt < oldest_dt:
+                oldest_dt = dt
+                oldest_committed_at = dt.isoformat()
+        if oldest_dt is not None:
+            oldest_age_seconds = max(
+                0.0, (_utcnow() - oldest_dt).total_seconds()
+            )
         return {
             "pending_count": len(pending),
             "total_records": total_records,
             "total_bytes": total_bytes,
+            "oldest_committed_at": oldest_committed_at,
+            "oldest_age_seconds": (
+                round(oldest_age_seconds, 1) if oldest_age_seconds is not None else None
+            ),
             "manifests": pending,
         }
 

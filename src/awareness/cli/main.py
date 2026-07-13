@@ -860,6 +860,22 @@ def _format_size(size_bytes: int) -> str:
         return f"{size_bytes} B"
 
 
+def _format_duration(seconds: float) -> str:
+    """Human-readable duration for compact --status age columns."""
+    s = max(0.0, float(seconds))
+    if s < 60:
+        return f"{int(s)}s"
+    if s < 3600:
+        return f"{int(s // 60)}m"
+    if s < 86400:
+        hours = int(s // 3600)
+        mins = int((s % 3600) // 60)
+        return f"{hours}h{mins:02d}m" if mins else f"{hours}h"
+    days = int(s // 86400)
+    hours = int((s % 86400) // 3600)
+    return f"{days}d{hours}h" if hours else f"{days}d"
+
+
 def _query_db_metrics(state: StateDB) -> dict[str, Any]:
     from sqlalchemy import func, select
     from awareness.storage.state import JobRow, TaskRow, DedupRow, DedupNearRow, ManifestRow, DLQRow
@@ -3490,10 +3506,14 @@ def compact(
         if n == 0:
             rprint("[green]No staging files pending compaction.[/green]")
             return
+        age_bits = ""
+        age_s = summary.get("oldest_age_seconds")
+        if age_s is not None:
+            age_bits = f", oldest {_format_duration(float(age_s))}"
         rprint(
             f"[bold cyan]{n} manifest file(s) pending compaction[/bold cyan]  "
             f"({int(summary['total_records']):,} records, "
-            f"{_format_size(int(summary['total_bytes']))})"
+            f"{_format_size(int(summary['total_bytes']))}{age_bits})"
         )
         table = Table(show_header=True, header_style=f"bold {banner.C_HI}")
         table.add_column("id", justify="right")
@@ -3501,13 +3521,30 @@ def compact(
         table.add_column("records", justify="right")
         table.add_column("size", justify="right")
         table.add_column("committed_at")
+        table.add_column("age", justify="right")
+        from datetime import UTC
+
+        now_utc = datetime.now(UTC)
         for m in summary["manifests"]:
+            age_cell = "—"
+            raw_ca = m.get("committed_at")
+            if raw_ca:
+                try:
+                    ca = datetime.fromisoformat(str(raw_ca).replace("Z", "+00:00"))
+                    if ca.tzinfo is None:
+                        ca = ca.replace(tzinfo=UTC)
+                    age_cell = _format_duration(
+                        max(0.0, (now_utc - ca.astimezone(UTC)).total_seconds())
+                    )
+                except ValueError:
+                    age_cell = "—"
             table.add_row(
                 str(m.get("id") or ""),
                 str(m.get("path") or ""),
                 f"{int(m.get('records') or 0):,}",
                 _format_size(int(m.get("bytes") or 0)),
                 str(m.get("committed_at") or "—"),
+                age_cell,
             )
         console.print(table)
         return
@@ -3522,58 +3559,102 @@ def compact(
         return
 
     rprint(f"[bold cyan]Found {len(pending)} manifest files pending compaction.[/bold cyan]\n")
-    
+
+    import time
+
     from awareness.storage.iceberg import IcebergWriter
+
     assert settings.iceberg_catalog_db is not None
     assert settings.iceberg_warehouse is not None
-    
+
     writer = IcebergWriter(catalog_db=settings.iceberg_catalog_db, warehouse=settings.iceberg_warehouse)
     writer.ensure_table()
-    
+
     compacted_count = 0
     total_records = 0
     total_bytes = 0
-    
+    metrics = get_metrics()
+
     for item in pending:
         manifest_id = item["id"]
         path_str = item["path"]
         p = Path(path_str)
-        
+
         if not p.exists():
             # If path is relative, try checking under settings.data_dir
             if not p.is_absolute() and settings.data_dir:
                 p = settings.data_dir / p
-                
+
         if not p.exists():
             rprint(f"[yellow]Manifest file not found: {path_str}. Marking as compacted (skipped).[/yellow]")
             state.mark_manifest_compacted(manifest_id)
+            metrics.inc("iceberg.compact_manifests", labels={"outcome": "missing"})
             continue
-            
+
         rprint(f"Compacting [cyan]{p.name}[/cyan] ({_format_size(item['bytes'])}, {item['records']} records)...")
-        
+
         # Read JSONL
         rows = []
+        t0 = time.perf_counter()
         try:
             import gzip
+
             open_func = gzip.open if str(p).endswith(".gz") else open
             with open_func(p, "rt", encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
                         rows.append(json.loads(line))
         except Exception as e:
+            elapsed = max(0.0, time.perf_counter() - t0)
+            metrics.observe(
+                "iceberg.compact_seconds",
+                elapsed,
+                labels={"outcome": "read_error"},
+            )
+            metrics.inc("iceberg.compact_manifests", labels={"outcome": "read_error"})
+            metrics.inc("iceberg.compact_errors", labels={"stage": "read"})
             rprint(f"[red]Failed to read JSONL file {p}: {e}[/red]")
             continue
-            
+
         if rows:
             try:
                 writer.append(rows)
                 state.mark_manifest_compacted(manifest_id)
+                elapsed = max(0.0, time.perf_counter() - t0)
+                metrics.observe(
+                    "iceberg.compact_seconds",
+                    elapsed,
+                    labels={"outcome": "ok"},
+                )
+                metrics.inc("iceberg.compact_manifests", labels={"outcome": "ok"})
+                metrics.inc("iceberg.compacted_rows", value=float(len(rows)))
                 compacted_count += 1
                 total_records += len(rows)
                 total_bytes += item["bytes"]
             except Exception as e:
+                elapsed = max(0.0, time.perf_counter() - t0)
+                metrics.observe(
+                    "iceberg.compact_seconds",
+                    elapsed,
+                    labels={"outcome": "append_error"},
+                )
+                metrics.inc(
+                    "iceberg.compact_manifests", labels={"outcome": "append_error"}
+                )
+                metrics.inc("iceberg.compact_errors", labels={"stage": "append"})
                 rprint(f"[red]Failed to append manifest {manifest_id} to Iceberg: {e}[/red]")
-                
+        else:
+            # Empty file: still mark compacted so backlog drains.
+            state.mark_manifest_compacted(manifest_id)
+            elapsed = max(0.0, time.perf_counter() - t0)
+            metrics.observe(
+                "iceberg.compact_seconds",
+                elapsed,
+                labels={"outcome": "empty"},
+            )
+            metrics.inc("iceberg.compact_manifests", labels={"outcome": "empty"})
+            compacted_count += 1
+
     rprint(f"\n[green]✔ Compaction completed successfully![/green]")
     rprint(f"  • Files Compacted: {compacted_count}/{len(pending)}")
     rprint(f"  • Total Records:   {total_records:,} docs")
