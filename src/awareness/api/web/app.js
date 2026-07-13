@@ -286,6 +286,36 @@ function renderJobStrip(root, jobs) {
 }
 
 // ── Captures view ─────────────────────────────────────────────
+// Hide-duplicates preference: default ON for browse (unique=group).
+// Persisted so users who want raw chronological can opt out once.
+const CAPS_HIDE_DUP_KEY = "awareness.captures.hideDuplicates";
+const CAPS_HIDE_DUP_DEFAULT = true;
+
+function readCapsHideDuplicates() {
+  try {
+    const raw = localStorage.getItem(CAPS_HIDE_DUP_KEY);
+    if (raw == null) return CAPS_HIDE_DUP_DEFAULT;
+    if (raw === "1" || raw === "true") return true;
+    if (raw === "0" || raw === "false") return false;
+  } catch (_) {
+    /* private mode / blocked storage */
+  }
+  return CAPS_HIDE_DUP_DEFAULT;
+}
+
+function writeCapsHideDuplicates(on) {
+  try {
+    localStorage.setItem(CAPS_HIDE_DUP_KEY, on ? "1" : "0");
+  } catch (_) {
+    /* ignore quota / private mode */
+  }
+}
+
+function applyCapsHideDuplicates(checked) {
+  const node = $("#caps-unique");
+  if (node) node.checked = !!checked;
+}
+
 const caps = { limit: 30, offset: 0, total: 0 };
 let capsSearchTimer = null;
 /** Last search terms for re-highlighting title/body in the capture reader. */
@@ -1570,7 +1600,8 @@ $("#caps-reset")?.addEventListener("click", () => {
   $("#caps-domain").value = "";
   $("#caps-start").value = "";
   $("#caps-end").value = "";
-  if ($("#caps-unique")) $("#caps-unique").checked = false;
+  applyCapsHideDuplicates(CAPS_HIDE_DUP_DEFAULT);
+  writeCapsHideDuplicates(CAPS_HIDE_DUP_DEFAULT);
   if ($("#caps-mode")) $("#caps-mode").value = "auto";
   loadCaptures(true);
 });
@@ -1580,7 +1611,10 @@ $("#caps-search")?.addEventListener("input", () => {
 });
 $("#caps-source")?.addEventListener("change", () => loadCaptures(true));
 $("#caps-mode")?.addEventListener("change", () => loadCaptures(true));
-$("#caps-unique")?.addEventListener("change", () => loadCaptures(true));
+$("#caps-unique")?.addEventListener("change", () => {
+  writeCapsHideDuplicates(!!$("#caps-unique").checked);
+  loadCaptures(true);
+});
 $("#caps-prev")?.addEventListener("click", () => { caps.offset = Math.max(0, caps.offset - caps.limit); loadCaptures(false); });
 $("#caps-next")?.addEventListener("click", () => { caps.offset += caps.limit; loadCaptures(false); });
 $("#jobs-refresh")?.addEventListener("click", () => loadJobs());
@@ -1623,6 +1657,8 @@ $("#api-offline-retry")?.addEventListener("click", async (e) => {
 // ── Boot ──────────────────────────────────────────────────────
 const initialRoute = (location.hash || "#dashboard").slice(1);
 $("#bf-start") && ($("#bf-start").value = isoDay(Date.now() - 30 * 86400 * 1000));
+// Restore Captures hide-duplicates before any route load hits /captures.
+applyCapsHideDuplicates(readCapsHideDuplicates());
 navigate(initialRoute, { push: false });
 void refreshDashboard();
 void refreshFeed();
