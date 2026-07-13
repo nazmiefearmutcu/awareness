@@ -353,10 +353,28 @@ class WorkerEngine:
 
     # ── single task ──────────────────────────────────────────────────────
     async def _run_task(self, task: TaskState) -> None:
+        t0 = time.perf_counter()
+        source_label = task.source_type.value
+        metrics = get_metrics()
+
+        def _record_duration(outcome: str) -> None:
+            """Wall-clock task duration for operator p95/SLA dashboards."""
+            elapsed = max(0.0, time.perf_counter() - t0)
+            metrics.observe(
+                "tasks.duration_seconds",
+                elapsed,
+                labels={"outcome": outcome, "source": source_label},
+            )
+
         adapter = self._registry.get(task.source_type)
         if adapter is None:
             self._state.fail_task(task.task_id, error=f"no_adapter:{task.source_type.value}", dead_letter=True)
             self._state.add_dlq(task.job_id, task.task_id, task.payload, error="no_adapter")
+            metrics.inc(
+                "tasks.failed",
+                labels={"source": source_label, "outcome": "no_adapter"},
+            )
+            _record_duration("no_adapter")
             return
 
         settings = get_settings()
@@ -391,12 +409,12 @@ class WorkerEngine:
                 # they never cost disk. Inactive filter (no terms) passes all.
                 if topic is not None and topic.active and not topic.matches(cap.title or "", cap.text or ""):
                     self._total_docs_filtered += 1
-                    get_metrics().inc("docs.filtered", labels={"source": task.source_type.value})
+                    metrics.inc("docs.filtered", labels={"source": source_label})
                     continue
                 outcome = self._dedup.evaluate(cap)
-                get_metrics().inc(
+                metrics.inc(
                     "dedup.decisions",
-                    labels={"decision": outcome.decision.value, "source": task.source_type.value},
+                    labels={"decision": outcome.decision.value, "source": source_label},
                 )
                 # EXACT_DUP / REVISION: skip durable storage — same bytes already
                 # on disk (different URL or same URL re-fetch). Tight NEAR_DUP
@@ -410,9 +428,9 @@ class WorkerEngine:
                 )
                 if outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.REVISION) or tight_near:
                     if tight_near:
-                        get_metrics().inc(
+                        metrics.inc(
                             "dedup.tight_near_skipped",
-                            labels={"source": task.source_type.value},
+                            labels={"source": source_label},
                         )
                     dedup_dropped += 1
                     self._total_docs_processed += 1
@@ -476,9 +494,15 @@ class WorkerEngine:
             logger.exception("task_failed", task_id=task.task_id, err=str(exc))
             dead = task.attempts >= max(1, settings.max_retries)
             self._state.fail_task(task.task_id, error=str(exc), dead_letter=dead)
+            fail_outcome = "dead_letter" if dead else "retry"
             if dead:
                 self._state.add_dlq(task.job_id, task.task_id, task.payload, error=str(exc))
                 self._state.increment_job_counters(task.job_id, dead_lettered=1)
+            metrics.inc(
+                "tasks.failed",
+                labels={"source": source_label, "outcome": fail_outcome},
+            )
+            _record_duration(fail_outcome)
             return
 
         # Pick up sub-partitions emitted by adapter (e.g. CC discovery).
@@ -502,8 +526,9 @@ class WorkerEngine:
             bytes_=bytes_processed,
             completed=1,
         )
-        get_metrics().inc("tasks.completed", labels={"source": task.source_type.value})
-        get_metrics().inc("docs.emitted", value=docs_emitted, labels={"source": task.source_type.value})
+        metrics.inc("tasks.completed", labels={"source": source_label})
+        metrics.inc("docs.emitted", value=docs_emitted, labels={"source": source_label})
+        _record_duration("completed")
 
     # ── flushing ─────────────────────────────────────────────────────────
     async def _flush(self, *, force: bool) -> None:
