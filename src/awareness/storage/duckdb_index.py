@@ -237,13 +237,20 @@ def _collapse_key(row: dict[str, Any]) -> str:
     return f"t:{title}|{domain}"
 
 
-def _collapse_search_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collapse rows to unique content, keeping the highest-scoring hit.
+def _collapse_search_rows(
+    rows: list[dict[str, Any]],
+    *,
+    prefer_higher_score: bool = True,
+) -> list[dict[str, Any]]:
+    """Collapse rows to unique content.
 
-    Input order is preserved for first-seen keys; when a later row shares the
-    same collapse key and has a strictly higher ``score``, it replaces the
-    earlier one (ties keep the first). Unscored rows (prefix/substring) keep
-    first-seen order (already sorted by fetch_ts DESC upstream).
+    Input order is preserved for first-seen keys. When ``prefer_higher_score``
+    is True (default) and a later row shares the same collapse key with a
+    strictly higher ``score``, it replaces the earlier one (ties keep the
+    first). When False, first-seen always wins — used after re-rank so the
+    best final-rank hit is not displaced by a later higher raw BM25 near-dup.
+    Unscored rows (prefix/substring) keep first-seen order (already sorted by
+    fetch_ts DESC upstream).
     """
     if not rows:
         return []
@@ -255,6 +262,8 @@ def _collapse_search_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if prev is None:
             best[key] = r
             order.append(key)
+            continue
+        if not prefer_higher_score:
             continue
         prev_score = prev.get("score")
         cur_score = r.get("score")
@@ -1035,13 +1044,18 @@ class DuckDbIndex:
             mode = "substring"
         cols = _clean_fields(fields)
 
-        # Clamp the page so a single call never materializes more than the cap.
+        # Page bounds. Do NOT rewrite offset past max_results — that corrupts
+        # client page state (SPA/CLI keep their own offset and see the last
+        # window forever). Over-range pages return empty rows instead.
         limit = max(1, int(limit))
         offset = max(0, int(offset))
+        page_beyond_cap = False
         if max_results is not None and max_results > 0:
             if offset >= max_results:
-                offset = max(0, max_results - limit)
-            limit = max(1, min(limit, max_results - offset))
+                page_beyond_cap = True
+            else:
+                # A single page never extends past the overload ceiling.
+                limit = max(1, min(limit, max_results - offset))
         # Candidate window for collapse-then-page: fetch up to the overload
         # ceiling (no SQL offset) so exact dups don't under-fill the page.
         candidate_cap = (
@@ -1049,7 +1063,9 @@ class DuckDbIndex:
             if max_results is not None and max_results > 0
             else DEFAULT_SEARCH_MAX_RESULTS
         )
-        candidate_cap = max(candidate_cap, offset + limit)
+        # Still honor an explicit offset+limit inside the cap for the window.
+        if not page_beyond_cap:
+            candidate_cap = max(candidate_cap, offset + limit)
 
         mode_label = "phrase" if is_phrase else mode
         empty = {
@@ -1219,7 +1235,7 @@ class DuckDbIndex:
                                   c.url, c.canonical_url, c.domain,
                                   c.fetch_ts, c.observed_ts, c.published_ts,
                                   c.title, c.text, c.language, c.content_hash
-                                ORDER BY score DESC
+                                ORDER BY score DESC, c.capture_id ASC
                                 LIMIT {int(candidate_cap)}
                             """
                             candidates = self._rows(conn, sql, params)
@@ -1288,7 +1304,7 @@ class DuckDbIndex:
                     "  NULL::DOUBLE AS score "
                     "FROM captures "
                     f"WHERE {where_sql} "
-                    "ORDER BY fetch_ts DESC "
+                    "ORDER BY fetch_ts DESC, capture_id ASC "
                     f"LIMIT {int(candidate_cap)}"
                 )
                 rows = self._rows(conn, sql, params)
@@ -1301,13 +1317,19 @@ class DuckDbIndex:
 
             # Collapse near/exact dups (parent group / hash / title|domain)
             # before pagination so top-K never shows syndicated copies twice.
+            # Ranked (post-rerank) lists keep first-seen: re-rank order is the
+            # authority, not raw BM25. Unranked lists may still promote a later
+            # higher-scored hit when scores exist.
             pre_collapse_n = len(rows)
-            rows = _collapse_search_rows(rows)
+            rows = _collapse_search_rows(rows, prefer_higher_score=not ranked)
             unique_n = len(rows)
             if used_mode == "fts":
                 # FTS COUNT is per capture_id; fold to unique content. When the
                 # candidate window held every match, unique_n is exact.
                 if total <= candidate_cap and pre_collapse_n >= total:
+                    total = unique_n
+                elif pre_collapse_n < candidate_cap:
+                    # Window not full ⇒ every match was fetched; unique is exact.
                     total = unique_n
                 else:
                     # Lower-bound unique total using dups observed in-window.
@@ -1320,8 +1342,16 @@ class DuckDbIndex:
                 else:
                     total = max(unique_n, total)
 
-            # Page after collapse.
-            rows = rows[offset : offset + limit]
+            # Pageable ceiling: clients (SPA Next, CLI) treat total as the last
+            # reachable index+1. Never report more than max_results when set.
+            if max_results is not None and max_results > 0:
+                total = min(total, int(max_results))
+
+            # Page after collapse (+ re-rank for FTS). Beyond-cap offsets yield [].
+            if page_beyond_cap:
+                rows = []
+            else:
+                rows = rows[offset : offset + limit]
 
             # Augment each row with a snippet + matched terms; strip the heavy
             # full text from the response payload.
@@ -1511,9 +1541,16 @@ def _rerank(
         return norm * title_f * len_f * rec_f
 
     finals = [final_score(c, raw) for c, raw in zip(candidates, scores, strict=True)]
-    # Sort by descending final score; `(-final, i)` keeps the original BM25 order
-    # for ties (lower original index = higher BM25 = ranked first).
-    order = sorted(range(len(candidates)), key=lambda i: (-finals[i], i))
+    # Sort by descending final score; ties keep original BM25 order (lower index
+    # first), then capture_id for full determinism across equal-BM25 dups.
+    order = sorted(
+        range(len(candidates)),
+        key=lambda i: (
+            -finals[i],
+            i,
+            str(candidates[i].get("capture_id") or ""),
+        ),
+    )
     return [candidates[i] for i in order]
 
 
