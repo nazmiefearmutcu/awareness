@@ -110,6 +110,18 @@ def _get_index() -> DuckDbIndex:
         return _State.index
 
 
+def _close_index() -> None:
+    """Close and clear the process-wide DuckDbIndex under the index lock.
+
+    Call after settings that can change data_dir / duckdb / staging paths, and
+    on lifespan shutdown, so the next _get_index() rebuilds against current paths.
+    """
+    with _index_lock:
+        if _State.index is not None:
+            _State.index.close()
+            _State.index = None
+
+
 
 # Fold key expressions for GET /captures?unique=…
 # Keep newest fetch_ts per key via DISTINCT ON; empty/null hash falls back to capture_id.
@@ -243,9 +255,7 @@ def create_app() -> FastAPI:
                 await _State.tail.stop(drain_seconds=10.0)
             for t in list(_State.background_tasks):
                 t.cancel()
-            if _State.index is not None:
-                _State.index.close()
-                _State.index = None
+            _close_index()
 
     app = FastAPI(title="Awareness", version=__version__, lifespan=lifespan)
 
@@ -583,7 +593,13 @@ def create_app() -> FastAPI:
             raise HTTPException(400, "expected object of key → value")
         # Strip meta keys if flat
         values = {k: v for k, v in values.items() if k not in ("values", "note")}
-        return apply_updates(values)
+        result = apply_updates(values)
+        # data_dir (and derived duckdb/staging paths) may have changed; always
+        # drop the singleton so the next request rebuilds against new paths.
+        # Slightly cold after any config apply; safer than path-key heuristics.
+        if result.get("applied"):
+            _close_index()
+        return result
 
     @app.get("/settings/tail-seeds")
     def settings_get_tail_seeds() -> dict[str, Any]:
