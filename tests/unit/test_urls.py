@@ -827,6 +827,87 @@ def test_canonical_url_unwraps_youtube_redirect() -> None:
     assert "youtube.com" in nested
 
 
+def test_canonical_url_unwraps_slack_redirect() -> None:
+    """slack-redir.net/link?url=… wrappers collapse onto the origin article."""
+    assert (
+        canonical_url(
+            "https://slack-redir.net/link?url=https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://www.slack-redir.net/link?url="
+            "http%3A%2F%2Fm.news.example%2Fstory%2Famp"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; Slack wrapper params dropped.
+    assert (
+        canonical_url(
+            "https://slack-redir.net/link?url="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dslack"
+            "&ssb_ver=3"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing url= → no unwrap.
+    bare = canonical_url("https://slack-redir.net/link?ssb_ver=3")
+    assert bare is not None
+    assert "slack-redir.net" in bare
+    # Non-link path is not a redirector.
+    other = canonical_url("https://slack-redir.net/other?url=https%3A%2F%2Fx.test%2Fa")
+    assert other is not None
+    assert "slack-redir.net" in other
+    # Nested Slack redirect must not loop.
+    nested = canonical_url(
+        "https://slack-redir.net/link?url="
+        "https%3A%2F%2Fslack-redir.net%2Flink%3Furl%3Dx"
+    )
+    assert nested is not None
+    assert "slack-redir.net" in nested
+
+
+def test_canonical_url_unwraps_whatsapp_redirect() -> None:
+    """l.wl.co WhatsApp click wrappers collapse onto the origin article."""
+    assert (
+        canonical_url(
+            "https://l.wl.co/l?u=https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://l.wl.co/?u=http%3A%2F%2Fm.news.example%2Fstory%2Famp"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; WhatsApp wrapper params dropped.
+    assert (
+        canonical_url(
+            "https://l.wl.co/l?u="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dwa"
+            "&e=ATxyz"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing u= → no unwrap.
+    bare = canonical_url("https://l.wl.co/l?e=ATxyz")
+    assert bare is not None
+    assert "l.wl.co" in bare
+    # Nested WhatsApp redirect must not loop.
+    nested = canonical_url(
+        "https://l.wl.co/l?u="
+        "https%3A%2F%2Fl.wl.co%2Fl%3Fu%3Dx"
+    )
+    assert nested is not None
+    assert "l.wl.co" in nested
+    # Ordinary chat.whatsapp.com invite is not a click wrapper.
+    invite = canonical_url("https://chat.whatsapp.com/AbCdEfGhIjK")
+    assert invite is not None
+    assert "chat.whatsapp.com" in invite
+
+
 def test_canonical_url_strips_search_and_cms_noise() -> None:
     """Google/MSN search wrappers and CMS feed/trackback paths are identity-noise."""
     assert (

@@ -219,6 +219,25 @@ _YOUTUBE_REDIRECT_HOSTS: frozenset[str] = frozenset(
     }
 )
 
+# Slack outbound click-through hosts (``slack-redir.net/link?url=…``).
+_SLACK_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "slack-redir.net",
+    }
+)
+_SLACK_REDIRECT_PATHS: frozenset[str] = frozenset(
+    {
+        "/link",
+    }
+)
+
+# WhatsApp click-through hosts (``l.wl.co/?u=…`` / ``l.wl.co/l?u=…``).
+_WHATSAPP_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "l.wl.co",
+    }
+)
+
 # Suffix for Microsoft Outlook Safe Links rewrite hosts
 # (``nam01.safelinks.protection.outlook.com``, ``*.safelinks.protection.outlook.com``).
 _OUTLOOK_SAFELINKS_SUFFIX = "safelinks.protection.outlook.com"
@@ -817,6 +836,55 @@ def _unwrap_youtube_redirect(netloc: str, path: str, query: str) -> str | None:
     return _validate_embedded_origin_url(origin, refuse_hosts=_YOUTUBE_REDIRECT_HOSTS)
 
 
+def _unwrap_slack_redirect(netloc: str, path: str, query: str) -> str | None:
+    """Extract the origin URL from a Slack ``slack-redir.net/link?url=…`` wrapper.
+
+    Forms:
+
+    * ``https://slack-redir.net/link?url=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://www.slack-redir.net/link?url=http%3A%2F%2Fm.example.com%2Fx``
+
+    Only the ``/link`` path is rewritten so other slack-redir routes stay put.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _SLACK_REDIRECT_HOSTS:
+        return None
+    p = (path or "").rstrip("/") or "/"
+    if p.lower() not in _SLACK_REDIRECT_PATHS:
+        return None
+    origin = _query_param(query, "url")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(origin, refuse_hosts=_SLACK_REDIRECT_HOSTS)
+
+
+def _unwrap_whatsapp_redirect(netloc: str, query: str) -> str | None:
+    """Extract the origin URL from a WhatsApp ``l.wl.co/?u=…`` click wrapper.
+
+    Forms:
+
+    * ``https://l.wl.co/l?u=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://l.wl.co/?u=http%3A%2F%2Fm.example.com%2Fx&e=AT…``
+
+    Any path on the click-through host is treated as a redirector when ``u=``
+    is present (WhatsApp puts the origin in the query, not a fixed path).
+    Ordinary ``chat.whatsapp.com`` invites are not rewritten.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _WHATSAPP_REDIRECT_HOSTS:
+        return None
+    origin = _query_param(query, "u")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(origin, refuse_hosts=_WHATSAPP_REDIRECT_HOSTS)
+
+
 def _normalize_path(path: str) -> str:
     """Normalize path for identity: empty → ``/``; strip AMP/print/index noise + slash."""
     if not path:
@@ -945,6 +1013,8 @@ def canonical_url(url: str | None) -> str | None:
       - LinkedIn ``/safety/go`` and ``/redir/redirect`` ``url=`` wrappers rewritten
       - Reddit ``out.reddit.com/?url=…`` outbound wrappers rewritten to origin
       - YouTube ``/redirect?q=…`` external-link redirects rewritten to origin
+      - Slack ``slack-redir.net/link?url=…`` outbound wrappers rewritten to origin
+      - WhatsApp ``l.wl.co/?u=…`` click wrappers rewritten to origin
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
@@ -991,7 +1061,8 @@ def canonical_url(url: str | None) -> str | None:
     # Share / cache wrappers → origin article before other host/path identity.
     # Order: AMP CDN, AMP viewers, Wayback, then query-embedded origins
     # (Translate, Facebook, Google /url, Outlook Safe Links, DuckDuckGo /l,
-    # Instagram, LinkedIn safety/redir, Reddit outbound, YouTube /redirect).
+    # Instagram, LinkedIn safety/redir, Reddit outbound, YouTube /redirect,
+    # Slack redir, WhatsApp l.wl.co).
     unwrapped = _unwrap_amp_cdn(netloc, path)
     if unwrapped is not None:
         netloc, path = unwrapped
@@ -1018,6 +1089,8 @@ def canonical_url(url: str | None) -> str | None:
                     or _unwrap_linkedin_redirect(netloc, path, parts.query)
                     or _unwrap_reddit_outbound(netloc, parts.query)
                     or _unwrap_youtube_redirect(netloc, path, parts.query)
+                    or _unwrap_slack_redirect(netloc, path, parts.query)
+                    or _unwrap_whatsapp_redirect(netloc, parts.query)
                 )
                 if embedded is not None:
                     try:
