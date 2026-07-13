@@ -110,3 +110,26 @@ def test_shell_command() -> None:
 
 
 
+
+
+def test_backfill_submit_warns_on_zero_tasks(tmp_project: Path) -> None:
+    """CLI must loudly warn when the plan emits no tasks (e.g. RSS-only)."""
+    result = runner.invoke(
+        app,
+        [
+            "backfill",
+            "submit",
+            "--start",
+            "2024-06-01",
+            "--end",
+            "2024-06-14",
+            "--source",
+            "rss",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "Submitted backfill" in out
+    assert "WARNING" in out and "0 tasks" in out
+    assert "rss" in out.lower()
+    assert '"warning": "zero_tasks"' in out or '"warning":"zero_tasks"' in out

@@ -1204,7 +1204,22 @@ def backfill_submit(
     if match:
         joiner = " AND " if match_all else " OR "
         rprint(f"[dim]Topic filter ({'regex' if match_regex else 'keyword'}, {match_field}): {escape(joiner.join(match))}[/dim]")
-    print(json.dumps(planner.status(job_id), indent=2, default=str))
+    st = planner.status(job_id)
+    if int(st.get("tasks_total") or 0) == 0 or st.get("warning") == "zero_tasks":
+        rprint(
+            "[bold yellow]WARNING: backfill planned 0 tasks — nothing will be scraped.[/bold yellow]"
+        )
+        for reason in st.get("zero_task_reasons") or []:
+            src = reason.get("source", "?")
+            detail = reason.get("detail") or reason.get("reason") or ""
+            rprint(f"[yellow]  • {escape(str(src))}: {escape(str(detail))}[/yellow]")
+        if st.get("notes") and not st.get("zero_task_reasons"):
+            rprint(f"[yellow]  {escape(str(st['notes']))}[/yellow]")
+        rprint(
+            "[dim]Hint: check --source kinds, date range, and domain filters; "
+            "RSS alone does not plan historical partitions.[/dim]"
+        )
+    print(json.dumps(st, indent=2, default=str))
 
 
 def _print_job_summary_table(job_id: str, status: dict[str, Any]) -> None:
