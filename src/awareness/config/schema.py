@@ -130,7 +130,7 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
     ),
     ConfigField(
         "terminal_mute_duplicates", "Tail (live capture)", KIND_BOOL, False,
-        "Mute/skip printing duplicate captures (EXACT_DUP, NEAR_DUP, REVISION) to the terminal.",
+        "Mute/skip printing duplicate captures (EXACT_DUP, NEAR_DUP, REVISION) and tight near-dup skip-store lines to the terminal.",
     ),
     ConfigField(
         "tail_seed_file", "Tail (live capture)", KIND_PATH, None,

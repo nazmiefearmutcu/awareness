@@ -412,6 +412,8 @@ class WorkerEngine:
                     self._total_docs_processed += 1
                     if outcome.decision == DedupDecision.NEAR_DUP:
                         dedup_dropped += 1
+                # Terminal lines: mute_duplicates hides EXACT_DUP / REVISION /
+                # NEAR_DUP and tight near-dup skip-store messages consistently.
                 is_unique = outcome.decision == DedupDecision.NEW
                 show_dup = not self._mute_duplicates
                 if self._is_tty and not self._silent_progress and (is_unique or show_dup):
@@ -423,8 +425,13 @@ class WorkerEngine:
                         domain = domain[:27] + "..."
                     chars = len(cap.text)
                     lang = cap.language or "unknown"
-                    decision_str = outcome.decision.value.upper()
-                    
+                    # Tight near-dups are skip-store; surface as NEAR_SKIP so the
+                    # line is distinguishable from a looser NEAR_DUP that persists.
+                    if tight_near:
+                        decision_str = "NEAR_SKIP"
+                    else:
+                        decision_str = outcome.decision.value.upper()
+
                     if outcome.decision == DedupDecision.NEW:
                         style = "bold green"
                     elif outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.NEAR_DUP):
@@ -433,11 +440,20 @@ class WorkerEngine:
                         style = "bold blue"
                     else:
                         style = "bold white"
-                    
+
+                    # Include dedup reason (hamming distance for NEAR_DUP) in the
+                    # worker log line so operators can see how close the match was.
+                    reason_bit = ""
+                    if outcome.decision == DedupDecision.NEAR_DUP:
+                        if outcome.reason:
+                            reason_bit = f", {escape(outcome.reason)}"
+                        elif outcome.hamming is not None:
+                            reason_bit = f", hamming={outcome.hamming}"
+
                     self._console.print(
                         f"[cyan]📥[/cyan] [[{style}]{decision_str:^9}[/{style}]] "
                         f"[bold white]{escape(title)}[/bold white] | [dim]{escape(domain)}[/dim] "
-                        f"({chars} chars, {escape(lang)} | Total: [green]{_format_size(self._total_bytes_processed)}[/green], {self._total_docs_processed} docs)"
+                        f"({chars} chars, {escape(lang)}{reason_bit} | Total: [green]{_format_size(self._total_bytes_processed)}[/green], {self._total_docs_processed} docs)"
                     )
                 if len(self._batch_buffer) >= settings.storage_flush_records:
                     await self._flush(force=False)

@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     tail_gdelt: bool = False  # also discover via GDELT (global news firehose)
     tail_gdelt_max_urls: int = 500  # cap URLs pulled per 15-min GDELT slot
     tail_show_captures: bool = True  # print each capture to the terminal as it lands
-    terminal_mute_duplicates: bool = False  # skip printing duplicate captures (EXACT_DUP, NEAR_DUP, REVISION) to the terminal
+    terminal_mute_duplicates: bool = False  # skip printing EXACT_DUP / NEAR_DUP / REVISION and tight near-dup skip-store lines
 
     # ── corpus filters ───────────────────────────────────────────────────
     text_min_chars: int = 200
