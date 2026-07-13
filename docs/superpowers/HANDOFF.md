@@ -15,10 +15,10 @@ Also read:
 |---|---|
 | **Branch** | `loop/continuous-dev` |
 | **Base** | synced from `origin/main` **`a0ba789`** (Merge PR #22 feat/benchmarks) |
-| **HEAD tip** | ~`a4345a6` (check `git rev-parse --short HEAD`) |
-| **Ahead of main** | **44 commits** (`origin/main..HEAD`) |
+| **HEAD tip** | ~`5dafef7` (check `git rev-parse --short HEAD`) |
+| **Ahead of main** | **~70 commits** (`origin/main..HEAD` was **71** at last handoff refresh) |
 | **Pushed?** | **No** — local only; do not push unless user asks |
-| **Unit suite** | **~380+ green** (`tests/unit` collects **390**; gate: `not slow and not smoke`) |
+| **Unit suite** | **~480+ collected** (`tests/unit` collects **481**; gate: `not slow and not smoke`) |
 | **Stop** | User says stop / `touch .ralph/STOP` / explicit cancel |
 
 ### What this branch fixed / shipped (verify: `git log origin/main..HEAD`)
@@ -29,11 +29,14 @@ Also read:
 - Staging: **index `.jsonl.gz`** + **exclude `.tmp`** chunks from DuckDB globs
 - Captures list: **`unique=content|group`** collapse param
 - CLI: export captures to JSONL with optional unique fold
+- **Persisted FTS restore + append-only `captures_idx`** (C3-T1) — no full rebuild every open
+- BM25 field avg-length **memoized per index signature**
 
 **Dedup / re-fetch prevention**
 
 - **RSS/GDELT unified tail partition keys** (no double-fetch across feed sources)
 - **URL fetch gate** before `tail_recrawl` HTTP when canonical URL already fetched
+- **Stronger news URL canonicalization** — strip `www.`, normalize trailing path slashes, expand tracking-param strip (`utm_*` + common ad/click IDs) so fetch-gate / tail keys collapse article variants
 - **32×4 SimHash banding live** (pigeonhole guarantee for Hamming ≤24 / `DEFAULT_NEAR_THRESHOLD`)
 - **Tight near-dup skip-store** at Hamming ≤12 (optional drop before persist + metrics)
 - **Union-find parent resolution** for near-dup clusters (transitive fold; related captures share parent)
@@ -42,40 +45,59 @@ Also read:
 
 - Collapse results by `parent_doc_or_dup_group`
 - **Phrase quotes** (`"exact phrase"` → `mode=phrase`)
-- Empty-result **diagnostics** + SPA hints
+- Empty-result **diagnostics** + SPA hints (mode/corpus/window surfaced)
 - **OR multi-term prefix** fallback for consistent auto mode
 - **FTS rebuild on content signature** (not row-count alone) — detects same-count content swap
 - Order-insensitive FTS field eligibility + BM25F re-rank path wired
+- **Optional `published_ts` recency boost** in ranking (settings-gated; deterministic when on)
+- **Domain facets** on search results (`facets.sources`) — CLI summary + SPA source chips
+- **Pagination correctness** after collapse + re-rank
 - **Inclusive end-of-day** date windows
 - **Long-lived DuckDB connection reuse** under lock (search path)
 - NULL-fill missing staging columns so sparse JSONL cannot kill the `captures` view
 
+**Scrape / feeds / news (recent wave)**
+
+- **News/RSS extract floor** — honor `text_min_chars` / max on tail + warc_repair; lower floor via `text_min_chars_news` (default **80**) so short news stubs are kept
+- **Transient HTTP retries** in tail_recrawl and feeds (shared retry path)
+- Non-200 feed/sitemap fetches **logged** (no silent empty)
+- **Loud zero-task backfill warning** with per-source reasons
+- Consistent **`user_agent` from settings** across fetch paths
+- **Process-wide global fetch concurrency cap**
+- Robots **crawl-delay** honored under per-domain concurrency
+- **Sitemap discovery** from robots `Sitemap:` directives
+- Stable ordered `seen_urls` window for feed checkpoints
+
+**Common Crawl WET**
+
+- **Streaming WET parse** with bounded memory (C3-T3)
+- **Mid-shard resume** via checkpoint `last_record_id`
+- `cc_wet_max_shards_per_crawl` so WET adapter registers; eTLD+1 domain filter
+
 **Also landed on this branch (bugfixes / UX / ops)**
 
-- LID `detect_langs` + confidence gate restored; `cc_wet_max_shards_per_crawl` so WET registers; gdrive binary multipart; idf hook on `simhash128`; CLI search-window defaults; version **0.2.0** + banding docs; SPA mode controls, term highlight, settings metrics for fetch-skip / tight-near-dup; Redis lock tests skip when unavailable; etc.
+- LID `detect_langs` + confidence gate restored; gdrive binary multipart; idf hook on `simhash128`; CLI search-window defaults; version **0.2.0** + banding docs; SPA mode controls, term highlight, settings/dashboard KPIs for fetch-skip / tight-near-dup; default hide-duplicates on Captures browse; Redis lock tests skip when unavailable; clearer near-dup worker logs with Hamming distance; etc.
 
 ### Remaining (good next picks)
 
 Loop Cycle 3+ and older backlog (not exhaustive):
 
-1. **Incremental / persisted FTS** — avoid full rebuild (C3-T1 in loop doc; was C2-P6)
-2. **Scraping hardening (Plan 2b)** — limiter race, robots crawl-delay/UA, seed discovery, fan-out budget
-3. **Plan 4b UX** — quickstart, empty-state “why”, text_min/max on tail_recrawl/warc_repair
-4. **Search leftovers** — pagination correctness; optional fuzzy
-5. **Systems (C2-P6 remainder)** — streaming WET parse, pooled httpx + global concurrency, Iceberg compaction, crash-safe flush, `/metrics` export
-6. **Math follow-ups** — threshold toward calibrated 36 only with banding + benchmark re-measure; corpus-IDF store for `simhash128` idf hook
-7. **Cycle 3 product** — SPA Settings editable; fetch_ts/observed_ts/published_ts disentangle; URL canonicalization; JSONL+Iceberg double-count reconcile
-8. **Ship decision** — branch is 44 ahead of main and **unpushed**; merge/push only with user consent
+1. **Plan 4b UX** — quickstart, empty-state “why”, broader text_min/max knobs where still missing
+2. **Search leftovers** — optional fuzzy; more facet dimensions; tune recency defaults with corpus measure
+3. **Systems remainder** — pooled httpx polish, Iceberg compaction, crash-safe flush, `/metrics` export
+4. **Math follow-ups** — threshold toward calibrated 36 only with banding + benchmark re-measure; corpus-IDF store for `simhash128` idf hook
+5. **Cycle 3 product** — SPA Settings editable; fetch_ts/observed_ts/published_ts disentangle; JSONL+Iceberg double-count reconcile
+6. **Ship decision** — branch is ~70 ahead of main and **unpushed**; merge/push only with user consent
 
-> Note: `loop/CONTINUOUS_LOOP.md` may still list union-find as pending — it is **done** on HEAD (`feat(dedup): union-find…` + related test). Prefer this HANDOFF + `git log` over stale loop rows.
+> Note: `loop/CONTINUOUS_LOOP.md` / `STATE.json` may lag HEAD (still mention ~55 commits / pending streaming WET). Prefer this HANDOFF + `git log origin/main..HEAD` for truth. Streaming WET + WET resume, news floor, URL canon, retries, facets, and recency are **done** on tip.
 
 ### Environment & first commands
 
 ```bash
 cd /Users/nazmi/Desktop/awareness
 git status && git branch --show-current   # expect loop/continuous-dev, not pushed
-git log --oneline origin/main..HEAD | head -20
-PYTHONPATH=src .venv/bin/python -m pytest -q -m "not slow and not smoke"   # ~380+ unit; can take minutes offline (DuckDB INSTALL)
+git log --oneline origin/main..HEAD | head -25
+PYTHONPATH=src .venv/bin/python -m pytest -q -m "not slow and not smoke"   # ~480+ unit; can take minutes offline (DuckDB INSTALL)
 # unit-only:
 PYTHONPATH=src .venv/bin/python -m pytest -q tests/unit
 ```
@@ -92,7 +114,8 @@ PYTHONPATH=src .venv/bin/python -m pytest -q tests/unit
 - JSONL fixtures: full canonical columns remain the norm (`tests/unit/test_search_matching.py`); missing cols are NULL-filled but don’t rely on that in tests.
 - `benchmarks.bench_simhash` is offline and uses the real `DedupEngine` — re-measure after banding/threshold changes.
 - **Don’t raise merge threshold** without raising banding (`bands-1 ≥ threshold`) and re-benchmarking.
-- Cross-cutting seams: `util/http.py` for fetchers; `_resolve_search_window` for CLI search defaults.
+- Cross-cutting seams: `util/http.py` for fetchers; `_resolve_search_window` for CLI search defaults; `util/urls.py` for news URL identity / fetch gate.
+- News extracts use **`text_min_chars_news`** (default 80), not the long-form `text_min_chars` floor — short RSS stubs are intentional.
 
 ---
 
