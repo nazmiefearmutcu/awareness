@@ -102,12 +102,16 @@
 | C4+ | cli | `metrics --format table|json|prometheus` (TTY-aware default) | ✅ |
 | C4+ | storage | fsync gzip JSONL chunks + parent dir on commit | ✅ |
 | C4+ | spa | Dashboard HTTP fetch p95 + attempts KPIs | ✅ |
+| C4+ | scrape | Charset-aware HTTP body decode (Content-Type / meta / detector) | ✅ |
+| C4+ | cli/storage | `dlq list` / `dlq count` + StateDB.list_dlq | ✅ |
+| C4+ | storage/obs | Iceberg append latency hist + row/batch counters | ✅ |
+| C4+ | spa | Dashboard robots cache hit + Iceberg rows KPIs | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~173 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~178 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** Diverse wave — HTTP obs/timeouts (`e92602d`), CLI metrics formats (`37b60be`), JSONL gzip fsync (`53c6b7d`), SPA HTTP KPIs (`14d2d06`)
+- **Latest:** Diverse wave — charset decode (`218d61d`), DLQ list CLI (`9c80614`), Iceberg metrics (`d83ada0`), SPA robots/Iceberg KPIs (`7f86c1e`)
 
 ## Rules
 

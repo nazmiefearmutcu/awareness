@@ -1,18 +1,18 @@
 {
-  "iteration": 34,
-  "phase": "http_obs_cli_metrics_jsonl_fsync_spa_kpis",
+  "iteration": 35,
+  "phase": "charset_dlq_iceberg_spa_obs",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "14d2d06c503a0afefed5682e0a1068e5060e6674",
+  "head_sha": "7f86c1edb7f33be711f21530aee918a8a0e70cdc",
   "product_shas": [
-    "e92602d872eb05037d55b808f808d29d81b188a3",
-    "37b60be8fcb15a67aaa2ae4a516ceac70384aecb",
-    "53c6b7d6816de7dd60bf17c78568e3310b80532d",
-    "14d2d06c503a0afefed5682e0a1068e5060e6674"
+    "218d61d3e609b5dd690f78021863668edb6976a4",
+    "9c8061489472adee9f3a4560b1a3fe82bf258544",
+    "d83ada08b43f541ae360c7210cacecd8704854d6",
+    "7f86c1edb7f33be711f21530aee918a8a0e70cdc"
   ],
-  "commits_ahead": 173,
+  "commits_ahead": 178,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): HTTP fetch latency hist + status counters + split connect/read timeouts (e92602d); CLI metrics table|json|prometheus TTY-aware (37b60be); gzip JSONL fsync + dir fsync (53c6b7d); SPA dashboard HTTP p95/attempts KPIs (14d2d06). Next: scrape seed/charset edge cases, FTS polish, more CLI empty-state, Iceberg compaction."
+  "notes": "DIVERSE wave (no ranking/unwrap): charset-aware HTML decode + tail.decode_charset (218d61d); DLQ list/count CLI + StateDB.list_dlq (9c80614); Iceberg append_seconds/rows metrics (d83ada0); SPA robots hit + Iceberg rows KPIs (7f86c1e). Next: feed body charset path, DLQ replay, FTS polish, JSONL rotation metrics."
 }
