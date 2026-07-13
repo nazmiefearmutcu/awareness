@@ -221,6 +221,16 @@ def _normalize_path(path: str) -> str:
                 path = "/"
             lower = path.lower()
             break
+    # Trailing ``.html`` / ``.htm`` is identity-noise for many news CMS paths
+    # (``/world/story.html`` ≡ ``/world/story``). Applied after AMP/print/index
+    # markers so ``/story/amp.html`` already collapsed before this runs.
+    for ext in (".html", ".htm"):
+        if lower.endswith(ext) and len(path) > len(ext):
+            stripped = path[: -len(ext)]
+            if stripped:
+                path = stripped
+                lower = path.lower()
+            break
     # Keep bare root as ``/``; collapse ``/foo/`` → ``/foo`` (and multi-segment).
     if not path:
         return "/"
@@ -240,6 +250,7 @@ def canonical_url(url: str | None) -> str | None:
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
       - CMS default basenames stripped (``/index.html``, ``/index.php``, …)
+      - trailing ``.html`` / ``.htm`` stripped (``/story.html`` → ``/story``)
       - path trailing slash normalized (``/`` kept; ``/foo/`` → ``/foo``)
       - tracking / AMP / print / share query parameters stripped (incl. ``utm_*``)
       - remaining query keys sorted

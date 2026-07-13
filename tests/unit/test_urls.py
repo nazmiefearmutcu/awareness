@@ -190,6 +190,37 @@ def test_canonical_url_strips_index_basenames() -> None:
     assert canonical_url("https://news.example/index.html") == "https://news.example/"
 
 
+def test_canonical_url_strips_trailing_html_extension() -> None:
+    """``.html`` / ``.htm`` article paths collapse onto the extensionless form."""
+    assert (
+        canonical_url("https://news.example/world/story.html")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story.htm")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story.HTML")
+        == "https://news.example/world/story"
+    )
+    # Extensionless path is already identity.
+    assert (
+        canonical_url("https://news.example/world/story")
+        == "https://news.example/world/story"
+    )
+    # Composes with host alias + trackers.
+    assert (
+        canonical_url("https://www.news.example/world/story.html?utm_source=rss")
+        == "https://news.example/world/story"
+    )
+    # Non-html extensions survive (not identity-noise for us).
+    assert (
+        canonical_url("https://news.example/world/story.json")
+        == "https://news.example/world/story.json"
+    )
+
+
 def test_canonical_url_print_share_index_compose() -> None:
     """Print path + index basename + share trackers collapse with host aliases."""
     variants = [
