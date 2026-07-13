@@ -2573,6 +2573,11 @@ def browse(
     end: str = typer.Option("now", "--end", help="End date range"),
     domain: str = typer.Option("", "--domain", help="Filter by domain"),
     source: str = typer.Option("", "--source", help="Filter by source"),
+    language: str = typer.Option(
+        "",
+        "--lang",
+        help="Filter by BCP-47 language tag (e.g. en, tr); case-insensitive",
+    ),
     query: str = typer.Option("", "--query", "-q", help="Search query/terms to highlight"),
     unique: str = typer.Option(
         "none",
@@ -2596,6 +2601,8 @@ def browse(
         rprint(f"[red]{e}[/red]")
         raise typer.Exit(code=2) from e
 
+    lang_filter = (language or "").strip().lower() or None
+
     # Empty start means no lower bound so historical backfills remain visible.
     start_dt = to_utc(start) if (start or "").strip() else None
     end_dt = inclusive_end(coerce_relative_end(end))
@@ -2618,6 +2625,9 @@ def browse(
         if source:
             where.append("source_type = $src")
             params["src"] = source
+        if lang_filter:
+            where.append("lower(language) = $lang")
+            params["lang"] = lang_filter
         if query:
             terms = [t for t in re.findall(r"[A-Za-z0-9']+", query.lower()) if len(t) >= 2]
             if terms:
@@ -2630,7 +2640,7 @@ def browse(
                 params["q_term"] = f"%{query}%"
             
         where_sql = " AND ".join(where)
-        browse_select = "doc_id, domain, title, fetch_ts, source_type, text"
+        browse_select = "doc_id, domain, title, fetch_ts, source_type, text, language"
         if fold_key is None:
             sql = f"""
                 SELECT {browse_select}
@@ -2662,10 +2672,11 @@ def browse(
         if not rows:
             if offset == 0:
                 range_hint = ""
-                if start_dt is not None or end_dt is not None:
+                if start_dt is not None or end_dt is not None or lang_filter:
                     range_hint = (
-                        f" (filters: start={start_dt or '−∞'}, end={end_dt}; "
-                        "try widening --start/--end)"
+                        f" (filters: start={start_dt or '−∞'}, end={end_dt}"
+                        f"{f', lang={lang_filter}' if lang_filter else ''}; "
+                        "try widening --start/--end or --lang)"
                     )
                 rprint(f"[yellow]No captures found in this range.{range_hint}[/yellow]")
                 break
@@ -2674,12 +2685,13 @@ def browse(
                 offset = max(0, offset - limit)
                 continue
                 
-        # Display table (surface active unique fold so operators see the mode)
+        # Display table (surface active unique fold + language so operators see mode)
         unique_label = f" unique={unique_mode}" if unique_mode != "none" else ""
+        lang_label = f" lang={lang_filter}" if lang_filter else ""
         table = Table(
             title=(
                 f"Awareness Documents - Page {offset // limit + 1} "
-                f"(Offset: {offset}{unique_label})"
+                f"(Offset: {offset}{unique_label}{lang_label})"
             )
         )
         table.add_column("#", justify="center", style="yellow")
@@ -2687,6 +2699,7 @@ def browse(
         table.add_column("Title", style="white")
         table.add_column("Date Captured", style="dim green")
         table.add_column("Source", style="magenta")
+        table.add_column("Lang", style="dim cyan")
         
         for i, r in enumerate(rows, 1):
             title = r["title"] or "No Title"
@@ -2698,7 +2711,8 @@ def browse(
                 r["domain"] or "N/A",
                 highlighted_title,
                 str(r["fetch_ts"])[:16],
-                r["source_type"] or "N/A"
+                r["source_type"] or "N/A",
+                r["language"] or "—",
             )
             
         console.print(table)
@@ -2728,6 +2742,8 @@ def browse(
                 rprint(f"[bold cyan]Domain:[/bold cyan]      {doc['domain']}")
                 rprint(f"[bold cyan]Captured at:[/bold cyan] {doc['fetch_ts']}")
                 rprint(f"[bold cyan]Source:[/bold cyan]      {doc['source_type']}")
+                if doc["language"]:
+                    rprint(f"[bold cyan]Language:[/bold cyan]    {doc['language']}")
                 rprint(f"[bold cyan]Doc ID:[/bold cyan]      {doc['doc_id']}\n")
                 rprint("-" * 80)
                 

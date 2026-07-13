@@ -28,6 +28,7 @@ def _write_doc(
     domain: str = "example.com",
     content_hash: str | None = None,
     fetch_ts: str = "2026-06-01T12:00:00+00:00",
+    language: str | None = None,
 ) -> None:
     day = root / "data" / "jsonl" / "captures" / "2026" / "06" / "01"
     day.mkdir(parents=True, exist_ok=True)
@@ -42,6 +43,7 @@ def _write_doc(
         title=title,
         text=text,
         content_hash=content_hash,
+        language=language,
     )
     (day / f"chunk-{idx}.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
 
@@ -205,4 +207,48 @@ def test_browse_unique_invalid_mode(tmp_project: Path) -> None:
     result = runner.invoke(app, ["browse", "--unique", "bogus"], input="q\n")
     assert result.exit_code == 2
     assert "invalid unique mode" in result.output.lower()
+
+
+def test_browse_lang_filter_case_insensitive(tmp_project: Path) -> None:
+    """browse --lang keeps only matching BCP-47 language rows and labels pager."""
+    _write_doc(
+        tmp_project,
+        20,
+        title="English sports brief",
+        text="Football match ended today in London.",
+        language="en",
+    )
+    _write_doc(
+        tmp_project,
+        21,
+        title="Turkish markets note",
+        text="Borsa Istanbul yukseldi bugun.",
+        language="tr",
+    )
+    _write_doc(
+        tmp_project,
+        22,
+        title="German markets note",
+        text="Die Aktien stiegen heute stark.",
+        language="DE",  # upper-case in store; filter is lower() matched
+    )
+
+    all_rows = runner.invoke(app, ["browse"], input="q\n")
+    assert all_rows.exit_code == 0
+    assert "English sports brief" in all_rows.output
+    assert "Turkish markets note" in all_rows.output
+    assert "German markets note" in all_rows.output
+
+    en_only = runner.invoke(app, ["browse", "--lang", "EN"], input="q\n")
+    assert en_only.exit_code == 0
+    assert "lang=en" in en_only.output
+    assert "English sports brief" in en_only.output
+    assert "Turkish markets note" not in en_only.output
+    assert "German markets note" not in en_only.output
+
+    tr_only = runner.invoke(app, ["browse", "--lang", "tr"], input="q\n")
+    assert tr_only.exit_code == 0
+    assert "lang=tr" in tr_only.output
+    assert "Turkish markets note" in tr_only.output
+    assert "English sports brief" not in tr_only.output
 
