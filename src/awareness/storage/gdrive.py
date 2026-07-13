@@ -122,6 +122,30 @@ def _get_or_create_folder(access_token: str) -> str | None:
     return None
 
 
+
+def _file_mime(file_path: Path) -> str:
+    """Content type for an uploaded corpus chunk."""
+    return "application/gzip" if file_path.suffix == ".gz" else "application/x-ndjson"
+
+
+def _build_multipart_body(
+    metadata: dict[str, Any], file_bytes: bytes, file_mime: str, boundary: str
+) -> bytes:
+    """Assemble a multipart/related body as bytes so binary (gzip) chunks
+    upload intact and carry the correct content type."""
+    return b"".join(
+        [
+            f"--{boundary}\r\n".encode(),
+            b"Content-Type: application/json; charset=UTF-8\r\n\r\n",
+            json.dumps(metadata).encode("utf-8"),
+            f"\r\n--{boundary}\r\n".encode(),
+            f"Content-Type: {file_mime}\r\n\r\n".encode(),
+            file_bytes,
+            f"\r\n--{boundary}--\r\n".encode(),
+        ]
+    )
+
+
 def upload_file(file_path: Path) -> str | None:
     """Upload a local file to the 'Awareness Captures' folder on Google Drive."""
     if not file_path.exists():
@@ -145,7 +169,7 @@ def upload_file(file_path: Path) -> str | None:
 
     filename = file_path.name
     try:
-        file_content = file_path.read_text(encoding="utf-8")
+        file_bytes = file_path.read_bytes()
     except Exception as e:
         logger.exception("gdrive_upload_read_failed", path=str(file_path), error=str(e))
         return None
@@ -162,16 +186,7 @@ def upload_file(file_path: Path) -> str | None:
         "parents": [folder_id],
     }
     
-    # Assemble multipart body
-    multipart_body = (
-        f"--{boundary}\r\n"
-        f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
-        f"{json.dumps(metadata)}\r\n"
-        f"--{boundary}\r\n"
-        f"Content-Type: application/json\r\n\r\n"
-        f"{file_content}\r\n"
-        f"--{boundary}--\r\n"
-    )
+    multipart_body = _build_multipart_body(metadata, file_bytes, _file_mime(file_path), boundary)
 
     upload_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
     try:
