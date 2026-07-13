@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import time
 from collections.abc import AsyncIterator
 
 import httpx
@@ -12,6 +13,7 @@ from awareness.config import get_settings
 from awareness.normalize.html import html_to_text
 from awareness.normalize.text import detect_language
 from awareness.obs.logging import get_logger
+from awareness.obs.metrics import get_metrics
 from awareness.schemas.doc import DocCapture, RobotsDecision, SourceKind, SourceRef
 from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
@@ -51,6 +53,11 @@ class WarcRepairAdapter(Adapter):
 
         end = offset + length - 1
         full_url = f"{CC_BASE}/{warc_path}"
+        crawl_label = str(crawl_id or "unknown")
+        metrics = get_metrics()
+        t_fetch = time.perf_counter()
+        fetch_outcome = "ok"
+        payload: bytes | None = None
         try:
             async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
                 resp = await client.get(
@@ -58,15 +65,32 @@ class WarcRepairAdapter(Adapter):
                     headers={"Range": f"bytes={offset}-{end}", "User-Agent": context.user_agent},
                 )
                 if resp.status_code not in (200, 206):
+                    fetch_outcome = "http_error"
                     logger.warning("warc_range_failed", status=resp.status_code, path=warc_path)
                     return
                 payload = resp.content
         except httpx.HTTPError as exc:
+            fetch_outcome = "network_error"
             logger.warning("warc_range_exception", err=str(exc))
+            return
+        finally:
+            fetch_elapsed = max(0.0, time.perf_counter() - t_fetch)
+            metrics.inc(
+                "warc_repair.fetch_attempts",
+                labels={"outcome": fetch_outcome, "crawl_id": crawl_label},
+            )
+            metrics.observe(
+                "warc_repair.fetch_seconds",
+                fetch_elapsed,
+                labels={"outcome": fetch_outcome},
+            )
+
+        if payload is None:
             return
 
         # Parse the WARC record from the byte range.
         settings = get_settings()
+        t_parse = time.perf_counter()
         cap = await asyncio.get_event_loop().run_in_executor(
             None,
             _parse_warc_record,
@@ -83,7 +107,19 @@ class WarcRepairAdapter(Adapter):
             settings.text_min_chars,
             settings.text_max_chars,
         )
+        parse_elapsed = max(0.0, time.perf_counter() - t_parse)
+        parse_outcome = "emitted" if cap is not None else "empty"
+        metrics.inc(
+            "warc_repair.parse_attempts",
+            labels={"outcome": parse_outcome, "crawl_id": crawl_label},
+        )
+        metrics.observe(
+            "warc_repair.parse_seconds",
+            parse_elapsed,
+            labels={"outcome": parse_outcome},
+        )
         if cap is not None:
+            metrics.inc("warc_repair.docs_emitted", labels={"crawl_id": crawl_label})
             yield cap
 
 
