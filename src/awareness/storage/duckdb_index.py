@@ -370,6 +370,11 @@ class DuckDbIndex:
         # this, every query paid a full view-refresh (~150ms over a few JSONL
         # chunks); steady-state queries are now bound by the query itself.
         self._views_signature: tuple[Any, ...] | None = None
+        # BM25F avg field lengths (title, text) keyed by views_signature so
+        # repeated searches skip the full-table AVG(length(...)) scan while
+        # the corpus fingerprint is unchanged.
+        self._bm25_avg_lengths: tuple[float, float] | None = None
+        self._bm25_avg_lengths_signature: tuple[Any, ...] | None = None
         self._initialized = True
 
     @contextlib.contextmanager
@@ -743,12 +748,67 @@ class DuckDbIndex:
             )
             self._fts_built_for_count = count
             self._fts_built_signature = self._views_signature
+            # captures_idx content changed → drop stale BM25F length cache.
+            self._bm25_avg_lengths = None
+            self._bm25_avg_lengths_signature = None
             logger.info("duckdb_fts_index_built", rows=count)
             return True
         except duckdb.Error as exc:
             logger.warning("duckdb_fts_build_failed", err=str(exc))
             self._fts_available = False
             return False
+
+    def _bm25_field_avg_lengths(self, conn: duckdb.DuckDBPyConnection) -> tuple[float, float]:
+        """Return (avg_title_len, avg_text_len) for BM25F, memoized by views_signature.
+
+        Avg field lengths are corpus-global constants for a given index
+        fingerprint. Recomputing ``AVG(length(...))`` over ``captures_idx`` on
+        every search is pure overhead on steady-state queries; cache until the
+        source signature (and thus FTS rebuild) changes.
+        """
+        sig = self._views_signature
+        if (
+            self._bm25_avg_lengths is not None
+            and self._bm25_avg_lengths_signature is not None
+            and self._bm25_avg_lengths_signature == sig
+        ):
+            return self._bm25_avg_lengths
+        avg_row = conn.execute(
+            "SELECT CAST(avg(length(coalesce(title, ''))) AS DOUBLE) as avg_title, "
+            "CAST(avg(length(coalesce(text, ''))) AS DOUBLE) as avg_text FROM captures_idx"
+        ).fetchone()
+        avg_title = float(avg_row[0] or 1.0) if avg_row else 1.0
+        avg_text = float(avg_row[1] or 1.0) if avg_row else 1.0
+        if avg_title <= 0.0:
+            avg_title = 1.0
+        if avg_text <= 0.0:
+            avg_text = 1.0
+        lengths = (avg_title, avg_text)
+        self._bm25_avg_lengths = lengths
+        self._bm25_avg_lengths_signature = sig
+        return lengths
+
+    def _bm25_term_dfs(self, conn: duckdb.DuckDBPyConnection, terms: list[str]) -> dict[str, int]:
+        """Batch-fetch document frequencies for stemmed terms (one dict query).
+
+        Missing terms map to df=0. Dedupes *terms* so multi-hit queries pay
+        one round-trip regardless of repeated stems.
+        """
+        if not terms:
+            return {}
+        unique = list(dict.fromkeys(terms))
+        placeholders = ", ".join(f"$df_term_{i}" for i in range(len(unique)))
+        params = {f"df_term_{i}": t for i, t in enumerate(unique)}
+        try:
+            rows = conn.execute(
+                f"SELECT term, CAST(df AS INTEGER) FROM fts_main_captures_idx.dict "
+                f"WHERE term IN ({placeholders})",
+                params,
+            ).fetchall()
+        except duckdb.Error:
+            return {t: 0 for t in unique}
+        found = {str(term): int(df) for term, df in rows}
+        return {t: found.get(t, 0) for t in unique}
 
     def _stem_roots(self, conn: duckdb.DuckDBPyConnection, terms: list[str]) -> list[str]:
         """Reduce each query token to its Snowball stem (its prefix root).
@@ -898,23 +958,14 @@ class DuckDbIndex:
                             count_row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
                             N = count_row[0] if count_row else 1
 
-                        # Get average lengths of title and text
-                        avg_row = conn.execute(
-                            "SELECT CAST(avg(length(coalesce(title, ''))) AS DOUBLE) as avg_title, "
-                            "CAST(avg(length(coalesce(text, ''))) AS DOUBLE) as avg_text FROM captures_idx"
-                        ).fetchone()
-                        avg_title = (avg_row[0] or 1.0) if avg_row else 1.0
-                        avg_text = (avg_row[1] or 1.0) if avg_row else 1.0
+                        # Avg field lengths: memoized per views_signature.
+                        avg_title, avg_text = self._bm25_field_avg_lengths(conn)
 
-                        # Get DFs from dictionary
+                        # Batch DF lookups (one dict query) then BM25 IDF.
+                        term_dfs = self._bm25_term_dfs(conn, stemmed_terms)
                         term_idfs = {}
                         for st in stemmed_terms:
-                            df_row = conn.execute(
-                                "SELECT CAST(df AS INTEGER) FROM fts_main_captures_idx.dict WHERE term = ? LIMIT 1",
-                                [st]
-                            ).fetchone()
-                            df = df_row[0] if df_row else 0
-                            # BM25 IDF
+                            df = term_dfs.get(st, 0)
                             idf = math.log(1.0 + (N - df + 0.5) / (df + 0.5))
                             term_idfs[st] = max(0.0, idf)
 
