@@ -128,12 +128,14 @@
 | C4+ | spa | Dashboard Iceberg compact p95 + compacted rows KPIs | ✅ |
 | C4+ | scrape/obs | FineWeb stream load/admit/filter metrics + load/partition hist | ✅ |
 | C4+ | spa | Dashboard staging backlog age + GDELT fetch p95/attempts KPIs | ✅ |
+| C4+ | spa | Dashboard FineWeb admit/filter + load p95/attempts KPIs | ✅ |
+| C4+ | cli/obs | metrics table FineWeb summary strip + human duration polish | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~207 commits ahead of `main`)
-- **Unit suite:** green (non-slow; datasets skip as configured) — **840 passed, 1 skipped**
-- **Latest:** Diverse wave — FineWeb stream metrics (`958949e`), SPA staging age + GDELT fetch KPIs (`42e36b4`)
+- **Branch:** `loop/continuous-dev` (~210 commits ahead of `main`)
+- **Unit suite:** green (non-slow; datasets skip as configured) — **848 passed, 1 skipped**
+- **Latest:** Diverse wave — FineWeb SPA KPIs (`042e5b4`), CLI FineWeb metrics table polish (`0a7c7c9`)
 
 ## Rules
 

@@ -1,16 +1,16 @@
 {
-  "iteration": 42,
-  "phase": "fineweb_stream_metrics_spa_staging_gdelt_kpis",
+  "iteration": 43,
+  "phase": "fineweb_spa_kpis_cli_metrics_polish",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "42e36b4",
+  "head_sha": "0a7c7c9",
   "product_shas": [
-    "958949e",
-    "42e36b4"
+    "042e5b4",
+    "0a7c7c9"
   ],
-  "commits_ahead": 207,
-  "unit_suite": "green (840 passed, 1 skipped datasets; not slow)",
+  "commits_ahead": 210,
+  "unit_suite": "green (848 passed, 1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): FineWeb stream load/admit/filter metrics (958949e); SPA staging backlog age + GDELT fetch p95/attempts KPIs (42e36b4). Next: FTS polish (non-ranking), FineWeb SPA KPIs, CLI metrics table polish for fineweb., storage crash-safe flush."
+  "notes": "DIVERSE wave (no ranking/unwrap): FineWeb SPA admit/filter/load KPIs (042e5b4); CLI metrics table FineWeb summary + ms latency polish (0a7c7c9). Next: storage crash-safe flush, FTS polish (non-ranking), scrape/obs gap metrics."
 }
