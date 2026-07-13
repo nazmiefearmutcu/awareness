@@ -1,18 +1,18 @@
 {
-  "iteration": 36,
-  "phase": "feed_charset_jsonl_metrics_dlq_replay_spa",
+  "iteration": 37,
+  "phase": "gdelt_metrics_prefix_dlq_purge_spa_discovery",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "65bb20a",
+  "head_sha": "60933ab",
   "product_shas": [
-    "7e55353",
-    "61feb20",
-    "92127b5",
-    "65bb20a"
+    "4147f92",
+    "a8d698f",
+    "b7b3932",
+    "60933ab"
   ],
-  "commits_ahead": 183,
+  "commits_ahead": 189,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): feed/sitemap charset decode (7e55353); JSONL commit metrics (61feb20); DLQ replay CLI (92127b5); SPA JSONL records KPI (65bb20a). Next: FTS polish, streaming WET, GDELT charset, metrics export polish."
+  "notes": "DIVERSE wave (no ranking/unwrap): GDELT fetch metrics (4147f92); metrics --prefix (a8d698f); DLQ purge (b7b3932); SPA discovery KPIs (60933ab). Next: FTS polish, compact pending status, feed metrics SPA polish, WET quality KPI."
 }

@@ -110,12 +110,16 @@
 | C4+ | storage/obs | JSONL staging commit/row/byte metrics + commit hist | ✅ |
 | C4+ | cli/storage | `dlq replay` re-arm DEAD_LETTERED by DLQ id | ✅ |
 | C4+ | spa | Dashboard JSONL records KPI (chunks + commit p95) | ✅ |
+| C4+ | scrape/obs | GDELT slot fetch latency + outcome/enqueue metrics | ✅ |
+| C4+ | cli/obs | `metrics --prefix` filter (table/json/prometheus) | ✅ |
+| C4+ | cli/storage | `dlq purge` drop entry without re-arm | ✅ |
+| C4+ | spa | Dashboard discovery + tail-fetch KPIs | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~183 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~188 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** Diverse wave — feed charset (`7e55353`), JSONL metrics (`61feb20`), DLQ replay (`92127b5`), SPA JSONL KPI (`65bb20a`)
+- **Latest:** Diverse wave — GDELT metrics (`4147f92`), metrics `--prefix` (`a8d698f`), DLQ purge (`b7b3932`), SPA discovery KPIs (`60933ab`)
 
 ## Rules
 
