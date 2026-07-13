@@ -1010,6 +1010,25 @@ def status(
         dedup_ratio = (db_metrics['total_docs_dedup_dropped'] / total_docs) * 100
         rprint(f"  • Ingestion Deduplication Ratio: [cyan]{dedup_ratio:.2f}%[/cyan] ({db_metrics['total_docs_dedup_dropped']:,} docs dropped)")
 
+    # Staging backlog age (same summary as compact --status / GET /staging).
+    try:
+        staging = state.pending_manifest_summary()
+    except Exception:  # noqa: BLE001 — status must stay best-effort
+        staging = None
+    if staging is not None:
+        pending_n = int(staging.get("pending_count") or 0)
+        if pending_n:
+            age = staging.get("oldest_age_seconds")
+            age_s = _format_duration(float(age)) if age is not None else "—"
+            recs = int(staging.get("total_records") or 0)
+            b = int(staging.get("total_bytes") or 0)
+            rprint(
+                f"  • Staging pending compaction:   [yellow]{pending_n:,}[/yellow] "
+                f"manifests · {recs:,} rows · {_format_size(b)} · oldest {age_s}"
+            )
+        else:
+            rprint("  • Staging pending compaction:   [green]0[/green] (caught up)")
+
     if detailed:
         rprint("\n[bold]Detailed Component Sizes:[/bold]")
         det_table = Table("Component", "Files", "Size on Disk")

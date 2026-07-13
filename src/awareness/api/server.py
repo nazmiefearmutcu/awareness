@@ -5,6 +5,7 @@ Endpoints:
     GET  /healthz                — liveness + search index readiness
     GET  /status                 — overall status
     GET  /metrics                — counters/histograms snapshot (JSON; ?format=prometheus)
+    GET  /staging                — JSONL staging backlog (pending manifests + oldest age)
     POST /backfill               — submit
     POST /backfill/{id}/run      — run pending tasks (non-blocking task)
     GET  /backfill/{id}          — status
@@ -344,6 +345,35 @@ def create_app() -> FastAPI:
         stats["fetch_skipped_seen"] = int(m.counter_sum("tail.fetch_skipped_seen"))
         stats["tight_near_skipped"] = int(m.counter_sum("dedup.tight_near_skipped"))
         return stats
+
+    @app.get("/staging")
+    def staging(
+        include_manifests: bool = Query(
+            default=True,
+            description="Include per-manifest rows (path/records/bytes/age). "
+            "Set false for a lightweight backlog summary only.",
+        ),
+    ) -> dict[str, Any]:
+        """JSONL staging backlog pending Iceberg compaction.
+
+        Mirrors ``awareness compact --status/--json``: pending chunk count,
+        total records/bytes, oldest committed_at + age_seconds so operators
+        and the SPA can see warehouse fold lag without shell access.
+        """
+        st = _State.state
+        if st is None:
+            raise HTTPException(500, "not initialized")
+        summary = st.pending_manifest_summary()
+        if not include_manifests:
+            # Drop the potentially large per-file list for cheap polling.
+            return {
+                "pending_count": summary.get("pending_count", 0),
+                "total_records": summary.get("total_records", 0),
+                "total_bytes": summary.get("total_bytes", 0),
+                "oldest_committed_at": summary.get("oldest_committed_at"),
+                "oldest_age_seconds": summary.get("oldest_age_seconds"),
+            }
+        return summary
 
     @app.post("/backfill")
     def submit_backfill(body: BackfillBody) -> dict[str, Any]:
