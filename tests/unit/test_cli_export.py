@@ -184,6 +184,33 @@ def test_query_export_domain_filter(tmp_path: Path) -> None:
         idx.close()
 
 
+def test_query_export_source_filter_case_insensitive(tmp_path: Path) -> None:
+    """export --source matches regardless of RSS vs rss casing."""
+    idx = _index(tmp_path)
+    try:
+        upper = query_export_captures(idx, limit=100, source="GDELT")
+        lower = query_export_captures(idx, limit=100, source="gdelt")
+        mixed = query_export_captures(idx, limit=100, source="Rss")
+        assert len(upper) == len(lower) == 1
+        assert upper[0]["capture_id"] == "c-other"
+        assert str(upper[0]["source_type"]).lower() == "gdelt"
+        assert len(mixed) == 3  # three rss rows in fixture
+        assert all(str(r["source_type"]).lower() == "rss" for r in mixed)
+    finally:
+        idx.close()
+
+
+def test_query_export_domain_filter_case_insensitive(tmp_path: Path) -> None:
+    """export --domain matches Example.COM vs example.com."""
+    idx = _index(tmp_path)
+    try:
+        rows = query_export_captures(idx, limit=100, domain="Other.COM")
+        assert len(rows) == 1
+        assert rows[0]["capture_id"] == "c-other"
+    finally:
+        idx.close()
+
+
 def test_write_export_jsonl(tmp_path: Path) -> None:
     out = tmp_path / "out" / "caps.jsonl"
     rows = [

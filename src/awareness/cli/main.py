@@ -1753,11 +1753,12 @@ def inspect(
     where = ["fetch_ts >= $start", "fetch_ts <= $end"]
     params: dict[str, Any] = {"start": start_dt, "end": end_dt}
     if domain:
-        where.append("domain = $dom")
-        params["dom"] = domain
+        where.append("lower(domain) = $dom")
+        params["dom"] = str(domain).strip().lower()
     if source:
-        where.append("source_type = $src")
-        params["src"] = source
+        # Case-insensitive: align CLI list with API/search (RSS vs rss).
+        where.append("lower(source_type) = $src")
+        params["src"] = str(source).strip().lower()
     where_sql = " AND ".join(where)
     sql = f"""
         SELECT
@@ -2620,11 +2621,12 @@ def browse(
             where.append("fetch_ts >= $start")
             params["start"] = start_dt
         if domain:
-            where.append("domain = $dom")
-            params["dom"] = domain
+            where.append("lower(domain) = $dom")
+            params["dom"] = str(domain).strip().lower()
         if source:
-            where.append("source_type = $src")
-            params["src"] = source
+            # Case-insensitive: RSS vs rss / Tail_Recrawl (API/search parity).
+            where.append("lower(source_type) = $src")
+            params["src"] = str(source).strip().lower()
         if lang_filter:
             where.append("lower(language) = $lang")
             params["lang"] = lang_filter
@@ -3238,11 +3240,11 @@ def hf_push(
     where = []
     params = {}
     if domain:
-        where.append("domain = $dom")
-        params["dom"] = domain
+        where.append("lower(domain) = $dom")
+        params["dom"] = str(domain).strip().lower()
     if source:
-        where.append("source_type = $src")
-        params["src"] = source
+        where.append("lower(source_type) = $src")
+        params["src"] = str(source).strip().lower()
         
     where_sql = " WHERE " + " AND ".join(where) if where else ""
     sql = f"""

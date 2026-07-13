@@ -58,11 +58,13 @@ def query_export_captures(
     where: list[str] = []
     params: dict[str, Any] = {}
     if domain:
-        where.append("domain = $dom")
-        params["dom"] = domain
+        # Case-insensitive: Example.COM matches stored eTLD+1 lower form.
+        where.append("lower(domain) = $dom")
+        params["dom"] = str(domain).strip().lower()
     if source:
-        where.append("source_type = $src")
-        params["src"] = source
+        # Case-insensitive: RSS vs rss / Common_Crawl_Wet (align with API/search).
+        where.append("lower(source_type) = $src")
+        params["src"] = str(source).strip().lower()
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     fold_key = export_fold_key_sql(unique)
     limit_sql = f" LIMIT {int(limit)}" if int(limit) > 0 else ""

@@ -252,3 +252,38 @@ def test_browse_lang_filter_case_insensitive(tmp_project: Path) -> None:
     assert "Turkish markets note" in tr_only.output
     assert "English sports brief" not in tr_only.output
 
+
+def test_browse_source_filter_case_insensitive(tmp_project: Path) -> None:
+    """browse --source matches RSS vs rss (parity with API/search)."""
+    _write_doc(
+        tmp_project,
+        30,
+        title="RSS climate brief",
+        text="Climate talks continue this week.",
+    )
+    day = tmp_project / "data" / "jsonl" / "captures" / "2026" / "06" / "01"
+    day.mkdir(parents=True, exist_ok=True)
+    rec: dict[str, object] = {k: None for k in _FULL_KEYS}
+    rec.update(
+        doc_id="doc-31",
+        capture_id="cap-31",
+        source_type="gdelt",
+        domain="gdelt.example",
+        url="https://gdelt.example/31",
+        fetch_ts="2026-06-01T13:00:00+00:00",
+        title="GDELT markets brief",
+        text="Markets moved after the report.",
+        language="en",
+    )
+    (day / "chunk-31.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+    rss_upper = runner.invoke(app, ["browse", "--source", "RSS"], input="q\n")
+    assert rss_upper.exit_code == 0
+    assert "RSS climate brief" in rss_upper.output
+    assert "GDELT markets brief" not in rss_upper.output
+
+    gdelt_mixed = runner.invoke(app, ["browse", "--source", "Gdelt"], input="q\n")
+    assert gdelt_mixed.exit_code == 0
+    assert "GDELT markets brief" in gdelt_mixed.output
+    assert "RSS climate brief" not in gdelt_mixed.output
+
