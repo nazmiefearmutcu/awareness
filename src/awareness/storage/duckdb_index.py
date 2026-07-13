@@ -16,6 +16,7 @@ A combined ``captures`` view UNIONs both with row-level dedup on
 
 from __future__ import annotations
 
+from datetime import datetime
 import contextlib
 import random
 import threading
