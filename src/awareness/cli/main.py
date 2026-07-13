@@ -2773,6 +2773,12 @@ def _print_search_diagnostics(diagnostics: dict[str, Any] | None) -> None:
         meta.append(f"corpus={diagnostics['corpus_size']}")
     if diagnostics.get("mode_used"):
         meta.append(f"mode={diagnostics['mode_used']}")
+    filters = diagnostics.get("filters") or {}
+    if isinstance(filters, dict):
+        if filters.get("domain"):
+            meta.append(f"domain={filters['domain']}")
+        if filters.get("source"):
+            meta.append(f"source={filters['source']}")
     title = "No results — suggestions"
     if meta:
         title = f"{title} ({', '.join(meta)})"

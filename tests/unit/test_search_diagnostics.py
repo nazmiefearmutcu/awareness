@@ -170,3 +170,35 @@ def test_phrase_search_empty_diagnostics_mode(tmp_path: Path) -> None:
     finally:
         idx.close()
 
+
+def test_build_search_diagnostics_includes_domain_filter() -> None:
+    """Active domain/source filters are first-class fields, not only hint text."""
+    diag = build_search_diagnostics(
+        mode_used="prefix",
+        fts_available=True,
+        query_terms=["alpha"],
+        corpus_size=10,
+        domain="news.example",
+        source="rss",
+    )
+    assert diag["filters"] == {"domain": "news.example", "source": "rss"}
+    assert any("domain" in h.lower() for h in diag["hints"])
+
+
+def test_empty_search_with_domain_surfaces_filters(tmp_path: Path) -> None:
+    """Zero-hit search with --domain carries filters.domain in diagnostics."""
+    jsonl_dir = tmp_path / "jsonl"
+    _write_doc(jsonl_dir, 1, title="Sports roundup", text="A football match ended in a draw.", domain="other.example")
+    idx = DuckDbIndex(
+        db_path=tmp_path / "duckdb" / "metadata.duckdb",
+        jsonl_dir=jsonl_dir,
+        iceberg_warehouse=None,
+    )
+    try:
+        res = idx.search("football", mode="auto", domain="news.example")
+        assert res["total"] == 0
+        diag = res["diagnostics"]
+        assert diag["filters"]["domain"] == "news.example"
+        assert any("domain" in h.lower() for h in diag["hints"])
+    finally:
+        idx.close()

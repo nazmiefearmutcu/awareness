@@ -356,6 +356,12 @@ function renderCapsDiagnostics(data, isSearch) {
     const e = win.end != null ? String(win.end).slice(0, 10) : "…";
     metaParts.push("window=" + s + "→" + e);
   }
+  // Active domain/source filters from diagnostics.filters (or form fields as fallback).
+  const filters = diag.filters && typeof diag.filters === "object" ? diag.filters : {};
+  const domainFilter = String(filters.domain || $("#caps-domain")?.value || "").trim();
+  const sourceFilter = String(filters.source || $("#caps-source")?.value || "").trim();
+  if (domainFilter) metaParts.push("domain=" + domainFilter);
+  if (sourceFilter) metaParts.push("source=" + sourceFilter);
   // Phrase empty-state must stay informative even if the API omitted hints.
   if (modeUsed.toLowerCase() === "phrase") {
     const hasPhraseHint = hints.some((h) => /phrase|quotes/i.test(String(h)));

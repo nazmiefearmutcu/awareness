@@ -356,6 +356,15 @@ def build_search_diagnostics(
             "start": _serialize_window_bound(start),
             "end": _serialize_window_bound(end),
         }
+    # Surface active filters so CLI/SPA empty-state UX can show what was applied
+    # (hints alone don't make the active domain/source filter obvious).
+    filters: dict[str, str] = {}
+    if domain:
+        filters["domain"] = str(domain)
+    if source:
+        filters["source"] = str(source)
+    if filters:
+        diag["filters"] = filters
     return diag
 
 

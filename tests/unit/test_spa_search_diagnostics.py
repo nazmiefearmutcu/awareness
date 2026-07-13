@@ -74,3 +74,11 @@ def test_spa_domain_chip_syncs_selected_state() -> None:
     # loadCaptures should call syncFacetChipSelection while loading, not renderCapsFacets(null…).
     assert "Keep facet chips visible during reload" in app_js or "syncFacetChipSelection();" in app_js
     assert ".facet-chip.is-active" in css
+
+
+def test_spa_empty_diagnostics_shows_domain_filter() -> None:
+    """Empty-search meta line includes active domain/source filters when present."""
+    app_js = APP_JS.read_text(encoding="utf-8")
+    assert "diag.filters" in app_js
+    assert 'metaParts.push("domain=" + domainFilter)' in app_js
+    assert 'metaParts.push("source=" + sourceFilter)' in app_js
