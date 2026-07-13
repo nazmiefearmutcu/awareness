@@ -79,7 +79,8 @@ _RERANK_URL_PREFIX_BOOST = 0.2   # Wupr: leaf slug tokens start with query multi
 _RERANK_DOMAIN_NAV_BOOST = 0.3   # Wd: domain-label term coverage multiplies by 1+Wd
 _RERANK_LEAD_HIT_BOOST = 0.15    # Wh: bag-of-words lead term coverage multiplies by 1+Wh
 _RERANK_LEAD_PHRASE_BOOST = 0.2   # Wl: ordered multi-term phrase in lead text multiplies by 1+Wl
-_RERANK_LEAD_CHARS = 280         # news lede window (chars) for lead hit/phrase credit
+_RERANK_LEAD_PREFIX_BOOST = 0.2  # Wlp: lead tokens start with query multiplies by 1+Wlp
+_RERANK_LEAD_CHARS = 280         # news lede window (chars) for lead hit/phrase/prefix credit
 _RERANK_LEN_PIVOT = 4000         # chars; docs up to here are not length-damped
 _RERANK_LEN_FLOOR = 0.75         # the most a very long doc can be damped to
 _RERANK_RECENCY_WEIGHT = 0.0     # Wr: 0 disables the recency prior (off by default)
@@ -1984,6 +1985,49 @@ def _lead_phrase_frac(
     return 0.5
 
 
+def _lead_tokens(text: str, *, lead_chars: int = _RERANK_LEAD_CHARS) -> list[str]:
+    """Alphanumeric tokens (len≥2) from the document lead window.
+
+    Mirrors ``_title_tokens`` so lead-prefix navigational checks share the same
+    token shape as title-prefix / exact equality.
+    """
+    import re
+
+    if lead_chars <= 0:
+        return []
+    lead = (text or "")[:lead_chars]
+    return [t for t in re.findall(r"[A-Za-z0-9']+", lead.lower()) if len(t) >= 2]
+
+
+def _lead_prefix_frac(
+    text: str,
+    terms: list[str],
+    *,
+    lead_chars: int = _RERANK_LEAD_CHARS,
+) -> float:
+    """1.0 when lead tokens start with the query terms (ordered prefix).
+
+    Phrase credit fires when the query appears *somewhere* in the lede
+    (possibly after a dateline or kicker). Prefix captures the stronger
+    navigational case where the article opens with the query
+    (``Bitcoin price surges overnight…`` for ``bitcoin price``). Mid-lead
+    phrase matches still get phrase credit without this boost.
+
+    * ``1.0`` — ``lead_tokens[:len(terms)] == cleaned terms``
+    * ``0.0`` — empty terms/lead, lead shorter than query, or prefix mismatch
+
+    Works for single-term queries (``Bitcoin rose…`` vs ``bitcoin``) unlike
+    phrase frac, which short-circuits below two terms.
+    """
+    cleaned = [t for t in terms if t]
+    if not cleaned:
+        return 0.0
+    tokens = _lead_tokens(text, lead_chars=lead_chars)
+    if len(tokens) < len(cleaned):
+        return 0.0
+    return 1.0 if tokens[: len(cleaned)] == cleaned else 0.0
+
+
 def _length_factor(text_len: int, *, pivot: int = _RERANK_LEN_PIVOT, floor: float = _RERANK_LEN_FLOOR) -> float:
     """1.0 for docs up to `pivot` chars, decaying toward `floor` for longer ones.
 
@@ -2046,6 +2090,7 @@ def _rerank(
     domain_nav_boost: float = _RERANK_DOMAIN_NAV_BOOST,
     lead_hit_boost: float = _RERANK_LEAD_HIT_BOOST,
     lead_phrase_boost: float = _RERANK_LEAD_PHRASE_BOOST,
+    lead_prefix_boost: float = _RERANK_LEAD_PREFIX_BOOST,
     lead_chars: int = _RERANK_LEAD_CHARS,
     len_pivot: int = _RERANK_LEN_PIVOT,
     len_floor: float = _RERANK_LEN_FLOOR,
@@ -2056,9 +2101,9 @@ def _rerank(
     """Re-rank BM25 candidates (already in raw-score DESC order) by multiplying
     the min-max-normalized BM25 score with independent title / title-phrase /
     title-exact / title-prefix / url / url-phrase / url-exact / url-prefix /
-    domain-nav / lead-hit / lead-phrase / length / recency factors. Returns a
-    NEW ordered list; input row dicts are not mutated. Stable: equal final
-    scores keep the incoming BM25 order.
+    domain-nav / lead-hit / lead-phrase / lead-prefix / length / recency
+    factors. Returns a NEW ordered list; input row dicts are not mutated.
+    Stable: equal final scores keep the incoming BM25 order.
 
     Each candidate dict carries ``score`` (raw BM25), ``title``, ``text``,
     optional ``url`` / ``canonical_url`` / ``domain``, and a timestamp
@@ -2110,6 +2155,9 @@ def _rerank(
         lead_f = 1.0 + lead_phrase_boost * _lead_phrase_frac(
             str(text), terms, lead_chars=lead_chars
         )
+        lead_prefix_f = 1.0 + lead_prefix_boost * _lead_prefix_frac(
+            str(text), terms, lead_chars=lead_chars
+        )
         len_f = _length_factor(len(text), pivot=len_pivot, floor=len_floor)
         doc_epoch = _to_epoch(c.get("published_ts") or c.get("fetch_ts")) if recency_on else None
         rec_f = _recency_factor(
@@ -2131,6 +2179,7 @@ def _rerank(
             * domain_nav_f
             * lead_hit_f
             * lead_f
+            * lead_prefix_f
             * len_f
             * rec_f
         )

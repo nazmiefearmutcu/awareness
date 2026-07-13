@@ -14,6 +14,8 @@ from awareness.storage.duckdb_index import (
     _domain_nav_frac,
     _lead_hit_frac,
     _lead_phrase_frac,
+    _lead_prefix_frac,
+    _lead_tokens,
     _length_factor,
     _recency_factor,
     _rerank,
@@ -173,6 +175,62 @@ def test_lead_phrase_frac_ignores_matches_past_lead_window() -> None:
 
 def test_lead_phrase_frac_out_of_order_is_zero() -> None:
     assert _lead_phrase_frac("Price of bitcoin jumps", ["bitcoin", "price"]) == 0.0
+
+
+# ── _lead_prefix_frac / _lead_tokens ─────────────────────────────────────
+def test_lead_tokens_window_and_alnum() -> None:
+    assert _lead_tokens("Bitcoin price surges!") == ["bitcoin", "price", "surges"]
+    assert _lead_tokens("") == []
+    assert _lead_tokens("a b", lead_chars=10) == []  # len < 2 discarded
+    # Past window is ignored.
+    long = ("noise " * 30) + "bitcoin later"
+    assert "bitcoin" not in _lead_tokens(long, lead_chars=20)
+
+
+def test_lead_prefix_frac_empty_is_zero() -> None:
+    assert _lead_prefix_frac("Bitcoin price", []) == 0.0
+    assert _lead_prefix_frac("", ["bitcoin"]) == 0.0
+    assert _lead_prefix_frac("   ", ["bitcoin"]) == 0.0
+    assert _lead_prefix_frac("Bitcoin", ["bitcoin"], lead_chars=0) == 0.0
+
+
+def test_lead_prefix_frac_single_and_multi_term() -> None:
+    """Lead token stream must start with the query terms (ordered)."""
+    assert _lead_prefix_frac("Bitcoin surges overnight.", ["bitcoin"]) == 1.0
+    assert (
+        _lead_prefix_frac("Bitcoin price surges overnight.", ["bitcoin", "price"])
+        == 1.0
+    )
+    # Exact lead open is also a prefix of itself.
+    assert _lead_prefix_frac("Bitcoin price", ["bitcoin", "price"]) == 1.0
+    assert _lead_prefix_frac("BITCOIN PRICE jumps", ["bitcoin", "price"]) == 1.0
+
+
+def test_lead_prefix_frac_rejects_mid_lead_and_reorder() -> None:
+    # Phrase may match mid-lead; prefix requires the lead *start*.
+    assert (
+        _lead_prefix_frac(
+            "Markets: bitcoin price jumped overnight.",
+            ["bitcoin", "price"],
+        )
+        == 0.0
+    )
+    assert (
+        _lead_prefix_frac("Price of bitcoin jumps early.", ["bitcoin", "price"])
+        == 0.0
+    )
+    assert _lead_prefix_frac("Bitcoin only.", ["bitcoin", "price"]) == 0.0
+    assert _lead_prefix_frac("markets only here.", ["bitcoin"]) == 0.0
+
+
+def test_lead_prefix_frac_ignores_matches_past_lead_window() -> None:
+    """Prefix only inside the lead window counts."""
+    # Window cuts before the real open when a long dateline is truncated mid-way.
+    text = "Bitcoin price " + ("x " * 100)
+    assert _lead_prefix_frac(text, ["bitcoin", "price"], lead_chars=280) == 1.0
+    # Tiny window that only captures "Bi" cannot form a len≥2 prefix token match
+    # for multi-term; single-char window yields no tokens.
+    assert _lead_prefix_frac(text, ["bitcoin"], lead_chars=2) == 0.0
 
 
 # ── _url_hit_frac ────────────────────────────────────────────────────────
@@ -413,6 +471,7 @@ def test_rerank_title_exact_overrides_phrase_only() -> None:
         url_phrase_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
     )
     # Equal title_f + phrase_f, no exact → BM25 order (LONGER first).
     assert [c["capture_id"] for c in off] == ["LONGER", "EXACT"]
@@ -427,6 +486,7 @@ def test_rerank_title_exact_overrides_phrase_only() -> None:
         url_phrase_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
     )
     # EXACT final = 0.85 * 1.5 * 1.35 * 1.4 = 2.40975
     # LONGER final = 1.0 * 1.5 * 1.35 * 1.0 = 2.025
@@ -455,6 +515,7 @@ def test_rerank_title_prefix_overrides_mid_title_phrase() -> None:
         url_phrase_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
         domain_nav_boost=0.0,
     )
     # Equal title_f + phrase_f, no prefix → BM25 order (MID first).
@@ -470,6 +531,7 @@ def test_rerank_title_prefix_overrides_mid_title_phrase() -> None:
         url_phrase_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
         domain_nav_boost=0.0,
     )
     # PREFIX final = 0.85 * 1.5 * 1.35 * 1.25 = 2.1515625
@@ -500,6 +562,7 @@ def test_rerank_lead_phrase_overrides_buried_body_match() -> None:
         url_phrase_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
     )
     assert [c["capture_id"] for c in off] == ["BURIED", "LEAD"]
     on = _rerank(
@@ -540,6 +603,7 @@ def test_rerank_lead_hit_overrides_buried_single_term() -> None:
         url_phrase_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
     )
     assert [c["capture_id"] for c in off] == ["BURIED", "LEAD"]
     on = _rerank(
@@ -552,10 +616,69 @@ def test_rerank_lead_hit_overrides_buried_single_term() -> None:
         url_phrase_boost=0.0,
         lead_hit_boost=0.15,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
         lead_chars=280,
     )
     # LEAD final = 0.90 * 1.15 = 1.035 > BURIED = 1.0 * 1.0
     assert [c["capture_id"] for c in on] == ["LEAD", "BURIED"]
+
+
+def test_rerank_lead_prefix_overrides_mid_lead_phrase() -> None:
+    """Lead opening with the query outranks a mid-lead ordered phrase.
+
+    MID has higher raw BM25 and an ordered phrase after a kicker. PREFIX opens
+    with the query. Neutral titles/urls; hit/phrase boosts off so only
+    lead_prefix_f differs when boost is on.
+    """
+    cands = [
+        _cand(
+            "MID",
+            1.0,
+            title="n",
+            text="Markets update: bitcoin price jumped as trading opened.",
+        ),
+        _cand(
+            "PREFIX",
+            0.85,
+            title="n",
+            text="Bitcoin price surges overnight after policy news.",
+        ),
+    ]
+    off = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        title_prefix_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        url_exact_boost=0.0,
+        url_prefix_boost=0.0,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
+        domain_nav_boost=0.0,
+    )
+    assert [c["capture_id"] for c in off] == ["MID", "PREFIX"]
+    on = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        title_prefix_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        url_exact_boost=0.0,
+        url_prefix_boost=0.0,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+        lead_prefix_boost=0.2,
+        domain_nav_boost=0.0,
+    )
+    # PREFIX final = 0.85 * 1.2 = 1.02 > MID = 1.0 * 1.0
+    assert [c["capture_id"] for c in on] == ["PREFIX", "MID"]
 
 
 def test_rerank_url_hit_overrides_higher_bm25() -> None:
@@ -588,6 +711,7 @@ def test_rerank_url_hit_overrides_higher_bm25() -> None:
         url_exact_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
     )
     assert [c["capture_id"] for c in off] == ["A", "B"]
     on = _rerank(
@@ -599,6 +723,7 @@ def test_rerank_url_hit_overrides_higher_bm25() -> None:
         url_exact_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
     )
     assert [c["capture_id"] for c in on] == ["B", "A"]
 
@@ -623,6 +748,7 @@ def test_rerank_url_boost_falls_back_to_canonical_url() -> None:
         url_boost=0.25,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
     )
     assert [c["capture_id"] for c in out] == ["B", "A"]
 
@@ -794,6 +920,7 @@ def test_rerank_url_exact_overrides_partial_slug_match() -> None:
         url_exact_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
     )
     # Without exact boost: equal url_f + url_phrase_f → BM25 order.
     assert [c["capture_id"] for c in off] == ["LONGER", "EXACT"]
@@ -808,6 +935,7 @@ def test_rerank_url_exact_overrides_partial_slug_match() -> None:
         url_exact_boost=0.3,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
     )
     # EXACT final = 0.85 * 1.25 * 1.2 * 1.3 = 1.6575
     # LONGER final = 1.0 * 1.25 * 1.2 * 1.0 = 1.5
@@ -839,6 +967,7 @@ def test_rerank_url_exact_falls_back_to_canonical_url() -> None:
         url_prefix_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
         domain_nav_boost=0.0,
     )
     # B final = 0.85 * 1.3 = 1.105 > A = 1.0
@@ -964,6 +1093,7 @@ def test_rerank_url_prefix_overrides_mid_slug_phrase() -> None:
         url_prefix_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
         domain_nav_boost=0.0,
     )
     # Both get url_phrase_f (MID ordered-with-gap 0.5, PREFIX contiguous 1.0)
@@ -982,6 +1112,7 @@ def test_rerank_url_prefix_overrides_mid_slug_phrase() -> None:
         url_prefix_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
         domain_nav_boost=0.0,
     )
     assert [c["capture_id"] for c in off_no_phrase] == ["MID", "PREFIX"]
@@ -998,6 +1129,7 @@ def test_rerank_url_prefix_overrides_mid_slug_phrase() -> None:
         url_prefix_boost=0.2,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
         domain_nav_boost=0.0,
     )
     # PREFIX final = 0.85 * 1.2 = 1.02 > MID = 1.0 * 1.0
@@ -1032,6 +1164,7 @@ def test_rerank_url_prefix_falls_back_to_canonical_url() -> None:
         url_prefix_boost=0.2,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
         domain_nav_boost=0.0,
     )
     # B final = 0.85 * 1.2 = 1.02 > A = 1.0
@@ -1109,6 +1242,7 @@ def test_rerank_domain_nav_overrides_higher_bm25() -> None:
         url_exact_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
         domain_nav_boost=0.0,
     )
     assert [c["capture_id"] for c in off] == ["OTHER", "NAV"]
@@ -1123,6 +1257,7 @@ def test_rerank_domain_nav_overrides_higher_bm25() -> None:
         url_exact_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
         domain_nav_boost=0.3,
     )
     # NAV final = 0.85 * 1.3 = 1.105 > OTHER = 1.0 * 1.0
@@ -1160,6 +1295,7 @@ def test_rerank_domain_nav_multi_term_partial_coverage() -> None:
         url_exact_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
+        lead_prefix_boost=0.0,
         domain_nav_boost=0.3,
     )
     # HALF domain_nav_f = 1 + 0.3 * 0.5 = 1.15 → final 0.90 * 1.15 = 1.035 > 1.0
