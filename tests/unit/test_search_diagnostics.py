@@ -136,3 +136,37 @@ def test_build_search_diagnostics_substring_single_term_has_hint() -> None:
     assert diag["hints"], "empty hints break CLI/API empty-state UX"
     assert any("substring" in h.lower() or "terms" in h.lower() for h in diag["hints"])
 
+
+def test_build_search_diagnostics_phrase_mode() -> None:
+    """Quoted phrase misses should not suggest substring (phrase already uses it)."""
+    diag = build_search_diagnostics(
+        mode_used="phrase",
+        fts_available=True,
+        query_terms=["machine", "learning"],
+        corpus_size=10,
+        requested_mode="substring",
+    )
+    assert diag["mode_used"] == "phrase"
+    assert any("exact phrase" in h.lower() or "without quotes" in h.lower() for h in diag["hints"])
+    assert not any("substring mode" in h.lower() for h in diag["hints"])
+
+
+def test_phrase_search_empty_diagnostics_mode(tmp_path: Path) -> None:
+    """Zero-hit quoted query surfaces mode=phrase + phrase-specific hints."""
+    jsonl_dir = tmp_path / "jsonl"
+    _write_doc(jsonl_dir, 1, title="Sports roundup", text="A football match ended in a draw.")
+    idx = DuckDbIndex(
+        db_path=tmp_path / "duckdb" / "metadata.duckdb",
+        jsonl_dir=jsonl_dir,
+        iceberg_warehouse=None,
+    )
+    try:
+        res = idx.search('"quantum chromodynamics"', mode="auto")
+        assert res["total"] == 0
+        assert res["mode"] == "phrase"
+        diag = res["diagnostics"]
+        assert diag["mode_used"] == "phrase"
+        assert any("phrase" in h.lower() or "quotes" in h.lower() for h in diag["hints"])
+    finally:
+        idx.close()
+

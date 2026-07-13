@@ -303,7 +303,12 @@ def build_search_diagnostics(
             )
         if corpus_size is None or corpus_size > 0:
             # Always offer a recall tip when the corpus is non-empty / unknown.
-            if mode_used != "substring" or len(query_terms) > 1:
+            if mode_used == "phrase":
+                # Quoted exact-phrase path — do not suggest substring (already used).
+                hints.append(
+                    "No exact phrase matches; try without quotes or fewer words."
+                )
+            elif mode_used != "substring" or len(query_terms) > 1:
                 hints.append("Try fewer terms or substring mode.")
             else:
                 # substring + single term still missed — keep hints non-empty.
