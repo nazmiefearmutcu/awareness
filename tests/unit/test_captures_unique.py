@@ -230,3 +230,69 @@ def test_unique_respects_domain_filter(tmp_path: Path) -> None:
         assert out2["total"] == 4
     finally:
         idx.close()
+
+
+def test_browse_language_filter_case_insensitive(tmp_path: Path) -> None:
+    """GET /captures language clause (lower) keeps only matching BCP-47 tags."""
+    idx = _index(tmp_path)
+    try:
+        en = query_captures_list(
+            idx,
+            limit=50,
+            offset=0,
+            where=["lower(language) = $lang"],
+            params={"lang": "EN".strip().lower()},
+            unique="none",
+        )
+        assert en["total"] == 5
+        for row in en["rows"]:
+            assert str(row.get("language") or "").lower() == "en"
+
+        none = query_captures_list(
+            idx,
+            limit=50,
+            offset=0,
+            where=["lower(language) = $lang"],
+            params={"lang": "tr"},
+            unique="none",
+        )
+        assert none["total"] == 0
+    finally:
+        idx.close()
+
+
+def test_browse_domain_filter_case_insensitive(tmp_path: Path) -> None:
+    """GET /captures domain clause uses lower() so SPA casing still matches."""
+    idx = _index(tmp_path)
+    try:
+        out = query_captures_list(
+            idx,
+            limit=50,
+            offset=0,
+            where=["lower(domain) = $dom"],
+            params={"dom": "Example.COM".strip().lower()},
+            unique="none",
+        )
+        assert out["total"] == 5
+        miss = query_captures_list(
+            idx,
+            limit=50,
+            offset=0,
+            where=["lower(domain) = $dom"],
+            params={"dom": "other.example"},
+            unique="none",
+        )
+        assert miss["total"] == 0
+    finally:
+        idx.close()
+
+
+def test_list_captures_endpoint_uses_case_insensitive_domain() -> None:
+    """Server list_captures SQL uses lower(domain)/lower(language) like search."""
+    import inspect
+
+    import awareness.api.server as server
+
+    src = inspect.getsource(server.create_app)
+    assert "lower(domain) = $dom" in src
+    assert "lower(language) = $lang" in src

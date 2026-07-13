@@ -7,6 +7,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+import pytest
+
 import awareness.api.server as server
 from awareness.storage.duckdb_index import DuckDbIndex
 
@@ -127,3 +129,47 @@ def test_settings_put_config_skips_close_when_nothing_applied(monkeypatch, tmp_p
         assert server._State.index is idx  # unchanged
     finally:
         server._close_index()
+
+
+def test_lifespan_source_closes_shared_http_clients() -> None:
+    """API lifespan shutdown must aclose process-wide pooled httpx clients."""
+    import inspect
+
+    src = inspect.getsource(server.create_app)
+    assert "aclose_shared_async_clients" in src
+    assert "from awareness.util.http import aclose_shared_async_clients" in src
+
+
+@pytest.mark.asyncio
+async def test_lifespan_aclose_shared_http_clients(monkeypatch, tmp_path: Path) -> None:
+    """Exiting the app lifespan drains the shared AsyncClient pool."""
+    from awareness.config import get_settings
+    from awareness.util.http import (
+        get_shared_async_client,
+        reset_shared_async_clients,
+        shared_async_client_pool_size,
+    )
+
+    # Isolate StateDB into tmp so we do not touch the workspace sqlite file.
+    real = get_settings()
+    monkeypatch.setattr(
+        real,
+        "state_db_url",
+        f"sqlite:///{tmp_path / 'lifespan-state.sqlite'}",
+    )
+    monkeypatch.setattr(real, "reaper_enabled", False)
+    monkeypatch.setattr(server, "get_settings", lambda: real)
+
+    app = server.create_app()
+    reset_shared_async_clients()
+    server._State.index = None
+    try:
+        async with app.router.lifespan_context(app):
+            client = await get_shared_async_client(timeout=5.0, follow_redirects=True)
+            assert client is not None
+            assert shared_async_client_pool_size() >= 1
+        # After lifespan finally: pool drained.
+        assert shared_async_client_pool_size() == 0
+    finally:
+        server._close_index()
+        reset_shared_async_clients()

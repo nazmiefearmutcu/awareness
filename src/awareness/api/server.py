@@ -256,6 +256,14 @@ def create_app() -> FastAPI:
             for t in list(_State.background_tasks):
                 t.cancel()
             _close_index()
+            # Drain process-wide pooled httpx clients so sockets/TLS sessions
+            # do not leak across uvicorn reloads / process exit.
+            try:
+                from awareness.util.http import aclose_shared_async_clients
+
+                await aclose_shared_async_clients()
+            except Exception as exc:  # noqa: BLE001 — best-effort shutdown
+                logger.warning("shared_http_clients_shutdown_failed", error=str(exc))
 
     app = FastAPI(title="Awareness", version=__version__, lifespan=lifespan)
 
@@ -535,8 +543,9 @@ def create_app() -> FastAPI:
             where.append("fetch_ts <= $end")
             params["end"] = inclusive_end(to_utc(end))
         if domain:
-            where.append("domain = $dom")
-            params["dom"] = domain
+            # Case-insensitive: SPA may send Example.COM; captures store lower eTLD+1.
+            where.append("lower(domain) = $dom")
+            params["dom"] = str(domain).strip().lower()
         if source:
             where.append("source_type = $src")
             params["src"] = source
