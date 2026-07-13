@@ -305,6 +305,11 @@ def build_search_diagnostics(
             # Always offer a recall tip when the corpus is non-empty / unknown.
             if mode_used != "substring" or len(query_terms) > 1:
                 hints.append("Try fewer terms or substring mode.")
+            else:
+                # substring + single term still missed — keep hints non-empty.
+                hints.append(
+                    "No substring matches; try different terms or drop domain/source filters."
+                )
 
     # Deduplicate while preserving order.
     seen: set[str] = set()

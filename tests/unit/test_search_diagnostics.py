@@ -124,3 +124,15 @@ def test_build_search_diagnostics_fts_unavailable() -> None:
     )
     assert diag["fts_available"] is False
     assert any("FTS unavailable" in h for h in diag["hints"])
+
+def test_build_search_diagnostics_substring_single_term_has_hint() -> None:
+    """Zero-hit substring + single term must still yield a non-empty hint list."""
+    diag = build_search_diagnostics(
+        mode_used="substring",
+        fts_available=True,
+        query_terms=["quantum"],
+        corpus_size=3,
+    )
+    assert diag["hints"], "empty hints break CLI/API empty-state UX"
+    assert any("substring" in h.lower() or "terms" in h.lower() for h in diag["hints"])
+

@@ -2683,13 +2683,22 @@ def browse(
 
 
 def _print_search_diagnostics(diagnostics: dict[str, Any] | None) -> None:
-    """Render empty-result diagnostics as a short Rich panel (if present)."""
-    if not diagnostics:
-        return
-    hints = diagnostics.get("hints") or []
-    if not hints:
-        return
+    """Render empty-result diagnostics as a short Rich panel.
+
+    Always prints something for zero-hit searches: if the index omitted
+    diagnostics or returned no hints, fall back to a generic suggestion so
+    the CLI never silently ends with only "Found 0 documents".
+    """
     from rich.panel import Panel
+
+    diagnostics = diagnostics or {}
+    hints = list(diagnostics.get("hints") or [])
+    if not hints:
+        corpus = diagnostics.get("corpus_size")
+        if corpus is not None and int(corpus) <= 0:
+            hints = ["No documents in index yet — run a backfill or start tail."]
+        else:
+            hints = ["No matches. Try fewer terms, substring mode, or a wider date window."]
 
     lines = "\n".join(f"• {escape(str(h))}" for h in hints)
     meta: list[str] = []
