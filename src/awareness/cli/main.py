@@ -2537,7 +2537,7 @@ def highlight_tokens(text: str, query: str) -> str:
 
 @app.command(name="browse")
 def browse(
-    start: str = typer.Option("", "--start", help="Start date range (empty = beginning of corpus)"),
+    start: str = typer.Option("", "--start", help="Start date range (empty = all time; e.g. '30 days ago', '2026-01-01')"),
     end: str = typer.Option("now", "--end", help="End date range"),
     domain: str = typer.Option("", "--domain", help="Filter by domain"),
     source: str = typer.Option("", "--source", help="Filter by source"),
@@ -2676,6 +2676,19 @@ def browse(
                 rprint("[red]Invalid document index.[/red]")
 
 
+
+def _resolve_search_window(start: str, end: str) -> tuple[datetime | None, datetime | None]:
+    """Resolve the (start, end) search window.
+
+    Empty / "all" / "all time" start means NO lower bound (search the entire
+    corpus) instead of a silent recent-window default that hid most captures.
+    """
+    s = (start or "").strip().lower()
+    start_dt = None if s in ("", "all", "all time", "alltime", "any") else to_utc(start)
+    end_dt = coerce_relative_end(end)
+    return start_dt, end_dt
+
+
 @app.command(name="search")
 def search(
     query: str = typer.Argument(..., help="Search query (BM25 ranked when the term is present; stem-prefix fallback otherwise)"),
@@ -2713,9 +2726,8 @@ def search(
     limit = limit if limit > 0 else settings.search_default_limit
     max_results = max_results if max_results > 0 else settings.search_max_results
 
-    # Empty start means no lower bound so historical backfills remain searchable.
-    start_dt = to_utc(start) if (start or "").strip() else None
-    end_dt = coerce_relative_end(end)
+    # Empty/"all time" start means no lower bound so historical backfills remain searchable.
+    start_dt, end_dt = _resolve_search_window(start, end)
 
     if not interactive or not sys.stdin.isatty():
         res = idx.search(
@@ -2736,6 +2748,8 @@ def search(
         used_mode = res.get("mode", mode)
         capped = " [dim](capped)[/dim]" if total > len(rows) and len(rows) >= max_results else ""
 
+        window = f"{start_dt.date() if start_dt else 'all time'} → {end_dt.date() if end_dt else 'now'}"
+        rprint(f"[dim]Window: {window}[/dim]")
         rprint(
             f"[bold cyan]Search Results for:[/bold cyan] '{query}' "
             f"(Found {total} documents, showing top {len(rows)}{capped}, "
