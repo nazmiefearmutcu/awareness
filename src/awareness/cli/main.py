@@ -1767,6 +1767,94 @@ def format_warc_repair_summary_line(summary: dict[str, Any]) -> str:
     return "WARC     " + "  ".join(bits)
 
 
+def summarize_task_metrics_table(snap: dict[str, Any]) -> dict[str, Any] | None:
+    """Aggregate worker task duration/failure metrics for the CLI table strip.
+
+    Returns None when the snapshot has no ``tasks.*`` series.
+    """
+    counters = list(snap.get("counters") or [])
+    histograms = list(snap.get("histograms") or [])
+    completed = 0.0
+    failed = 0.0
+    retry = 0.0
+    dead_letter = 0.0
+    no_adapter = 0.0
+    has_tasks = False
+    for c in counters:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if name not in ("tasks.completed", "tasks.failed"):
+            continue
+        has_tasks = True
+        val = float(c.get("value") or 0)
+        labels = c.get("labels") or {}
+        outcome = labels.get("outcome")
+        if name == "tasks.completed":
+            completed += val
+        elif name == "tasks.failed":
+            failed += val
+            if outcome == "retry":
+                retry += val
+            elif outcome == "dead_letter":
+                dead_letter += val
+            elif outcome == "no_adapter":
+                no_adapter += val
+    weighted_p95 = 0.0
+    hist_count = 0
+    for h in histograms:
+        if not isinstance(h, dict):
+            continue
+        if str(h.get("name") or "") != "tasks.duration_seconds":
+            continue
+        has_tasks = True
+        n = int(h.get("count") or 0)
+        if n <= 0:
+            continue
+        p95 = float(h.get("p95") or 0.0)
+        hist_count += n
+        weighted_p95 += p95 * n
+    if not has_tasks:
+        return None
+    return {
+        "completed": int(completed),
+        "failed": int(failed),
+        "retry": int(retry),
+        "dead_letter": int(dead_letter),
+        "no_adapter": int(no_adapter),
+        "duration_p95": (weighted_p95 / hist_count) if hist_count else None,
+    }
+
+
+def format_task_summary_line(summary: dict[str, Any]) -> str:
+    """Render a single operator-facing task metrics summary line (no Rich markup)."""
+    bits: list[str] = []
+    completed = int(summary.get("completed") or 0)
+    if completed:
+        bits.append(f"done={completed}")
+    failed = int(summary.get("failed") or 0)
+    if failed:
+        bits.append(f"fail={failed}")
+        retry = int(summary.get("retry") or 0)
+        dead = int(summary.get("dead_letter") or 0)
+        no_adapter = int(summary.get("no_adapter") or 0)
+        detail: list[str] = []
+        if retry:
+            detail.append(f"retry={retry}")
+        if dead:
+            detail.append(f"dead={dead}")
+        if no_adapter:
+            detail.append(f"no_adapter={no_adapter}")
+        if detail:
+            bits.append(" ".join(detail))
+    p95 = summary.get("duration_p95")
+    if p95 is not None:
+        bits.append(f"p95={_format_metric_duration(float(p95))}")
+    if not bits:
+        bits.append("idle")
+    return "TASKS    " + "  ".join(bits)
+
+
 def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
     """Render a human-readable metrics summary (uptime + top series)."""
     uptime = float(snap.get("uptime_seconds") or 0.0)
@@ -1804,6 +1892,11 @@ def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
     if warc_summary is not None:
         console.print(
             f"[bold cyan]{escape(format_warc_repair_summary_line(warc_summary))}[/bold cyan]"
+        )
+    task_summary = summarize_task_metrics_table(snap)
+    if task_summary is not None:
+        console.print(
+            f"[bold cyan]{escape(format_task_summary_line(task_summary))}[/bold cyan]"
         )
 
     counters = list(snap.get("counters") or [])
