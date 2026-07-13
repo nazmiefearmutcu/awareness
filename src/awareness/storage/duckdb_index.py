@@ -3,7 +3,7 @@
 Two views over the same corpus:
 
 1. ``staging_captures`` — read JSONL chunks from
-   ``data/jsonl/captures/YYYY/MM/DD/*.jsonl`` directly. This is always
+   ``data/jsonl/captures/YYYY/MM/DD/*.jsonl*`` (plain or ``.gz``) directly. This is always
    present and is the source-of-truth for the latest writes.
 2. ``iceberg_captures`` — read the Iceberg table when present.
 
@@ -363,12 +363,12 @@ class DuckDbIndex:
 
     def _staging_glob(self) -> str:
         # JSONL chunks land here; use a recursive glob.
-        return str(self._jsonl_dir / "captures" / "**" / "*.jsonl")
+        return str(self._jsonl_dir / "captures" / "**" / "*.jsonl*")
 
     def _get_partition_globs(self) -> list[str]:
         """Scan captures directory to find leaf partition directories containing JSONL files.
 
-        Returns a list of glob patterns for each active partition (e.g. ['/path/to/captures/2026/06/01/*.jsonl']).
+        Returns a list of glob patterns for each active partition (e.g. ['/path/to/captures/2026/06/01/*.jsonl*']).
         If partition-aware scanning is empty, falls back to the default staging glob.
         """
         captures_root = self._jsonl_dir / "captures"
@@ -377,7 +377,7 @@ class DuckDbIndex:
 
         partition_dirs = set()
         try:
-            for p in captures_root.rglob("*.jsonl"):
+            for p in captures_root.rglob("*.jsonl*"):
                 try:
                     if p.is_file():
                         partition_dirs.add(p.parent)
@@ -389,7 +389,7 @@ class DuckDbIndex:
         if not partition_dirs:
             return []
 
-        return [str(d / "*.jsonl") for d in sorted(partition_dirs)]
+        return [str(d / "*.jsonl*") for d in sorted(partition_dirs)]
 
     def _source_signature(self) -> tuple[Any, ...]:
         """Cheap fingerprint of the on-disk corpus (JSONL chunks + Iceberg metadata).
@@ -404,7 +404,7 @@ class DuckDbIndex:
             entries = []
             try:
                 partition_dirs = set()
-                for p in captures_root.rglob("*.jsonl"):
+                for p in captures_root.rglob("*.jsonl*"):
                     try:
                         if p.is_file():
                             partition_dirs.add(p.parent)
@@ -444,7 +444,7 @@ class DuckDbIndex:
         has_files = False
         if captures_root.exists():
             try:
-                for p in captures_root.rglob("*.jsonl"):
+                for p in captures_root.rglob("*.jsonl*"):
                     has_files = True
                     break
             except OSError:
