@@ -435,6 +435,71 @@ function summarizeWetQualityMetrics(metricsSnap) {
 }
 
 /**
+ * Common Crawl WET shard download + parse latency from /metrics (process-local).
+ * Pure — no DOM. Sums records seen/emitted, download attempts by outcome, and
+ * weighted p95 for shard parse / download histograms.
+ */
+function summarizeWetParseMetrics(metricsSnap) {
+  const empty = {
+    recordsSeen: 0,
+    parseEmitted: 0,
+    downloadAttempts: 0,
+    downloadCacheHits: 0,
+    downloadOk: 0,
+    downloadP95: null,
+    parseP95: null,
+  };
+  if (!metricsSnap || typeof metricsSnap !== "object") return empty;
+  const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
+  let recordsSeen = 0;
+  let parseEmitted = 0;
+  let downloadAttempts = 0;
+  let downloadCacheHits = 0;
+  let downloadOk = 0;
+  for (const c of counters) {
+    if (!c) continue;
+    const n = c.name;
+    const v = Number(c.value) || 0;
+    if (n === "cc_wet.records_seen") recordsSeen += v;
+    else if (n === "cc_wet.shard_parse_emitted") parseEmitted += v;
+    else if (n === "cc_wet.shard_download_attempts") {
+      downloadAttempts += v;
+      const outcome = (c.labels && c.labels.outcome) || "";
+      if (outcome === "cache_hit") downloadCacheHits += v;
+      if (outcome === "ok" || outcome === "cache_hit") downloadOk += v;
+    }
+  }
+  const hists = Array.isArray(metricsSnap.histograms) ? metricsSnap.histograms : [];
+  let parseWeighted = 0;
+  let parseCount = 0;
+  let dlWeighted = 0;
+  let dlCount = 0;
+  for (const h of hists) {
+    if (!h) continue;
+    const n = Number(h.count) || 0;
+    if (n <= 0) continue;
+    const p95 = Number(h.p95);
+    if (!Number.isFinite(p95)) continue;
+    if (h.name === "cc_wet.shard_parse_seconds" || h.name === "cc_wet.iter_parse_seconds") {
+      parseCount += n;
+      parseWeighted += p95 * n;
+    } else if (h.name === "cc_wet.shard_download_seconds") {
+      dlCount += n;
+      dlWeighted += p95 * n;
+    }
+  }
+  return {
+    recordsSeen,
+    parseEmitted,
+    downloadAttempts,
+    downloadCacheHits,
+    downloadOk,
+    downloadP95: dlCount > 0 ? dlWeighted / dlCount : null,
+    parseP95: parseCount > 0 ? parseWeighted / parseCount : null,
+  };
+}
+
+/**
  * FineWeb HF stream counters + load latency from /metrics (process-local).
  * Pure — no DOM. Sums admitted/filtered/seen rows, load attempts, and weighted
  * load p95 across dataset labels.
@@ -526,11 +591,18 @@ function summarizeStorageObsMetrics(metricsSnap) {
     jsonlRecords: 0,
     jsonlChunks: 0,
     jsonlCommitP95: null,
+    jsonlSyncs: 0,
+    jsonlSyncOk: 0,
+    jsonlSyncP95: null,
+    jsonlOrphansRecovered: 0,
+    jsonlOrphansRemoved: 0,
+    jsonlOpenRecords: 0,
   };
   if (!metricsSnap || typeof metricsSnap !== "object") return empty;
   const gauges = Array.isArray(metricsSnap.gauges) ? metricsSnap.gauges : [];
   let robotsHitRatio = null;
   let robotsResolutions = 0;
+  let jsonlOpenRecords = 0;
   for (const g of gauges) {
     if (!g) continue;
     if (g.name === "robots.cache.hit_ratio") {
@@ -541,6 +613,10 @@ function summarizeStorageObsMetrics(metricsSnap) {
       const v = Number(g.value);
       if (Number.isFinite(v)) robotsResolutions = v;
     }
+    if (g.name === "jsonl.open_records") {
+      const v = Number(g.value);
+      if (Number.isFinite(v)) jsonlOpenRecords = v;
+    }
   }
   const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
   let icebergRows = 0;
@@ -550,6 +626,10 @@ function summarizeStorageObsMetrics(metricsSnap) {
   let icebergCompactOk = 0;
   let jsonlRecords = 0;
   let jsonlChunks = 0;
+  let jsonlSyncs = 0;
+  let jsonlSyncOk = 0;
+  let jsonlOrphansRecovered = 0;
+  let jsonlOrphansRemoved = 0;
   let robotsFetchAttempts = 0;
   let robotsFetchOk = 0;
   for (const c of counters) {
@@ -567,6 +647,14 @@ function summarizeStorageObsMetrics(metricsSnap) {
     }
     if (c.name === "jsonl.records_committed") jsonlRecords += Number(c.value) || 0;
     if (c.name === "jsonl.chunks_committed") jsonlChunks += Number(c.value) || 0;
+    if (c.name === "jsonl.syncs") {
+      const v = Number(c.value) || 0;
+      jsonlSyncs += v;
+      const labels = c.labels || {};
+      if (labels.outcome === "ok") jsonlSyncOk += v;
+    }
+    if (c.name === "jsonl.orphans_recovered") jsonlOrphansRecovered += Number(c.value) || 0;
+    if (c.name === "jsonl.orphans_removed") jsonlOrphansRemoved += Number(c.value) || 0;
     if (c.name === "robots.fetch_attempts") {
       const v = Number(c.value) || 0;
       robotsFetchAttempts += v;
@@ -582,6 +670,8 @@ function summarizeStorageObsMetrics(metricsSnap) {
   let histCount = 0;
   let jsonlWeightedP95 = 0;
   let jsonlHistCount = 0;
+  let jsonlSyncWeightedP95 = 0;
+  let jsonlSyncHistCount = 0;
   let robotsWeightedP95 = 0;
   let robotsHistCount = 0;
   let compactWeightedP95 = 0;
@@ -598,6 +688,9 @@ function summarizeStorageObsMetrics(metricsSnap) {
     } else if (h.name === "jsonl.commit_seconds") {
       jsonlHistCount += n;
       jsonlWeightedP95 += p95 * n;
+    } else if (h.name === "jsonl.sync_seconds") {
+      jsonlSyncHistCount += n;
+      jsonlSyncWeightedP95 += p95 * n;
     } else if (h.name === "robots.fetch_seconds") {
       robotsHistCount += n;
       robotsWeightedP95 += p95 * n;
@@ -622,6 +715,12 @@ function summarizeStorageObsMetrics(metricsSnap) {
     jsonlRecords,
     jsonlChunks,
     jsonlCommitP95: jsonlHistCount > 0 ? jsonlWeightedP95 / jsonlHistCount : null,
+    jsonlSyncs,
+    jsonlSyncOk,
+    jsonlSyncP95: jsonlSyncHistCount > 0 ? jsonlSyncWeightedP95 / jsonlSyncHistCount : null,
+    jsonlOrphansRecovered,
+    jsonlOrphansRemoved,
+    jsonlOpenRecords,
   };
 }
 
@@ -915,6 +1014,91 @@ async function refreshDashboard() {
     fwAttSub.textContent = fineweb.loadAttempts
       ? `${fmt(fineweb.loadOk)} succeeded`
       : "dataset loads this process";
+  }
+
+  // CC-WET shard download + parse latency (process-local).
+  const wetParse = summarizeWetParseMetrics(metricsSnap);
+  const wetParseP95Node = $("#kpi-dash-wet-parse-p95");
+  if (wetParseP95Node) {
+    wetParseP95Node.textContent = formatFetchLatency(wetParse.parseP95);
+    wetParseP95Node.classList.toggle(
+      "is-zero",
+      wetParse.parseP95 == null && !wetParse.parseEmitted && !wetParse.recordsSeen
+    );
+  }
+  const wetParseP95Sub = $("#kpi-dash-wet-parse-p95-sub");
+  if (wetParseP95Sub) {
+    wetParseP95Sub.textContent = wetParse.parseEmitted || wetParse.recordsSeen
+      ? `${fmt(wetParse.parseEmitted)} emitted · shard parse`
+      : "shard parse latency (process)";
+  }
+  setKPI("kpi-dash-wet-dl-attempts", wetParse.downloadAttempts);
+  const wetDlSub = $("#kpi-dash-wet-dl-attempts-sub");
+  if (wetDlSub) {
+    if (wetParse.downloadAttempts) {
+      const bits = [
+        `${fmt(wetParse.downloadOk)}/${fmt(wetParse.downloadAttempts)} ok`,
+      ];
+      if (wetParse.downloadCacheHits) {
+        bits.push(`${fmt(wetParse.downloadCacheHits)} cache`);
+      }
+      const dlP95 = formatFetchLatency(wetParse.downloadP95);
+      if (wetParse.downloadP95 != null) bits.push(`p95 ${dlP95}`);
+      wetDlSub.textContent = bits.join(" · ");
+    } else {
+      wetDlSub.textContent = "shard cache hits + downloads";
+    }
+  }
+  setKPI("kpi-dash-wet-seen", wetParse.recordsSeen);
+  const wetSeenSub = $("#kpi-dash-wet-seen-sub");
+  if (wetSeenSub) {
+    wetSeenSub.textContent = wetParse.recordsSeen || wetParse.parseEmitted
+      ? `${fmt(wetParse.parseEmitted)} emitted after quality`
+      : "WAR records scanned this process";
+  }
+
+  // JSONL crash-safe mid-chunk sync + orphan recovery (process-local).
+  setKPI("kpi-dash-jsonl-syncs", storageObs.jsonlSyncs);
+  const jsonlSyncSub = $("#kpi-dash-jsonl-syncs-sub");
+  if (jsonlSyncSub) {
+    if (storageObs.jsonlSyncs) {
+      const bits = [
+        `${fmt(storageObs.jsonlSyncOk)}/${fmt(storageObs.jsonlSyncs)} ok`,
+      ];
+      if (storageObs.jsonlOpenRecords) {
+        bits.push(`${fmt(storageObs.jsonlOpenRecords)} open`);
+      }
+      jsonlSyncSub.textContent = bits.join(" · ");
+    } else {
+      jsonlSyncSub.textContent = "crash-safe fsyncs this process";
+    }
+  }
+  const jsonlSyncP95Node = $("#kpi-dash-jsonl-sync-p95");
+  if (jsonlSyncP95Node) {
+    jsonlSyncP95Node.textContent = formatFetchLatency(storageObs.jsonlSyncP95);
+    jsonlSyncP95Node.classList.toggle("is-zero", !storageObs.jsonlSyncs);
+  }
+  const jsonlSyncP95Sub = $("#kpi-dash-jsonl-sync-p95-sub");
+  if (jsonlSyncP95Sub) {
+    jsonlSyncP95Sub.textContent = storageObs.jsonlSyncs
+      ? `${fmt(storageObs.jsonlSyncOk)} ok fsyncs · process`
+      : "mid-chunk fsync latency";
+  }
+  setKPI("kpi-dash-jsonl-orphans", storageObs.jsonlOrphansRecovered);
+  const jsonlOrphSub = $("#kpi-dash-jsonl-orphans-sub");
+  if (jsonlOrphSub) {
+    if (storageObs.jsonlOrphansRecovered || storageObs.jsonlOrphansRemoved) {
+      const bits = [];
+      if (storageObs.jsonlOrphansRecovered) {
+        bits.push(`${fmt(storageObs.jsonlOrphansRecovered)} promoted`);
+      }
+      if (storageObs.jsonlOrphansRemoved) {
+        bits.push(`${fmt(storageObs.jsonlOrphansRemoved)} empty dropped`);
+      }
+      jsonlOrphSub.textContent = bits.join(" · ");
+    } else {
+      jsonlOrphSub.textContent = "promoted leftover .tmp chunks";
+    }
   }
 
   $("#kpi-captures-sub").textContent = (docsTotal ? `${fmt(docsTotal)} emitted across jobs` : "across the corpus");
