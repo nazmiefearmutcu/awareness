@@ -43,3 +43,34 @@ def test_counter_sum_aggregates_labels() -> None:
     m.inc("other", value=99.0)
     assert m.counter_sum("tail.fetch_skipped_seen") == 3.0
     assert m.counter_sum("missing") == 0.0
+
+
+def test_render_prometheus_counters_gauges_histograms() -> None:
+    m = MetricsRegistry()
+    m.inc("tail.fetch_skipped_seen", labels={"domain": "a.example"})
+    m.inc("tail.fetch_skipped_seen", value=2.0, labels={"domain": "b.example"})
+    m.set("queue.depth", 7.0, labels={"kind": "tail"})
+    m.observe("http.latency_ms", 12.5, labels={"route": "/search"})
+    m.observe("http.latency_ms", 40.0, labels={"route": "/search"})
+    text = m.render_prometheus()
+    assert "awareness_uptime_seconds" in text
+    assert "tail_fetch_skipped_seen_total" in text
+    assert 'domain="a.example"' in text
+    assert "queue_depth" in text
+    assert 'kind="tail"' in text
+    assert "http_latency_ms_count" in text
+    assert "http_latency_ms_sum" in text
+    assert 'quantile="0.5"' in text
+    # Sanitized name: dots → underscores; trailing newline.
+    assert text.endswith("\n")
+    assert "# TYPE" in text
+
+
+def test_prom_metric_name_sanitizes() -> None:
+    assert MetricsRegistry._prom_metric_name("tail.fetch.skipped") == "tail_fetch_skipped"
+    assert MetricsRegistry._prom_metric_name("9bad") == "m_9bad"
+    assert MetricsRegistry._prom_metric_name("ok_name") == "ok_name"
+
+
+def test_prom_label_value_escapes() -> None:
+    assert MetricsRegistry._prom_label_value('a"b\\c\nd') == 'a\\"b\\\\c\\nd'

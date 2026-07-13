@@ -4,7 +4,7 @@ Endpoints:
     GET  /                       — web dashboard (static SPA)
     GET  /healthz                — liveness + search index readiness
     GET  /status                 — overall status
-    GET  /metrics                — counters/histograms snapshot
+    GET  /metrics                — counters/histograms snapshot (JSON; ?format=prometheus)
     POST /backfill               — submit
     POST /backfill/{id}/run      — run pending tasks (non-blocking task)
     GET  /backfill/{id}          — status
@@ -38,8 +38,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -308,7 +308,30 @@ def create_app() -> FastAPI:
         return {"tail": st.get_tail(), "jobs": jobs}
 
     @app.get("/metrics")
-    def metrics() -> dict[str, Any]:
+    def metrics(
+        request: Request,
+        format: str | None = Query(  # noqa: A002 — Prometheus-style query name
+            default=None,
+            description="Response format: omit/json (default) or prometheus/prom/text",
+        ),
+    ) -> Any:
+        """Process metrics as JSON snapshot or Prometheus text exposition.
+
+        Default remains JSON for the SPA/dashboard. Pass ``?format=prometheus``
+        (aliases: ``prom``, ``text``) or ``Accept: text/plain`` to scrape with
+        Prometheus / VictoriaMetrics / Grafana Alloy.
+        """
+        fmt = (format or "").strip().lower()
+        accept = (request.headers.get("accept") or "").lower()
+        want_prom = fmt in ("prometheus", "prom", "text", "exposition") or (
+            "text/plain" in accept and "application/json" not in accept
+        )
+        if want_prom:
+            body = get_metrics().render_prometheus()
+            return PlainTextResponse(
+                content=body,
+                media_type="text/plain; version=0.0.4; charset=utf-8",
+            )
         return get_metrics().snapshot()
 
     @app.get("/dedup-stats")
