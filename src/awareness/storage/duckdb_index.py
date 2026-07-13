@@ -1007,6 +1007,70 @@ class DuckDbIndex:
                 roots.append(root)
         return roots
 
+
+    def _match_facets(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        kind: str,
+        params: dict[str, Any],
+        base: str | None = None,
+        where_sql: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Top domains/sources for the current match set (cheap SQL GROUP BY).
+
+        ``kind`` is ``"fts"`` (BM25 join via *base*) or ``"where"`` (ILIKE path
+        with *where_sql*). Only called when the match total is > 0 so the extra
+        aggregates stay cheap relative to the search itself.
+        """
+        lim = max(1, min(int(limit), 50))
+        if kind == "fts" and base:
+            # Placeholders live only inside *base* (terms + range/source filters).
+            p = {
+                k: v
+                for k, v in params.items()
+                if f"${k}" in base or k.startswith("term_")
+            }
+            dom_sql = (
+                f"SELECT c.domain AS domain, COUNT(DISTINCT c.capture_id)::BIGINT AS n "
+                f"{base} "
+                f"WHERE c.domain IS NOT NULL AND CAST(c.domain AS VARCHAR) != '' "
+                f"GROUP BY c.domain ORDER BY n DESC LIMIT {lim}"
+            )
+            src_sql = (
+                f"SELECT c.source_type AS source_type, "
+                f"COUNT(DISTINCT c.capture_id)::BIGINT AS n "
+                f"{base} "
+                f"WHERE c.source_type IS NOT NULL AND CAST(c.source_type AS VARCHAR) != '' "
+                f"GROUP BY c.source_type ORDER BY n DESC LIMIT {lim}"
+            )
+        else:
+            w = where_sql or "1=1"
+            p = {k: v for k, v in params.items() if f"${k}" in w}
+            dom_sql = (
+                f"SELECT domain, COUNT(*)::BIGINT AS n FROM captures "
+                f"WHERE ({w}) AND domain IS NOT NULL AND CAST(domain AS VARCHAR) != '' "
+                f"GROUP BY domain ORDER BY n DESC LIMIT {lim}"
+            )
+            src_sql = (
+                f"SELECT source_type, COUNT(*)::BIGINT AS n FROM captures "
+                f"WHERE ({w}) AND source_type IS NOT NULL "
+                f"AND CAST(source_type AS VARCHAR) != '' "
+                f"GROUP BY source_type ORDER BY n DESC LIMIT {lim}"
+            )
+        try:
+            domains = self._rows(conn, dom_sql, p)
+            sources = self._rows(conn, src_sql, p)
+        except duckdb.Error as exc:
+            logger.warning("search_facets_failed", kind=kind, err=str(exc))
+            return {"domains": [], "sources": []}
+        for row in domains:
+            row["n"] = int(row["n"])
+        for row in sources:
+            row["n"] = int(row["n"])
+        return {"domains": domains, "sources": sources}
+
     def search(
         self,
         query: str,
@@ -1110,6 +1174,8 @@ class DuckDbIndex:
             rows: list[dict[str, Any]] = []
             used_mode = mode
             requested_mode = mode
+            # (kind, base|None, where_sql|None, params) for cheap facet GROUP BY.
+            facet_ctx: tuple[str, str | None, str | None, dict[str, Any]] | None = None
 
             # FTS indexes title+text as one blob, so it cannot honor a
             # narrowed ``fields`` request. Explicit ``fts`` still runs (escape
@@ -1243,6 +1309,7 @@ class DuckDbIndex:
                             # collapse+page so field boost is not lost to LIMIT.
                             rows = _rerank(candidates, terms)
                             used_mode = "fts"
+                            facet_ctx = ("fts", base, None, params)
                 elif mode == "fts":
                     # FTS explicitly requested but unavailable → degrade to prefix.
                     mode = "prefix"
@@ -1308,6 +1375,8 @@ class DuckDbIndex:
                     f"LIMIT {int(candidate_cap)}"
                 )
                 rows = self._rows(conn, sql, params)
+                if total > 0:
+                    facet_ctx = ("where", None, where_sql, params)
 
             # Quoted whole-query: keep substring matching, surface mode=phrase.
             if is_phrase:
@@ -1375,6 +1444,17 @@ class DuckDbIndex:
                 "fields": cols,
                 "query": query,
             }
+            # Facets over the matching set (not just this page) when total > 0.
+            if total > 0 and facet_ctx is not None:
+                f_kind, f_base, f_where, f_params = facet_ctx
+                payload["facets"] = self._match_facets(
+                    conn,
+                    kind=f_kind,
+                    base=f_base,
+                    where_sql=f_where,
+                    params=f_params,
+                    limit=10,
+                )
             # Empty-result diagnostics (corpus_size only when total==0).
             if total == 0:
                 corpus_size: int | None = None

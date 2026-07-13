@@ -381,6 +381,49 @@ function renderCapsDiagnostics(data, isSearch) {
   box.hidden = false;
 }
 
+
+/** Domain facet chips under the search box (from search facets.domains). */
+function renderCapsFacets(data, isSearch) {
+  const box = $("#caps-facets");
+  if (!box) return;
+  clear(box);
+  const domains = isSearch && data && data.facets && Array.isArray(data.facets.domains)
+    ? data.facets.domains
+    : [];
+  if (!domains.length) {
+    box.hidden = true;
+    return;
+  }
+  const active = ($("#caps-domain")?.value || "").trim().toLowerCase();
+  for (const item of domains) {
+    const dom = String(item.domain || item.Domain || "").trim();
+    if (!dom) continue;
+    const n = item.n != null ? Number(item.n) : null;
+    const chip = el("button", {
+      type: "button",
+      class: "facet-chip" + (active && active === dom.toLowerCase() ? " is-active" : ""),
+      title: n != null ? `${dom} (${n} matches)` : dom,
+      onclick: () => {
+        const field = $("#caps-domain");
+        if (!field) return;
+        // Toggle: second click on the active chip clears the domain filter.
+        if ((field.value || "").trim().toLowerCase() === dom.toLowerCase()) {
+          field.value = "";
+        } else {
+          field.value = dom;
+        }
+        void loadCaptures(true);
+      },
+    });
+    chip.appendChild(document.createTextNode(dom));
+    if (n != null && !Number.isNaN(n)) {
+      chip.appendChild(el("span", { class: "facet-n", text: String(n) }));
+    }
+    box.appendChild(chip);
+  }
+  box.hidden = box.childNodes.length === 0;
+}
+
 async function loadCaptures(reset = false) {
   if (reset) caps.offset = 0;
   const q = $("#caps-search").value.trim();
@@ -393,6 +436,7 @@ async function loadCaptures(reset = false) {
   const meta = $("#caps-meta");
   meta.textContent = "loading…";
   renderCapsDiagnostics(null, false);
+  renderCapsFacets(null, false);
 
   // Search-mode hits /search (BM25 ranked, with snippets); browse-mode hits
   // /captures (chronological).
@@ -431,6 +475,7 @@ async function loadCaptures(reset = false) {
     }
     renderCaps(list, data.rows || [], { search: q, ranked: !!data.ranked });
     renderCapsDiagnostics(data, isSearch);
+    renderCapsFacets(data, isSearch);
     const from = data.total ? caps.offset + 1 : 0;
     const to = Math.min(caps.offset + (data.rows || []).length, data.total);
     if (isSearch) {
@@ -447,6 +492,7 @@ async function loadCaptures(reset = false) {
     console.error(err);
     meta.textContent = "query failed: " + err.message;
     renderCapsDiagnostics(null, false);
+    renderCapsFacets(null, false);
   }
 }
 

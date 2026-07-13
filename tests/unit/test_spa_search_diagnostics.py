@@ -26,3 +26,17 @@ def test_spa_empty_diagnostics_shows_mode_corpus_and_phrase_fallback() -> None:
 def test_spa_diagnostics_meta_style_present() -> None:
     css = STYLE_CSS.read_text(encoding="utf-8")
     assert ".caps-diagnostics-meta" in css
+
+
+def test_spa_search_domain_facets_chips() -> None:
+    """SPA renders domain facet chips under the search box when present."""
+    app_js = APP_JS.read_text(encoding="utf-8")
+    html = Path("src/awareness/api/web/index.html").read_text(encoding="utf-8")
+    css = STYLE_CSS.read_text(encoding="utf-8")
+
+    assert 'id="caps-facets"' in html
+    assert "function renderCapsFacets(data, isSearch)" in app_js
+    assert "data.facets.domains" in app_js or "data.facets &&" in app_js
+    assert "facet-chip" in app_js
+    assert ".caps-facets" in css
+    assert ".facet-chip" in css
