@@ -86,12 +86,14 @@
 | C4+ | dedup | Unwrap Outlook Safe Links + DuckDuckGo /l/ for fetch-gate identity | ✅ |
 | C4+ | search | Lead-text bag-of-words term coverage boost in BM25 re-rank | ✅ |
 | C4+ | dedup | Unwrap Instagram l.instagram.com + LinkedIn safety/redir for fetch-gate identity | ✅ |
+| C4+ | search | Exact URL-slug token equality boost in BM25 re-rank | ✅ |
+| C4+ | dedup | Unwrap Reddit out.reddit.com + YouTube /redirect for fetch-gate identity | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~149 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~154 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** lead-text bag-of-words hit re-rank (`f87c6fb`), Instagram + LinkedIn identity (`cb4d6e7`)
+- **Latest:** exact URL-slug re-rank (`6630943`), Reddit + YouTube identity (`d0439e2`)
 
 ## Rules
 

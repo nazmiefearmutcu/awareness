@@ -1,12 +1,16 @@
 {
-  "iteration": 27,
-  "phase": "lead_hit_rerank_instagram_linkedin_identity",
+  "iteration": 28,
+  "phase": "url_exact_rerank_reddit_youtube_identity",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "cb4d6e78684b414fe9701c38beb548ae64e8976b",
-  "commits_ahead": 149,
+  "head_sha": "63c4c4470e2f1c68fadca8cecc9861b0a444dd1e",
+  "product_shas": [
+    "66309431f4c6e6de629e5448eec74348fc327a25",
+    "d0439e2aa14c88108b3aa892adc84cdecda10d6e"
+  ],
+  "commits_ahead": 154,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed lead-text bag-of-words hit re-rank boost (f87c6fb), Instagram l.instagram.com + LinkedIn safety/go and redir/redirect unwrap for fetch-gate identity (cb4d6e7). Next: scrape reliability / more ranking signals / facets / Iceberg compaction."
+  "notes": "Landed exact URL-slug token equality re-rank boost (6630943), Reddit out.reddit.com + YouTube /redirect unwrap for fetch-gate identity (d0439e2). Next: domain-label navigational boost / Slack+WhatsApp identity / scrape reliability / facets."
 }
