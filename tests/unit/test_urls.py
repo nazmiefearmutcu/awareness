@@ -523,6 +523,71 @@ def test_canonical_url_unwraps_google_translate() -> None:
     assert "translate.google.com" in bare
 
 
+def test_canonical_url_unwraps_facebook_click_redirect() -> None:
+    """l(m).facebook.com/l.php?u=… click wrappers collapse onto the origin."""
+    assert (
+        canonical_url(
+            "https://l.facebook.com/l.php?u=https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://lm.facebook.com/l.php?u=http%3A%2F%2Fm.news.example%2Fstory%2Famp&h=AT123"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; Facebook wrapper params dropped.
+    assert (
+        canonical_url(
+            "https://l.facebook.com/l.php?u=https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dfb"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing u= → no unwrap.
+    bare = canonical_url("https://l.facebook.com/l.php?h=AT")
+    assert bare is not None
+    assert "l.facebook.com" in bare
+    # Nested facebook redirect must not loop.
+    nested = canonical_url(
+        "https://l.facebook.com/l.php?u=https%3A%2F%2Fl.facebook.com%2Fl.php%3Fu%3Dx"
+    )
+    assert nested is not None
+    assert "l.facebook.com" in nested
+
+
+def test_canonical_url_unwraps_google_url_redirect() -> None:
+    """google.com/url?url=… (or q= absolute URL) collapses onto the origin."""
+    assert (
+        canonical_url(
+            "https://www.google.com/url?url=https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://google.com/url?q=https%3A%2F%2Fm.news.example%2Fstory%2Famp&sa=U"
+        )
+        == "https://news.example/story"
+    )
+    # Prefer url= over free-text q= when both present.
+    assert (
+        canonical_url(
+            "https://www.google.com/url?q=bitcoin+price&url=https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Free-text q= alone is not an origin → no unwrap.
+    searchish = canonical_url("https://www.google.com/url?q=bitcoin+price&sa=U")
+    assert searchish is not None
+    assert "google.com" in searchish
+    # /search?q= is not a redirect path.
+    assert (
+        canonical_url("https://www.google.com/search?q=https%3A%2F%2Fnews.example%2Fx")
+        == "https://google.com/search?q=https%3A%2F%2Fnews.example%2Fx"
+    )
+
+
 def test_canonical_url_strips_search_and_cms_noise() -> None:
     """Google/MSN search wrappers and CMS feed/trackback paths are identity-noise."""
     assert (

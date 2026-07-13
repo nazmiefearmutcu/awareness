@@ -154,6 +154,26 @@ _TRANSLATE_HOSTS: frozenset[str] = frozenset(
     }
 )
 
+# Facebook click-through hosts that embed the origin in a ``u=`` query param
+# (``l.facebook.com/l.php?u=…``, ``lm.facebook.com/l.php?u=…``).
+_FACEBOOK_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "l.facebook.com",
+        "lm.facebook.com",
+        "l.facebook.net",
+        "lm.facebook.net",
+    }
+)
+
+# Google web-search redirect hosts (``google.com/url?url=…`` / ``?q=…``).
+# Matched after stripping a single leading ``www.`` / country TLD is NOT
+# expanded here — only the common ``google.com`` apex (plus www).
+_GOOGLE_URL_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "google.com",
+    }
+)
+
 # Path suffixes that mark mobile / lite / app CMS mirrors of the same article.
 # Applied after embed/comments so those wrappers still win when stacked;
 # only trailing whole-segment markers are stripped. Bare ``/mobile`` (root-only)
@@ -455,6 +475,43 @@ def _unwrap_wayback(
     return origin_netloc, (op.path or "/"), (op.query or "")
 
 
+def _validate_embedded_origin_url(
+    origin: str, *, refuse_hosts: frozenset[str]
+) -> str | None:
+    """Normalize and validate an embedded origin URL string.
+
+    Accepts absolute http(s) or scheme-relative (``//host/…``) origins.
+    Returns the cleaned origin string, or ``None`` when unusable / looping
+    into a host listed in ``refuse_hosts`` (after stripping ``www.``).
+    """
+    origin = (origin or "").strip()
+    if not origin:
+        return None
+    if origin.startswith("//"):
+        origin = "https:" + origin
+    try:
+        op = urlsplit(origin)
+    except (ValueError, AttributeError):
+        return None
+    if op.scheme.lower() not in ("http", "https") or not op.netloc:
+        return None
+    origin_host = _host_without_port_or_userinfo(op.netloc.lower())
+    if origin_host is None:
+        return None
+    if _strip_www_label(origin_host) in refuse_hosts:
+        return None
+    return origin
+
+
+def _query_param(query: str, *keys: str) -> str | None:
+    """First non-empty value for any of ``keys`` (case-insensitive key match)."""
+    want = {k.lower() for k in keys}
+    for k, v in parse_qsl(query or "", keep_blank_values=True):
+        if k.lower() in want and v.strip():
+            return v.strip()
+    return None
+
+
 def _unwrap_translate(netloc: str, query: str) -> str | None:
     """Extract the origin URL from a Google Translate wrapper ``u=`` param.
 
@@ -471,28 +528,68 @@ def _unwrap_translate(netloc: str, query: str) -> str | None:
     host = _strip_www_label(host)
     if host not in _TRANSLATE_HOSTS:
         return None
-    pairs = parse_qsl(query or "", keep_blank_values=True)
-    origin: str | None = None
-    for k, v in pairs:
-        if k.lower() == "u" and v.strip():
-            origin = v.strip()
-            break
+    origin = _query_param(query, "u")
     if not origin:
         return None
-    if origin.startswith("//"):
-        origin = "https:" + origin
-    try:
-        op = urlsplit(origin)
-    except (ValueError, AttributeError):
+    return _validate_embedded_origin_url(origin, refuse_hosts=_TRANSLATE_HOSTS)
+
+
+def _unwrap_facebook_redirect(netloc: str, query: str) -> str | None:
+    """Extract the origin URL from a Facebook ``l.php?u=…`` click wrapper.
+
+    Forms:
+
+    * ``https://l.facebook.com/l.php?u=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://lm.facebook.com/l.php?u=http%3A%2F%2Fm.example.com%2Fstory``
+
+    Returns the raw origin URL string when recoverable, else ``None``.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
         return None
-    if op.scheme.lower() not in ("http", "https") or not op.netloc:
+    host = _strip_www_label(host)
+    if host not in _FACEBOOK_REDIRECT_HOSTS:
         return None
-    origin_host = _host_without_port_or_userinfo(op.netloc.lower())
-    if origin_host is None:
+    origin = _query_param(query, "u")
+    if not origin:
         return None
-    if _strip_www_label(origin_host) in _TRANSLATE_HOSTS:
+    return _validate_embedded_origin_url(origin, refuse_hosts=_FACEBOOK_REDIRECT_HOSTS)
+
+
+def _unwrap_google_url_redirect(netloc: str, path: str, query: str) -> str | None:
+    """Extract the origin URL from a Google ``/url?url=…`` (or ``q=``) redirect.
+
+    Forms:
+
+    * ``https://www.google.com/url?url=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://google.com/url?q=https%3A%2F%2Fexample.com%2Fstory&sa=U``
+
+    Only the ``/url`` path is treated as a redirector so ordinary search
+    result pages (``/search?q=…``) are not rewritten. Prefer ``url=`` over
+    ``q=`` when both are present (``q`` may be a free-text query).
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
         return None
-    return origin
+    host = _strip_www_label(host)
+    if host not in _GOOGLE_URL_REDIRECT_HOSTS:
+        return None
+    # Path must be exactly /url (optional trailing slash); ignore /url/other.
+    p = (path or "").rstrip("/") or "/"
+    if p.lower() != "/url":
+        return None
+    # Prefer explicit url=; fall back to q= only when it looks like an absolute URL.
+    origin = _query_param(query, "url")
+    if not origin:
+        candidate = _query_param(query, "q")
+        if candidate and (
+            candidate.lower().startswith(("http://", "https://"))
+            or candidate.startswith("//")
+        ):
+            origin = candidate
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(origin, refuse_hosts=_GOOGLE_URL_REDIRECT_HOSTS)
 
 
 def _normalize_path(path: str) -> str:
@@ -615,6 +712,8 @@ def canonical_url(url: str | None) -> str | None:
       - Bing / Google AMP viewer hosts rewritten to the origin article URL
       - Wayback Machine (``web.archive.org/web/…``) rewritten to the origin article URL
       - Google Translate ``u=`` wrappers rewritten to the origin article URL
+      - Facebook ``l(m).facebook.com/l.php?u=…`` click redirects rewritten to origin
+      - Google ``/url?url=…`` (or ``q=``) click redirects rewritten to origin
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
@@ -659,7 +758,8 @@ def canonical_url(url: str | None) -> str | None:
             netloc = bracket
 
     # Share / cache wrappers → origin article before other host/path identity.
-    # Order: AMP CDN, AMP viewers, Wayback, Translate (query-based).
+    # Order: AMP CDN, AMP viewers, Wayback, Translate, Facebook click,
+    # Google /url redirect (query-based last).
     unwrapped = _unwrap_amp_cdn(netloc, path)
     if unwrapped is not None:
         netloc, path = unwrapped
@@ -675,10 +775,15 @@ def canonical_url(url: str | None) -> str | None:
                 # Origin query (wrapper query reattached when it belonged to origin).
                 parts = parts._replace(query=origin_q)
             else:
-                translated = _unwrap_translate(netloc, parts.query)
-                if translated is not None:
+                # Query-embedded origins: Translate, Facebook l.php, Google /url.
+                embedded = (
+                    _unwrap_translate(netloc, parts.query)
+                    or _unwrap_facebook_redirect(netloc, parts.query)
+                    or _unwrap_google_url_redirect(netloc, path, parts.query)
+                )
+                if embedded is not None:
                     try:
-                        tp = urlsplit(translated)
+                        tp = urlsplit(embedded)
                     except (ValueError, AttributeError):
                         tp = None
                     if tp is not None and tp.netloc:
