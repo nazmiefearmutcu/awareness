@@ -30,6 +30,7 @@ Run with ``awareness-api`` script or ``uvicorn awareness.api.server:create_app``
 from __future__ import annotations
 
 import asyncio
+import threading
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -85,7 +86,27 @@ class _State:
     state: StateDB | None = None
     planner: Planner | None = None
     tail: TailEngine | None = None
+    index: DuckDbIndex | None = None
     background_tasks: set[asyncio.Task[Any]] = set()
+
+
+_index_lock = threading.Lock()
+
+
+def _get_index() -> DuckDbIndex:
+    """Return the process-wide DuckDbIndex (create once, double-checked locking)."""
+    idx = _State.index
+    if idx is not None:
+        return idx
+    with _index_lock:
+        if _State.index is None:
+            s = get_settings()
+            _State.index = DuckDbIndex(
+                db_path=s.duckdb_path(),
+                jsonl_dir=s.staging_jsonl_dir(),
+                iceberg_warehouse=s.iceberg_warehouse,
+            )
+        return _State.index
 
 
 def create_app() -> FastAPI:
@@ -337,12 +358,7 @@ def create_app() -> FastAPI:
 
     @app.get("/counts")
     def counts(start: datetime, end: datetime | None = None) -> dict[str, Any]:
-        s = get_settings()
-        idx = DuckDbIndex(
-            db_path=s.duckdb_path(),
-            jsonl_dir=s.staging_jsonl_dir(),
-            iceberg_warehouse=s.iceberg_warehouse,
-        )
+        idx = _get_index()
         end_dt = to_utc(end) if end else coerce_relative_end("now")
         p = {"start": to_utc(start), "end": end_dt}
         total = idx.execute("SELECT COUNT(*) AS n FROM captures WHERE fetch_ts BETWEEN $start AND $end", p)
@@ -439,11 +455,7 @@ def create_app() -> FastAPI:
         fields: str | None = Query(None, description="comma-list: title,text,domain,url"),
     ) -> dict[str, Any]:
         s = get_settings()
-        idx = DuckDbIndex(
-            db_path=s.duckdb_path(),
-            jsonl_dir=s.staging_jsonl_dir(),
-            iceberg_warehouse=s.iceberg_warehouse,
-        )
+        idx = _get_index()
         field_list = [
             f.strip().lower()
             for f in (fields or s.search_default_fields).split(",")

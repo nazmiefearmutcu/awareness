@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlalchemy import (
     DateTime,
+    Float,
     Integer,
     BigInteger,
     String,
