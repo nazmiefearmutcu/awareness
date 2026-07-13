@@ -26,7 +26,11 @@ logger = get_logger("util.robots")
 
 
 def _robots_cache_metric(layer: str) -> None:
-    """Count robots cache resolution by layer: memory | db | network."""
+    """Count robots cache resolution by layer: memory | db | network.
+
+    Layer counters feed ``robots.cache.hit_ratio`` gauges on metrics snapshot
+    (hit = memory + db; miss = network).
+    """
     get_metrics().inc("robots.cache", labels={"layer": layer})
 
 

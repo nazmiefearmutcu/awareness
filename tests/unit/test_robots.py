@@ -213,3 +213,30 @@ async def test_robots_cache_metrics_memory_db_network(tmp_path: Path, monkeypatc
         if c["name"] == "robots.cache"
     }
     assert layers.get("memory", 0) >= 2.0
+
+
+def test_robots_cache_hit_ratio_gauges(monkeypatch: pytest.MonkeyPatch) -> None:
+    """snapshot() derives hit_ratio gauges from robots.cache layer counters."""
+    isolated = MetricsRegistry()
+    monkeypatch.setattr("awareness.obs.metrics._REGISTRY", isolated)
+
+    # 3 memory + 1 db + 1 network → hit_ratio = 0.8
+    for _ in range(3):
+        isolated.inc("robots.cache", labels={"layer": "memory"})
+    isolated.inc("robots.cache", labels={"layer": "db"})
+    isolated.inc("robots.cache", labels={"layer": "network"})
+
+    gauges = {g["name"]: g["value"] for g in isolated.snapshot()["gauges"]}
+    assert gauges["robots.cache.resolutions"] == 5.0
+    assert abs(gauges["robots.cache.hit_ratio"] - 0.8) < 1e-9
+    assert abs(gauges["robots.cache.memory_ratio"] - 0.6) < 1e-9
+    assert abs(gauges["robots.cache.db_ratio"] - 0.2) < 1e-9
+    assert abs(gauges["robots.cache.network_ratio"] - 0.2) < 1e-9
+
+
+def test_robots_cache_hit_ratio_zero_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    isolated = MetricsRegistry()
+    monkeypatch.setattr("awareness.obs.metrics._REGISTRY", isolated)
+    gauges = {g["name"]: g["value"] for g in isolated.snapshot()["gauges"]}
+    assert gauges["robots.cache.hit_ratio"] == 0.0
+    assert gauges["robots.cache.resolutions"] == 0.0

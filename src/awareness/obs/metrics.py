@@ -90,6 +90,12 @@ class MetricsRegistry:
         with self._lock:
             return float(sum(v for (n, _), v in self._counters.items() if n == name))
 
+    def counter_value(self, name: str, labels: dict[str, str] | None = None) -> float:
+        """Return a single labelled counter series (0.0 if absent)."""
+        key = (name, self._labels_key(labels))
+        with self._lock:
+            return float(self._counters.get(key, 0.0))
+
     def set(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
         with self._lock:
             self._gauges[(name, self._labels_key(labels))] = value
@@ -104,6 +110,9 @@ class MetricsRegistry:
                 {"name": n, "labels": dict(lbl), "value": round(v, 4)}
                 for (n, lbl), v in sorted(self._counters.items())
             ]
+            # Derived robots cache hit ratio from layer counters (memory+db vs total).
+            # Updated gauges keep /metrics dashboards simple without client math.
+            self._refresh_robots_hit_ratio_unlocked()
             gauges = [
                 {"name": n, "labels": dict(lbl), "value": v}
                 for (n, lbl), v in sorted(self._gauges.items())
@@ -118,6 +127,33 @@ class MetricsRegistry:
                 "gauges": gauges,
                 "histograms": histograms,
             }
+
+    def _refresh_robots_hit_ratio_unlocked(self) -> None:
+        """Set ``robots.cache.hit_ratio`` gauges from layer counter series.
+
+        Hit = memory + db (no network fetch). Ratio is 0.0 when no resolutions
+        have been recorded yet. Caller must hold ``self._lock``.
+        """
+        mem = float(self._counters.get(("robots.cache", (("layer", "memory"),)), 0.0))
+        db = float(self._counters.get(("robots.cache", (("layer", "db"),)), 0.0))
+        net = float(self._counters.get(("robots.cache", (("layer", "network"),)), 0.0))
+        total = mem + db + net
+        if total <= 0:
+            hit_ratio = 0.0
+            memory_ratio = 0.0
+            db_ratio = 0.0
+            network_ratio = 0.0
+        else:
+            hit_ratio = (mem + db) / total
+            memory_ratio = mem / total
+            db_ratio = db / total
+            network_ratio = net / total
+        self._gauges[("robots.cache.hit_ratio", ())] = round(hit_ratio, 6)
+        self._gauges[("robots.cache.memory_ratio", ())] = round(memory_ratio, 6)
+        self._gauges[("robots.cache.db_ratio", ())] = round(db_ratio, 6)
+        self._gauges[("robots.cache.network_ratio", ())] = round(network_ratio, 6)
+        self._gauges[("robots.cache.resolutions", ())] = float(total)
+
 
 
 _REGISTRY: MetricsRegistry | None = None
