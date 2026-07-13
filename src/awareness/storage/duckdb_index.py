@@ -1100,11 +1100,14 @@ class DuckDbIndex:
                 for k, v in params.items()
                 if f"${k}" in base or k.startswith("term_")
             }
+            # Case-normalize domains so Example.com / example.com roll into one
+            # SPA chip (matches lower(domain) filter semantics).
             dom_sql = (
-                f"SELECT c.domain AS domain, COUNT(DISTINCT c.capture_id)::BIGINT AS n "
+                f"SELECT lower(CAST(c.domain AS VARCHAR)) AS domain, "
+                f"COUNT(DISTINCT c.capture_id)::BIGINT AS n "
                 f"{base} "
                 f"WHERE c.domain IS NOT NULL AND CAST(c.domain AS VARCHAR) != '' "
-                f"GROUP BY c.domain ORDER BY n DESC LIMIT {lim}"
+                f"GROUP BY 1 ORDER BY n DESC LIMIT {lim}"
             )
             # Case-normalize so RSS / rss / Rss roll into one SPA chip (matches
             # lower(source_type) filter semantics used by source= query params).
@@ -1128,10 +1131,12 @@ class DuckDbIndex:
         else:
             w = where_sql or "1=1"
             p = {k: v for k, v in params.items() if f"${k}" in w}
+            # Case-normalize domains so mixed-case corpus values share one chip.
             dom_sql = (
-                f"SELECT domain, COUNT(*)::BIGINT AS n FROM captures "
+                f"SELECT lower(CAST(domain AS VARCHAR)) AS domain, "
+                f"COUNT(*)::BIGINT AS n FROM captures "
                 f"WHERE ({w}) AND domain IS NOT NULL AND CAST(domain AS VARCHAR) != '' "
-                f"GROUP BY domain ORDER BY n DESC LIMIT {lim}"
+                f"GROUP BY 1 ORDER BY n DESC LIMIT {lim}"
             )
             # Case-normalize so RSS / rss roll into one chip (filter is lower()).
             src_sql = (

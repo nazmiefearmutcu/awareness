@@ -92,6 +92,42 @@ def test_search_facets_sources_present(faceted_index: DuckDbIndex) -> None:
     assert by_src.get("common_crawl_wet", 0) == 1
 
 
+def test_search_facets_domains_case_normalized(tmp_path: Path) -> None:
+    """Mixed-case domain values roll into one lowercased facet chip."""
+    jsonl_dir = tmp_path / "jsonl"
+    _write_doc(
+        jsonl_dir, 1,
+        title="Alpha lower", text="alpha one", domain="news.example",
+    )
+    _write_doc(
+        jsonl_dir, 2,
+        title="Alpha upper", text="alpha two", domain="News.Example",
+    )
+    _write_doc(
+        jsonl_dir, 3,
+        title="Alpha mixed", text="alpha three", domain="NEWS.example",
+    )
+    _write_doc(
+        jsonl_dir, 4,
+        title="Alpha other", text="alpha four", domain="other.example",
+    )
+    idx = DuckDbIndex(
+        db_path=tmp_path / "duckdb" / "metadata.duckdb",
+        jsonl_dir=jsonl_dir,
+        iceberg_warehouse=None,
+    )
+    res = idx.search("alpha", mode="substring")
+    assert res["total"] == 4
+    domains = res["facets"]["domains"]
+    by_dom = {str(d["domain"]): int(d["n"]) for d in domains}
+    # Three mixed-case news.example variants → one lowercased bucket.
+    assert by_dom.get("news.example") == 3
+    assert by_dom.get("other.example") == 1
+    # Raw casing must not appear as separate facet keys.
+    assert "News.Example" not in by_dom
+    assert "NEWS.example" not in by_dom
+
+
 def test_search_facets_sources_case_normalized(tmp_path: Path) -> None:
     """Mixed-case source_type values roll into one lowercased facet chip."""
     jsonl_dir = tmp_path / "jsonl"
