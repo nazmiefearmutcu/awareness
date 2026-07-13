@@ -94,12 +94,14 @@
 | C4+ | dedup | Unwrap Telegram t.me/share|/iv + href.li for fetch-gate identity | ✅ |
 | C4+ | search | URL-slug prefix token navigational boost in BM25 re-rank | ✅ |
 | C4+ | dedup | Unwrap Tumblr t.umblr.com/redirect + Pocket getpocket.com/redirect for fetch-gate identity | ✅ |
+| C4+ | search | Lead-text prefix token navigational boost in BM25 re-rank | ✅ |
+| C4+ | dedup | Unwrap Pinterest pin-create/offsite + Flipboard share/bookmarklet for fetch-gate identity | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~162 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~165 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** URL-slug prefix navigational re-rank (`fdffcb3`), Tumblr + Pocket identity (`9724b4a`)
+- **Latest:** Lead-text prefix navigational re-rank (`5e3e7d6`), Pinterest + Flipboard identity (`d211314`)
 
 ## Rules
 

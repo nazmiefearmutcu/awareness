@@ -1,16 +1,16 @@
 {
-  "iteration": 31,
-  "phase": "url_prefix_rerank_tumblr_pocket_identity",
+  "iteration": 32,
+  "phase": "lead_prefix_rerank_pinterest_flipboard_identity",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "9724b4a3b2ff448ac84a163c84d472bf37287fa2",
+  "head_sha": "d2113149db69e5aa53879d3423535d7761e56a65",
   "product_shas": [
-    "fdffcb39199d9dd13dbc91d8b88a21453758813c",
-    "9724b4a3b2ff448ac84a163c84d472bf37287fa2"
+    "5e3e7d634cc24a263b0d4dd4f55819d9fba9d9ef",
+    "d2113149db69e5aa53879d3423535d7761e56a65"
   ],
-  "commits_ahead": 162,
+  "commits_ahead": 165,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed URL-slug prefix navigational re-rank boost (fdffcb3), Tumblr t.umblr.com/redirect + Pocket getpocket.com/redirect unwrap for fetch-gate identity (9724b4a). Next: scrape reliability / facets / more SERP identity / fuzzy search leftovers."
+  "notes": "Landed lead-text prefix navigational re-rank boost (5e3e7d6), Pinterest pin-create/offsite + Flipboard share/bookmarklet unwrap for fetch-gate identity (d211314). Next: scrape reliability / facets / more SERP identity / fuzzy search leftovers."
 }
