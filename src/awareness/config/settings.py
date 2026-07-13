@@ -130,6 +130,9 @@ class Settings(BaseSettings):
     search_default_limit: int = 10
     search_max_results: int = 200
     search_idf_threshold: float = 1.0
+    # Multiplicative recency weight Wr for FTS re-rank; 0 disables.
+    # When >0, prefer fresher published_ts (fallback fetch_ts).
+    search_recency_boost: float = 0.0
 
     # ── observability ────────────────────────────────────────────────────
     log_level: str = "INFO"

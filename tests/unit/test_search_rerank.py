@@ -79,8 +79,27 @@ def test_recency_factor_newest_gets_full_boost_old_decays() -> None:
 
 
 # ── _rerank ──────────────────────────────────────────────────────────────
-def _cand(cid: str, score: float, *, title: str = "", text: str = "", ts: object = None) -> dict[str, object]:
-    return {"capture_id": cid, "score": score, "title": title, "text": text, "fetch_ts": ts}
+def _cand(
+    cid: str,
+    score: float,
+    *,
+    title: str = "",
+    text: str = "",
+    ts: object = None,
+    published_ts: object = None,
+    fetch_ts: object = None,
+) -> dict[str, object]:
+    """Build a candidate row. ``ts`` is a shorthand for fetch_ts (legacy tests)."""
+    row: dict[str, object] = {
+        "capture_id": cid,
+        "score": score,
+        "title": title,
+        "text": text,
+        "fetch_ts": fetch_ts if fetch_ts is not None else ts,
+    }
+    if published_ts is not None:
+        row["published_ts"] = published_ts
+    return row
 
 
 def test_rerank_title_hit_overrides_higher_bm25() -> None:
@@ -135,3 +154,43 @@ def test_rerank_handles_empty_and_single() -> None:
     assert _rerank([], ["bitcoin"]) == []
     one = [_cand("A", 1.0, title="t", text="t")]
     assert [c["capture_id"] for c in _rerank(one, ["bitcoin"])] == ["A"]
+
+
+def test_rerank_recency_prefers_published_ts_over_fetch_ts() -> None:
+    """When recency is on, published_ts beats a newer fetch_ts on the other doc."""
+    ref = 1_000_000_000.0
+    # A: old published, but freshly fetched (fetch_ts = ref).
+    # B: recently published, older fetch.
+    # If we incorrectly used fetch_ts only, A would win; published_ts makes B win.
+    cands = [
+        _cand("A", 1.0, title="n", text="t", published_ts=ref - 365 * 86400, fetch_ts=ref),
+        _cand("B", 1.0, title="n", text="t", published_ts=ref, fetch_ts=ref - 30 * 86400),
+    ]
+    out = _rerank(cands, ["bitcoin"], recency_weight=0.5, recency_halflife_days=30.0)
+    assert [c["capture_id"] for c in out] == ["B", "A"]
+
+
+def test_rerank_recency_falls_back_to_fetch_ts_when_published_missing() -> None:
+    """Missing published_ts → use fetch_ts for the recency prior."""
+    ref = 1_000_000_000.0
+    cands = [
+        _cand("OLD", 1.0, title="n", text="t", fetch_ts=ref - 365 * 86400),
+        _cand("NEW", 1.0, title="n", text="t", fetch_ts=ref),
+    ]
+    out = _rerank(cands, ["bitcoin"], recency_weight=0.5, recency_halflife_days=30.0)
+    assert [c["capture_id"] for c in out] == ["NEW", "OLD"]
+
+
+def test_rerank_recency_weight_boosts_fresher_over_higher_bm25() -> None:
+    """With a large enough Wr, a fresher published_ts can outrank higher raw BM25."""
+    ref = 1_000_000_000.0
+    # OLD has higher BM25 (1.0) but is a year old; NEW has 0.85 BM25 and is fresh.
+    # Without recency: OLD first. With Wr=0.5: NEW final = 0.85 * 1.5 = 1.275 > 1.0 * ~1.0.
+    cands = [
+        _cand("OLD", 1.0, title="n", text="t", published_ts=ref - 365 * 86400),
+        _cand("NEW", 0.85, title="n", text="t", published_ts=ref),
+    ]
+    off = _rerank(cands, ["bitcoin"], recency_weight=0.0)
+    assert [c["capture_id"] for c in off] == ["OLD", "NEW"]
+    on = _rerank(cands, ["bitcoin"], recency_weight=0.5, recency_halflife_days=30.0)
+    assert [c["capture_id"] for c in on] == ["NEW", "OLD"]

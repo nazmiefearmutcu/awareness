@@ -281,6 +281,12 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
         "Minimum Inverse Document Frequency (IDF) threshold for query terms in BM25F ranking.",
         minimum=0.0, maximum=100.0,
     ),
+    ConfigField(
+        "search_recency_boost", "Search", KIND_FLOAT, 0.0,
+        "Optional FTS re-rank recency weight (0=off). When >0, prefer fresher "
+        "published_ts (fallback fetch_ts); boost is bounded in [1, 1+weight].",
+        minimum=0.0, maximum=10.0,
+    ),
     # ── Observability / terminal ─────────────────────────────────────────────
     ConfigField(
         "log_level", "Observability / terminal", KIND_CHOICE, "INFO",

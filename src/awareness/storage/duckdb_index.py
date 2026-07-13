@@ -1225,6 +1225,7 @@ class DuckDbIndex:
                         # early ingestion.
                         settings = get_settings()
                         threshold = float(getattr(settings, "search_idf_threshold", 1.0) or 0.0)
+                        recency_weight = float(getattr(settings, "search_recency_boost", 0.0) or 0.0)
                         _MIN_DOCS_FOR_IDF_PRUNE = 20
                         if N < _MIN_DOCS_FOR_IDF_PRUNE or threshold <= 0.0:
                             valid_terms = list(stemmed_terms)
@@ -1307,7 +1308,13 @@ class DuckDbIndex:
                             candidates = self._rows(conn, sql, params)
                             # Title/length (and optional recency) re-rank before
                             # collapse+page so field boost is not lost to LIMIT.
-                            rows = _rerank(candidates, terms)
+                            # recency_weight from settings.search_recency_boost
+                            # (0=off); uses published_ts, else fetch_ts.
+                            rows = _rerank(
+                                candidates,
+                                terms,
+                                recency_weight=recency_weight,
+                            )
                             used_mode = "fts"
                             facet_ctx = ("fts", base, None, params)
                 elif mode == "fts":
