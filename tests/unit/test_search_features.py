@@ -124,6 +124,7 @@ def test_idf_threshold_filtering(tmp_path: Path, caplog: pytest.LogCaptureFixtur
 
 def test_fineweb_crawl_id_fallback() -> None:
     """Verify that FineWeb planning validates configs and falls back gracefully."""
+    pytest.importorskip("datasets")
     adapter = FineWebAdapter()
     
     # 2024 June range translates to CC-MAIN-2024-26 (from crawl_ids_for_range)
