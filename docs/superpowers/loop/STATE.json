@@ -1,11 +1,12 @@
 {
-  "iteration": 16,
-  "phase": "counts_by_language_feedburner_origlink",
+  "iteration": 17,
+  "phase": "search_lang_facets_primary_html_url_identity",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "commits_ahead": 116,
+  "head_sha": "732d893d6c866c74df4d77327d0c270f403dc66e",
+  "commits_ahead": 119,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed by_language counts with BCP-47 primary-tag rollup on GET /counts + CLI (ef0f40b); feedburner/phoenix/origLink preferred over syndication proxy links (552e91a). Next: Iceberg compaction / SPA settings polish / more scrape reliability / search facet primary-lang rollup."
+  "notes": "Landed language facets primary-tag rollup (39a70e2) so en/en-US/en_GB share one SPA chip; trailing .html/.htm path collapse for fetch-gate identity (732d893). Next: Iceberg compaction / SPA settings polish / source facet case-normalize / more scrape reliability."
 }
