@@ -297,6 +297,7 @@ async function loadCaptures(reset = false) {
   if (domain) params.set("domain", domain);
   if (start) params.set("start", start);
   if (end) params.set("end", end);
+  const hideDups = !!$("#caps-unique")?.checked;
 
   const isSearch = !!q;
   let url;
@@ -304,6 +305,7 @@ async function loadCaptures(reset = false) {
     params.set("q", q);
     url = "/search?" + params.toString();
   } else {
+    if (hideDups) params.set("unique", "group");
     url = "/captures?" + params.toString();
   }
 
@@ -317,7 +319,8 @@ async function loadCaptures(reset = false) {
       const mode = data.ranked ? "BM25-ranked" : "fallback substring";
       meta.textContent = `${from}–${to} of ${fmt(data.total)} matches · ${mode}`;
     } else {
-      meta.textContent = `${from}–${to} of ${fmt(data.total)} captures · chronological`;
+      const fold = hideDups ? " · unique groups" : "";
+      meta.textContent = `${from}–${to} of ${fmt(data.total)} captures · chronological${fold}`;
     }
     $("#caps-pos").textContent = data.total ? `${from}–${to} of ${fmt(data.total)}` : "—";
     $("#caps-prev").disabled = caps.offset <= 0;
@@ -1499,6 +1502,7 @@ $("#caps-reset")?.addEventListener("click", () => {
   $("#caps-domain").value = "";
   $("#caps-start").value = "";
   $("#caps-end").value = "";
+  if ($("#caps-unique")) $("#caps-unique").checked = false;
   loadCaptures(true);
 });
 $("#caps-search")?.addEventListener("input", () => {
@@ -1506,6 +1510,7 @@ $("#caps-search")?.addEventListener("input", () => {
   capsSearchTimer = setTimeout(() => loadCaptures(true), 300);
 });
 $("#caps-source")?.addEventListener("change", () => loadCaptures(true));
+$("#caps-unique")?.addEventListener("change", () => loadCaptures(true));
 $("#caps-prev")?.addEventListener("click", () => { caps.offset = Math.max(0, caps.offset - caps.limit); loadCaptures(false); });
 $("#caps-next")?.addEventListener("click", () => { caps.offset += caps.limit; loadCaptures(false); });
 $("#jobs-refresh")?.addEventListener("click", () => loadJobs());

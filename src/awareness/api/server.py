@@ -13,7 +13,7 @@ Endpoints:
     POST /tail/stop              — stop tail
     GET  /tail                   — tail state
     GET  /inspect                — date/domain/source range query
-    GET  /captures               — paginated capture listing for UI
+    GET  /captures               — paginated capture listing for UI (unique=none|content|group)
     GET  /captures/{capture_id}  — full capture (incl. text) for UI detail view
     GET  /captures/{id}/related  — sibling captures in the same dup_group
     GET  /search                 — BM25-ranked full-text search w/ snippets
@@ -36,7 +36,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -107,6 +107,102 @@ def _get_index() -> DuckDbIndex:
                 iceberg_warehouse=s.iceberg_warehouse,
             )
         return _State.index
+
+
+
+# Fold key expressions for GET /captures?unique=…
+# Keep newest fetch_ts per key via DISTINCT ON; empty/null hash falls back to capture_id.
+_UNIQUE_FOLD_KEY_SQL: dict[str, str] = {
+    "content": (
+        "COALESCE(NULLIF(TRIM(CAST(content_hash AS VARCHAR)), ''), capture_id)"
+    ),
+    "group": (
+        "COALESCE("
+        "NULLIF(TRIM(CAST(parent_doc_or_dup_group AS VARCHAR)), ''), "
+        "NULLIF(TRIM(CAST(content_hash AS VARCHAR)), ''), "
+        "capture_id)"
+    ),
+}
+
+_CAPTURE_LIST_SELECT = """
+              doc_id, capture_id, source_type, source_name,
+              fetch_ts, observed_ts, domain, url, canonical_url,
+              title, language, length(text) AS text_len,
+              content_hash, parent_doc_or_dup_group
+"""
+
+
+def unique_fold_key_sql(unique: str) -> str | None:
+    """Return SQL fold-key expression for unique mode, or None for no fold."""
+    if unique in (None, "", "none"):
+        return None
+    expr = _UNIQUE_FOLD_KEY_SQL.get(unique)
+    if expr is None:
+        raise ValueError(f"invalid unique mode: {unique!r}")
+    return expr
+
+
+def query_captures_list(
+    idx: DuckDbIndex,
+    *,
+    limit: int,
+    offset: int,
+    where: list[str] | None = None,
+    params: dict[str, Any] | None = None,
+    unique: str = "none",
+) -> dict[str, Any]:
+    """Paginated captures listing with optional unique folding (DuckDB).
+
+    ``unique``:
+      * ``none``    — all rows (default)
+      * ``content`` — one row per content_hash (newest fetch_ts)
+      * ``group``   — one row per parent_doc_or_dup_group / content_hash / capture_id
+    """
+    where = where or []
+    params = dict(params or {})
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    fold_key = unique_fold_key_sql(unique)
+
+    if fold_key is None:
+        total_rows = idx.execute(f"SELECT COUNT(*) AS n FROM captures{where_sql}", params)
+        rows = idx.execute(
+            f"""
+            SELECT{_CAPTURE_LIST_SELECT}
+            FROM captures{where_sql}
+            ORDER BY fetch_ts DESC
+            LIMIT {int(limit)} OFFSET {int(offset)}
+            """,
+            params,
+        )
+    else:
+        total_rows = idx.execute(
+            f"SELECT COUNT(*) AS n FROM ("
+            f"SELECT DISTINCT {fold_key} AS _fold_key FROM captures{where_sql}"
+            f") _u",
+            params,
+        )
+        rows = idx.execute(
+            f"""
+            SELECT * EXCLUDE (_fold_key) FROM (
+              SELECT DISTINCT ON ({fold_key})
+                {_CAPTURE_LIST_SELECT.strip()},
+                {fold_key} AS _fold_key
+              FROM captures{where_sql}
+              ORDER BY {fold_key}, fetch_ts DESC
+            ) _folded
+            ORDER BY fetch_ts DESC
+            LIMIT {int(limit)} OFFSET {int(offset)}
+            """,
+            params,
+        )
+
+    return {
+        "total": int(total_rows[0]["n"]) if total_rows else 0,
+        "limit": limit,
+        "offset": offset,
+        "unique": unique if unique else "none",
+        "rows": rows,
+    }
 
 
 def create_app() -> FastAPI:
@@ -381,6 +477,10 @@ def create_app() -> FastAPI:
         domain: str | None = Query(None),
         source: str | None = Query(None),
         search: str | None = Query(None),
+        unique: Literal["none", "content", "group"] = Query(
+            "none",
+            description="Collapse duplicates: none | content (content_hash) | group (dup group)",
+        ),
     ) -> dict[str, Any]:
         idx = _get_index()
         where: list[str] = []
@@ -400,28 +500,14 @@ def create_app() -> FastAPI:
         if search:
             where.append("(title ILIKE $q OR text ILIKE $q)")
             params["q"] = f"%{search}%"
-        where_sql = (" WHERE " + " AND ".join(where)) if where else ""
-
-        total = idx.execute(f"SELECT COUNT(*) AS n FROM captures{where_sql}", params)
-        rows = idx.execute(
-            f"""
-            SELECT
-              doc_id, capture_id, source_type, source_name,
-              fetch_ts, observed_ts, domain, url, canonical_url,
-              title, language, length(text) AS text_len,
-              content_hash, parent_doc_or_dup_group
-            FROM captures{where_sql}
-            ORDER BY fetch_ts DESC
-            LIMIT {int(limit)} OFFSET {int(offset)}
-            """,
-            params,
+        return query_captures_list(
+            idx,
+            limit=limit,
+            offset=offset,
+            where=where,
+            params=params,
+            unique=unique,
         )
-        return {
-            "total": int(total[0]["n"]) if total else 0,
-            "limit": limit,
-            "offset": offset,
-            "rows": rows,
-        }
 
     @app.get("/captures/{capture_id}")
     def capture_detail(capture_id: str) -> dict[str, Any]:
