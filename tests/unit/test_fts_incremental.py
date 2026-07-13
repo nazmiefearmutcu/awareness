@@ -100,3 +100,43 @@ def test_fts_content_swap_still_full_rebuilds(tmp_path: Path) -> None:
     assert idx._fts_full_rebuilds == 2
     assert idx._fts_incremental_appends == 0
     idx.close()
+
+
+def test_fts_paths_emit_process_metrics(tmp_path: Path) -> None:
+    """Full rebuild, restore, and incremental append each bump fts.* metrics."""
+    from awareness.obs.metrics import get_metrics
+
+    m = get_metrics()
+    before_full = m.counter_value("fts.builds", labels={"mode": "full"})
+    before_restore = m.counter_value("fts.builds", labels={"mode": "restore"})
+    before_incr = m.counter_value("fts.builds", labels={"mode": "incremental"})
+
+    jsonl_dir = tmp_path / "jsonl"
+    db_path = tmp_path / "idx.duckdb"
+    _write_chunk(jsonl_dir, "a.jsonl", "d1", "xylophone rambunctious")
+
+    idx = DuckDbIndex(db_path=db_path, jsonl_dir=jsonl_dir, iceberg_warehouse=None)
+    assert idx.search("xylophone", limit=10)["total"] >= 1
+    assert m.counter_value("fts.builds", labels={"mode": "full"}) >= before_full + 1
+    snap = m.snapshot()
+    gauges = {g["name"]: g["value"] for g in snap["gauges"]}
+    assert gauges.get("fts.indexed_rows", 0) >= 1
+    hists = [
+        h
+        for h in snap["histograms"]
+        if h["name"] == "fts.build_seconds" and (h.get("labels") or {}).get("mode") == "full"
+    ]
+    assert hists and sum(h["count"] for h in hists) >= 1
+    idx.close()
+
+    idx2 = DuckDbIndex(db_path=db_path, jsonl_dir=jsonl_dir, iceberg_warehouse=None)
+    assert idx2.search("xylophone", limit=10)["total"] >= 1
+    assert m.counter_value("fts.builds", labels={"mode": "restore"}) >= before_restore + 1
+
+    _write_chunk(jsonl_dir, "b.jsonl", "d2", "pluviophile zymurgy")
+    assert idx2.search("pluviophile", limit=10)["total"] >= 1
+    assert m.counter_value("fts.builds", labels={"mode": "incremental"}) >= before_incr + 1
+    assert m.counter_value("fts.builds", labels={"mode": "full"}) >= before_full + 1
+    gauges2 = {g["name"]: g["value"] for g in m.snapshot()["gauges"]}
+    assert gauges2.get("fts.indexed_rows", 0) >= 2
+    idx2.close()

@@ -34,9 +34,24 @@ except ImportError:
     HAS_FCNTL = False
 
 from awareness.obs.logging import get_logger
+from awareness.obs.metrics import get_metrics
 from awareness.util.lang import append_language_filter, primary_language_sql
 
 logger = get_logger("storage.duckdb")
+
+
+def _record_fts_build(mode: str, *, seconds: float, rows: int) -> None:
+    """Emit process-local FTS path counters / latency / row gauge.
+
+    *mode* is one of ``full``, ``incremental``, ``restore`` so operators can
+    see whether search is paying for a cold rebuild, an append-only delta, or
+    a free fingerprint hit after restart.
+    """
+    labels = {"mode": mode}
+    m = get_metrics()
+    m.inc("fts.builds", labels=labels)
+    m.observe("fts.build_seconds", max(0.0, float(seconds)), labels=labels)
+    m.set("fts.indexed_rows", float(max(0, int(rows))))
 
 
 # Fingerprint of the on-disk corpus used to decide whether a persisted FTS
@@ -883,6 +898,7 @@ class DuckDbIndex:
         stored = self._load_persisted_fts_signature(conn)
         if stored is None or stored != _signature_digest(self._views_signature):
             return False
+        t0 = time.perf_counter()
         try:
             # Probe FTS schema still present and queryable.
             conn.execute("SELECT COUNT(*) FROM fts_main_captures_idx.docs").fetchone()
@@ -893,7 +909,9 @@ class DuckDbIndex:
             self._fts_built_for_count = count
             self._fts_built_signature = self._views_signature
             self._fts_restores += 1
-            logger.info("duckdb_fts_index_restored", rows=count)
+            elapsed = max(0.0, time.perf_counter() - t0)
+            _record_fts_build("restore", seconds=elapsed, rows=count)
+            logger.info("duckdb_fts_index_restored", rows=count, seconds=round(elapsed, 4))
             return True
         except duckdb.Error:
             return False
@@ -914,6 +932,7 @@ class DuckDbIndex:
             return False
         if old_count <= 0 or new_count <= old_count:
             return False
+        t0 = time.perf_counter()
         try:
             missing = conn.execute(
                 """
@@ -945,17 +964,28 @@ class DuckDbIndex:
             self._mark_fts_ready(new_count)
             self._persist_fts_signature(conn)
             self._fts_incremental_appends += 1
+            elapsed = max(0.0, time.perf_counter() - t0)
+            _record_fts_build("incremental", seconds=elapsed, rows=new_count)
             logger.info(
                 "duckdb_fts_index_appended",
                 rows=new_count,
                 prev_rows=old_count,
+                seconds=round(elapsed, 4),
             )
             return True
         except duckdb.Error as exc:
+            elapsed = max(0.0, time.perf_counter() - t0)
+            get_metrics().inc("fts.build_errors", labels={"mode": "incremental"})
+            get_metrics().observe(
+                "fts.build_seconds",
+                elapsed,
+                labels={"mode": "incremental", "outcome": "error"},
+            )
             logger.warning("duckdb_fts_incremental_failed", err=str(exc))
             return False
 
     def _full_rebuild_fts(self, conn: duckdb.DuckDBPyConnection, count: int) -> bool:
+        t0 = time.perf_counter()
         try:
             conn.execute(
                 f"""
@@ -967,9 +997,18 @@ class DuckDbIndex:
             self._mark_fts_ready(count)
             self._persist_fts_signature(conn)
             self._fts_full_rebuilds += 1
-            logger.info("duckdb_fts_index_built", rows=count)
+            elapsed = max(0.0, time.perf_counter() - t0)
+            _record_fts_build("full", seconds=elapsed, rows=count)
+            logger.info("duckdb_fts_index_built", rows=count, seconds=round(elapsed, 4))
             return True
         except duckdb.Error as exc:
+            elapsed = max(0.0, time.perf_counter() - t0)
+            get_metrics().inc("fts.build_errors", labels={"mode": "full"})
+            get_metrics().observe(
+                "fts.build_seconds",
+                elapsed,
+                labels={"mode": "full", "outcome": "error"},
+            )
             logger.warning("duckdb_fts_build_failed", err=str(exc))
             self._fts_available = False
             return False
