@@ -70,6 +70,7 @@ DEFAULT_SEARCH_MAX_RESULTS = 200
 # factors; all-neutral collapses to identity (pure BM25 order preserved).
 _RERANK_TITLE_BOOST = 0.5        # Wt: full title-term coverage multiplies score by 1+Wt
 _RERANK_TITLE_PHRASE_BOOST = 0.35  # Wp: ordered multi-term title phrase multiplies by 1+Wp
+_RERANK_TITLE_EXACT_BOOST = 0.4  # We: title tokens == query terms multiplies by 1+We
 _RERANK_URL_BOOST = 0.25         # Wu: full url/domain term coverage multiplies by 1+Wu
 _RERANK_URL_PHRASE_BOOST = 0.2   # Wup: ordered multi-term URL-slug phrase multiplies by 1+Wup
 _RERANK_LEN_PIVOT = 4000         # chars; docs up to here are not length-damped
@@ -1684,6 +1685,35 @@ def _title_phrase_frac(title: str, terms: list[str]) -> float:
     return 0.5
 
 
+def _title_tokens(title: str) -> list[str]:
+    """Alphanumeric title tokens (len≥2), lowercased — same shape as query terms."""
+    import re
+
+    return [t for t in re.findall(r"[A-Za-z0-9']+", (title or "").lower()) if len(t) >= 2]
+
+
+def _title_exact_frac(title: str, terms: list[str]) -> float:
+    """1.0 when title tokens equal the query terms exactly (order + set).
+
+    Phrase credit still fires when the query is a *substring* of a longer
+    title (``Bitcoin price surges`` for ``bitcoin price``). Exact equality is
+    a stronger navigational signal: the capture title *is* the query.
+
+    * ``1.0`` — tokenized title == cleaned terms (same order, no extras)
+    * ``0.0`` — empty terms, empty title, or any mismatch
+
+    Works for single-term queries (``Bitcoin`` title vs ``bitcoin`` query)
+    unlike phrase frac, which short-circuits below two terms.
+    """
+    cleaned = [t for t in terms if t]
+    if not cleaned:
+        return 0.0
+    tokens = _title_tokens(title)
+    if not tokens:
+        return 0.0
+    return 1.0 if tokens == cleaned else 0.0
+
+
 def _url_hit_frac(url: str, domain: str, terms: list[str]) -> float:
     """Fraction of distinct query terms that occur in domain or URL (case-insensitive).
 
@@ -1802,6 +1832,7 @@ def _rerank(
     *,
     title_boost: float = _RERANK_TITLE_BOOST,
     title_phrase_boost: float = _RERANK_TITLE_PHRASE_BOOST,
+    title_exact_boost: float = _RERANK_TITLE_EXACT_BOOST,
     url_boost: float = _RERANK_URL_BOOST,
     url_phrase_boost: float = _RERANK_URL_PHRASE_BOOST,
     len_pivot: int = _RERANK_LEN_PIVOT,
@@ -1812,9 +1843,9 @@ def _rerank(
 ) -> list[dict[str, Any]]:
     """Re-rank BM25 candidates (already in raw-score DESC order) by multiplying
     the min-max-normalized BM25 score with independent title / title-phrase /
-    url / url-phrase / length / recency factors. Returns a NEW ordered list;
-    input row dicts are not mutated. Stable: equal final scores keep the
-    incoming BM25 order.
+    title-exact / url / url-phrase / length / recency factors. Returns a NEW
+    ordered list; input row dicts are not mutated. Stable: equal final scores
+    keep the incoming BM25 order.
 
     Each candidate dict carries ``score`` (raw BM25), ``title``, ``text``,
     optional ``url`` / ``canonical_url`` / ``domain``, and a timestamp
@@ -1844,6 +1875,7 @@ def _rerank(
         title = c.get("title") or ""
         title_f = 1.0 + title_boost * _title_hit_frac(title, terms)
         phrase_f = 1.0 + title_phrase_boost * _title_phrase_frac(title, terms)
+        exact_f = 1.0 + title_exact_boost * _title_exact_frac(title, terms)
         url_blob = c.get("url") or c.get("canonical_url") or ""
         domain_blob = c.get("domain") or ""
         url_f = 1.0 + url_boost * _url_hit_frac(str(url_blob), str(domain_blob), terms)
@@ -1858,7 +1890,7 @@ def _rerank(
             halflife_days=recency_halflife_days,
             weight=recency_weight,
         )
-        return norm * title_f * phrase_f * url_f * url_phrase_f * len_f * rec_f
+        return norm * title_f * phrase_f * exact_f * url_f * url_phrase_f * len_f * rec_f
 
     finals = [final_score(c, raw) for c, raw in zip(candidates, scores, strict=True)]
     # Sort by descending final score; ties keep original BM25 order (lower index

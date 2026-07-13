@@ -13,6 +13,7 @@ from awareness.storage.duckdb_index import (
     _length_factor,
     _recency_factor,
     _rerank,
+    _title_exact_frac,
     _title_hit_frac,
     _title_phrase_frac,
     _to_epoch,
@@ -61,6 +62,28 @@ def test_title_phrase_frac_out_of_order_is_zero() -> None:
     """Bag-of-words title hit without ordered span is not a phrase hit."""
     assert _title_phrase_frac("Price of bitcoin jumps", ["bitcoin", "price"]) == 0.0
     assert _title_phrase_frac("markets only", ["bitcoin", "price"]) == 0.0
+
+
+# ── _title_exact_frac ────────────────────────────────────────────────────
+def test_title_exact_frac_empty_is_zero() -> None:
+    assert _title_exact_frac("Bitcoin", []) == 0.0
+    assert _title_exact_frac("", ["bitcoin"]) == 0.0
+    assert _title_exact_frac("   ", ["bitcoin"]) == 0.0
+
+
+def test_title_exact_frac_single_and_multi_term_match() -> None:
+    assert _title_exact_frac("Bitcoin", ["bitcoin"]) == 1.0
+    assert _title_exact_frac("BITCOIN PRICE", ["bitcoin", "price"]) == 1.0
+    # Punctuation / short tokens ignored in title tokenization.
+    assert _title_exact_frac("Bitcoin: price!", ["bitcoin", "price"]) == 1.0
+
+
+def test_title_exact_frac_rejects_extra_or_missing_or_reorder() -> None:
+    # Longer title still gets phrase credit elsewhere; exact requires equality.
+    assert _title_exact_frac("Bitcoin price surges", ["bitcoin", "price"]) == 0.0
+    assert _title_exact_frac("Bitcoin", ["bitcoin", "price"]) == 0.0
+    assert _title_exact_frac("Price bitcoin", ["bitcoin", "price"]) == 0.0
+    assert _title_exact_frac("markets only", ["bitcoin"]) == 0.0
 
 
 # ── _url_hit_frac ────────────────────────────────────────────────────────
@@ -259,6 +282,7 @@ def test_rerank_title_phrase_overrides_scattered_title_hits() -> None:
         ["bitcoin", "price"],
         title_boost=0.5,
         title_phrase_boost=0.0,
+        title_exact_boost=0.0,
         url_boost=0.0,
     )
     # Without phrase boost: equal title_f → BM25 order (SCATTER first).
@@ -268,11 +292,48 @@ def test_rerank_title_phrase_overrides_scattered_title_hits() -> None:
         ["bitcoin", "price"],
         title_boost=0.5,
         title_phrase_boost=0.35,
+        title_exact_boost=0.0,
         url_boost=0.0,
     )
     # PHRASE final = 0.85 * (1+0.5) * (1+0.35) = 0.85 * 1.5 * 1.35 = 1.72125
     # SCATTER final = 1.0 * (1+0.5) * 1.0 = 1.5
     assert [c["capture_id"] for c in on] == ["PHRASE", "SCATTER"]
+
+
+def test_rerank_title_exact_overrides_phrase_only() -> None:
+    """Title token equality beats a longer title that only contains the phrase.
+
+    Both docs form the contiguous phrase and full term coverage. Only EXACT
+    has title tokens == query; with exact boost on, EXACT ranks first despite
+    lower raw BM25.
+    """
+    cands = [
+        _cand("LONGER", 1.0, title="Bitcoin price surges overnight", text="t"),
+        _cand("EXACT", 0.85, title="Bitcoin price", text="t"),
+    ]
+    off = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.5,
+        title_phrase_boost=0.35,
+        title_exact_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+    )
+    # Equal title_f + phrase_f, no exact → BM25 order (LONGER first).
+    assert [c["capture_id"] for c in off] == ["LONGER", "EXACT"]
+    on = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.5,
+        title_phrase_boost=0.35,
+        title_exact_boost=0.4,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+    )
+    # EXACT final = 0.85 * 1.5 * 1.35 * 1.4 = 2.40975
+    # LONGER final = 1.0 * 1.5 * 1.35 * 1.0 = 2.025
+    assert [c["capture_id"] for c in on] == ["EXACT", "LONGER"]
 
 
 def test_rerank_url_hit_overrides_higher_bm25() -> None:
