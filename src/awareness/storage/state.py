@@ -1233,6 +1233,101 @@ class StateDB:
             )
         return out
 
+    def get_dlq(self, dlq_id: int) -> dict[str, Any] | None:
+        """Return one DLQ row by id, or ``None`` if missing."""
+        with self.session() as s:
+            row = s.get(DLQRow, int(dlq_id))
+            if row is None:
+                return None
+            try:
+                payload = json.loads(row.payload_json or "{}")
+                if not isinstance(payload, dict):
+                    payload = {"_raw": payload}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                payload = {"_raw": row.payload_json}
+            created = row.created_at
+            if created is not None and created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            return {
+                "id": int(row.id),
+                "job_id": row.job_id,
+                "task_id": row.task_id,
+                "error": row.error or "",
+                "payload": payload,
+                "created_at": created.isoformat() if created is not None else None,
+            }
+
+    def replay_dlq(
+        self,
+        dlq_id: int,
+        *,
+        reset_attempts: bool = True,
+    ) -> dict[str, Any]:
+        """Re-arm a dead-lettered task and remove its DLQ row.
+
+        Looks up the DLQ entry by *dlq_id*, finds the associated task, resets it
+        to ``PENDING`` (optionally clearing ``attempts`` so max-retries can fire
+        again), decrements the job's dead-letter counter when the task was
+        ``DEAD_LETTERED``, and deletes the DLQ row.
+
+        Returns a result dict::
+
+            {"ok": True, "dlq_id": int, "task_id": str, "job_id": str,
+             "previous_status": str, "attempts": int}
+            {"ok": False, "reason": "dlq_missing"|"task_missing"|"no_task_id", ...}
+
+        Does not create new tasks when the task row is gone — operators must
+        re-plan or reseed for those cases.
+        """
+        dlq_id = int(dlq_id)
+        with self.session() as s:
+            dlq = s.get(DLQRow, dlq_id)
+            if dlq is None:
+                return {"ok": False, "reason": "dlq_missing", "dlq_id": dlq_id}
+            task_id = dlq.task_id
+            job_id = dlq.job_id
+            if not task_id:
+                return {
+                    "ok": False,
+                    "reason": "no_task_id",
+                    "dlq_id": dlq_id,
+                    "job_id": job_id,
+                }
+            task = s.get(TaskRow, task_id)
+            if task is None:
+                return {
+                    "ok": False,
+                    "reason": "task_missing",
+                    "dlq_id": dlq_id,
+                    "task_id": task_id,
+                    "job_id": job_id,
+                }
+            prev_status = task.status
+            task.status = TaskStatus.PENDING.value
+            task.started_at = None
+            task.completed_at = None
+            task.next_attempt_at = None
+            task.last_error = None
+            if reset_attempts:
+                task.attempts = 0
+            if prev_status == TaskStatus.DEAD_LETTERED.value and task.job_id:
+                # Keep job dead-letter counter consistent with re-arm (mirror
+                # add_tasks rearmed_from DEAD_LETTERED path).
+                job = s.get(JobRow, task.job_id)
+                if job is not None and (job.tasks_dead_lettered or 0) > 0:
+                    job.tasks_dead_lettered = int(job.tasks_dead_lettered) - 1
+            s.delete(dlq)
+            s.commit()
+            return {
+                "ok": True,
+                "dlq_id": dlq_id,
+                "task_id": task_id,
+                "job_id": task.job_id,
+                "previous_status": prev_status,
+                "attempts": int(task.attempts),
+                "reset_attempts": bool(reset_attempts),
+            }
+
     # ── tail state ───────────────────────────────────────────────────────
     @staticmethod
     def _pid_alive(pid: int | None) -> bool:

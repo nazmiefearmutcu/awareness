@@ -1942,6 +1942,48 @@ def dlq_count(
         rprint(f"[bold red]{n}[/bold red] dead-lettered task(s){scope}.")
 
 
+@dlq_app.command("replay")
+def dlq_replay(
+    dlq_id: int = typer.Argument(..., help="DLQ row id (from `dlq list`)"),
+    keep_attempts: bool = typer.Option(
+        False,
+        "--keep-attempts",
+        help="Do not reset attempts (default: reset to 0 so max-retries restarts)",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable JSON"),
+) -> None:
+    """Re-arm a dead-lettered task and drop its DLQ entry.
+
+    Resets the task to PENDING so the worker pool can claim it again. By default
+    ``attempts`` is cleared; pass ``--keep-attempts`` to preserve the prior
+    counter (may immediately re-dead-letter if already at max retries).
+    """
+    state, _ = _bootstrap()
+    result = state.replay_dlq(dlq_id, reset_attempts=not keep_attempts)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        if not result.get("ok"):
+            raise typer.Exit(code=1)
+        return
+    if not result.get("ok"):
+        reason = result.get("reason") or "unknown"
+        rprint(f"[bold red]Replay failed[/bold red]: {reason} (dlq_id={dlq_id}).")
+        if reason == "dlq_missing":
+            rprint("[dim]Use `awareness dlq list` to see current ids.[/dim]")
+        elif reason == "task_missing":
+            rprint(
+                f"[dim]Task {result.get('task_id')!r} is gone; re-plan or reseed "
+                "instead of replaying this DLQ row.[/dim]"
+            )
+        raise typer.Exit(code=1)
+    rprint(
+        f"[bold green]Replayed[/bold green] dlq #{result.get('dlq_id')} → "
+        f"task [cyan]{result.get('task_id')}[/cyan] "
+        f"(job {result.get('job_id')}, was {result.get('previous_status')}, "
+        f"attempts={result.get('attempts')})."
+    )
+
+
 # ── inspect ──────────────────────────────────────────────────────────────
 @app.command()
 def inspect(
