@@ -1,16 +1,16 @@
 {
-  "iteration": 30,
-  "phase": "title_prefix_rerank_telegram_hrefli_identity",
+  "iteration": 31,
+  "phase": "url_prefix_rerank_tumblr_pocket_identity",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "1cf53e2faead7d0debb8baf4b6b3e4bfd6c642a7",
+  "head_sha": "9724b4a3b2ff448ac84a163c84d472bf37287fa2",
   "product_shas": [
-    "ea3e561c2c95b5f9578307e5e0b4fd2c15a766d8",
-    "1cf53e2faead7d0debb8baf4b6b3e4bfd6c642a7"
+    "fdffcb39199d9dd13dbc91d8b88a21453758813c",
+    "9724b4a3b2ff448ac84a163c84d472bf37287fa2"
   ],
-  "commits_ahead": 159,
+  "commits_ahead": 162,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed title-prefix navigational re-rank boost (ea3e561), Telegram t.me/share|/iv + href.li unwrap for fetch-gate identity (1cf53e2). Next: scrape reliability / facets / more SERP identity / fuzzy search leftovers."
+  "notes": "Landed URL-slug prefix navigational re-rank boost (fdffcb3), Tumblr t.umblr.com/redirect + Pocket getpocket.com/redirect unwrap for fetch-gate identity (9724b4a). Next: scrape reliability / facets / more SERP identity / fuzzy search leftovers."
 }

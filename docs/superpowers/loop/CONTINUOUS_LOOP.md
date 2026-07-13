@@ -92,12 +92,14 @@
 | C4+ | dedup | Unwrap Slack slack-redir.net + WhatsApp l.wl.co for fetch-gate identity | ✅ |
 | C4+ | search | Title-prefix token navigational boost in BM25 re-rank | ✅ |
 | C4+ | dedup | Unwrap Telegram t.me/share|/iv + href.li for fetch-gate identity | ✅ |
+| C4+ | search | URL-slug prefix token navigational boost in BM25 re-rank | ✅ |
+| C4+ | dedup | Unwrap Tumblr t.umblr.com/redirect + Pocket getpocket.com/redirect for fetch-gate identity | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~159 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~162 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** title-prefix navigational re-rank (`ea3e561`), Telegram + href.li identity (`1cf53e2`)
+- **Latest:** URL-slug prefix navigational re-rank (`fdffcb3`), Tumblr + Pocket identity (`9724b4a`)
 
 ## Rules
 
