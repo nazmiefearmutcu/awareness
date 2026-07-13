@@ -20,6 +20,7 @@ from awareness.storage.duckdb_index import (
     _title_exact_frac,
     _title_hit_frac,
     _title_phrase_frac,
+    _title_prefix_frac,
     _to_epoch,
     _url_exact_frac,
     _url_hit_frac,
@@ -90,6 +91,30 @@ def test_title_exact_frac_rejects_extra_or_missing_or_reorder() -> None:
     assert _title_exact_frac("Bitcoin", ["bitcoin", "price"]) == 0.0
     assert _title_exact_frac("Price bitcoin", ["bitcoin", "price"]) == 0.0
     assert _title_exact_frac("markets only", ["bitcoin"]) == 0.0
+
+
+# ── _title_prefix_frac ───────────────────────────────────────────────────
+def test_title_prefix_frac_empty_is_zero() -> None:
+    assert _title_prefix_frac("Bitcoin price", []) == 0.0
+    assert _title_prefix_frac("", ["bitcoin"]) == 0.0
+    assert _title_prefix_frac("   ", ["bitcoin"]) == 0.0
+
+
+def test_title_prefix_frac_single_and_multi_term() -> None:
+    """Title token stream must start with the query terms (ordered)."""
+    assert _title_prefix_frac("Bitcoin surges overnight", ["bitcoin"]) == 1.0
+    assert _title_prefix_frac("Bitcoin price surges", ["bitcoin", "price"]) == 1.0
+    # Exact title is also a prefix of itself.
+    assert _title_prefix_frac("Bitcoin price", ["bitcoin", "price"]) == 1.0
+    assert _title_prefix_frac("BITCOIN: PRICE jumps!", ["bitcoin", "price"]) == 1.0
+
+
+def test_title_prefix_frac_rejects_mid_title_and_reorder() -> None:
+    # Phrase may match mid-title; prefix requires the title *start*.
+    assert _title_prefix_frac("Markets: bitcoin price jump", ["bitcoin", "price"]) == 0.0
+    assert _title_prefix_frac("Price of bitcoin jumps", ["bitcoin", "price"]) == 0.0
+    assert _title_prefix_frac("Bitcoin", ["bitcoin", "price"]) == 0.0
+    assert _title_prefix_frac("markets only", ["bitcoin"]) == 0.0
 
 
 # ── _lead_hit_frac ───────────────────────────────────────────────────────
@@ -346,6 +371,7 @@ def test_rerank_title_phrase_overrides_scattered_title_hits() -> None:
         title_boost=0.5,
         title_phrase_boost=0.0,
         title_exact_boost=0.0,
+        title_prefix_boost=0.0,
         url_boost=0.0,
     )
     # Without phrase boost: equal title_f → BM25 order (SCATTER first).
@@ -356,6 +382,7 @@ def test_rerank_title_phrase_overrides_scattered_title_hits() -> None:
         title_boost=0.5,
         title_phrase_boost=0.35,
         title_exact_boost=0.0,
+        title_prefix_boost=0.0,
         url_boost=0.0,
     )
     # PHRASE final = 0.85 * (1+0.5) * (1+0.35) = 0.85 * 1.5 * 1.35 = 1.72125
@@ -380,6 +407,7 @@ def test_rerank_title_exact_overrides_phrase_only() -> None:
         title_boost=0.5,
         title_phrase_boost=0.35,
         title_exact_boost=0.0,
+        title_prefix_boost=0.0,
         url_boost=0.0,
         url_phrase_boost=0.0,
         lead_hit_boost=0.0,
@@ -393,6 +421,7 @@ def test_rerank_title_exact_overrides_phrase_only() -> None:
         title_boost=0.5,
         title_phrase_boost=0.35,
         title_exact_boost=0.4,
+        title_prefix_boost=0.0,
         url_boost=0.0,
         url_phrase_boost=0.0,
         lead_hit_boost=0.0,
@@ -401,6 +430,50 @@ def test_rerank_title_exact_overrides_phrase_only() -> None:
     # EXACT final = 0.85 * 1.5 * 1.35 * 1.4 = 2.40975
     # LONGER final = 1.0 * 1.5 * 1.35 * 1.0 = 2.025
     assert [c["capture_id"] for c in on] == ["EXACT", "LONGER"]
+
+
+def test_rerank_title_prefix_overrides_mid_title_phrase() -> None:
+    """Title leading with the query beats a mid-title phrase with higher BM25.
+
+    Both docs form the contiguous phrase and full term coverage. Only PREFIX
+    starts with the query tokens; with prefix boost on, PREFIX ranks first
+    despite lower raw BM25. Exact boost off so LONGER/PREFIX are not exact.
+    """
+    cands = [
+        _cand("MID", 1.0, title="Markets: bitcoin price jump", text="t"),
+        _cand("PREFIX", 0.85, title="Bitcoin price surges overnight", text="t"),
+    ]
+    off = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.5,
+        title_phrase_boost=0.35,
+        title_exact_boost=0.0,
+        title_prefix_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+        domain_nav_boost=0.0,
+    )
+    # Equal title_f + phrase_f, no prefix → BM25 order (MID first).
+    assert [c["capture_id"] for c in off] == ["MID", "PREFIX"]
+    on = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.5,
+        title_phrase_boost=0.35,
+        title_exact_boost=0.0,
+        title_prefix_boost=0.25,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+        domain_nav_boost=0.0,
+    )
+    # PREFIX final = 0.85 * 1.5 * 1.35 * 1.25 = 2.1515625
+    # MID final = 1.0 * 1.5 * 1.35 * 1.0 = 2.025
+    assert [c["capture_id"] for c in on] == ["PREFIX", "MID"]
 
 
 def test_rerank_lead_phrase_overrides_buried_body_match() -> None:
