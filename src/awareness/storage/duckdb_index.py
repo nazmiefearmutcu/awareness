@@ -938,7 +938,10 @@ class DuckDbIndex:
                                 ORDER BY score DESC
                                 LIMIT {int(candidate_cap)}
                             """
-                            rows = self._rows(conn, sql, params)
+                            candidates = self._rows(conn, sql, params)
+                            # Title/length (and optional recency) re-rank before
+                            # collapse+page so field boost is not lost to LIMIT.
+                            rows = _rerank(candidates, terms)
                             used_mode = "fts"
                 elif mode == "fts":
                     # FTS explicitly requested but unavailable → degrade to prefix.
