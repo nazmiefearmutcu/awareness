@@ -254,6 +254,81 @@ def _collapse_search_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [best[k] for k in order]
 
 
+
+def _serialize_window_bound(value: Any) -> Any:
+    """JSON-friendly form of a search window bound (datetime → ISO-8601)."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def build_search_diagnostics(
+    *,
+    mode_used: str,
+    fts_available: bool,
+    query_terms: list[str],
+    corpus_size: int | None = None,
+    start: Any = None,
+    end: Any = None,
+    source: str | None = None,
+    domain: str | None = None,
+    requested_mode: str | None = None,
+) -> dict[str, Any]:
+    """Build an empty-result diagnostic payload with actionable hints.
+
+    Heavier fields such as ``corpus_size`` are expected to be precomputed by
+    the caller only when ``total == 0`` so successful queries stay cheap.
+    """
+    hints: list[str] = []
+    if corpus_size is not None and corpus_size <= 0:
+        hints.append("No documents in index yet — run a backfill or start tail.")
+    else:
+        # Non-empty corpus (or unknown size) but zero hits.
+        if not fts_available and (requested_mode or mode_used) in ("auto", "fts", "prefix", "substring"):
+            if mode_used in ("prefix", "substring") or not fts_available:
+                hints.append("FTS unavailable; used prefix/substring mode.")
+        if start is not None:
+            hints.append("Date window may exclude older captures.")
+        if source or domain:
+            parts: list[str] = []
+            if domain:
+                parts.append("domain")
+            if source:
+                parts.append("source")
+            hints.append(
+                f"{'/'.join(parts).capitalize()} filter may exclude matching captures."
+            )
+        if corpus_size is None or corpus_size > 0:
+            # Always offer a recall tip when the corpus is non-empty / unknown.
+            if mode_used != "substring" or len(query_terms) > 1:
+                hints.append("Try fewer terms or substring mode.")
+
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    unique_hints: list[str] = []
+    for h in hints:
+        if h not in seen:
+            seen.add(h)
+            unique_hints.append(h)
+
+    diag: dict[str, Any] = {
+        "mode_used": mode_used,
+        "fts_available": bool(fts_available),
+        "query_terms": list(query_terms),
+        "hints": unique_hints,
+    }
+    if corpus_size is not None:
+        diag["corpus_size"] = int(corpus_size)
+    if start is not None or end is not None:
+        diag["window"] = {
+            "start": _serialize_window_bound(start),
+            "end": _serialize_window_bound(end),
+        }
+    return diag
+
+
 class DuckDbIndex:
     """Thin wrapper around a DuckDB connection that knows our layout."""
 
@@ -776,6 +851,17 @@ class DuckDbIndex:
             "ranked": False, "mode": mode, "fields": cols, "query": query,
         }
         if not query:
+            empty["diagnostics"] = build_search_diagnostics(
+                mode_used=mode,
+                fts_available=bool(self._fts_available),
+                query_terms=[],
+                corpus_size=None,
+                start=start,
+                end=end,
+                source=source,
+                domain=domain,
+                requested_mode=mode,
+            )
             return empty
 
         with self._lock, self._connection_context() as conn:
@@ -801,6 +887,7 @@ class DuckDbIndex:
             total = 0
             rows: list[dict[str, Any]] = []
             used_mode = mode
+            requested_mode = mode
 
             # FTS indexes title+text as one blob, so it cannot honor a
             # narrowed ``fields`` request. Explicit ``fts`` still runs (escape
@@ -1047,7 +1134,7 @@ class DuckDbIndex:
                 r["text_len"] = len(text)
                 r["terms"] = snippet_terms
                 results.append(r)
-            return {
+            payload: dict[str, Any] = {
                 "total": total,
                 "limit": limit,
                 "offset": offset,
@@ -1057,6 +1144,27 @@ class DuckDbIndex:
                 "fields": cols,
                 "query": query,
             }
+            # Empty-result diagnostics (corpus_size only when total==0).
+            if total == 0:
+                corpus_size: int | None = None
+                try:
+                    crow = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+                    corpus_size = int(crow[0]) if crow else 0
+                except duckdb.Error:
+                    corpus_size = None
+                payload["diagnostics"] = build_search_diagnostics(
+                    mode_used=used_mode,
+                    fts_available=bool(self._fts_available),
+                    # Original tokens (not stem roots) so diagnostics mirror the user query.
+                    query_terms=_tokenize_query(query),
+                    corpus_size=corpus_size,
+                    start=start,
+                    end=end,
+                    source=source,
+                    domain=domain,
+                    requested_mode=requested_mode,
+                )
+            return payload
 
     @staticmethod
     def _rows(conn: duckdb.DuckDBPyConnection, sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:

@@ -2677,6 +2677,28 @@ def browse(
 
 
 
+
+def _print_search_diagnostics(diagnostics: dict[str, Any] | None) -> None:
+    """Render empty-result diagnostics as a short Rich panel (if present)."""
+    if not diagnostics:
+        return
+    hints = diagnostics.get("hints") or []
+    if not hints:
+        return
+    from rich.panel import Panel
+
+    lines = "\n".join(f"• {escape(str(h))}" for h in hints)
+    meta: list[str] = []
+    if "corpus_size" in diagnostics:
+        meta.append(f"corpus={diagnostics['corpus_size']}")
+    if diagnostics.get("mode_used"):
+        meta.append(f"mode={diagnostics['mode_used']}")
+    title = "No results — suggestions"
+    if meta:
+        title = f"{title} ({', '.join(meta)})"
+    rprint(Panel(lines, title=f"[yellow]{title}[/yellow]", border_style="yellow", expand=False))
+
+
 def _resolve_search_window(start: str, end: str) -> tuple[datetime | None, datetime | None]:
     """Resolve the (start, end) search window.
 
@@ -2766,6 +2788,8 @@ def search(
                 highlighted_snippet = highlight_tokens(r["snippet"], query)
                 rprint(f"  [italic]\"{highlighted_snippet}\"[/italic]")
             rprint()
+        if total == 0:
+            _print_search_diagnostics(res.get("diagnostics"))
         return
 
     offset = 0
@@ -2796,6 +2820,7 @@ def search(
                 if start_dt is not None:
                     range_hint = f" (start={start_dt}; try --start '' or an earlier date)"
                 rprint(f"[yellow]No documents matched query '{query}'.{range_hint}[/yellow]")
+                _print_search_diagnostics(res.get("diagnostics"))
                 break
             else:
                 rprint("[yellow]No more pages. Going back...[/yellow]")
