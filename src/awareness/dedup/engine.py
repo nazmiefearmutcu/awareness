@@ -107,11 +107,12 @@ class DedupEngine:
                     best_dist = dist
                     best_doc = other_doc_id
             if best_doc is not None and best_dist <= self._near_threshold:
-                cap.parent_doc_or_dup_group = best_doc
+                root = self._state.uf_union(cap.doc_id, best_doc)
+                cap.parent_doc_or_dup_group = root
                 self._state.add_near_dup_index(cap.doc_id, sig)
                 return DedupOutcome(
                     decision=DedupDecision.NEAR_DUP,
-                    dup_group=best_doc,
+                    dup_group=root,
                     reason=f"simhash128_hamming={best_dist}",
                     hamming=best_dist,
                 )
@@ -119,5 +120,6 @@ class DedupEngine:
         # Step 3: brand new canonical doc.
         if sig > 0:
             self._state.add_near_dup_index(cap.doc_id, sig)
-        cap.parent_doc_or_dup_group = cap.doc_id
-        return DedupOutcome(decision=DedupDecision.NEW, dup_group=cap.doc_id, reason="new_content")
+        root = self._state.uf_union(cap.doc_id, cap.doc_id)
+        cap.parent_doc_or_dup_group = root
+        return DedupOutcome(decision=DedupDecision.NEW, dup_group=root, reason="new_content")

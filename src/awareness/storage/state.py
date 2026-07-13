@@ -156,6 +156,20 @@ class DedupNearRow(Base):
     __table_args__ = (UniqueConstraint("doc_id", "seg", name="uq_dedup_near"),)
 
 
+class DupParentRow(Base):
+    """Union-find parent map for near-duplicate clusters.
+
+    Each ``doc_id`` points at a ``parent_id`` in the same table. Roots have
+    ``parent_id == doc_id``. Missing rows are treated as self-roots by
+    :meth:`StateDB.uf_find`. Path compression rewrites intermediate parents to
+    the root on find so A~B and B~C share one canonical parent.
+    """
+
+    __tablename__ = "dup_parent"
+    doc_id: Mapped[str] = mapped_column(String, primary_key=True)
+    parent_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+
+
 # 128 bits split into 32 bands of 4 bits. The Manku/Jain pigeonhole guarantee is
 # "a pair within Hamming ≤ (bands-1) shares ≥1 identical band", so 32 bands give
 # an EXACT-retrieval guarantee up to Hamming ≤31 — covering DEFAULT_NEAR_THRESHOLD
@@ -970,6 +984,91 @@ class StateDB:
                     elif legacy is not None:
                         out[did] = legacy & 0xffffffffffffffff
         return list(out.items())
+
+    def uf_find(self, doc_id: str) -> str:
+        """Find the canonical root of ``doc_id``'s near-dup cluster.
+
+        Walks parent links in ``dup_parent`` and applies path compression so
+        subsequent finds are O(1) amortized. A missing row means the doc is its
+        own root (not yet linked into any cluster).
+        """
+        if not doc_id:
+            return doc_id
+        with self.session() as s:
+            seen: list[str] = []
+            cur = doc_id
+            # Cap walk length against accidental cycles in corrupted state.
+            for _ in range(256):
+                row = s.get(DupParentRow, cur)
+                if row is None or row.parent_id == cur:
+                    root = cur
+                    break
+                if cur in seen:
+                    # Cycle — treat current as root and break.
+                    root = cur
+                    break
+                seen.append(cur)
+                cur = row.parent_id
+            else:
+                root = cur
+
+            # Path compression: point every visited node straight at root.
+            for mid in seen:
+                mid_row = s.get(DupParentRow, mid)
+                if mid_row is None:
+                    s.add(DupParentRow(doc_id=mid, parent_id=root))
+                elif mid_row.parent_id != root:
+                    mid_row.parent_id = root
+
+            # Ensure root row exists so later unions have a stable anchor.
+            root_row = s.get(DupParentRow, root)
+            if root_row is None:
+                s.add(DupParentRow(doc_id=root, parent_id=root))
+            elif root_row.parent_id != root:
+                root_row.parent_id = root
+            s.commit()
+            return root
+
+    def uf_union(self, a: str, b: str) -> str:
+        """Link ``a`` under :meth:`uf_find` of ``b``; return the resulting root.
+
+        Self-union (``a == b``) registers ``a`` as its own root. When ``a``
+        already heads a cluster, that whole tree is folded under ``find(b)`` so
+        near-dup links remain transitive.
+        """
+        if not a:
+            return self.uf_find(b) if b else a
+        if not b or a == b:
+            with self.session() as s:
+                row = s.get(DupParentRow, a)
+                if row is None:
+                    s.add(DupParentRow(doc_id=a, parent_id=a))
+                    s.commit()
+            return self.uf_find(a)
+
+        root = self.uf_find(b)
+        # Fold a's existing group into root (union of two trees).
+        existing_root = self.uf_find(a)
+        if existing_root != root:
+            with self.session() as s:
+                old = s.get(DupParentRow, existing_root)
+                if old is None:
+                    s.add(DupParentRow(doc_id=existing_root, parent_id=root))
+                else:
+                    old.parent_id = root
+                # Also point a directly at root (path compression).
+                a_row = s.get(DupParentRow, a)
+                if a_row is None:
+                    s.add(DupParentRow(doc_id=a, parent_id=root))
+                else:
+                    a_row.parent_id = root
+                root_row = s.get(DupParentRow, root)
+                if root_row is None:
+                    s.add(DupParentRow(doc_id=root, parent_id=root))
+                elif root_row.parent_id != root:
+                    root_row.parent_id = root
+                s.commit()
+        return root
 
     def dedup_stats(self) -> dict[str, int]:
         with self.session() as s:
