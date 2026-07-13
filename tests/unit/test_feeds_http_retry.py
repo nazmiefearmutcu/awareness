@@ -133,3 +133,32 @@ async def test_read_feed_404_returns_empty_no_retry(monkeypatch: pytest.MonkeyPa
     urls = await _read_feed("https://example.com/missing.xml", "TestBot/1.0")
     assert urls == []
     assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_read_feed_non_200_increments_metric(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Permanent non-200 (404) is not retried but is counted for reliability dashboards."""
+    from awareness.obs.metrics import get_metrics
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+    before = get_metrics().counter_sum("feeds.fetch_non_200")
+    urls = await _read_feed("https://example.com/missing.xml", "TestBot/1.0")
+    assert urls == []
+    assert get_metrics().counter_sum("feeds.fetch_non_200") == before + 1
+
+
+@pytest.mark.asyncio
+async def test_read_sitemap_non_200_increments_metric(monkeypatch: pytest.MonkeyPatch) -> None:
+    from awareness.obs.metrics import get_metrics
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403)
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+    before = get_metrics().counter_sum("feeds.fetch_non_200")
+    urls = await _read_sitemap("https://example.com/forbidden.xml", "TestBot/1.0")
+    assert urls == []
+    assert get_metrics().counter_sum("feeds.fetch_non_200") == before + 1
