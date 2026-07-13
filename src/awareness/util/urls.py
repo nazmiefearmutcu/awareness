@@ -138,6 +138,22 @@ _VIEWER_AMP_HOSTS: frozenset[str] = frozenset(
     }
 )
 
+# Wayback Machine hosts that wrap an origin URL in ``/web/<timestamp…>/<origin>``.
+_WAYBACK_HOSTS: frozenset[str] = frozenset(
+    {
+        "web.archive.org",
+        "wayback.archive.org",
+    }
+)
+
+# Google Translate wrapper hosts that put the origin in a ``u=`` query param.
+_TRANSLATE_HOSTS: frozenset[str] = frozenset(
+    {
+        "translate.google.com",
+        "translate.googleusercontent.com",
+    }
+)
+
 # Path suffixes that mark mobile / lite / app CMS mirrors of the same article.
 # Applied after embed/comments so those wrappers still win when stacked;
 # only trailing whole-segment markers are stripped. Bare ``/mobile`` (root-only)
@@ -368,6 +384,117 @@ def _unwrap_viewer_amp(netloc: str, path: str) -> tuple[str, str] | None:
     return origin_netloc, origin_path
 
 
+def _strip_www_label(host: str) -> str:
+    """Drop a single leading ``www.`` label when present."""
+    if host.startswith("www.") and len(host) > 4:
+        return host[4:]
+    return host
+
+
+def _unwrap_wayback(
+    netloc: str, path: str, outer_query: str = ""
+) -> tuple[str, str, str] | None:
+    """Rewrite Wayback Machine URLs to origin (netloc, path, query).
+
+    Forms (https://archive.org/help/wayback_api.php):
+
+    * ``https://web.archive.org/web/20240101120000/https://www.example.com/story``
+    * ``https://web.archive.org/web/20240101120000id_/http://example.com/story``
+    * ``https://web.archive.org/web/20240101120000if_/https://example.com/story``
+
+    Timestamp flags (``id_``, ``if_``, ``js_``, ``cs_``, ``im_``, ``oe_``) may
+    trail the 14-digit capture id. ``urlsplit`` peels the origin's query off
+    the *wrapper* URL (first ``?``), so ``outer_query`` is reattached to the
+    embedded origin before parsing. Returns ``None`` when the host is not a
+    Wayback host or the path does not embed a recoverable absolute origin URL.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _WAYBACK_HOSTS:
+        return None
+    # Path: /web/<timestamp[flags]>/<origin-url>
+    raw = path or ""
+    if not raw.lower().startswith("/web/"):
+        return None
+    rest = raw[5:]  # after "/web/"
+    if not rest:
+        return None
+    # First segment is the timestamp (+ optional modifier suffix).
+    stamp, sep, origin = rest.partition("/")
+    if not sep or not origin:
+        return None
+    # Timestamp is digits, optionally followed by a short alpha flag + underscore.
+    if not stamp or not stamp[0].isdigit():
+        return None
+    # Origin may be scheme-relative or absolute; require an absolute http(s) URL.
+    origin = origin.strip()
+    if origin.startswith("//"):
+        origin = "https:" + origin
+    if not origin.lower().startswith(("http://", "https://")):
+        return None
+    # Reattach outer query: urlsplit took origin's ?… off the full wrapper URL.
+    if outer_query:
+        origin = f"{origin}&{outer_query}" if "?" in origin else f"{origin}?{outer_query}"
+    try:
+        op = urlsplit(origin)
+    except (ValueError, AttributeError):
+        return None
+    if not op.scheme or not op.netloc:
+        return None
+    if op.scheme.lower() not in ("http", "https"):
+        return None
+    origin_netloc = op.netloc.lower()
+    origin_host = _host_without_port_or_userinfo(origin_netloc)
+    if origin_host is None:
+        return None
+    # Refuse to unwrap into another Wayback host (loop).
+    if _strip_www_label(origin_host) in _WAYBACK_HOSTS:
+        return None
+    return origin_netloc, (op.path or "/"), (op.query or "")
+
+
+def _unwrap_translate(netloc: str, query: str) -> str | None:
+    """Extract the origin URL from a Google Translate wrapper ``u=`` param.
+
+    Forms:
+
+    * ``https://translate.google.com/translate?u=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://translate.googleusercontent.com/translate_c?u=…``
+
+    Returns the raw origin URL string when recoverable, else ``None``.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _TRANSLATE_HOSTS:
+        return None
+    pairs = parse_qsl(query or "", keep_blank_values=True)
+    origin: str | None = None
+    for k, v in pairs:
+        if k.lower() == "u" and v.strip():
+            origin = v.strip()
+            break
+    if not origin:
+        return None
+    if origin.startswith("//"):
+        origin = "https:" + origin
+    try:
+        op = urlsplit(origin)
+    except (ValueError, AttributeError):
+        return None
+    if op.scheme.lower() not in ("http", "https") or not op.netloc:
+        return None
+    origin_host = _host_without_port_or_userinfo(op.netloc.lower())
+    if origin_host is None:
+        return None
+    if _strip_www_label(origin_host) in _TRANSLATE_HOSTS:
+        return None
+    return origin
+
+
 def _normalize_path(path: str) -> str:
     """Normalize path for identity: empty → ``/``; strip AMP/print/index noise + slash."""
     if not path:
@@ -486,6 +613,8 @@ def canonical_url(url: str | None) -> str | None:
       - default ports dropped
       - Google AMP Cache hosts rewritten to the origin article URL
       - Bing / Google AMP viewer hosts rewritten to the origin article URL
+      - Wayback Machine (``web.archive.org/web/…``) rewritten to the origin article URL
+      - Google Translate ``u=`` wrappers rewritten to the origin article URL
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
@@ -529,15 +658,33 @@ def canonical_url(url: str | None) -> str | None:
         if port in ("80", "443"):
             netloc = bracket
 
-    # Google AMP Cache → origin article before other host/path identity rules.
+    # Share / cache wrappers → origin article before other host/path identity.
+    # Order: AMP CDN, AMP viewers, Wayback, Translate (query-based).
     unwrapped = _unwrap_amp_cdn(netloc, path)
     if unwrapped is not None:
         netloc, path = unwrapped
+        # Origin query is not present on AMP CDN forms (path-only embed).
     else:
-        # Bing / Google AMP viewer URLs embed the origin in the path.
         viewer = _unwrap_viewer_amp(netloc, path)
         if viewer is not None:
             netloc, path = viewer
+        else:
+            wayback = _unwrap_wayback(netloc, path, parts.query)
+            if wayback is not None:
+                netloc, path, origin_q = wayback
+                # Origin query (wrapper query reattached when it belonged to origin).
+                parts = parts._replace(query=origin_q)
+            else:
+                translated = _unwrap_translate(netloc, parts.query)
+                if translated is not None:
+                    try:
+                        tp = urlsplit(translated)
+                    except (ValueError, AttributeError):
+                        tp = None
+                    if tp is not None and tp.netloc:
+                        netloc = tp.netloc.lower()
+                        path = tp.path or "/"
+                        parts = parts._replace(query=tp.query or "")
 
     netloc = _strip_alias_host(netloc)
 

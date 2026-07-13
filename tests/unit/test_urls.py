@@ -453,6 +453,76 @@ def test_canonical_url_unwraps_bing_and_google_amp_viewers() -> None:
     assert canonical_url("https://www.google.com/") == "https://google.com/"
 
 
+def test_canonical_url_unwraps_wayback_machine() -> None:
+    """web.archive.org /web/<ts>/… wrappers collapse onto the origin article."""
+    assert (
+        canonical_url(
+            "https://web.archive.org/web/20240101120000/https://www.news.example/world/story"
+        )
+        == "https://news.example/world/story"
+    )
+    # Timestamp modifier flags (id_, if_) still unwrap.
+    assert (
+        canonical_url(
+            "https://web.archive.org/web/20240101120000id_/http://m.news.example/world/story"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://web.archive.org/web/20240101120000if_/https://news.example/world/story/amp"
+        )
+        == "https://news.example/world/story"
+    )
+    # Origin query is kept (minus tracking); wrapper query is dropped.
+    assert (
+        canonical_url(
+            "https://web.archive.org/web/20240101120000/https://news.example/story?id=9&utm_source=wayback"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Nested Wayback must not loop.
+    nested = canonical_url(
+        "https://web.archive.org/web/20240101120000/https://web.archive.org/web/1/https://news.example/x"
+    )
+    assert nested is not None
+    assert "web.archive.org" in nested  # refused unwrap → stays on archive host
+    # Bare archive root is not rewritten.
+    assert canonical_url("https://web.archive.org/") == "https://web.archive.org/"
+    # Non-archive host with /web/ path is left alone.
+    assert (
+        canonical_url("https://other.example/web/20240101120000/https://news.example/x")
+        == "https://other.example/web/20240101120000/https://news.example/x"
+    )
+
+
+def test_canonical_url_unwraps_google_translate() -> None:
+    """translate.google.com?u=… wrappers collapse onto the origin article."""
+    assert (
+        canonical_url(
+            "https://translate.google.com/translate?sl=auto&tl=en&u=https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://translate.googleusercontent.com/translate_c?u=http%3A%2F%2Fm.news.example%2Fstory%2Famp&depth=1"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; translate noise params dropped with the wrapper.
+    assert (
+        canonical_url(
+            "https://translate.google.com/translate?u=https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dx"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing u= → no unwrap (translate host identity only).
+    bare = canonical_url("https://translate.google.com/translate?sl=en&tl=tr")
+    assert bare is not None
+    assert "translate.google.com" in bare
+
+
 def test_canonical_url_strips_search_and_cms_noise() -> None:
     """Google/MSN search wrappers and CMS feed/trackback paths are identity-noise."""
     assert (
