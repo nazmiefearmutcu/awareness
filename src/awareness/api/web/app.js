@@ -689,13 +689,25 @@ async function openReader(cid) {
   clear(body);
   body.appendChild(el("div", { class: "reader-eyebrow-source", text: (d.source_type || "") + " · " + (d.source_name || "") }));
   const titleText = d.title || "(untitled)";
+  const relatedTotal = Number(d.related_count || 0);
+  const titleRow = el("div", { class: "reader-title-row" });
   if (lastSearchTerms.length) {
     const titleNode = el("h1", { class: "reader-title" });
     titleNode.appendChild(highlightedFragment(titleText, lastSearchTerms));
-    body.appendChild(titleNode);
+    titleRow.appendChild(titleNode);
   } else {
-    body.appendChild(el("h1", { class: "reader-title", text: titleText }));
+    titleRow.appendChild(el("h1", { class: "reader-title", text: titleText }));
   }
+  // Related sibling count in the title row so operators see cluster size
+  // before scrolling to the collapsible related panel.
+  if (relatedTotal > 0) {
+    titleRow.appendChild(el("span", {
+      class: "reader-related-badge",
+      text: relatedTotal === 1 ? "1 related" : relatedTotal + " related",
+      title: relatedTotal + " other capture(s) in the same dup-group",
+    }));
+  }
+  body.appendChild(titleRow);
 
   const byline = el("div", { class: "reader-byline" });
   function bk(label, value, opts = {}) {
@@ -778,14 +790,16 @@ async function loadRelated(cid, host, detailsEl, countEl) {
     const r = await api("/captures/" + encodeURIComponent(cid) + "/related?limit=12");
     clear(host);
     const sibs = r.siblings || [];
+    // Prefer full related_count from API (siblings list may be limit-truncated).
+    const total = (typeof r.related_count === "number") ? r.related_count : sibs.length;
     if (countEl) {
-      countEl.textContent = sibs.length ? String(sibs.length) : "0";
+      countEl.textContent = total ? String(total) : "0";
     }
     if (detailsEl) {
-      if (sibs.length === 0) {
+      if (total === 0) {
         detailsEl.open = false;
         detailsEl.classList.add("is-empty");
-      } else if (sibs.length <= AUTO_OPEN_MAX) {
+      } else if (total <= AUTO_OPEN_MAX) {
         detailsEl.open = true;
         detailsEl.classList.remove("is-empty");
       } else {
@@ -793,7 +807,7 @@ async function loadRelated(cid, host, detailsEl, countEl) {
         detailsEl.classList.remove("is-empty");
       }
     }
-    if (sibs.length === 0) {
+    if (total === 0) {
       host.appendChild(el("p", { class: "muted", text: "No related captures — this is the only member of its dup-group." }));
       return;
     }
@@ -897,6 +911,17 @@ $("#bf-form")?.addEventListener("submit", async (e) => {
       max_tasks: Number.isFinite(max) ? max : null,
     };
     const resp = await api("/backfill", { method: "POST", body: JSON.stringify(body) });
+    // Planner zero-task warning: RSS-only / empty range plans are not silent no-ops.
+    if (resp.warning === "zero_tasks" || Number(resp.tasks_total || 0) === 0) {
+      const reasons = Array.isArray(resp.zero_task_reasons) ? resp.zero_task_reasons : [];
+      const detail = reasons.length
+        ? reasons.map((r) => (r.source || "?") + ": " + (r.detail || r.reason || "")).join("; ")
+        : (resp.notes || "no partitions for selected sources/range");
+      toast(`job ${resp.job_id}: 0 tasks planned — ${detail}`, "err");
+      void loadJobs();
+      void refreshDashboard();
+      return;
+    }
     toast(`job ${resp.job_id} submitted (${resp.tasks_total} tasks)`, "ok");
     await api(`/backfill/${encodeURIComponent(resp.job_id)}/run`, { method: "POST", body: "{}" });
     toast(`job ${resp.job_id} running…`, "ok");
