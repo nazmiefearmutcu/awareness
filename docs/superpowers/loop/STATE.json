@@ -1,17 +1,17 @@
 {
-  "iteration": 38,
-  "phase": "wet_quality_compact_status_spa_feed_kpis",
+  "iteration": 39,
+  "phase": "feed_fetch_latency_dlq_bulk_spa_feed_kpis",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "4a2b938",
+  "head_sha": "3bb05d0",
   "product_shas": [
-    "dc24097",
-    "1282532",
-    "4a2b938"
+    "64318b3",
+    "f10bc45",
+    "3bb05d0"
   ],
-  "commits_ahead": 193,
+  "commits_ahead": 196,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): WET quality reason+admitted metrics (dc24097); compact --status (1282532); SPA WET quality + feed health KPIs (4a2b938). Next: FTS polish (non-ranking), feed fetch latency hist, DLQ bulk purge, Iceberg compact metrics."
+  "notes": "DIVERSE wave (no ranking/unwrap): feed fetch latency+outcome metrics (64318b3); dlq purge-bulk (f10bc45); SPA feed p95/attempts KPIs (3bb05d0). Next: Iceberg compact metrics, FTS polish (non-ranking), JSONL staging age KPI, robots/sitemap probe metrics."
 }

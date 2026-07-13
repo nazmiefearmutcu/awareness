@@ -117,12 +117,15 @@
 | C4+ | scrape/obs | WET quality filter reason labels + admitted counters | ✅ |
 | C4+ | cli/storage | `compact --status` / `--json` pending staging backlog | ✅ |
 | C4+ | spa | Dashboard WET quality drops + feed fetch error KPIs | ✅ |
+| C4+ | scrape/obs | Feed/sitemap fetch latency hist + outcome counters | ✅ |
+| C4+ | cli/storage | `dlq purge-bulk` multi-row drop without re-arm | ✅ |
+| C4+ | spa | Dashboard feed fetch p95 + attempts KPIs | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~192 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~196 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** Diverse wave — WET quality metrics (`dc24097`), compact `--status` (`1282532`), SPA WET/feed KPIs (`4a2b938`)
+- **Latest:** Diverse wave — feed fetch latency (`64318b3`), `dlq purge-bulk` (`f10bc45`), SPA feed p95/attempts (`3bb05d0`)
 
 ## Rules
 
