@@ -92,6 +92,47 @@ def test_search_facets_sources_present(faceted_index: DuckDbIndex) -> None:
     assert by_src.get("common_crawl_wet", 0) == 1
 
 
+def test_search_facets_sources_case_normalized(tmp_path: Path) -> None:
+    """Mixed-case source_type values roll into one lowercased facet chip."""
+    jsonl_dir = tmp_path / "jsonl"
+    _write_doc(
+        jsonl_dir, 1,
+        title="Alpha lower", text="alpha one", domain="a.example",
+        source_type="rss",
+    )
+    _write_doc(
+        jsonl_dir, 2,
+        title="Alpha upper", text="alpha two", domain="b.example",
+        source_type="RSS",
+    )
+    _write_doc(
+        jsonl_dir, 3,
+        title="Alpha mixed", text="alpha three", domain="c.example",
+        source_type="Rss",
+    )
+    _write_doc(
+        jsonl_dir, 4,
+        title="Alpha wet", text="alpha four", domain="d.example",
+        source_type="Common_Crawl_Wet",
+    )
+    idx = DuckDbIndex(
+        db_path=tmp_path / "duckdb" / "metadata.duckdb",
+        jsonl_dir=jsonl_dir,
+        iceberg_warehouse=None,
+    )
+    res = idx.search("alpha", mode="substring")
+    assert res["total"] == 4
+    sources = res["facets"]["sources"]
+    by_src = {str(s["source_type"]): int(s["n"]) for s in sources}
+    # Three mixed-case RSS variants → one lowercased bucket.
+    assert by_src.get("rss") == 3
+    assert by_src.get("common_crawl_wet") == 1
+    # Raw casing must not appear as separate facet keys.
+    assert "RSS" not in by_src
+    assert "Rss" not in by_src
+    assert "Common_Crawl_Wet" not in by_src
+
+
 def test_search_facets_languages_present(faceted_index: DuckDbIndex) -> None:
     res = faceted_index.search("alpha", mode="prefix")
     assert res["total"] >= 3

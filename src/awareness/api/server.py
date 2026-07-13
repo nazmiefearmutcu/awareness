@@ -509,8 +509,17 @@ def create_app() -> FastAPI:
         end_dt = inclusive_end(to_utc(end)) if end else coerce_relative_end("now")
         p = {"start": to_utc(start), "end": end_dt}
         total = idx.execute("SELECT COUNT(*) AS n FROM captures WHERE fetch_ts BETWEEN $start AND $end", p)
+        # Case-normalize source buckets (RSS vs rss) so dashboard chips match filters.
         by_source = idx.execute(
-            "SELECT source_type, COUNT(*) AS n FROM captures WHERE fetch_ts BETWEEN $start AND $end GROUP BY source_type",
+            """
+            SELECT lower(CAST(source_type AS VARCHAR)) AS source_type, COUNT(*) AS n
+            FROM captures
+            WHERE fetch_ts BETWEEN $start AND $end
+              AND source_type IS NOT NULL
+              AND CAST(source_type AS VARCHAR) != ''
+            GROUP BY 1
+            ORDER BY n DESC
+            """,
             p,
         )
         by_domain = idx.execute(

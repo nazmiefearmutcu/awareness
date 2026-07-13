@@ -1106,12 +1106,14 @@ class DuckDbIndex:
                 f"WHERE c.domain IS NOT NULL AND CAST(c.domain AS VARCHAR) != '' "
                 f"GROUP BY c.domain ORDER BY n DESC LIMIT {lim}"
             )
+            # Case-normalize so RSS / rss / Rss roll into one SPA chip (matches
+            # lower(source_type) filter semantics used by source= query params).
             src_sql = (
-                f"SELECT c.source_type AS source_type, "
+                f"SELECT lower(CAST(c.source_type AS VARCHAR)) AS source_type, "
                 f"COUNT(DISTINCT c.capture_id)::BIGINT AS n "
                 f"{base} "
                 f"WHERE c.source_type IS NOT NULL AND CAST(c.source_type AS VARCHAR) != '' "
-                f"GROUP BY c.source_type ORDER BY n DESC LIMIT {lim}"
+                f"GROUP BY 1 ORDER BY n DESC LIMIT {lim}"
             )
             # Primary BCP-47 tags so en / en-US / en_GB roll into one "en" chip.
             lang_prim = primary_language_sql("c.language")
@@ -1131,11 +1133,13 @@ class DuckDbIndex:
                 f"WHERE ({w}) AND domain IS NOT NULL AND CAST(domain AS VARCHAR) != '' "
                 f"GROUP BY domain ORDER BY n DESC LIMIT {lim}"
             )
+            # Case-normalize so RSS / rss roll into one chip (filter is lower()).
             src_sql = (
-                f"SELECT source_type, COUNT(*)::BIGINT AS n FROM captures "
+                f"SELECT lower(CAST(source_type AS VARCHAR)) AS source_type, "
+                f"COUNT(*)::BIGINT AS n FROM captures "
                 f"WHERE ({w}) AND source_type IS NOT NULL "
                 f"AND CAST(source_type AS VARCHAR) != '' "
-                f"GROUP BY source_type ORDER BY n DESC LIMIT {lim}"
+                f"GROUP BY 1 ORDER BY n DESC LIMIT {lim}"
             )
             # Primary BCP-47 tags so SPA chips match filter semantics (language=en).
             lang_prim = primary_language_sql("language")

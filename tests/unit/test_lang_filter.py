@@ -95,6 +95,7 @@ def _write_doc(
     text: str,
     language: str | None,
     domain: str = "example.com",
+    source_type: str = "rss",
 ) -> None:
     day = root / "captures" / "2026" / "06" / "01"
     day.mkdir(parents=True, exist_ok=True)
@@ -102,7 +103,7 @@ def _write_doc(
     rec.update(
         doc_id=f"doc-{idx}",
         capture_id=f"cap-{idx}",
-        source_type="rss",
+        source_type=source_type,
         domain=domain,
         url=f"https://{domain}/{idx}",
         fetch_ts="2026-06-01T12:00:00+00:00",
@@ -205,6 +206,56 @@ def test_api_counts_includes_by_language(monkeypatch, tmp_path: Path) -> None:
         }
         assert by_lang.get("en") == 2
         assert by_lang.get("tr") == 1
+    finally:
+        server._State.index = None
+        try:
+            idx.close()
+        except Exception:
+            pass
+
+
+def test_api_counts_by_source_case_normalized(monkeypatch, tmp_path: Path) -> None:
+    """/counts by_source rolls mixed-case source_type into one lowercased bucket."""
+    import awareness.api.server as server
+
+    jsonl_dir = tmp_path / "jsonl"
+    _write_doc(jsonl_dir, 1, title="A", text="body a", language="en", source_type="rss")
+    _write_doc(jsonl_dir, 2, title="B", text="body b", language="en", source_type="RSS")
+    _write_doc(jsonl_dir, 3, title="C", text="body c", language="en", source_type="Rss")
+    _write_doc(
+        jsonl_dir, 4, title="D", text="body d", language="en",
+        source_type="Common_Crawl_Wet",
+    )
+    idx = DuckDbIndex(
+        db_path=tmp_path / "duckdb" / "metadata.duckdb",
+        jsonl_dir=jsonl_dir,
+        iceberg_warehouse=None,
+    )
+    app = server.create_app()
+    monkeypatch.setattr(server, "_get_index", lambda: idx)
+    try:
+        counts_ep = None
+        for route in app.routes:
+            if getattr(route, "path", None) == "/counts" and "GET" in getattr(
+                route, "methods", set()
+            ):
+                counts_ep = route.endpoint
+                break
+        assert counts_ep is not None
+        from datetime import datetime, timezone
+
+        payload = counts_ep(
+            start=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            end=datetime(2026, 6, 2, tzinfo=timezone.utc),
+        )
+        by_src = {
+            str(r["source_type"]): int(r["n"]) for r in payload["by_source"]
+        }
+        assert by_src.get("rss") == 3
+        assert by_src.get("common_crawl_wet") == 1
+        assert "RSS" not in by_src
+        assert "Rss" not in by_src
+        assert "Common_Crawl_Wet" not in by_src
     finally:
         server._State.index = None
         try:

@@ -1802,12 +1802,15 @@ def counts(
     end_dt = inclusive_end(coerce_relative_end(end))
     try:
         params = {"start": start_dt, "end": end_dt}
+        # Case-normalize source buckets (RSS vs rss) so CLI counts match search chips.
         by_source = idx.execute(
             """
-            SELECT source_type, COUNT(*) AS n
+            SELECT lower(CAST(source_type AS VARCHAR)) AS source_type, COUNT(*) AS n
             FROM captures
             WHERE fetch_ts BETWEEN $start AND $end
-            GROUP BY source_type
+              AND source_type IS NOT NULL
+              AND CAST(source_type AS VARCHAR) != ''
+            GROUP BY 1
             ORDER BY n DESC
             """,
             params,
