@@ -262,6 +262,30 @@ _HREFLI_HOSTS: frozenset[str] = frozenset(
     }
 )
 
+# Tumblr outbound click-through hosts (``t.umblr.com/redirect?z=…``).
+_TUMBLR_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "t.umblr.com",
+    }
+)
+_TUMBLR_REDIRECT_PATHS: frozenset[str] = frozenset(
+    {
+        "/redirect",
+    }
+)
+
+# Pocket save/share redirect hosts (``getpocket.com/redirect?url=…``).
+_POCKET_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "getpocket.com",
+    }
+)
+_POCKET_REDIRECT_PATHS: frozenset[str] = frozenset(
+    {
+        "/redirect",
+    }
+)
+
 # Suffix for Microsoft Outlook Safe Links rewrite hosts
 # (``nam01.safelinks.protection.outlook.com``, ``*.safelinks.protection.outlook.com``).
 _OUTLOOK_SAFELINKS_SUFFIX = "safelinks.protection.outlook.com"
@@ -983,6 +1007,61 @@ def _unwrap_href_li(netloc: str, query: str) -> str | None:
     return None
 
 
+def _unwrap_tumblr_redirect(netloc: str, path: str, query: str) -> str | None:
+    """Extract the origin URL from a Tumblr ``t.umblr.com/redirect?z=…`` wrapper.
+
+    Forms:
+
+    * ``https://t.umblr.com/redirect?z=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://t.umblr.com/redirect?z=http%3A%2F%2Fm.example.com%2Fx&t=…``
+
+    Only the ``/redirect`` path is rewritten so ordinary Tumblr blog hosts
+    (``blog.tumblr.com``) stay on Tumblr identity. The origin lives in ``z=``.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _TUMBLR_REDIRECT_HOSTS:
+        return None
+    p = (path or "").rstrip("/") or "/"
+    if p.lower() not in _TUMBLR_REDIRECT_PATHS:
+        return None
+    origin = _query_param(query, "z")
+    if not origin:
+        # Defensive alias used by some clients / older bookmarks.
+        origin = _query_param(query, "url")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(origin, refuse_hosts=_TUMBLR_REDIRECT_HOSTS)
+
+
+def _unwrap_pocket_redirect(netloc: str, path: str, query: str) -> str | None:
+    """Extract the origin URL from a Pocket ``getpocket.com/redirect?url=…`` wrapper.
+
+    Forms:
+
+    * ``https://getpocket.com/redirect?url=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://www.getpocket.com/redirect?url=http%3A%2F%2Fm.example.com%2Fx``
+
+    Only the ``/redirect`` path is rewritten so ordinary Pocket UI paths
+    (``/home``, ``/read/…``) stay on Pocket identity.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _POCKET_REDIRECT_HOSTS:
+        return None
+    p = (path or "").rstrip("/") or "/"
+    if p.lower() not in _POCKET_REDIRECT_PATHS:
+        return None
+    origin = _query_param(query, "url")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(origin, refuse_hosts=_POCKET_REDIRECT_HOSTS)
+
+
 def _normalize_path(path: str) -> str:
     """Normalize path for identity: empty → ``/``; strip AMP/print/index noise + slash."""
     if not path:
@@ -1115,6 +1194,8 @@ def canonical_url(url: str | None) -> str | None:
       - WhatsApp ``l.wl.co/?u=…`` click wrappers rewritten to origin
       - Telegram ``t.me/share/url`` / ``t.me/iv`` ``url=`` wrappers rewritten to origin
       - href.li privacy wrappers (``href.li/?https://…``) rewritten to origin
+      - Tumblr ``t.umblr.com/redirect?z=…`` outbound wrappers rewritten to origin
+      - Pocket ``getpocket.com/redirect?url=…`` save wrappers rewritten to origin
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
@@ -1162,7 +1243,8 @@ def canonical_url(url: str | None) -> str | None:
     # Order: AMP CDN, AMP viewers, Wayback, then query-embedded origins
     # (Translate, Facebook, Google /url, Outlook Safe Links, DuckDuckGo /l,
     # Instagram, LinkedIn safety/redir, Reddit outbound, YouTube /redirect,
-    # Slack redir, WhatsApp l.wl.co, Telegram share/iv, href.li).
+    # Slack redir, WhatsApp l.wl.co, Telegram share/iv, href.li, Tumblr
+    # redirect, Pocket redirect).
     unwrapped = _unwrap_amp_cdn(netloc, path)
     if unwrapped is not None:
         netloc, path = unwrapped
@@ -1193,6 +1275,8 @@ def canonical_url(url: str | None) -> str | None:
                     or _unwrap_whatsapp_redirect(netloc, parts.query)
                     or _unwrap_telegram_share(netloc, path, parts.query)
                     or _unwrap_href_li(netloc, parts.query)
+                    or _unwrap_tumblr_redirect(netloc, path, parts.query)
+                    or _unwrap_pocket_redirect(netloc, path, parts.query)
                 )
                 if embedded is not None:
                     try:

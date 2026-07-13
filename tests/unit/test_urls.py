@@ -998,6 +998,97 @@ def test_canonical_url_unwraps_href_li() -> None:
     assert "href.li" in nested or nested == "https://x.test/a"
 
 
+def test_canonical_url_unwraps_tumblr_redirect() -> None:
+    """t.umblr.com/redirect?z=… outbound wrappers collapse to origin."""
+    assert (
+        canonical_url(
+            "https://t.umblr.com/redirect?z=https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://t.umblr.com/redirect?z="
+            "http%3A%2F%2Fm.news.example%2Fstory%2Famp"
+            "&t=AbCd&b=1&p=&m=1"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; Tumblr tracking t=/b=/m= dropped with wrapper.
+    assert (
+        canonical_url(
+            "https://t.umblr.com/redirect?z="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dtumblr"
+            "&t=token"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Defensive url= alias.
+    assert (
+        canonical_url(
+            "https://t.umblr.com/redirect?url=https%3A%2F%2Fnews.example%2Fstory"
+        )
+        == "https://news.example/story"
+    )
+    # Missing z=/url= → no unwrap.
+    bare = canonical_url("https://t.umblr.com/redirect?t=only")
+    assert bare is not None
+    assert "t.umblr.com" in bare
+    # Non-redirect Tumblr path stays put.
+    other = canonical_url("https://t.umblr.com/about")
+    assert other is not None
+    assert "t.umblr.com" in other
+    # Nested Tumblr redirect must not loop.
+    nested = canonical_url(
+        "https://t.umblr.com/redirect?z="
+        "https%3A%2F%2Ft.umblr.com%2Fredirect%3Fz%3Dx"
+    )
+    assert nested is not None
+    assert "t.umblr.com" in nested
+
+
+def test_canonical_url_unwraps_pocket_redirect() -> None:
+    """getpocket.com/redirect?url=… save wrappers collapse to origin."""
+    assert (
+        canonical_url(
+            "https://getpocket.com/redirect?url="
+            "https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://www.getpocket.com/redirect?url="
+            "http%3A%2F%2Fm.news.example%2Fstory%2Famp"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; Pocket wrapper params dropped.
+    assert (
+        canonical_url(
+            "https://getpocket.com/redirect?url="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dpocket"
+            "&formCheck=1"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing url= → no unwrap.
+    bare = canonical_url("https://getpocket.com/redirect?formCheck=1")
+    assert bare is not None
+    assert "getpocket.com" in bare
+    # Ordinary Pocket UI paths are not redirectors.
+    home = canonical_url("https://getpocket.com/home")
+    assert home is not None
+    assert "getpocket.com" in home
+    # Nested Pocket redirect must not loop.
+    nested = canonical_url(
+        "https://getpocket.com/redirect?url="
+        "https%3A%2F%2Fgetpocket.com%2Fredirect%3Furl%3Dx"
+    )
+    assert nested is not None
+    assert "getpocket.com" in nested
+
+
 def test_canonical_url_strips_search_and_cms_noise() -> None:
     """Google/MSN search wrappers and CMS feed/trackback paths are identity-noise."""
     assert (
