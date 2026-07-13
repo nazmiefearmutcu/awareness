@@ -243,6 +243,53 @@ def _strip_alias_host(netloc: str) -> str:
 _strip_www_host = _strip_alias_host
 
 
+def _unwrap_amp_cdn(netloc: str, path: str) -> tuple[str, str] | None:
+    """Rewrite Google AMP Cache hosts to the origin article (netloc, path).
+
+    AMP Cache URL forms (https://developers.google.com/amp/cache/overview):
+
+    * ``https://cdn.ampproject.org/c/s/www.example.com/story``
+    * ``https://cdn.ampproject.org/c/www.example.com/story`` (http origin)
+    * ``https://www-example-com.cdn.ampproject.org/c/s/www.example.com/story``
+    * Viewer variants use ``/v/`` or ``/v/s/`` instead of ``/c/`` / ``/c/s/``.
+
+    Returns ``(origin_netloc, origin_path)`` when the input is an AMP Cache
+    URL with a recoverable origin; ``None`` otherwise so callers keep the
+    original parts. Identity-only — does not change what is fetched.
+    """
+    host = netloc.lower()
+    # Drop userinfo if present (rare on AMP CDN).
+    if "@" in host:
+        _, _, host = host.rpartition("@")
+    # Drop port (AMP CDN is always 443 in practice).
+    if host.startswith("["):
+        return None  # IPv6 never hosts ampproject CDN
+    if ":" in host:
+        host, _, _ = host.partition(":")
+    if not (host == "cdn.ampproject.org" or host.endswith(".cdn.ampproject.org")):
+        return None
+    # Path prefixes: /c/s/, /c/, /v/s/, /v/ then origin host + origin path.
+    lower = (path or "").lower()
+    rest: str | None = None
+    for prefix in ("/c/s/", "/v/s/", "/c/", "/v/"):
+        if lower.startswith(prefix) and len(path) > len(prefix):
+            rest = path[len(prefix) :]
+            break
+    if not rest:
+        return None
+    # rest = "www.example.com/world/story" or "www.example.com"
+    origin_host, sep, origin_path = rest.partition("/")
+    if not origin_host or "." not in origin_host:
+        # Reject path-only leftovers or single-label junk.
+        return None
+    # Basic host sanity: no spaces, no scheme smuggling.
+    if any(ch in origin_host for ch in (" ", "?", "#", "@")):
+        return None
+    origin_netloc = origin_host.lower()
+    origin_path_out = f"/{origin_path}" if sep else "/"
+    return origin_netloc, origin_path_out
+
+
 def _normalize_path(path: str) -> str:
     """Normalize path for identity: empty → ``/``; strip AMP/print/index noise + slash."""
     if not path:
@@ -345,6 +392,7 @@ def canonical_url(url: str | None) -> str | None:
       - scheme/host lowercased
       - ``http`` upgraded to ``https`` for identity (same doc, different scheme)
       - default ports dropped
+      - Google AMP Cache hosts rewritten to the origin article URL
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
@@ -375,6 +423,7 @@ def canonical_url(url: str | None) -> str | None:
     if scheme == "http":
         scheme = "https"
     netloc = parts.netloc.lower()
+    path = parts.path or "/"
     # Drop default ports (both original http:80 and https:443 after upgrade).
     if ":" in netloc and not netloc.startswith("["):
         host, _, port = netloc.rpartition(":")
@@ -386,9 +435,14 @@ def canonical_url(url: str | None) -> str | None:
         if port in ("80", "443"):
             netloc = bracket
 
+    # Google AMP Cache → origin article before other host/path identity rules.
+    unwrapped = _unwrap_amp_cdn(netloc, path)
+    if unwrapped is not None:
+        netloc, path = unwrapped
+
     netloc = _strip_alias_host(netloc)
 
-    path = _normalize_path(parts.path or "/")
+    path = _normalize_path(path)
 
     # Filter and sort query params for stable identity.
     pairs = [

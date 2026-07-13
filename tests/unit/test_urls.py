@@ -367,6 +367,49 @@ def test_canonical_url_mobile_page_compose_with_aliases() -> None:
     assert {canonical_url(u) for u in variants} == {"https://news.example/world/story"}
 
 
+def test_canonical_url_unwraps_amp_cdn() -> None:
+    """Google AMP Cache hosts collapse onto the origin article identity."""
+    # Content cache, secure origin (/c/s/).
+    assert (
+        canonical_url("https://cdn.ampproject.org/c/s/www.news.example/world/story")
+        == "https://news.example/world/story"
+    )
+    # Content cache, insecure origin marker (/c/ → still https identity).
+    assert (
+        canonical_url("https://cdn.ampproject.org/c/www.news.example/world/story")
+        == "https://news.example/world/story"
+    )
+    # Viewer cache variants (/v/s/, /v/).
+    assert (
+        canonical_url("https://cdn.ampproject.org/v/s/news.example/world/story")
+        == "https://news.example/world/story"
+    )
+    # Publisher subdomain form on ampproject.org.
+    assert (
+        canonical_url(
+            "https://www-news-example.cdn.ampproject.org/c/s/www.news.example/world/story"
+        )
+        == "https://news.example/world/story"
+    )
+    # AMP CDN + AMP path + trackers compose to the same apex article.
+    assert (
+        canonical_url(
+            "https://cdn.ampproject.org/c/s/m.news.example/world/story/amp?utm_source=amp"
+        )
+        == "https://news.example/world/story"
+    )
+    # Non-AMP hosts must not be rewritten.
+    assert (
+        canonical_url("https://cdn.example.org/c/s/news.example/world/story")
+        == "https://cdn.example.org/c/s/news.example/world/story"
+    )
+    # AMP CDN without a recoverable origin path is left as-is (after other rules).
+    assert (
+        canonical_url("https://cdn.ampproject.org/")
+        == "https://cdn.ampproject.org/"
+    )
+
+
 def test_domain_of_returns_etld_plus_one() -> None:
     assert domain_of("https://news.bbc.co.uk/x") == "bbc.co.uk"
     assert domain_of("https://example.com/y") == "example.com"
