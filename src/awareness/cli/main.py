@@ -1249,6 +1249,117 @@ def metrics(
     _print_metrics_table(m.snapshot(prefix=pfx), limit=max(1, int(limit)))
 
 
+def _format_metric_duration(sec: float) -> str:
+    """Format histogram latency seconds for table mode (ms when sub-second)."""
+    try:
+        v = float(sec)
+    except (TypeError, ValueError):
+        return "—"
+    if v != v or v < 0:  # NaN / negative
+        return "—"
+    if v < 0.001:
+        return f"{v * 1_000_000:.0f}µs"
+    if v < 1.0:
+        return f"{v * 1000:.0f}ms"
+    if v < 10.0:
+        return f"{v:.2f}s"
+    return f"{v:.1f}s"
+
+
+def _hist_is_seconds(name: str) -> bool:
+    n = (name or "").lower()
+    return n.endswith("_seconds") or n.endswith(".seconds") or "seconds" in n
+
+
+def summarize_fineweb_metrics_table(snap: dict[str, Any]) -> dict[str, Any] | None:
+    """Aggregate FineWeb process metrics for the CLI table summary strip.
+
+    Returns None when the snapshot has no ``fineweb.*`` series so callers can
+    skip the strip entirely.
+    """
+    counters = list(snap.get("counters") or [])
+    histograms = list(snap.get("histograms") or [])
+    admitted = 0.0
+    filtered = 0.0
+    seen = 0.0
+    load_attempts = 0.0
+    load_ok = 0.0
+    by_reason: dict[str, float] = {}
+    has_fineweb = False
+    for c in counters:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if not name.startswith("fineweb."):
+            continue
+        has_fineweb = True
+        val = float(c.get("value") or 0)
+        labels = c.get("labels") or {}
+        if name == "fineweb.rows_admitted":
+            admitted += val
+        elif name == "fineweb.rows_filtered":
+            filtered += val
+            reason = str(labels.get("reason") or "unknown")
+            by_reason[reason] = by_reason.get(reason, 0.0) + val
+        elif name == "fineweb.rows_seen":
+            seen += val
+        elif name == "fineweb.load_attempts":
+            load_attempts += val
+            if labels.get("outcome") == "ok":
+                load_ok += val
+    weighted_p95 = 0.0
+    hist_count = 0
+    for h in histograms:
+        if not isinstance(h, dict):
+            continue
+        name = str(h.get("name") or "")
+        if not name.startswith("fineweb."):
+            continue
+        has_fineweb = True
+        if name != "fineweb.load_seconds":
+            continue
+        n = int(h.get("count") or 0)
+        if n <= 0:
+            continue
+        p95 = float(h.get("p95") or 0.0)
+        hist_count += n
+        weighted_p95 += p95 * n
+    if not has_fineweb:
+        return None
+    top_reason = None
+    if by_reason:
+        top_reason = max(by_reason.items(), key=lambda kv: kv[1])[0]
+    return {
+        "admitted": int(admitted),
+        "filtered": int(filtered),
+        "seen": int(seen),
+        "load_attempts": int(load_attempts),
+        "load_ok": int(load_ok),
+        "load_p95": (weighted_p95 / hist_count) if hist_count else None,
+        "top_filter": top_reason,
+    }
+
+
+def format_fineweb_summary_line(summary: dict[str, Any]) -> str:
+    """Render a single operator-facing FineWeb summary line (no Rich markup)."""
+    bits = [
+        f"admitted={summary.get('admitted', 0)}",
+        f"filtered={summary.get('filtered', 0)}",
+        f"seen={summary.get('seen', 0)}",
+    ]
+    attempts = int(summary.get("load_attempts") or 0)
+    ok = int(summary.get("load_ok") or 0)
+    if attempts:
+        bits.append(f"load={ok}/{attempts} ok")
+    p95 = summary.get("load_p95")
+    if p95 is not None:
+        bits.append(f"load_p95={_format_metric_duration(float(p95))}")
+    top = summary.get("top_filter")
+    if top:
+        bits.append(f"top_filter={top}")
+    return "FineWeb  " + "  ".join(bits)
+
+
 def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
     """Render a human-readable metrics summary (uptime + top series)."""
     uptime = float(snap.get("uptime_seconds") or 0.0)
@@ -1261,6 +1372,12 @@ def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
         f"{pfx_note}  "
         f"([dim]--format json|prometheus · --prefix name.[/dim])"
     )
+
+    fineweb_summary = summarize_fineweb_metrics_table(snap)
+    if fineweb_summary is not None:
+        console.print(
+            f"[bold cyan]{escape(format_fineweb_summary_line(fineweb_summary))}[/bold cyan]"
+        )
 
     counters = list(snap.get("counters") or [])
     gauges = list(snap.get("gauges") or [])
@@ -1314,14 +1431,25 @@ def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
     ht.add_column("p99", justify="right")
     ht.add_column("avg", justify="right")
     for row in sorted(histograms, key=lambda r: int(r.get("count") or 0), reverse=True)[:limit]:
+        name = str(row.get("name") or "")
+        if _hist_is_seconds(name):
+            p50_s = _format_metric_duration(float(row.get("p50") or 0))
+            p95_s = _format_metric_duration(float(row.get("p95") or 0))
+            p99_s = _format_metric_duration(float(row.get("p99") or 0))
+            avg_s = _format_metric_duration(float(row.get("avg") or 0))
+        else:
+            p50_s = f"{float(row.get('p50') or 0):.4g}"
+            p95_s = f"{float(row.get('p95') or 0):.4g}"
+            p99_s = f"{float(row.get('p99') or 0):.4g}"
+            avg_s = f"{float(row.get('avg') or 0):.4g}"
         ht.add_row(
-            str(row.get("name") or ""),
+            name,
             _lbl(row.get("labels")).strip(),
             str(int(row.get("count") or 0)),
-            f"{float(row.get('p50') or 0):.4g}",
-            f"{float(row.get('p95') or 0):.4g}",
-            f"{float(row.get('p99') or 0):.4g}",
-            f"{float(row.get('avg') or 0):.4g}",
+            p50_s,
+            p95_s,
+            p99_s,
+            avg_s,
         )
     if histograms:
         console.print(ht)
