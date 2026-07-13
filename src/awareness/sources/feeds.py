@@ -14,7 +14,7 @@ sub-partition that actually fetches the page (tail_recrawl).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,46 @@ from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
 from awareness.util.urls import canonical_url
 
 logger = get_logger("sources.feeds")
+
+# Checkpoint window for feed-level URL cursors. Ordered most-recently-seen;
+# oldest entries are dropped when the cap is exceeded.
+SEEN_URLS_CAP = 5000
+
+
+def merge_seen_urls(
+    previous: Sequence[str] | None,
+    discovered: Iterable[str],
+    *,
+    cap: int = SEEN_URLS_CAP,
+) -> list[str]:
+    """Merge discovered URLs into an ordered most-recently-seen window.
+
+    Insertion order is oldest → newest. Re-seeing a URL moves it to the end
+    (most recent). When over ``cap``, the oldest entries are dropped so the
+    checkpoint retains the most recent ``cap`` URLs.
+
+    Unlike ``set``-based trimming, this is stable across runs and does not
+    randomly forget recently seen URLs when the window is full.
+    """
+    ordered: dict[str, None] = {}
+    for raw in previous or ():
+        if not raw:
+            continue
+        # Checkpoint already stores canonical forms; keep non-empty strings.
+        ordered[str(raw)] = None
+    for raw in discovered:
+        cu = canonical_url(raw) if raw else None
+        if not cu:
+            continue
+        # Move to end = most recently seen (LRU-ish ordered window).
+        ordered.pop(cu, None)
+        ordered[cu] = None
+    if cap <= 0:
+        return []
+    if len(ordered) > cap:
+        keys = list(ordered.keys())
+        ordered = {k: None for k in keys[-cap:]}
+    return list(ordered.keys())
 
 
 def _load_seeds(path: Path | None) -> dict[str, Any]:
@@ -67,12 +107,12 @@ class FeedsAdapter(Adapter):
 
         get_metrics().inc("feeds.urls_discovered", value=len(urls), labels={"channel": kind})
 
-        # Filter against cursor.
-        last_seen: set[str] = set(context.checkpoint.get("seen_urls", []))
+        # Filter against ordered cursor (membership is order-independent).
+        prev_seen = list(context.checkpoint.get("seen_urls") or [])
+        last_seen: set[str] = set(prev_seen)
         new_urls = [u for u in urls if canonical_url(u) and canonical_url(u) not in last_seen]
-        # Update cursor (bounded to last 5000 to keep memory in check).
-        merged = last_seen | {canonical_url(u) for u in urls if canonical_url(u)}
-        context.checkpoint["seen_urls"] = list(list(merged)[-5000:])
+        # Ordered most-recently-seen window; cap keeps newest SEEN_URLS_CAP.
+        context.checkpoint["seen_urls"] = merge_seen_urls(prev_seen, urls, cap=SEEN_URLS_CAP)
 
         enqueue = context.extras.setdefault("enqueue", [])
         for u in new_urls:
