@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import gzip
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
-from awareness.sources.feeds import _read_feed, _read_sitemap
+from awareness.sources.feeds import (
+    _maybe_decompress_body,
+    _read_feed,
+    _read_sitemap,
+    entry_primary_url,
+)
 from awareness.util.http import RetryableHTTPError, get_with_retries, reset_global_fetch_semaphore
 
 
@@ -227,4 +235,90 @@ async def test_read_sitemap_retryable_error_increments_metric(
     with pytest.raises(RetryableHTTPError):
         await _read_sitemap("https://example.com/sitemap.xml", "TestBot/1.0")
     assert get_metrics().counter_sum("feeds.retryable_http_error") == before + 1
+
+
+def test_maybe_decompress_body_gunzips() -> None:
+    raw = b"<rss/>"
+    assert _maybe_decompress_body(gzip.compress(raw)) == raw
+    assert _maybe_decompress_body(raw) == raw
+    assert _maybe_decompress_body(b"") == b""
+
+
+def test_entry_primary_url_prefers_link() -> None:
+    entry = SimpleNamespace(link="https://example.com/a", links=[])
+    assert entry_primary_url(entry) == "https://example.com/a"
+
+
+def test_entry_primary_url_from_atom_links_alternate() -> None:
+    """Atom entries often only populate links[] (no entry.link)."""
+    entry = SimpleNamespace(
+        link=None,
+        links=[
+            {"rel": "self", "href": "https://example.com/atom/entry/1"},
+            {"rel": "alternate", "href": "https://example.com/article/1"},
+        ],
+    )
+    assert entry_primary_url(entry) == "https://example.com/article/1"
+
+
+def test_entry_primary_url_fallback_any_http() -> None:
+    entry = SimpleNamespace(
+        link="",
+        links=[{"rel": "related", "href": "https://cdn.example.com/x"}],
+    )
+    assert entry_primary_url(entry) == "https://cdn.example.com/x"
+
+
+def test_entry_primary_url_skips_non_http() -> None:
+    entry = SimpleNamespace(link="mailto:a@b.com", links=[{"href": "/relative"}])
+    assert entry_primary_url(entry) is None
+
+
+@pytest.mark.asyncio
+async def test_read_feed_accepts_gzip_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gzip-wrapped RSS (no Content-Encoding) still yields entry links."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=gzip.compress(RSS_OK))
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+
+    urls = await _read_feed("https://example.com/feed.xml.gz", "TestBot/1.0")
+    assert urls == ["https://example.com/story/1"]
+
+
+@pytest.mark.asyncio
+async def test_read_sitemap_accepts_gzip_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=gzip.compress(SITEMAP_OK))
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+
+    urls = await _read_sitemap("https://example.com/sitemap.xml.gz", "TestBot/1.0")
+    assert urls == ["https://example.com/page-a", "https://example.com/page-b"]
+
+
+ATOM_LINKS_ONLY = b"""<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example</title>
+  <entry>
+    <title>Story</title>
+    <link rel="alternate" href="https://example.com/atom-story/1"/>
+    <id>tag:example.com,2026:1</id>
+  </entry>
+</feed>
+"""
+
+
+@pytest.mark.asyncio
+async def test_read_feed_atom_links_without_link_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=ATOM_LINKS_ONLY)
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+
+    urls = await _read_feed("https://example.com/atom.xml", "TestBot/1.0")
+    assert urls == ["https://example.com/atom-story/1"]
 

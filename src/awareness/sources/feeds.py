@@ -14,6 +14,7 @@ sub-partition that actually fetches the page (tail_recrawl).
 
 from __future__ import annotations
 
+import gzip as _gzip
 from collections.abc import AsyncIterator, Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,58 @@ logger = get_logger("sources.feeds")
 # Checkpoint window for feed-level URL cursors. Ordered most-recently-seen;
 # oldest entries are dropped when the cap is exceeded.
 SEEN_URLS_CAP = 5000
+
+
+def _maybe_decompress_body(body: bytes) -> bytes:
+    """Decompress gzip-wrapped feed/sitemap bodies (magic ``1f 8b``).
+
+    Many publishers serve ``.xml.gz`` sitemaps and some CDNs gzip RSS even
+    without ``Content-Encoding`` after httpx has already decoded the transfer
+    encoding. Corrupt gzip falls through to the raw bytes so parsers can fail
+    clearly.
+    """
+    if not body or not body.startswith(b"\x1f\x8b"):
+        return body
+    try:
+        return _gzip.decompress(body)
+    except OSError as exc:
+        logger.warning("feed_body_gunzip_failed", err=str(exc))
+        return body
+
+
+def _is_http_url(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith(("http://", "https://"))
+
+
+def entry_primary_url(entry: Any) -> str | None:
+    """Best article URL from a feedparser entry (RSS link or Atom links[]).
+
+    Prefers ``entry.link`` when it is an http(s) URL. Otherwise scans
+    ``entry.links`` for ``rel=alternate`` (Atom default) then any http(s)
+    href. Returns ``None`` when no usable URL is present.
+    """
+    link = getattr(entry, "link", None)
+    if _is_http_url(link):
+        return str(link)
+
+    links = getattr(entry, "links", None) or []
+    fallback: str | None = None
+    for ln in links:
+        if isinstance(ln, dict):
+            href = ln.get("href")
+            rel = ln.get("rel")
+        else:
+            href = getattr(ln, "href", None)
+            rel = getattr(ln, "rel", None)
+        if not _is_http_url(href):
+            continue
+        href_s = str(href)
+        # Atom: alternate is the HTML article; self is often the entry id.
+        if rel in (None, "", "alternate"):
+            return href_s
+        if fallback is None:
+            fallback = href_s
+    return fallback
 
 
 def merge_seen_urls(
@@ -198,7 +251,7 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
                 return []
             if not r.content:
                 return []
-            body = r.content
+            body = _maybe_decompress_body(r.content)
     except RetryableHTTPError:
         get_metrics().inc(
             "feeds.retryable_http_error",
@@ -211,8 +264,8 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
     parsed = feedparser.parse(body)
     out: list[str] = []
     for entry in parsed.entries:
-        link = getattr(entry, "link", None)
-        if link and link.startswith(("http://", "https://")):
+        link = entry_primary_url(entry)
+        if link:
             out.append(link)
     return out
 
@@ -234,7 +287,7 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
                 return []
             if not r.content:
                 return []
-            body = r.content
+            body = _maybe_decompress_body(r.content)
     except RetryableHTTPError:
         get_metrics().inc(
             "feeds.retryable_http_error",
@@ -246,10 +299,6 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
         return []
 
     try:
-        if body.startswith(b"\x1f\x8b"):
-            import gzip as _gz
-
-            body = _gz.decompress(body)
         root = etree.fromstring(body)
     except (etree.XMLSyntaxError, OSError, ValueError) as exc:
         logger.warning("sitemap_parse_failed", url=url, err=str(exc))
