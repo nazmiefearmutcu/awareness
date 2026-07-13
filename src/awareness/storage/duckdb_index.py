@@ -203,12 +203,18 @@ def _clean_fields(fields: list[str] | tuple[str, ...] | None) -> list[str]:
 
 
 def _collapse_key(row: dict[str, Any]) -> str:
-    """Key used to fold exact-duplicate search hits into one result.
+    """Key used to fold near/exact-duplicate search hits into one result.
 
-    Prefer ``content_hash`` (true content identity). When it is missing/empty
-    fall back to lower(title)|domain so syndicated copies without a hash still
-    collapse together.
+    Priority:
+      1. ``parent_doc_or_dup_group`` — near-dup / exact-dup cluster id when set
+      2. ``content_hash`` — true content identity
+      3. lower(title)|domain — syndicated copies missing hash + parent
     """
+    parent = row.get("parent_doc_or_dup_group")
+    if parent is not None:
+        parent_s = str(parent).strip()
+        if parent_s:
+            return f"p:{parent_s}"
     ch = row.get("content_hash")
     if ch is not None:
         ch_s = str(ch).strip()
@@ -968,12 +974,15 @@ class DuckDbIndex:
                 # _clean_fields) and $-bound placeholders; all user values are
                 # bound params. No untrusted string reaches the SQL text.
                 where_sql = " AND ".join(where) if where else "1=1"
-                # Unique-content total (content_hash, else title|domain).
+                # Unique-content total: parent group, else content_hash, else title|domain.
                 collapse_expr = (
                     "CASE "
+                    "WHEN parent_doc_or_dup_group IS NOT NULL "
+                    " AND CAST(parent_doc_or_dup_group AS VARCHAR) != '' "
+                    "THEN 'p:' || CAST(parent_doc_or_dup_group AS VARCHAR) "
                     "WHEN content_hash IS NOT NULL AND CAST(content_hash AS VARCHAR) != '' "
-                    "THEN CAST(content_hash AS VARCHAR) "
-                    "ELSE lower(trim(coalesce(title, ''))) || '|' || lower(coalesce(domain, '')) "
+                    "THEN 'h:' || CAST(content_hash AS VARCHAR) "
+                    "ELSE 't:' || lower(trim(coalesce(title, ''))) || '|' || lower(coalesce(domain, '')) "
                     "END"
                 )
                 total_row = conn.execute(  # nosemgrep
@@ -1001,7 +1010,7 @@ class DuckDbIndex:
 
             ranked = used_mode == "fts"
 
-            # Collapse exact content duplicates (same hash / same title|domain)
+            # Collapse near/exact dups (parent group / hash / title|domain)
             # before pagination so top-K never shows syndicated copies twice.
             pre_collapse_n = len(rows)
             rows = _collapse_search_rows(rows)

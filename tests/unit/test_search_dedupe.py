@@ -1,7 +1,8 @@
 """Search result collapse + worker EXACT_DUP storage skip.
 
 Regression for data-quality hard gates:
-  * top-K search must not show the same content_hash twice
+  * top-K search must not show the same parent_doc_or_dup_group twice
+  * top-K search must not show the same content_hash twice (when parent unset)
   * EXACT_DUP captures must not be re-persisted to JSONL
 """
 
@@ -45,6 +46,7 @@ def _write_doc(
     domain: str = "example.com",
     content_hash_val: str | None = None,
     url: str | None = None,
+    parent_doc_or_dup_group: str | None = None,
 ) -> None:
     day = root / "captures" / "2026" / "06" / "01"
     day.mkdir(parents=True, exist_ok=True)
@@ -52,6 +54,7 @@ def _write_doc(
     rec.update(
         doc_id=f"doc-{idx}",
         capture_id=f"cap-{idx}",
+        parent_doc_or_dup_group=parent_doc_or_dup_group,
         source_type="rss",
         domain=domain,
         url=url or f"https://{domain}/{idx}",
@@ -63,8 +66,33 @@ def _write_doc(
     (day / f"chunk-{idx}.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
 
 
-def test_collapse_key_prefers_content_hash() -> None:
+def test_collapse_key_prefers_parent_then_content_hash() -> None:
+    # parent_doc_or_dup_group wins even when content_hash differs
+    assert _collapse_key({
+        "parent_doc_or_dup_group": "doc-canonical",
+        "content_hash": "abc",
+        "title": "T",
+        "domain": "d.com",
+    }) == "p:doc-canonical"
+    assert _collapse_key({
+        "parent_doc_or_dup_group": "  grp  ",
+        "content_hash": "xyz",
+    }) == "p:grp"
+    # empty / missing parent falls through to content_hash
+    assert _collapse_key({
+        "parent_doc_or_dup_group": "",
+        "content_hash": "abc",
+        "title": "T",
+        "domain": "d.com",
+    }) == "h:abc"
+    assert _collapse_key({
+        "parent_doc_or_dup_group": None,
+        "content_hash": "abc",
+        "title": "T",
+        "domain": "d.com",
+    }) == "h:abc"
     assert _collapse_key({"content_hash": "abc", "title": "T", "domain": "d.com"}) == "h:abc"
+    # no parent + no hash → title|domain
     assert _collapse_key({"content_hash": "", "title": " Hello ", "domain": "D.COM"}) == "t:hello|d.com"
     assert _collapse_key({"content_hash": None, "title": "X", "domain": "y"}) == "t:x|y"
 
@@ -82,6 +110,61 @@ def test_collapse_search_rows_keeps_highest_score() -> None:
     assert by_hash["h1"]["url"] == "https://b/2"
     assert by_hash["h1"]["score"] == 3.5
     assert by_hash["h2"]["url"] == "https://c/3"
+
+
+def test_collapse_search_rows_by_parent_doc_or_dup_group() -> None:
+    """Same parent group collapses even when content_hash differs (near-dups)."""
+    rows = [
+        {
+            "parent_doc_or_dup_group": "doc-root",
+            "content_hash": "h-a",
+            "url": "https://a/1",
+            "score": 1.0,
+            "title": "A",
+        },
+        {
+            "parent_doc_or_dup_group": "doc-root",
+            "content_hash": "h-b",  # different hash, same near-dup group
+            "url": "https://b/2",
+            "score": 4.0,
+            "title": "A (edit)",
+        },
+        {
+            "parent_doc_or_dup_group": "doc-other",
+            "content_hash": "h-c",
+            "url": "https://c/3",
+            "score": 2.0,
+            "title": "B",
+        },
+        {
+            "parent_doc_or_dup_group": "doc-root",
+            "content_hash": "h-d",
+            "url": "https://d/4",
+            "score": 4.0,  # tie with h-b → keep first winner (b)
+            "title": "A (rev)",
+        },
+    ]
+    out = _collapse_search_rows(rows)
+    assert len(out) == 2
+    by_parent = {r["parent_doc_or_dup_group"]: r for r in out}
+    assert by_parent["doc-root"]["url"] == "https://b/2"
+    assert by_parent["doc-root"]["score"] == 4.0
+    assert by_parent["doc-other"]["url"] == "https://c/3"
+
+
+def test_collapse_search_rows_parent_takes_precedence_over_hash() -> None:
+    """Different content_hash but shared parent → one hit; hash alone is ignored."""
+    rows = [
+        {"parent_doc_or_dup_group": "g1", "content_hash": "h1", "url": "https://a/1", "score": 2.0},
+        {"parent_doc_or_dup_group": "g1", "content_hash": "h2", "url": "https://b/2", "score": 1.0},
+        # no parent: still collapses exact hash dups
+        {"parent_doc_or_dup_group": None, "content_hash": "h3", "url": "https://c/3", "score": 1.0},
+        {"parent_doc_or_dup_group": "", "content_hash": "h3", "url": "https://d/4", "score": 3.0},
+    ]
+    out = _collapse_search_rows(rows)
+    assert len(out) == 2
+    assert out[0]["url"] == "https://a/1"  # higher score within g1
+    assert out[1]["url"] == "https://d/4"  # higher score within h3
 
 
 def test_search_collapses_same_content_hash_different_urls(tmp_path: Path) -> None:
@@ -133,6 +216,72 @@ def test_search_collapses_same_content_hash_different_urls(tmp_path: Path) -> No
             assert res["total"] >= 1
             # Full match set for this corpus is small; total should not count both dups.
             assert res["total"] <= 2  # climate unique + maybe sports if it matched
+    finally:
+        idx.close()
+
+
+def test_search_collapses_same_parent_doc_or_dup_group(tmp_path: Path) -> None:
+    """Near-dups (different content_hash, shared parent) → one search hit."""
+    jsonl_dir = tmp_path / "jsonl"
+    db_path = tmp_path / "duckdb" / "metadata.duckdb"
+    body_a = (
+        "Near-duplicate content about climate markets and carbon credits "
+        "appearing under slightly edited syndication should collapse in search."
+    )
+    body_b = (
+        "Near-duplicate content about climate markets and carbon credits "
+        "appearing under lightly rewritten syndication should collapse in search."
+    )
+    shared_parent = "doc-climate-canonical"
+    _write_doc(
+        jsonl_dir, 1,
+        title="Climate markets update",
+        text=body_a,
+        domain="news.example",
+        content_hash_val="aaaa1111bbbb2222",
+        url="https://news.example/climate",
+        parent_doc_or_dup_group=shared_parent,
+    )
+    _write_doc(
+        jsonl_dir, 2,
+        title="Climate markets update (wire)",
+        text=body_b,
+        domain="wire.example",
+        content_hash_val="cccc3333dddd4444",
+        url="https://wire.example/climate",
+        parent_doc_or_dup_group=shared_parent,
+    )
+    _write_doc(
+        jsonl_dir, 3,
+        title="Sports scoreboard",
+        text="Football match results unrelated to climate markets entirely.",
+        domain="sports.example",
+        content_hash_val="1111222233334444",
+        url="https://sports.example/scores",
+        parent_doc_or_dup_group="doc-sports",
+    )
+
+    idx = DuckDbIndex(db_path, jsonl_dir, None)
+    try:
+        for mode in ("prefix", "substring", "auto", "fts"):
+            res = idx.search("climate markets", mode=mode)
+            parents = [r.get("parent_doc_or_dup_group") for r in res["rows"]]
+            assert parents.count(shared_parent) == 1, (
+                f"mode={mode}: expected 1 hit for parent group, got {parents}"
+            )
+            climate_rows = [
+                r for r in res["rows"]
+                if r.get("parent_doc_or_dup_group") == shared_parent
+            ]
+            assert len(climate_rows) == 1
+            # Must not surface both near-dup URLs.
+            urls = {r["url"] for r in res["rows"]}
+            assert not (
+                "https://news.example/climate" in urls
+                and "https://wire.example/climate" in urls
+            )
+            # total should count the parent group once, not both near-dups
+            assert res["total"] <= 2
     finally:
         idx.close()
 
