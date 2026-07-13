@@ -115,9 +115,9 @@ class DedupNearRow(Base):
     To search for near-dupes for a 128-bit simhash ``H`` we split H into
     :data:`NEAR_DUP_SEGMENTS` bands of :data:`NEAR_DUP_SEG_BITS` bits and store
     rows keyed by ``(segment_index, segment_value)``. Two near-dupes share at
-    least one band exactly when their Hamming distance is below the band count
-    (Manku/Jain pigeonhole), and probabilistically beyond it. Query is
-    ``WHERE seg = ? AND value = ?``.
+    least one band exactly when their Hamming distance is ≤ (bands − 1)
+    (Manku/Jain pigeonhole; 32 bands → Hamming ≤ 31), and probabilistically
+    beyond it. Query is ``WHERE seg = ? AND value = ?``.
 
     ``sig_hex`` holds the full 128-bit signature (32 hex chars); the legacy
     ``near_dup_hash`` int column is retained, nullable, for backward
@@ -134,13 +134,14 @@ class DedupNearRow(Base):
     __table_args__ = (UniqueConstraint("doc_id", "seg", name="uq_dedup_near"),)
 
 
-# 128 bits split into 16 bands of 8 bits. Finer banding than the bit budget
-# strictly needs (it guarantees a shared band only up to Hamming < 16) but it
-# lifts *probabilistic* candidate retrieval far past that — end-to-end near-dup
-# recall roughly doubles vs an 8-band split at the same threshold, at the cost
-# of 16 (not 8) tiny index rows per document. Bands are byte-aligned.
-NEAR_DUP_SEGMENTS = 16
-NEAR_DUP_SEG_BITS = 8
+# 128 bits split into 32 bands of 4 bits. The Manku/Jain pigeonhole guarantee is
+# "a pair within Hamming ≤ (bands-1) shares ≥1 identical band", so 32 bands give
+# an EXACT-retrieval guarantee up to Hamming ≤31 — covering DEFAULT_NEAR_THRESHOLD
+# (24), which 16×8 banding (guarantee ≤15) did not. Cost: 32 tiny index rows/doc.
+# Reindex: existing near_dup rows written under 16×8 are wrong band width after
+# upgrade; rebuild the dedup_near index if upgrading mid-corpus.
+NEAR_DUP_SEGMENTS = 32
+NEAR_DUP_SEG_BITS = 4
 _NEAR_DUP_SEG_MASK = (1 << NEAR_DUP_SEG_BITS) - 1
 # Per-band candidate cap. Higher than the 64-bit era's 256 so moderate-scale
 # corpora don't silently truncate true near-dup candidates out of a hot band.
