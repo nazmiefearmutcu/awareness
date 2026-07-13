@@ -1379,6 +1379,51 @@ class StateDB:
             s.commit()
             return result
 
+    def purge_dlq_bulk(
+        self,
+        *,
+        job_id: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Drop many DLQ rows without re-arming tasks.
+
+        Optionally filter by *job_id*. *limit* caps how many rows are deleted
+        (newest-first by ``created_at`` / id) so operators can drain a large
+        queue in batches. Task status and job ``tasks_dead_lettered`` counters
+        are left untouched (same contract as :meth:`purge_dlq`).
+
+        Returns::
+
+            {"ok": True, "purged": int, "job_id": str|None, "limit": int|None,
+             "remaining": int}
+        """
+        jid = (job_id or "").strip() or None
+        cap = None if limit is None else max(0, int(limit))
+        with self.session() as s:
+            q = select(DLQRow).order_by(DLQRow.created_at.desc(), DLQRow.id.desc())
+            if jid:
+                q = q.where(DLQRow.job_id == jid)
+            if cap is not None:
+                q = q.limit(cap)
+            rows = list(s.scalars(q).all())
+            purged = 0
+            for row in rows:
+                s.delete(row)
+                purged += 1
+            if purged:
+                s.commit()
+            remaining_q = select(func.count(DLQRow.id))
+            if jid:
+                remaining_q = remaining_q.where(DLQRow.job_id == jid)
+            remaining = int(s.scalar(remaining_q) or 0)
+        return {
+            "ok": True,
+            "purged": purged,
+            "job_id": jid,
+            "limit": cap,
+            "remaining": remaining,
+        }
+
     # ── tail state ───────────────────────────────────────────────────────
     @staticmethod
     def _pid_alive(pid: int | None) -> bool:

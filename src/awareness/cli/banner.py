@@ -385,6 +385,7 @@ COMMAND_CATEGORIES: list[tuple[str, list[tuple[str, str]]]] = [
         ("dlq count", "Count dead-letter queue rows"),
         ("dlq replay", "Re-arm a dead-lettered task by DLQ id"),
         ("dlq purge", "Drop a DLQ entry without re-arming the task"),
+        ("dlq purge-bulk", "Drop many DLQ entries (optional --job-id / --limit)"),
     ]),
     ("Config & cloud", [
         ("init", "Initialise storage layout & choose data dir"),

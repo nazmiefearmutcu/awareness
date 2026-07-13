@@ -2029,6 +2029,68 @@ def dlq_purge(
     )
 
 
+@dlq_app.command("purge-bulk")
+def dlq_purge_bulk(
+    job_id: str = typer.Option("", "--job-id", "-j", help="Only purge rows for this job"),
+    limit: int = typer.Option(
+        0,
+        "--limit",
+        "-n",
+        help="Max rows to drop (0 = all matching; newest first)",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip confirmation prompt (required for non-interactive use)",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable JSON"),
+) -> None:
+    """Drop many DLQ entries without re-arming tasks.
+
+    Filters by ``--job-id`` when set; otherwise purges the whole queue.
+    Use ``--limit`` to drain large queues in batches. Task rows stay
+    ``DEAD_LETTERED``; only queue entries are removed (same as ``dlq purge``).
+    """
+    state, _ = _bootstrap()
+    jid = job_id.strip() or None
+    cap = None if limit <= 0 else int(limit)
+    pending = state.count_dlq(job_id=jid)
+    if pending == 0:
+        empty = {
+            "ok": True,
+            "purged": 0,
+            "job_id": jid,
+            "limit": cap,
+            "remaining": 0,
+        }
+        if as_json:
+            print(json.dumps(empty, indent=2, default=str))
+            return
+        scope = f" for job {jid}" if jid else ""
+        rprint(f"[dim]Dead-letter queue is empty{scope}; nothing to purge.[/dim]")
+        return
+    will_purge = pending if cap is None else min(pending, cap)
+    if not yes:
+        scope = f" for job {jid}" if jid else ""
+        rprint(
+            f"[bold yellow]About to purge {will_purge} DLQ row(s){scope}[/bold yellow] "
+            f"(of {pending} matching; tasks not re-armed)."
+        )
+        if not typer.confirm("Continue?", default=False):
+            rprint("[dim]Aborted.[/dim]")
+            raise typer.Exit(code=1)
+    result = state.purge_dlq_bulk(job_id=jid, limit=cap)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    rprint(
+        f"[bold green]Purged[/bold green] {result.get('purged')} DLQ row(s)"
+        + (f" for job {jid}" if jid else "")
+        + f" — {result.get('remaining')} remaining; tasks not re-armed."
+    )
+
+
 # ── inspect ──────────────────────────────────────────────────────────────
 @app.command()
 def inspect(
