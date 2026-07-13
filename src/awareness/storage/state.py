@@ -1149,9 +1149,31 @@ class StateDB:
         with self.session() as s:
             stmt = select(ManifestRow).where(ManifestRow.compacted_at.is_(None)).order_by(ManifestRow.id)
             return [
-                {"id": r.id, "path": r.path, "records": r.records, "bytes": r.bytes}
+                {
+                    "id": r.id,
+                    "path": r.path,
+                    "records": r.records,
+                    "bytes": r.bytes,
+                    "committed_at": r.committed_at.isoformat() if r.committed_at else None,
+                }
                 for r in s.scalars(stmt)
             ]
+
+    def pending_manifest_summary(self) -> dict[str, Any]:
+        """Aggregate counts for staging manifests not yet compacted into Iceberg.
+
+        Used by ``awareness compact --status`` so operators can see backlog size
+        without starting a compaction pass.
+        """
+        pending = self.list_pending_manifests()
+        total_records = sum(int(m.get("records") or 0) for m in pending)
+        total_bytes = sum(int(m.get("bytes") or 0) for m in pending)
+        return {
+            "pending_count": len(pending),
+            "total_records": total_records,
+            "total_bytes": total_bytes,
+            "manifests": pending,
+        }
 
     def mark_manifest_compacted(self, manifest_id: int) -> None:
         with self.session() as s:

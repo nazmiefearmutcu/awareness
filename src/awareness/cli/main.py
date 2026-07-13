@@ -3397,21 +3397,68 @@ def search(
 
 @app.command()
 def compact(
-    force: bool = typer.Option(False, "--force", help="Force compaction even if Iceberg is disabled in config")
+    force: bool = typer.Option(
+        False, "--force", help="Force compaction even if Iceberg is disabled in config"
+    ),
+    status: bool = typer.Option(
+        False,
+        "--status",
+        help="List pending staging manifests without compacting",
+    ),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Machine-readable pending status (implies --status)",
+    ),
 ) -> None:
-    """Compact local JSONL staging files into the durable Iceberg warehouse."""
+    """Compact local JSONL staging files into the durable Iceberg warehouse.
+
+    Pass ``--status`` (or ``--json``) to inspect the compaction backlog without
+    writing to Iceberg.
+    """
     state, _ = _bootstrap()
     settings = get_settings()
-    
+
+    if status or as_json:
+        summary = state.pending_manifest_summary()
+        if as_json:
+            print(json.dumps(summary, indent=2))
+            return
+        n = int(summary["pending_count"])
+        if n == 0:
+            rprint("[green]No staging files pending compaction.[/green]")
+            return
+        rprint(
+            f"[bold cyan]{n} manifest file(s) pending compaction[/bold cyan]  "
+            f"({int(summary['total_records']):,} records, "
+            f"{_format_size(int(summary['total_bytes']))})"
+        )
+        table = Table(show_header=True, header_style=f"bold {banner.C_HI}")
+        table.add_column("id", justify="right")
+        table.add_column("path")
+        table.add_column("records", justify="right")
+        table.add_column("size", justify="right")
+        table.add_column("committed_at")
+        for m in summary["manifests"]:
+            table.add_row(
+                str(m.get("id") or ""),
+                str(m.get("path") or ""),
+                f"{int(m.get('records') or 0):,}",
+                _format_size(int(m.get("bytes") or 0)),
+                str(m.get("committed_at") or "—"),
+            )
+        console.print(table)
+        return
+
     if not settings.enable_iceberg and not force:
         rprint("[yellow]Iceberg storage is disabled in configuration. Use --force to override.[/yellow]")
         return
-        
+
     pending = state.list_pending_manifests()
     if not pending:
         rprint("[green]No staging files pending compaction.[/green]")
         return
-        
+
     rprint(f"[bold cyan]Found {len(pending)} manifest files pending compaction.[/bold cyan]\n")
     
     from awareness.storage.iceberg import IcebergWriter

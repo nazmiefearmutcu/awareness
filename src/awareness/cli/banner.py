@@ -360,7 +360,7 @@ COMMAND_CATEGORIES: list[tuple[str, list[tuple[str, str]]]] = [
         ("backfill submit", "Queue a historical date-range crawl"),
         ("backfill run", "Run a queued backfill job to completion"),
         ("backfill status", "Inspect a backfill job"),
-        ("compact", "Fold JSONL staging into the Iceberg warehouse"),
+        ("compact", "Fold JSONL staging into Iceberg (--status for backlog)"),
     ]),
     ("Ingest — TAIL (live)", [
         ("tail start", "Capture newly-published text until stopped"),
