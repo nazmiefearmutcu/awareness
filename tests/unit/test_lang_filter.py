@@ -9,9 +9,11 @@ import pytest
 
 from awareness.storage.duckdb_index import DuckDbIndex
 from awareness.util.lang import (
+    PRIMARY_LANGUAGE_SQL,
     append_language_filter,
     language_sql_filter,
     normalize_language_tag,
+    primary_language_tag,
 )
 
 _FULL_KEYS = (
@@ -33,6 +35,18 @@ def test_normalize_language_tag() -> None:
     assert normalize_language_tag("en-US") == "en-us"
     assert normalize_language_tag("en_US") == "en-us"
     assert normalize_language_tag("EN_gb") == "en-gb"
+
+
+def test_primary_language_tag() -> None:
+    """Regional / script variants collapse to the primary subtag for counts."""
+    assert primary_language_tag(None) is None
+    assert primary_language_tag("") is None
+    assert primary_language_tag("  ") is None
+    assert primary_language_tag("EN") == "en"
+    assert primary_language_tag("en-US") == "en"
+    assert primary_language_tag("en_GB") == "en"
+    assert primary_language_tag("zh-Hans-CN") == "zh"
+    assert primary_language_tag("TR") == "tr"
 
 
 def test_language_sql_filter_primary_matches_subtags() -> None:
@@ -123,3 +137,69 @@ def test_search_primary_language_matches_regional_subtags(lang_index: DuckDbInde
     tr = lang_index.search("alpha", mode="substring", language="TR")
     assert tr["total"] == 1
     assert str(tr["rows"][0].get("language") or "").lower() == "tr"
+
+
+def test_counts_by_language_rolls_up_primary_tags(lang_index: DuckDbIndex) -> None:
+    """GET /counts style aggregation: en + en-US + en_GB → one en bucket."""
+    rows = lang_index.execute(
+        f"""
+        SELECT {PRIMARY_LANGUAGE_SQL} AS language, COUNT(*) AS n
+        FROM captures
+        WHERE language IS NOT NULL AND CAST(language AS VARCHAR) != ''
+        GROUP BY 1
+        ORDER BY n DESC
+        """
+    )
+    by_lang = {str(r["language"]): int(r["n"]) for r in rows}
+    assert by_lang.get("en") == 3
+    assert by_lang.get("tr") == 1
+    assert "en-us" not in by_lang
+    assert "en_gb" not in by_lang
+    # Null language rows are excluded.
+    assert sum(by_lang.values()) == 4
+
+
+def test_api_counts_includes_by_language(monkeypatch, tmp_path: Path) -> None:
+    """/counts response shape exposes by_language with primary-tag rollup."""
+    import awareness.api.server as server
+
+    jsonl_dir = tmp_path / "jsonl"
+    _write_doc(jsonl_dir, 1, title="A", text="body a english", language="en")
+    _write_doc(jsonl_dir, 2, title="B", text="body b american", language="en-US")
+    _write_doc(jsonl_dir, 3, title="C", text="body c turkce", language="tr")
+    idx = DuckDbIndex(
+        db_path=tmp_path / "duckdb" / "metadata.duckdb",
+        jsonl_dir=jsonl_dir,
+        iceberg_warehouse=None,
+    )
+    app = server.create_app()
+    monkeypatch.setattr(server, "_get_index", lambda: idx)
+    try:
+        counts_ep = None
+        for route in app.routes:
+            if getattr(route, "path", None) == "/counts" and "GET" in getattr(
+                route, "methods", set()
+            ):
+                counts_ep = route.endpoint
+                break
+        assert counts_ep is not None
+        from datetime import datetime, timezone
+
+        payload = counts_ep(
+            start=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            end=datetime(2026, 6, 2, tzinfo=timezone.utc),
+        )
+        assert "by_language" in payload
+        assert "by_source" in payload
+        assert "by_domain" in payload
+        by_lang = {
+            str(r["language"]): int(r["n"]) for r in payload["by_language"]
+        }
+        assert by_lang.get("en") == 2
+        assert by_lang.get("tr") == 1
+    finally:
+        server._State.index = None
+        try:
+            idx.close()
+        except Exception:
+            pass

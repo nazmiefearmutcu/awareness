@@ -17,7 +17,7 @@ Endpoints:
     GET  /captures/{capture_id}  — full capture (incl. text) for UI detail view
     GET  /captures/{id}/related  — sibling captures in the same dup_group
     GET  /search                 — BM25-ranked full-text search w/ snippets
-    GET  /counts                 — counts grouped by source & domain
+    GET  /counts                 — counts grouped by source, domain & language
     GET  /dedup-stats            — dedup index stats + process skip counters
     GET  /jobsearch/sources      — public job boards catalog
     GET  /jobsearch/profile      — personalization profile
@@ -53,7 +53,7 @@ from awareness.schemas.jobs import BackfillRequest
 from awareness.storage.duckdb_index import DuckDbIndex
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
-from awareness.util.lang import append_language_filter
+from awareness.util.lang import PRIMARY_LANGUAGE_SQL, append_language_filter
 from awareness.util.timeutil import coerce_relative_end, inclusive_end, to_utc
 from awareness.workers.engine import WorkerEngine
 
@@ -517,7 +517,26 @@ def create_app() -> FastAPI:
             "SELECT domain, COUNT(*) AS n FROM captures WHERE fetch_ts BETWEEN $start AND $end AND domain IS NOT NULL GROUP BY domain ORDER BY n DESC LIMIT 25",
             p,
         )
-        return {"total": total, "by_source": by_source, "by_domain": by_domain}
+        # Primary BCP-47 tags so en / en-US / en_GB roll into one "en" bucket.
+        by_language = idx.execute(
+            f"""
+            SELECT {PRIMARY_LANGUAGE_SQL} AS language, COUNT(*) AS n
+            FROM captures
+            WHERE fetch_ts BETWEEN $start AND $end
+              AND language IS NOT NULL
+              AND CAST(language AS VARCHAR) != ''
+            GROUP BY 1
+            ORDER BY n DESC
+            LIMIT 50
+            """,
+            p,
+        )
+        return {
+            "total": total,
+            "by_source": by_source,
+            "by_domain": by_domain,
+            "by_language": by_language,
+        }
 
     @app.get("/captures")
     def list_captures(

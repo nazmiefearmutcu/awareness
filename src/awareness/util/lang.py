@@ -16,6 +16,25 @@ def normalize_language_tag(language: str | None) -> str | None:
     return "-".join(parts)
 
 
+def primary_language_tag(language: str | None) -> str | None:
+    """Return the BCP-47 primary subtag (``en-US`` / ``en_GB`` → ``en``).
+
+    Used by aggregate counts so regional variants roll up under one language
+    bucket for operators. Empty / missing → ``None``.
+    """
+    tag = normalize_language_tag(language)
+    if not tag:
+        return None
+    return tag.split("-", 1)[0]
+
+
+# DuckDB expression: normalize stored language then take primary subtag.
+# Keep in sync with ``primary_language_tag`` (underscore → hyphen, lower, split).
+PRIMARY_LANGUAGE_SQL = (
+    "split_part(lower(replace(CAST(language AS VARCHAR), '_', '-')), '-', 1)"
+)
+
+
 def language_sql_filter(
     language: str | None,
     *,

@@ -51,7 +51,7 @@ from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
 from datetime import datetime
 
-from awareness.util.lang import append_language_filter
+from awareness.util.lang import PRIMARY_LANGUAGE_SQL, append_language_filter
 from awareness.util.timeutil import coerce_relative_end, inclusive_end, to_utc
 from awareness.workers.engine import WorkerEngine
 
@@ -1790,7 +1790,7 @@ def counts(
     start: str = typer.Option(..., "--start"),
     end: str = typer.Option("now", "--end"),
 ) -> None:
-    """Aggregate counts by source and domain in [start, end]."""
+    """Aggregate counts by source, domain, and language in [start, end]."""
     state, _ = _bootstrap()
     settings = get_settings()
     idx = DuckDbIndex(
@@ -1801,6 +1801,7 @@ def counts(
     start_dt = to_utc(start)
     end_dt = inclusive_end(coerce_relative_end(end))
     try:
+        params = {"start": start_dt, "end": end_dt}
         by_source = idx.execute(
             """
             SELECT source_type, COUNT(*) AS n
@@ -1809,7 +1810,7 @@ def counts(
             GROUP BY source_type
             ORDER BY n DESC
             """,
-            {"start": start_dt, "end": end_dt},
+            params,
         )
         by_domain = idx.execute(
             """
@@ -1819,13 +1820,38 @@ def counts(
             GROUP BY domain
             ORDER BY n DESC LIMIT 25
             """,
-            {"start": start_dt, "end": end_dt},
+            params,
+        )
+        # Primary BCP-47 tags: en / en-US / en_GB → one "en" bucket.
+        by_language = idx.execute(
+            f"""
+            SELECT {PRIMARY_LANGUAGE_SQL} AS language, COUNT(*) AS n
+            FROM captures
+            WHERE fetch_ts BETWEEN $start AND $end
+              AND language IS NOT NULL
+              AND CAST(language AS VARCHAR) != ''
+            GROUP BY 1
+            ORDER BY n DESC
+            LIMIT 50
+            """,
+            params,
         )
         total = idx.execute(
             "SELECT COUNT(*) AS n FROM captures WHERE fetch_ts BETWEEN $start AND $end",
-            {"start": start_dt, "end": end_dt},
+            params,
         )
-        print(json.dumps({"total": total, "by_source": by_source, "by_domain": by_domain}, indent=2, default=str))
+        print(
+            json.dumps(
+                {
+                    "total": total,
+                    "by_source": by_source,
+                    "by_domain": by_domain,
+                    "by_language": by_language,
+                },
+                indent=2,
+                default=str,
+            )
+        )
     except Exception as exc:
         rprint(f"[red]Query failed:[/red] {escape(str(exc))}")
 

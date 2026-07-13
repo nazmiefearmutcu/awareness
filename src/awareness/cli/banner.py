@@ -372,7 +372,7 @@ COMMAND_CATEGORIES: list[tuple[str, list[tuple[str, str]]]] = [
         ("search", "Search captures (ranked; --mode/--fields/--max-results)"),
         ("browse", "Page through captures & read full text (--unique)"),
         ("inspect", "Tabular query by date / domain / source"),
-        ("counts", "Aggregate counts by source & domain"),
+        ("counts", "Aggregate counts by source, domain & language"),
         ("export", "Export captures to JSONL/txt (--limit, --unique)"),
         ("hf-push", "Publish captures to a Hugging Face dataset"),
     ]),
