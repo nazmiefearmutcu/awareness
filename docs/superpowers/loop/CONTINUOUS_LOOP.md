@@ -88,12 +88,14 @@
 | C4+ | dedup | Unwrap Instagram l.instagram.com + LinkedIn safety/redir for fetch-gate identity | ✅ |
 | C4+ | search | Exact URL-slug token equality boost in BM25 re-rank | ✅ |
 | C4+ | dedup | Unwrap Reddit out.reddit.com + YouTube /redirect for fetch-gate identity | ✅ |
+| C4+ | search | Domain-label navigational boost in BM25 re-rank | ✅ |
+| C4+ | dedup | Unwrap Slack slack-redir.net + WhatsApp l.wl.co for fetch-gate identity | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~154 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~156 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** exact URL-slug re-rank (`6630943`), Reddit + YouTube identity (`d0439e2`)
+- **Latest:** domain-label navigational re-rank (`2604be1`), Slack + WhatsApp identity (`2c66620`)
 
 ## Rules
 

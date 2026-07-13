@@ -1,16 +1,16 @@
 {
-  "iteration": 28,
-  "phase": "url_exact_rerank_reddit_youtube_identity",
+  "iteration": 29,
+  "phase": "domain_nav_rerank_slack_whatsapp_identity",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "63c4c4470e2f1c68fadca8cecc9861b0a444dd1e",
+  "head_sha": "2c66620926ae685d6ebd38b93af2bdb796a08fab",
   "product_shas": [
-    "66309431f4c6e6de629e5448eec74348fc327a25",
-    "d0439e2aa14c88108b3aa892adc84cdecda10d6e"
+    "2604be1ac14274ed0295d365c3b2ba217bc7bc62",
+    "2c66620926ae685d6ebd38b93af2bdb796a08fab"
   ],
-  "commits_ahead": 154,
+  "commits_ahead": 156,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed exact URL-slug token equality re-rank boost (6630943), Reddit out.reddit.com + YouTube /redirect unwrap for fetch-gate identity (d0439e2). Next: domain-label navigational boost / Slack+WhatsApp identity / scrape reliability / facets."
+  "notes": "Landed domain-label navigational re-rank boost (2604be1), Slack slack-redir.net + WhatsApp l.wl.co unwrap for fetch-gate identity (2c66620). Next: scrape reliability / facets / more SERP identity / fuzzy search leftovers."
 }
