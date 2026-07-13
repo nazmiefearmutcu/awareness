@@ -106,12 +106,16 @@
 | C4+ | cli/storage | `dlq list` / `dlq count` + StateDB.list_dlq | ✅ |
 | C4+ | storage/obs | Iceberg append latency hist + row/batch counters | ✅ |
 | C4+ | spa | Dashboard robots cache hit + Iceberg rows KPIs | ✅ |
+| C4+ | scrape | Feed/sitemap body charset decode + `feeds.decode_charset` | ✅ |
+| C4+ | storage/obs | JSONL staging commit/row/byte metrics + commit hist | ✅ |
+| C4+ | cli/storage | `dlq replay` re-arm DEAD_LETTERED by DLQ id | ✅ |
+| C4+ | spa | Dashboard JSONL records KPI (chunks + commit p95) | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~178 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~183 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** Diverse wave — charset decode (`218d61d`), DLQ list CLI (`9c80614`), Iceberg metrics (`d83ada0`), SPA robots/Iceberg KPIs (`7f86c1e`)
+- **Latest:** Diverse wave — feed charset (`7e55353`), JSONL metrics (`61feb20`), DLQ replay (`92127b5`), SPA JSONL KPI (`65bb20a`)
 
 ## Rules
 

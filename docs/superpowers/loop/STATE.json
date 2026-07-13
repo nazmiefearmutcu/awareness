@@ -1,18 +1,18 @@
 {
-  "iteration": 35,
-  "phase": "charset_dlq_iceberg_spa_obs",
+  "iteration": 36,
+  "phase": "feed_charset_jsonl_metrics_dlq_replay_spa",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "7f86c1edb7f33be711f21530aee918a8a0e70cdc",
+  "head_sha": "65bb20a",
   "product_shas": [
-    "218d61d3e609b5dd690f78021863668edb6976a4",
-    "9c8061489472adee9f3a4560b1a3fe82bf258544",
-    "d83ada08b43f541ae360c7210cacecd8704854d6",
-    "7f86c1edb7f33be711f21530aee918a8a0e70cdc"
+    "7e55353",
+    "61feb20",
+    "92127b5",
+    "65bb20a"
   ],
-  "commits_ahead": 178,
+  "commits_ahead": 183,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): charset-aware HTML decode + tail.decode_charset (218d61d); DLQ list/count CLI + StateDB.list_dlq (9c80614); Iceberg append_seconds/rows metrics (d83ada0); SPA robots hit + Iceberg rows KPIs (7f86c1e). Next: feed body charset path, DLQ replay, FTS polish, JSONL rotation metrics."
+  "notes": "DIVERSE wave (no ranking/unwrap): feed/sitemap charset decode (7e55353); JSONL commit metrics (61feb20); DLQ replay CLI (92127b5); SPA JSONL records KPI (65bb20a). Next: FTS polish, streaming WET, GDELT charset, metrics export polish."
 }
