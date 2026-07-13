@@ -1550,6 +1550,110 @@ def format_jsonl_sync_summary_line(summary: dict[str, Any]) -> str:
     return "JSONL    " + "  ".join(bits)
 
 
+def summarize_fts_metrics_table(snap: dict[str, Any]) -> dict[str, Any] | None:
+    """Aggregate FTS build-path metrics for the CLI table summary strip.
+
+    Returns None when the snapshot has no ``fts.*`` series.
+    """
+    counters = list(snap.get("counters") or [])
+    histograms = list(snap.get("histograms") or [])
+    gauges = list(snap.get("gauges") or [])
+    builds = 0.0
+    full = 0.0
+    incremental = 0.0
+    restore = 0.0
+    errors = 0.0
+    has_fts = False
+    for c in counters:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if name not in ("fts.builds", "fts.build_errors"):
+            continue
+        has_fts = True
+        val = float(c.get("value") or 0)
+        labels = c.get("labels") or {}
+        if name == "fts.builds":
+            builds += val
+            mode = labels.get("mode")
+            if mode == "full":
+                full += val
+            elif mode == "incremental":
+                incremental += val
+            elif mode == "restore":
+                restore += val
+        elif name == "fts.build_errors":
+            errors += val
+    weighted_p95 = 0.0
+    hist_count = 0
+    for h in histograms:
+        if not isinstance(h, dict):
+            continue
+        if str(h.get("name") or "") != "fts.build_seconds":
+            continue
+        has_fts = True
+        labels = h.get("labels") or {}
+        if labels.get("outcome") == "error":
+            continue
+        n = int(h.get("count") or 0)
+        if n <= 0:
+            continue
+        p95 = float(h.get("p95") or 0.0)
+        hist_count += n
+        weighted_p95 += p95 * n
+    indexed_rows = 0.0
+    for g in gauges:
+        if not isinstance(g, dict):
+            continue
+        if str(g.get("name") or "") == "fts.indexed_rows":
+            has_fts = True
+            indexed_rows = float(g.get("value") or 0)
+            break
+    if not has_fts:
+        return None
+    return {
+        "builds": int(builds),
+        "full": int(full),
+        "incremental": int(incremental),
+        "restore": int(restore),
+        "errors": int(errors),
+        "build_p95": (weighted_p95 / hist_count) if hist_count else None,
+        "indexed_rows": int(indexed_rows),
+    }
+
+
+def format_fts_summary_line(summary: dict[str, Any]) -> str:
+    """Render a single operator-facing FTS summary line (no Rich markup)."""
+    bits: list[str] = []
+    builds = int(summary.get("builds") or 0)
+    if builds:
+        bits.append(f"builds={builds}")
+        full = int(summary.get("full") or 0)
+        incr = int(summary.get("incremental") or 0)
+        restore = int(summary.get("restore") or 0)
+        mode_bits = []
+        if full:
+            mode_bits.append(f"full={full}")
+        if incr:
+            mode_bits.append(f"incr={incr}")
+        if restore:
+            mode_bits.append(f"restore={restore}")
+        if mode_bits:
+            bits.append(" ".join(mode_bits))
+    p95 = summary.get("build_p95")
+    if p95 is not None:
+        bits.append(f"p95={_format_metric_duration(float(p95))}")
+    rows = int(summary.get("indexed_rows") or 0)
+    if rows:
+        bits.append(f"rows={rows}")
+    errors = int(summary.get("errors") or 0)
+    if errors:
+        bits.append(f"errors={errors}")
+    if not bits:
+        bits.append("idle")
+    return "FTS      " + "  ".join(bits)
+
+
 def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
     """Render a human-readable metrics summary (uptime + top series)."""
     uptime = float(snap.get("uptime_seconds") or 0.0)
@@ -1577,6 +1681,11 @@ def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
     if jsonl_summary is not None:
         console.print(
             f"[bold cyan]{escape(format_jsonl_sync_summary_line(jsonl_summary))}[/bold cyan]"
+        )
+    fts_summary = summarize_fts_metrics_table(snap)
+    if fts_summary is not None:
+        console.print(
+            f"[bold cyan]{escape(format_fts_summary_line(fts_summary))}[/bold cyan]"
         )
 
     counters = list(snap.get("counters") or [])
