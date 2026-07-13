@@ -1360,6 +1360,196 @@ def format_fineweb_summary_line(summary: dict[str, Any]) -> str:
     return "FineWeb  " + "  ".join(bits)
 
 
+def summarize_wet_parse_metrics_table(snap: dict[str, Any]) -> dict[str, Any] | None:
+    """Aggregate CC-WET download/parse process metrics for the CLI table strip.
+
+    Returns None when the snapshot has no relevant ``cc_wet.*`` series.
+    """
+    counters = list(snap.get("counters") or [])
+    histograms = list(snap.get("histograms") or [])
+    records_seen = 0.0
+    parse_emitted = 0.0
+    download_attempts = 0.0
+    download_ok = 0.0
+    download_cache_hits = 0.0
+    has_wet = False
+    for c in counters:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if name not in (
+            "cc_wet.records_seen",
+            "cc_wet.shard_parse_emitted",
+            "cc_wet.shard_download_attempts",
+        ):
+            continue
+        has_wet = True
+        val = float(c.get("value") or 0)
+        labels = c.get("labels") or {}
+        if name == "cc_wet.records_seen":
+            records_seen += val
+        elif name == "cc_wet.shard_parse_emitted":
+            parse_emitted += val
+        elif name == "cc_wet.shard_download_attempts":
+            download_attempts += val
+            outcome = labels.get("outcome")
+            if outcome == "cache_hit":
+                download_cache_hits += val
+                download_ok += val
+            elif outcome == "ok":
+                download_ok += val
+    parse_weighted = 0.0
+    parse_count = 0
+    dl_weighted = 0.0
+    dl_count = 0
+    for h in histograms:
+        if not isinstance(h, dict):
+            continue
+        name = str(h.get("name") or "")
+        if name not in (
+            "cc_wet.shard_parse_seconds",
+            "cc_wet.iter_parse_seconds",
+            "cc_wet.shard_download_seconds",
+        ):
+            continue
+        has_wet = True
+        n = int(h.get("count") or 0)
+        if n <= 0:
+            continue
+        p95 = float(h.get("p95") or 0.0)
+        if name in ("cc_wet.shard_parse_seconds", "cc_wet.iter_parse_seconds"):
+            parse_count += n
+            parse_weighted += p95 * n
+        else:
+            dl_count += n
+            dl_weighted += p95 * n
+    if not has_wet:
+        return None
+    return {
+        "records_seen": int(records_seen),
+        "parse_emitted": int(parse_emitted),
+        "download_attempts": int(download_attempts),
+        "download_ok": int(download_ok),
+        "download_cache_hits": int(download_cache_hits),
+        "parse_p95": (parse_weighted / parse_count) if parse_count else None,
+        "download_p95": (dl_weighted / dl_count) if dl_count else None,
+    }
+
+
+def format_wet_parse_summary_line(summary: dict[str, Any]) -> str:
+    """Render a single operator-facing WET parse summary line (no Rich markup)."""
+    bits = [
+        f"seen={summary.get('records_seen', 0)}",
+        f"emitted={summary.get('parse_emitted', 0)}",
+    ]
+    attempts = int(summary.get("download_attempts") or 0)
+    ok = int(summary.get("download_ok") or 0)
+    if attempts:
+        bits.append(f"download={ok}/{attempts} ok")
+        cache = int(summary.get("download_cache_hits") or 0)
+        if cache:
+            bits.append(f"cache={cache}")
+    parse_p95 = summary.get("parse_p95")
+    if parse_p95 is not None:
+        bits.append(f"parse_p95={_format_metric_duration(float(parse_p95))}")
+    dl_p95 = summary.get("download_p95")
+    if dl_p95 is not None:
+        bits.append(f"dl_p95={_format_metric_duration(float(dl_p95))}")
+    return "WET      " + "  ".join(bits)
+
+
+def summarize_jsonl_sync_metrics_table(snap: dict[str, Any]) -> dict[str, Any] | None:
+    """Aggregate JSONL crash-safe sync/orphan metrics for the CLI table strip.
+
+    Returns None when the snapshot has no ``jsonl.sync*`` / orphan series.
+    """
+    counters = list(snap.get("counters") or [])
+    histograms = list(snap.get("histograms") or [])
+    gauges = list(snap.get("gauges") or [])
+    syncs = 0.0
+    sync_ok = 0.0
+    orphans_recovered = 0.0
+    orphans_removed = 0.0
+    has_series = False
+    for c in counters:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if name not in (
+            "jsonl.syncs",
+            "jsonl.orphans_recovered",
+            "jsonl.orphans_removed",
+            "jsonl.orphans_recover_errors",
+        ):
+            continue
+        has_series = True
+        val = float(c.get("value") or 0)
+        labels = c.get("labels") or {}
+        if name == "jsonl.syncs":
+            syncs += val
+            if labels.get("outcome") == "ok":
+                sync_ok += val
+        elif name == "jsonl.orphans_recovered":
+            orphans_recovered += val
+        elif name == "jsonl.orphans_removed":
+            orphans_removed += val
+    sync_weighted = 0.0
+    sync_count = 0
+    for h in histograms:
+        if not isinstance(h, dict):
+            continue
+        name = str(h.get("name") or "")
+        if name != "jsonl.sync_seconds":
+            continue
+        has_series = True
+        n = int(h.get("count") or 0)
+        if n <= 0:
+            continue
+        p95 = float(h.get("p95") or 0.0)
+        sync_count += n
+        sync_weighted += p95 * n
+    open_records = 0.0
+    for g in gauges:
+        if not isinstance(g, dict):
+            continue
+        if str(g.get("name") or "") == "jsonl.open_records":
+            has_series = True
+            open_records = float(g.get("value") or 0)
+            break
+    if not has_series:
+        return None
+    return {
+        "syncs": int(syncs),
+        "sync_ok": int(sync_ok),
+        "sync_p95": (sync_weighted / sync_count) if sync_count else None,
+        "orphans_recovered": int(orphans_recovered),
+        "orphans_removed": int(orphans_removed),
+        "open_records": int(open_records),
+    }
+
+
+def format_jsonl_sync_summary_line(summary: dict[str, Any]) -> str:
+    """Render a single operator-facing JSONL sync summary line (no Rich markup)."""
+    bits: list[str] = []
+    syncs = int(summary.get("syncs") or 0)
+    ok = int(summary.get("sync_ok") or 0)
+    if syncs:
+        bits.append(f"sync={ok}/{syncs} ok")
+    p95 = summary.get("sync_p95")
+    if p95 is not None:
+        bits.append(f"sync_p95={_format_metric_duration(float(p95))}")
+    open_recs = int(summary.get("open_records") or 0)
+    if open_recs:
+        bits.append(f"open={open_recs}")
+    recovered = int(summary.get("orphans_recovered") or 0)
+    removed = int(summary.get("orphans_removed") or 0)
+    if recovered or removed:
+        bits.append(f"orphans={recovered} recovered/{removed} removed")
+    if not bits:
+        bits.append("idle")
+    return "JSONL    " + "  ".join(bits)
+
+
 def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
     """Render a human-readable metrics summary (uptime + top series)."""
     uptime = float(snap.get("uptime_seconds") or 0.0)
@@ -1377,6 +1567,16 @@ def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
     if fineweb_summary is not None:
         console.print(
             f"[bold cyan]{escape(format_fineweb_summary_line(fineweb_summary))}[/bold cyan]"
+        )
+    wet_summary = summarize_wet_parse_metrics_table(snap)
+    if wet_summary is not None:
+        console.print(
+            f"[bold cyan]{escape(format_wet_parse_summary_line(wet_summary))}[/bold cyan]"
+        )
+    jsonl_summary = summarize_jsonl_sync_metrics_table(snap)
+    if jsonl_summary is not None:
+        console.print(
+            f"[bold cyan]{escape(format_jsonl_sync_summary_line(jsonl_summary))}[/bold cyan]"
         )
 
     counters = list(snap.get("counters") or [])
