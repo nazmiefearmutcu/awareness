@@ -75,6 +75,10 @@ _TRACKING_PARAMS: frozenset[str] = frozenset(
         "print",
         "printable",
         "printview",
+        # Google organic / SERP and MSN wrappers that do not change article identity.
+        "srsltid",
+        "ocid",
+        "replytocom",
     }
 )
 
@@ -111,6 +115,27 @@ _EMBED_COMMENTS_SHARE_PATH_SUFFIXES: tuple[str, ...] = (
     "/comment",
     "/share",
     "/shared",
+)
+
+# WordPress / CMS article appendages that are not the article body itself.
+# Require a parent segment so bare ``/feed`` (site RSS) stays distinct.
+_CMS_FEED_TRACKBACK_PATH_SUFFIXES: tuple[str, ...] = (
+    "/trackback",
+    "/feed",
+    "/atom",
+    "/rdf",
+    "/feed.xml",
+    "/atom.xml",
+    "/index.rdf",
+)
+
+# Search-engine AMP *viewer* hosts (not publisher AMP paths). Path embeds the
+# origin as ``/amp/s/<host>/<path>`` (https) or ``/amp/<host>/<path>`` (http).
+_VIEWER_AMP_HOSTS: frozenset[str] = frozenset(
+    {
+        "bing.com",
+        "google.com",
+    }
 )
 
 # Path suffixes that mark mobile / lite / app CMS mirrors of the same article.
@@ -199,6 +224,9 @@ def _is_noise_query_pair(key: str, value: str) -> bool:
                 "amp",
                 "amphtml",
             )
+        # ``preview=true`` is CMS identity-noise; ``preview=draft`` may be real.
+        if kl == "preview":
+            return val in ("1", "true", "yes", "on")
         return False
     # ``output`` is only noise when it marks AMP/print; keep other values.
     if kl == "output":
@@ -243,6 +271,30 @@ def _strip_alias_host(netloc: str) -> str:
 _strip_www_host = _strip_alias_host
 
 
+def _host_without_port_or_userinfo(netloc: str) -> str | None:
+    """Lowercased hostname from a netloc, or ``None`` for IPv6 literals."""
+    host = netloc.lower()
+    if "@" in host:
+        _, _, host = host.rpartition("@")
+    if host.startswith("["):
+        return None
+    if ":" in host:
+        host, _, _ = host.partition(":")
+    return host
+
+
+def _parse_embedded_origin(rest: str) -> tuple[str, str] | None:
+    """Parse ``host`` or ``host/path…`` into ``(netloc, path)`` for AMP viewers."""
+    origin_host, sep, origin_path = rest.partition("/")
+    if not origin_host or "." not in origin_host:
+        return None
+    if any(ch in origin_host for ch in (" ", "?", "#", "@")):
+        return None
+    origin_netloc = origin_host.lower()
+    origin_path_out = f"/{origin_path}" if sep else "/"
+    return origin_netloc, origin_path_out
+
+
 def _unwrap_amp_cdn(netloc: str, path: str) -> tuple[str, str] | None:
     """Rewrite Google AMP Cache hosts to the origin article (netloc, path).
 
@@ -257,15 +309,9 @@ def _unwrap_amp_cdn(netloc: str, path: str) -> tuple[str, str] | None:
     URL with a recoverable origin; ``None`` otherwise so callers keep the
     original parts. Identity-only — does not change what is fetched.
     """
-    host = netloc.lower()
-    # Drop userinfo if present (rare on AMP CDN).
-    if "@" in host:
-        _, _, host = host.rpartition("@")
-    # Drop port (AMP CDN is always 443 in practice).
-    if host.startswith("["):
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
         return None  # IPv6 never hosts ampproject CDN
-    if ":" in host:
-        host, _, _ = host.partition(":")
     if not (host == "cdn.ampproject.org" or host.endswith(".cdn.ampproject.org")):
         return None
     # Path prefixes: /c/s/, /c/, /v/s/, /v/ then origin host + origin path.
@@ -277,17 +323,49 @@ def _unwrap_amp_cdn(netloc: str, path: str) -> tuple[str, str] | None:
             break
     if not rest:
         return None
-    # rest = "www.example.com/world/story" or "www.example.com"
-    origin_host, sep, origin_path = rest.partition("/")
-    if not origin_host or "." not in origin_host:
-        # Reject path-only leftovers or single-label junk.
+    return _parse_embedded_origin(rest)
+
+
+def _unwrap_viewer_amp(netloc: str, path: str) -> tuple[str, str] | None:
+    """Rewrite Bing / Google AMP *viewer* URLs to the origin article.
+
+    Forms:
+
+    * ``https://www.bing.com/amp/s/www.example.com/story``
+    * ``https://www.bing.com/amp/www.example.com/story`` (http origin marker)
+    * ``https://www.google.com/amp/s/www.example.com/story``
+
+    Host matching ignores a single leading ``www.``. Returns ``None`` when the
+    host is not a known viewer or the path does not embed a recoverable origin.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
         return None
-    # Basic host sanity: no spaces, no scheme smuggling.
-    if any(ch in origin_host for ch in (" ", "?", "#", "@")):
+    if host.startswith("www.") and len(host) > 4:
+        host = host[4:]
+    if host not in _VIEWER_AMP_HOSTS:
         return None
-    origin_netloc = origin_host.lower()
-    origin_path_out = f"/{origin_path}" if sep else "/"
-    return origin_netloc, origin_path_out
+    lower = (path or "").lower()
+    rest: str | None = None
+    # Prefer /amp/s/ (https origin) before bare /amp/ so we do not leave a
+    # leading ``s/`` segment as a fake host.
+    for prefix in ("/amp/s/", "/amp/"):
+        if lower.startswith(prefix) and len(path) > len(prefix):
+            rest = path[len(prefix) :]
+            break
+    if not rest:
+        return None
+    parsed = _parse_embedded_origin(rest)
+    if parsed is None:
+        return None
+    origin_netloc, origin_path = parsed
+    # Refuse to "unwrap" into another viewer host (loop / nonsense).
+    origin_host = origin_netloc
+    if origin_host.startswith("www.") and len(origin_host) > 4:
+        origin_host = origin_host[4:]
+    if origin_host in _VIEWER_AMP_HOSTS:
+        return None
+    return origin_netloc, origin_path
 
 
 def _normalize_path(path: str) -> str:
@@ -327,6 +405,20 @@ def _normalize_path(path: str) -> str:
         if not s:
             continue
         # Path must be longer than the suffix itself (not root-only marker).
+        if lower.endswith(s) and len(path) > len(s):
+            path = path[: -len(s)]
+            lower = path.lower()
+            break
+        if lower.endswith(s + "/") and len(path) > len(s) + 1:
+            path = path[: -(len(s) + 1)]
+            lower = path.lower()
+            break
+    # WordPress feed/trackback/atom appendages (``/world/story/feed`` →
+    # ``/world/story``). Bare ``/feed`` is kept (site RSS is a real resource).
+    for suffix in _CMS_FEED_TRACKBACK_PATH_SUFFIXES:
+        s = suffix.rstrip("/")
+        if not s:
+            continue
         if lower.endswith(s) and len(path) > len(s):
             path = path[: -len(s)]
             lower = path.lower()
@@ -393,15 +485,17 @@ def canonical_url(url: str | None) -> str | None:
       - ``http`` upgraded to ``https`` for identity (same doc, different scheme)
       - default ports dropped
       - Google AMP Cache hosts rewritten to the origin article URL
+      - Bing / Google AMP viewer hosts rewritten to the origin article URL
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
       - embed/comments/share path suffixes stripped (``/embed``, ``/comments``, …)
+      - CMS feed/trackback/atom path suffixes stripped (``/feed``, ``/trackback``, …)
       - mobile/lite/app path prefixes and suffixes stripped (``/m/…``, ``/mobile``, …)
       - CMS default basenames stripped (``/index.html``, ``/index.php``, …)
       - trailing ``.html`` / ``.htm`` stripped (``/story.html`` → ``/story``)
       - path trailing slash normalized (``/`` kept; ``/foo/`` → ``/foo``)
-      - tracking / AMP / print / share query parameters stripped (incl. ``utm_*``)
+      - tracking / AMP / print / share / SERP query parameters stripped (incl. ``utm_*``)
       - first-page pagination query params stripped (``page=1``, ``p=1``, …)
       - remaining query keys sorted
       - fragment dropped
@@ -439,6 +533,11 @@ def canonical_url(url: str | None) -> str | None:
     unwrapped = _unwrap_amp_cdn(netloc, path)
     if unwrapped is not None:
         netloc, path = unwrapped
+    else:
+        # Bing / Google AMP viewer URLs embed the origin in the path.
+        viewer = _unwrap_viewer_amp(netloc, path)
+        if viewer is not None:
+            netloc, path = viewer
 
     netloc = _strip_alias_host(netloc)
 

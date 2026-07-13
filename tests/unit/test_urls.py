@@ -2,6 +2,8 @@
 
 import socket
 
+from urllib.parse import urlsplit
+
 from awareness.util.urls import (
     canonical_url,
     domain_of,
@@ -407,6 +409,90 @@ def test_canonical_url_unwraps_amp_cdn() -> None:
     assert (
         canonical_url("https://cdn.ampproject.org/")
         == "https://cdn.ampproject.org/"
+    )
+
+
+def test_canonical_url_unwraps_bing_and_google_amp_viewers() -> None:
+    """Bing / Google AMP viewer hosts collapse onto the origin article identity."""
+    # Bing AMP viewer (secure origin /amp/s/).
+    assert (
+        canonical_url("https://www.bing.com/amp/s/www.news.example/world/story")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://bing.com/amp/s/news.example/world/story")
+        == "https://news.example/world/story"
+    )
+    # Bing without /s/ (http origin marker) still maps to https identity.
+    assert (
+        canonical_url("https://www.bing.com/amp/www.news.example/world/story")
+        == "https://news.example/world/story"
+    )
+    # Google AMP viewer.
+    assert (
+        canonical_url("https://www.google.com/amp/s/www.news.example/world/story")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://google.com/amp/s/m.news.example/world/story/amp")
+        == "https://news.example/world/story"
+    )
+    # Viewer + trackers + mobile host compose.
+    assert (
+        canonical_url(
+            "https://www.bing.com/amp/s/www.news.example/world/story?utm_source=bing&srsltid=x"
+        )
+        == "https://news.example/world/story"
+    )
+    # Non-viewer host must not be rewritten to a foreign origin host.
+    non_viewer = canonical_url("https://cdn.other.test/amp/s/news.example/world/story")
+    assert non_viewer is not None
+    assert "news.example" not in urlsplit(non_viewer).netloc
+    # Bare bing/google roots stay as-is (alias host strip only).
+    assert canonical_url("https://www.bing.com/") == "https://bing.com/"
+    assert canonical_url("https://www.google.com/") == "https://google.com/"
+
+
+def test_canonical_url_strips_search_and_cms_noise() -> None:
+    """Google/MSN search wrappers and CMS feed/trackback paths are identity-noise."""
+    assert (
+        canonical_url("https://news.example/world/story?srsltid=Abc123&id=9")
+        == "https://news.example/world/story?id=9"
+    )
+    assert (
+        canonical_url("https://news.example/world/story?ocid=msft&id=9")
+        == "https://news.example/world/story?id=9"
+    )
+    assert (
+        canonical_url("https://news.example/world/story?replytocom=42")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story?preview=true&id=9")
+        == "https://news.example/world/story?id=9"
+    )
+    # Non-true preview values survive (custom CMS modes).
+    assert (
+        canonical_url("https://news.example/world/story?preview=draft&id=9")
+        == "https://news.example/world/story?id=9&preview=draft"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/trackback")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/feed")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/atom")
+        == "https://news.example/world/story"
+    )
+    # Bare root /feed is kept (site feed is a real resource).
+    assert canonical_url("https://news.example/feed") == "https://news.example/feed"
+    assert (
+        canonical_url("https://news.example/trackback")
+        == "https://news.example/trackback"
     )
 
 
