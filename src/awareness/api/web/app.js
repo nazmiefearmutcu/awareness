@@ -264,6 +264,52 @@ function formatFetchLatency(sec) {
 }
 
 /**
+ * Discovery + tail fetch counters from /metrics (process-local).
+ * Pure — no DOM. Sums feeds/GDELT URL discovery and tail recrawl fetches.
+ */
+function summarizeDiscoveryMetrics(metricsSnap) {
+  const empty = {
+    feedsUrls: 0,
+    gdeltUrls: 0,
+    gdeltEnqueued: 0,
+    gdeltFetchOk: 0,
+    gdeltFetchAttempts: 0,
+    tailFetches: 0,
+    discovered: 0,
+  };
+  if (!metricsSnap || typeof metricsSnap !== "object") return empty;
+  const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
+  let feedsUrls = 0;
+  let gdeltUrls = 0;
+  let gdeltEnqueued = 0;
+  let gdeltFetchOk = 0;
+  let gdeltFetchAttempts = 0;
+  let tailFetches = 0;
+  for (const c of counters) {
+    if (!c) continue;
+    const n = c.name;
+    const v = Number(c.value) || 0;
+    if (n === "feeds.urls_discovered") feedsUrls += v;
+    else if (n === "gdelt.urls_discovered") gdeltUrls += v;
+    else if (n === "gdelt.urls_enqueued") gdeltEnqueued += v;
+    else if (n === "gdelt.fetch_attempts") {
+      gdeltFetchAttempts += v;
+      const labels = c.labels || {};
+      if (labels.outcome === "ok") gdeltFetchOk += v;
+    } else if (n === "tail.fetches") tailFetches += v;
+  }
+  return {
+    feedsUrls,
+    gdeltUrls,
+    gdeltEnqueued,
+    gdeltFetchOk,
+    gdeltFetchAttempts,
+    tailFetches,
+    discovered: feedsUrls + gdeltUrls,
+  };
+}
+
+/**
  * Pull robots cache hit ratio + Iceberg append counters from /metrics.
  * Pure — no DOM. Gauges are preferred for robots; counters for iceberg rows.
  */
@@ -419,6 +465,33 @@ async function refreshDashboard() {
     jsonlSub.textContent = storageObs.jsonlChunks
       ? `${fmt(storageObs.jsonlChunks)} chunks · p95 ${p95}`
       : "committed this process";
+  }
+
+  // Discovery firehose (feeds + GDELT) and tail recrawl fetch volume.
+  const discovery = summarizeDiscoveryMetrics(metricsSnap);
+  setKPI("kpi-dash-discover", discovery.discovered);
+  const discSub = $("#kpi-dash-discover-sub");
+  if (discSub) {
+    if (discovery.discovered || discovery.gdeltFetchAttempts) {
+      const bits = [];
+      if (discovery.feedsUrls) bits.push(`${fmt(discovery.feedsUrls)} feeds`);
+      if (discovery.gdeltUrls) bits.push(`${fmt(discovery.gdeltUrls)} gdelt`);
+      if (discovery.gdeltFetchOk || discovery.gdeltFetchAttempts) {
+        bits.push(
+          `${fmt(discovery.gdeltFetchOk)}/${fmt(discovery.gdeltFetchAttempts)} slots ok`
+        );
+      }
+      discSub.textContent = bits.length ? bits.join(" · ") : "feeds + GDELT this process";
+    } else {
+      discSub.textContent = "feeds + GDELT this process";
+    }
+  }
+  setKPI("kpi-dash-tail-fetches", discovery.tailFetches);
+  const tailFetchSub = $("#kpi-dash-tail-fetches-sub");
+  if (tailFetchSub) {
+    tailFetchSub.textContent = discovery.tailFetches
+      ? "recrawl HTTP GETs this process"
+      : "no recrawl fetches yet";
   }
 
   $("#kpi-captures-sub").textContent = (docsTotal ? `${fmt(docsTotal)} emitted across jobs` : "across the corpus");
