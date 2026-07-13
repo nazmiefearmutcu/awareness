@@ -2,7 +2,7 @@
 
 Endpoints:
     GET  /                       — web dashboard (static SPA)
-    GET  /healthz                — liveness
+    GET  /healthz                — liveness + search index readiness
     GET  /status                 — overall status
     GET  /metrics                — counters/histograms snapshot
     POST /backfill               — submit
@@ -261,12 +261,34 @@ def create_app() -> FastAPI:
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
+        """Liveness probe plus search-index readiness.
+
+        ``ok`` stays True while the process can answer (liveness). ``index_ready``
+        reports whether DuckDB views are queryable; clients that need search
+        should wait for ``index_ready`` (and optionally ``index.fts_built``).
+        """
         s = get_settings()
-        return {
+        out: dict[str, Any] = {
             "ok": True,
+            "version": __version__,
             "state_db": _State.state.url if _State.state else None,
             "data_dir": str(s.data_dir),
+            "index_ready": False,
+            "index": None,
         }
+        try:
+            idx = _get_index()
+            snap = idx.health_snapshot()
+            out["index"] = snap
+            out["index_ready"] = bool(snap.get("ready"))
+        except Exception as exc:  # noqa: BLE001 — healthz must never 500
+            logger.warning("healthz_index_probe_failed", error=str(exc))
+            out["index"] = {
+                "ready": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            out["index_ready"] = False
+        return out
 
     @app.get("/status")
     def status() -> dict[str, Any]:
@@ -540,13 +562,22 @@ def create_app() -> FastAPI:
         )
         if not rows:
             raise HTTPException(404, "capture not found")
-        return rows[0]
+        row = dict(rows[0])
+        # Total siblings in the same dup-group (for reader title badge).
+        row["related_count"] = idx.related_count(capture_id)
+        return row
 
     @app.get("/captures/{capture_id}/related")
     def capture_related(capture_id: str, limit: int = Query(12, ge=1, le=50)) -> dict[str, Any]:
         idx = _get_index()
         siblings = idx.related(capture_id, limit=limit)
-        return {"capture_id": capture_id, "siblings": siblings}
+        # Full sibling total (may exceed *limit*); UI uses this for counts.
+        related_count = idx.related_count(capture_id)
+        return {
+            "capture_id": capture_id,
+            "siblings": siblings,
+            "related_count": related_count,
+        }
 
     @app.get("/search")
     def search(

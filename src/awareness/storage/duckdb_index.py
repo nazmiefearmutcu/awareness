@@ -734,6 +734,59 @@ class DuckDbIndex:
             self._refresh_views_if_stale(conn)
             return find_related_captures(conn, capture_id, limit=limit)
 
+    def related_count(self, capture_id: str) -> int:
+        """Total sibling captures in the same dup-group (excludes *capture_id*)."""
+        with self._lock:
+            conn = self.connect()
+            self._refresh_views_if_stale(conn)
+            return count_related_captures(conn, capture_id)
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Cheap readiness probe for /healthz (views, row count, FTS flags).
+
+        Does not force an FTS rebuild — only reports whether the extension
+        loaded and whether an FTS index has already been built for the
+        current corpus signature.
+        """
+        try:
+            with self._lock:
+                conn = self.connect()
+                self._refresh_views_if_stale(conn)
+                try:
+                    row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+                    captures = int(row[0]) if row else 0
+                except duckdb.Error as exc:
+                    return {
+                        "ready": False,
+                        "error": f"captures_view: {exc}",
+                        "fts_extension": bool(self._fts_available),
+                        "fts_built": False,
+                        "captures": 0,
+                    }
+                fts_built = (
+                    self._fts_built_signature is not None
+                    and self._fts_built_signature == self._views_signature
+                    and self._fts_built_for_count >= 0
+                )
+                return {
+                    "ready": True,
+                    "captures": captures,
+                    "fts_extension": bool(self._fts_available),
+                    "fts_built": bool(fts_built),
+                    "fts_built_for_count": int(self._fts_built_for_count),
+                    "views_signature_present": self._views_signature is not None,
+                    "db_path": str(self._db_path),
+                    "jsonl_dir": str(self._jsonl_dir),
+                }
+        except Exception as exc:  # noqa: BLE001 — health must never raise
+            return {
+                "ready": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "fts_extension": bool(self._fts_available) if self._fts_available is not None else False,
+                "fts_built": False,
+                "captures": 0,
+            }
+
     # ── full-text search ────────────────────────────────────────────────
     _CAPTURES_IDX_SELECT = """
                 SELECT
@@ -1703,6 +1756,28 @@ def _snippet_for(text: str, title: str, terms: list[str]) -> tuple[str, list[tup
     for mm in pattern.finditer(snippet):
         hits.append((mm.start(), mm.end()))
     return snippet, hits
+
+
+def count_related_captures(conn: duckdb.DuckDBPyConnection, capture_id: str) -> int:
+    """Count sibling captures in the same dup_group (excludes *capture_id*)."""
+    row = conn.execute(
+        "SELECT doc_id, parent_doc_or_dup_group FROM captures WHERE capture_id = ? LIMIT 1",
+        [capture_id],
+    ).fetchone()
+    if not row:
+        return 0
+    doc_id, dup_group = row
+    group = dup_group or doc_id
+    cnt = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM captures
+        WHERE (parent_doc_or_dup_group = ? OR doc_id = ?)
+          AND capture_id <> ?
+        """,
+        [group, group, capture_id],
+    ).fetchone()
+    return int(cnt[0]) if cnt else 0
 
 
 def find_related_captures(
