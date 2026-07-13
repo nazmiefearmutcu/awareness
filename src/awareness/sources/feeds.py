@@ -189,7 +189,10 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
             r = await get_with_retries(
                 client, url, headers={"User-Agent": user_agent}
             )
-            if r.status_code != 200 or not r.content:
+            if r.status_code != 200:
+                logger.warning("feed_fetch_non_200", url=url, status=r.status_code)
+                return []
+            if not r.content:
                 return []
             body = r.content
     except RetryableHTTPError:
@@ -214,7 +217,10 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
             r = await get_with_retries(
                 client, url, headers={"User-Agent": user_agent}
             )
-            if r.status_code != 200 or not r.content:
+            if r.status_code != 200:
+                logger.warning("sitemap_fetch_non_200", url=url, status=r.status_code)
+                return []
+            if not r.content:
                 return []
             body = r.content
     except RetryableHTTPError:
