@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -26,6 +27,7 @@ from email.utils import parsedate_to_datetime
 import httpx
 
 from awareness.obs.logging import get_logger
+from awareness.obs.metrics import get_metrics
 
 logger = get_logger("util.http")
 
@@ -35,6 +37,11 @@ RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 DEFAULT_MAX_ATTEMPTS = 4
 DEFAULT_BASE_DELAY = 0.5
 DEFAULT_MAX_DELAY = 30.0
+# Cap connect phase so hung SYN/TLS handshakes fail fast while still allowing
+# long reads for large feed/sitemap bodies (full budget goes to read/write).
+DEFAULT_CONNECT_TIMEOUT_CAP = 10.0
+DEFAULT_CONNECT_TIMEOUT_FLOOR = 1.0
+DEFAULT_CONNECT_TIMEOUT_FRACTION = 0.25
 
 # Process-wide cap on concurrent HTTP fetches (open sockets).
 _fetch_sem: asyncio.Semaphore | None = None
@@ -45,6 +52,67 @@ _fetch_sem_init = threading.Lock()
 # Reuse avoids per-request TCP/TLS setup across feed/sitemap/tail fetches.
 _shared_clients: dict[tuple[float, bool], httpx.AsyncClient] = {}
 _shared_clients_lock = threading.Lock()
+
+
+def build_http_timeout(total_sec: float) -> httpx.Timeout:
+    """Build a split connect/read/write timeout from a single budget.
+
+    Connect (TCP + TLS) is capped so slow or blackholed hosts fail quickly;
+    read/write keep the full ``total_sec`` budget for large bodies. Pool
+    acquisition uses the same connect budget.
+    """
+    total = max(0.1, float(total_sec))
+    connect = min(
+        DEFAULT_CONNECT_TIMEOUT_CAP,
+        max(DEFAULT_CONNECT_TIMEOUT_FLOOR, total * DEFAULT_CONNECT_TIMEOUT_FRACTION),
+    )
+    # Never let connect exceed the overall budget.
+    connect = min(connect, total)
+    return httpx.Timeout(
+        connect=connect,
+        read=total,
+        write=total,
+        pool=connect,
+    )
+
+
+def _status_class(code: int) -> str:
+    """Map an HTTP status to a low-cardinality class label (``2xx`` … ``5xx``)."""
+    if 100 <= code < 200:
+        return "1xx"
+    if 200 <= code < 300:
+        return "2xx"
+    if 300 <= code < 400:
+        return "3xx"
+    if 400 <= code < 500:
+        return "4xx"
+    if 500 <= code < 600:
+        return "5xx"
+    return "other"
+
+
+def _record_fetch_attempt(
+    *,
+    elapsed_sec: float,
+    outcome: str,
+    status_code: int | None = None,
+    attempt: int = 0,
+) -> None:
+    """Record one HTTP attempt: latency hist + attempt/retry/status counters.
+
+    Labels stay low-cardinality (outcome + status class only) so Prometheus
+    series do not explode per URL/domain.
+    """
+    m = get_metrics()
+    labels = {"outcome": outcome}
+    if status_code is not None:
+        labels = {**labels, "status_class": _status_class(status_code)}
+    m.observe("http.fetch_seconds", max(0.0, float(elapsed_sec)), labels=labels)
+    m.inc("http.fetch_attempts", labels={"outcome": outcome})
+    if attempt > 0:
+        m.inc("http.fetch_retries", labels={"outcome": outcome})
+    if status_code is not None:
+        m.inc("http.fetch_status", labels={"status_class": _status_class(status_code)})
 
 
 class RetryableHTTPError(Exception):
@@ -126,7 +194,9 @@ async def get_shared_async_client(
     after a single request — use :func:`aclose_shared_async_clients` at process
     shutdown or in tests via :func:`reset_shared_async_clients`.
 
-    ``timeout`` defaults to ``settings.request_timeout_sec``.
+    ``timeout`` defaults to ``settings.request_timeout_sec``. The client uses a
+    split :class:`httpx.Timeout` (fast connect, full budget for read/write) so
+    hung handshakes fail before burning the whole request window.
     """
     if timeout is None:
         from awareness.config import get_settings  # noqa: PLC0415
@@ -139,7 +209,7 @@ async def get_shared_async_client(
         if client is not None and not client.is_closed:
             return client
         client = httpx.AsyncClient(
-            timeout=timeout_f,
+            timeout=build_http_timeout(timeout_f),
             follow_redirects=follow_redirects,
             limits=_pool_limits(max_connections),
         )
@@ -225,22 +295,46 @@ async def get_with_retries(
 
     Each attempt acquires the process-wide fetch slot for the duration of the
     HTTP call only (backoff sleeps release the slot).
+
+    Observability: every attempt records ``http.fetch_seconds`` (histogram),
+    ``http.fetch_attempts`` / ``http.fetch_retries`` counters, and
+    ``http.fetch_status`` by status class (``2xx``…``5xx``).
     """
     last_exc: Exception | None = None
     for attempt in range(max_attempts):
+        t0 = time.perf_counter()
         try:
             async with acquire_fetch_slot():
                 resp = await client.get(url, headers=headers)
         except httpx.HTTPError as exc:
+            elapsed = time.perf_counter() - t0
             last_exc = exc
+            _record_fetch_attempt(
+                elapsed_sec=elapsed, outcome="transport_error", attempt=attempt
+            )
             if attempt + 1 >= max_attempts:
                 break
             await asyncio.sleep(_backoff_delay(attempt, base_delay, None))
             continue
+        elapsed = time.perf_counter() - t0
         if resp.status_code in RETRYABLE_STATUS:
+            _record_fetch_attempt(
+                elapsed_sec=elapsed,
+                outcome="retryable",
+                status_code=resp.status_code,
+                attempt=attempt,
+            )
             if attempt + 1 >= max_attempts:
                 raise RetryableHTTPError(f"{url} -> {resp.status_code} after {max_attempts} attempts")
             await asyncio.sleep(_backoff_delay(attempt, base_delay, _retry_after_seconds(resp)))
             continue
-        return resp  # success OR non-retryable (e.g. 404) — caller decides
+        # success OR non-retryable (e.g. 404) — caller decides
+        outcome = "ok" if resp.status_code < 400 else "http_error"
+        _record_fetch_attempt(
+            elapsed_sec=elapsed,
+            outcome=outcome,
+            status_code=resp.status_code,
+            attempt=attempt,
+        )
+        return resp
     raise RetryableHTTPError(f"{url} failed transiently after {max_attempts} attempts: {last_exc}")
