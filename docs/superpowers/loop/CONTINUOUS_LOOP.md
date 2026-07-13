@@ -76,12 +76,14 @@
 |----|------|------|--------|
 | C4+ | search | URL/path term coverage boost in BM25 re-rank | ✅ |
 | C4+ | dedup | Unwrap Google AMP Cache hosts for fetch-gate identity | ✅ |
+| C4+ | search | Ordered title-phrase boost in BM25 re-rank | ✅ |
+| C4+ | dedup | Unwrap Bing/Google AMP viewers + SERP/CMS identity noise | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~135 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~137 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** URL hit re-rank (`e87d9bc`), AMP CDN identity (`a401496`)
+- **Latest:** title-phrase re-rank (`44283a5`), viewer AMP identity (`e4ad046`)
 
 ## Rules
 
