@@ -92,8 +92,23 @@ class WorkerEngine:
         settings = get_settings()
         self._concurrency = concurrency or settings.worker_concurrency
         self._robots = RobotsCache(state_db=state, ttl=settings.robots_cache_ttl_sec)
+        staging_root = settings.staging_jsonl_dir()
+        # Promote leftover writer temps from a prior crash so compact/index see them.
+        if jsonl_writer is None:
+            try:
+                from awareness.storage.jsonl import recover_orphan_temps  # noqa: PLC0415
+
+                recovered = recover_orphan_temps(staging_root)
+                if recovered:
+                    logger.info(
+                        "jsonl_orphans_recovered_on_start",
+                        count=len(recovered),
+                        root=str(staging_root),
+                    )
+            except Exception as exc:  # noqa: BLE001 — never block worker start
+                logger.warning("jsonl_orphan_recover_on_start_failed", err=str(exc))
         self._jsonl = jsonl_writer or JsonlStagingWriter(
-            root=settings.staging_jsonl_dir(),
+            root=staging_root,
             flush_seconds=settings.storage_flush_seconds,
             max_records_per_file=settings.storage_flush_records,
             compress=settings.jsonl_compress,
