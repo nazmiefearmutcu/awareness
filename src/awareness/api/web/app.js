@@ -282,6 +282,9 @@ function summarizeDiscoveryMetrics(metricsSnap) {
     feedCharset: 0,
     feedSitemaps: 0,
     feedErrors: 0,
+    feedFetchAttempts: 0,
+    feedFetchOk: 0,
+    feedFetchP95: null,
   };
   if (!metricsSnap || typeof metricsSnap !== "object") return empty;
   const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
@@ -295,6 +298,8 @@ function summarizeDiscoveryMetrics(metricsSnap) {
   let feedRetryable = 0;
   let feedCharset = 0;
   let feedSitemaps = 0;
+  let feedFetchAttempts = 0;
+  let feedFetchOk = 0;
   for (const c of counters) {
     if (!c) continue;
     const n = c.name;
@@ -311,6 +316,23 @@ function summarizeDiscoveryMetrics(metricsSnap) {
     else if (n === "feeds.retryable_http_error") feedRetryable += v;
     else if (n === "feeds.decode_charset") feedCharset += v;
     else if (n === "feeds.robots_sitemaps_discovered") feedSitemaps += v;
+    else if (n === "feeds.fetch_attempts") {
+      feedFetchAttempts += v;
+      const labels = c.labels || {};
+      if (labels.outcome === "ok") feedFetchOk += v;
+    }
+  }
+  const hists = Array.isArray(metricsSnap.histograms) ? metricsSnap.histograms : [];
+  let feedWeightedP95 = 0;
+  let feedHistCount = 0;
+  for (const h of hists) {
+    if (!h || h.name !== "feeds.fetch_seconds") continue;
+    const n = Number(h.count) || 0;
+    if (n <= 0) continue;
+    const p95 = Number(h.p95);
+    if (!Number.isFinite(p95)) continue;
+    feedHistCount += n;
+    feedWeightedP95 += p95 * n;
   }
   return {
     feedsUrls,
@@ -325,6 +347,9 @@ function summarizeDiscoveryMetrics(metricsSnap) {
     feedCharset,
     feedSitemaps,
     feedErrors: feedNon200 + feedRetryable,
+    feedFetchAttempts,
+    feedFetchOk,
+    feedFetchP95: feedHistCount > 0 ? feedWeightedP95 / feedHistCount : null,
   };
 }
 
@@ -561,6 +586,26 @@ async function refreshDashboard() {
     } else {
       feedErrSub.textContent = "non-200 + retries this process";
     }
+  }
+
+  // Feed/sitemap discovery fetch latency + attempts (process-local).
+  const feedP95Node = $("#kpi-dash-feed-p95");
+  if (feedP95Node) {
+    feedP95Node.textContent = formatFetchLatency(discovery.feedFetchP95);
+    feedP95Node.classList.toggle("is-zero", !discovery.feedFetchAttempts);
+  }
+  const feedP95Sub = $("#kpi-dash-feed-p95-sub");
+  if (feedP95Sub) {
+    feedP95Sub.textContent = discovery.feedFetchAttempts
+      ? `${fmt(discovery.feedFetchOk)}/${fmt(discovery.feedFetchAttempts)} ok · process`
+      : "no feed fetches yet";
+  }
+  setKPI("kpi-dash-feed-attempts", discovery.feedFetchAttempts);
+  const feedAttSub = $("#kpi-dash-feed-attempts-sub");
+  if (feedAttSub) {
+    feedAttSub.textContent = discovery.feedFetchAttempts
+      ? `${fmt(discovery.feedFetchOk)} succeeded`
+      : "discovery GETs this process";
   }
 
   // WET Gopher/C4 quality filter (process-local).
