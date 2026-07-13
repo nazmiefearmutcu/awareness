@@ -1948,10 +1948,57 @@ code {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.reader-related { margin-top: 28px; }
+.reader-related {
+  margin-top: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-1, var(--bg-2));
+  padding: 0;
+}
+.related-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  user-select: none;
+  color: var(--fg-dim);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+.related-summary::-webkit-details-marker { display: none; }
+.related-summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  color: var(--fg-dim);
+  transition: transform 0.12s ease;
+}
+.reader-related[open] > .related-summary::before {
+  transform: rotate(90deg);
+}
+.related-summary-label { font-weight: 600; color: var(--fg-mid, var(--fg)); }
+.related-summary-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 8px;
+  line-height: 1.6;
+}
+.reader-related.is-empty .related-summary-count { opacity: 0.7; }
+.related-body {
+  padding: 0 12px 12px;
+  max-height: min(40vh, 320px);
+  overflow-y: auto;
+}
 .related-list {
   list-style: none;
-  margin: 10px 0 0;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -1964,9 +2011,12 @@ code {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: inherit;
+  width: 100%;
+  text-align: left;
 }
-.related-title { font-weight: 600; color: var(--fg-strong); font-size: 13px; }
-.related-meta, .related-when { font-size: 11px; color: var(--fg-dim); font-family: var(--mono); margin-top: 3px; }
+.related-link:hover { border-color: var(--fg-dim); }
+.related-title { font-weight: 600; color: var(--fg-strong); font-size: 13px; display: block; }
+.related-meta, .related-when { font-size: 11px; color: var(--fg-dim); font-family: var(--mono); margin-top: 3px; display: block; }
 
 /* Command palette */
 .cmdk-overlay {

@@ -752,24 +752,47 @@ async function openReader(cid) {
   meta.appendChild(dl);
   body.appendChild(meta);
 
-  // Related captures (sibling dup_group entries).
-  const relatedSection = el("section", { class: "reader-related" });
-  relatedSection.appendChild(el("div", { class: "reader-meta-title", text: "related captures" }));
+  // Related captures (sibling dup_group entries) — collapsible so long
+  // sibling lists do not bury provenance/body below the fold.
+  const relatedDetails = el("details", { class: "reader-related" });
+  const relatedSummary = el("summary", { class: "related-summary" });
+  relatedSummary.appendChild(el("span", { class: "related-summary-label", text: "related captures" }));
+  const relatedCount = el("span", { class: "related-summary-count", text: "…" });
+  relatedSummary.appendChild(relatedCount);
+  relatedDetails.appendChild(relatedSummary);
   const relatedBody = el("div", { class: "related-body" });
   relatedBody.appendChild(el("p", { class: "muted", text: "loading…" }));
-  relatedSection.appendChild(relatedBody);
-  body.appendChild(relatedSection);
+  relatedDetails.appendChild(relatedBody);
+  body.appendChild(relatedDetails);
 
-  void loadRelated(cid, relatedBody);
+  void loadRelated(cid, relatedBody, relatedDetails, relatedCount);
 
   setTimeout(() => $("#reader-close").focus(), 80);
 }
 
-async function loadRelated(cid, host) {
+async function loadRelated(cid, host, detailsEl, countEl) {
+  // Auto-open only for small sibling sets; larger clusters stay collapsed
+  // so the reader body stays primary. User can expand via <summary>.
+  const AUTO_OPEN_MAX = 3;
   try {
     const r = await api("/captures/" + encodeURIComponent(cid) + "/related?limit=12");
     clear(host);
     const sibs = r.siblings || [];
+    if (countEl) {
+      countEl.textContent = sibs.length ? String(sibs.length) : "0";
+    }
+    if (detailsEl) {
+      if (sibs.length === 0) {
+        detailsEl.open = false;
+        detailsEl.classList.add("is-empty");
+      } else if (sibs.length <= AUTO_OPEN_MAX) {
+        detailsEl.open = true;
+        detailsEl.classList.remove("is-empty");
+      } else {
+        detailsEl.open = false;
+        detailsEl.classList.remove("is-empty");
+      }
+    }
     if (sibs.length === 0) {
       host.appendChild(el("p", { class: "muted", text: "No related captures — this is the only member of its dup-group." }));
       return;
@@ -797,9 +820,15 @@ async function loadRelated(cid, host) {
     host.appendChild(list);
   } catch (err) {
     clear(host);
+    if (countEl) countEl.textContent = "!";
+    if (detailsEl) {
+      detailsEl.open = true;
+      detailsEl.classList.add("is-empty");
+    }
     host.appendChild(el("p", { class: "muted", text: "failed: " + err.message }));
   }
 }
+
 function closeReader() {
   const reader = $("#reader");
   const scrim = $("#reader-scrim");
