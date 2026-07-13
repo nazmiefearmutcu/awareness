@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from awareness.storage.duckdb_index import (
+    _lead_hit_frac,
     _lead_phrase_frac,
     _length_factor,
     _recency_factor,
@@ -85,6 +86,34 @@ def test_title_exact_frac_rejects_extra_or_missing_or_reorder() -> None:
     assert _title_exact_frac("Bitcoin", ["bitcoin", "price"]) == 0.0
     assert _title_exact_frac("Price bitcoin", ["bitcoin", "price"]) == 0.0
     assert _title_exact_frac("markets only", ["bitcoin"]) == 0.0
+
+
+# ── _lead_hit_frac ───────────────────────────────────────────────────────
+def test_lead_hit_frac_no_terms_is_zero() -> None:
+    assert _lead_hit_frac("Bitcoin anywhere", []) == 0.0
+
+
+def test_lead_hit_frac_counts_distinct_terms_in_lead() -> None:
+    assert _lead_hit_frac("Bitcoin price surges in Asia", ["bitcoin", "price"]) == 1.0
+    assert _lead_hit_frac("Bitcoin only in lead", ["bitcoin", "ethereum"]) == 0.5
+    assert _lead_hit_frac("nothing here", ["bitcoin"]) == 0.0
+
+
+def test_lead_hit_frac_is_case_insensitive() -> None:
+    assert _lead_hit_frac("BITCOIN jumped", ["bitcoin"]) == 1.0
+
+
+def test_lead_hit_frac_ignores_matches_past_lead_window() -> None:
+    """Term only after the lead window must not score."""
+    buried = ("noise " * 80) + "bitcoin later"
+    assert _lead_hit_frac(buried, ["bitcoin"], lead_chars=40) == 0.0
+    assert _lead_hit_frac(buried, ["bitcoin"], lead_chars=2000) == 1.0
+
+
+def test_lead_hit_frac_empty_lead_is_zero() -> None:
+    assert _lead_hit_frac("", ["bitcoin"]) == 0.0
+    assert _lead_hit_frac("   ", ["bitcoin"]) == 0.0
+    assert _lead_hit_frac("Bitcoin", ["bitcoin"], lead_chars=0) == 0.0
 
 
 # ── _lead_phrase_frac ────────────────────────────────────────────────────
@@ -349,6 +378,7 @@ def test_rerank_title_exact_overrides_phrase_only() -> None:
         title_exact_boost=0.0,
         url_boost=0.0,
         url_phrase_boost=0.0,
+        lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
     )
     # Equal title_f + phrase_f, no exact → BM25 order (LONGER first).
@@ -361,6 +391,7 @@ def test_rerank_title_exact_overrides_phrase_only() -> None:
         title_exact_boost=0.4,
         url_boost=0.0,
         url_phrase_boost=0.0,
+        lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
     )
     # EXACT final = 0.85 * 1.5 * 1.35 * 1.4 = 2.40975
@@ -389,6 +420,7 @@ def test_rerank_lead_phrase_overrides_buried_body_match() -> None:
         title_exact_boost=0.0,
         url_boost=0.0,
         url_phrase_boost=0.0,
+        lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
     )
     assert [c["capture_id"] for c in off] == ["BURIED", "LEAD"]
@@ -400,10 +432,51 @@ def test_rerank_lead_phrase_overrides_buried_body_match() -> None:
         title_exact_boost=0.0,
         url_boost=0.0,
         url_phrase_boost=0.0,
+        lead_hit_boost=0.0,
         lead_phrase_boost=0.2,
         lead_chars=280,
     )
     # LEAD final = 0.85 * 1.2 = 1.02 > BURIED = 1.0 * 1.0
+    assert [c["capture_id"] for c in on] == ["LEAD", "BURIED"]
+
+
+def test_rerank_lead_hit_overrides_buried_single_term() -> None:
+    """Bag-of-words lead coverage beats a buried single-term body match.
+
+    lead_phrase_frac is 0 for single-term queries; lead_hit_frac covers them.
+    Neutral titles/urls; only lead_hit_f differs when boost is on.
+    """
+    buried_text = ("x " * 200) + "bitcoin later in the article"
+    lead_text = "Bitcoin jumped as markets opened. " + ("y " * 50)
+    cands = [
+        _cand("BURIED", 1.0, title="n", text=buried_text),
+        _cand("LEAD", 0.90, title="n", text=lead_text),
+    ]
+    off = _rerank(
+        cands,
+        ["bitcoin"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+    )
+    assert [c["capture_id"] for c in off] == ["BURIED", "LEAD"]
+    on = _rerank(
+        cands,
+        ["bitcoin"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        lead_hit_boost=0.15,
+        lead_phrase_boost=0.0,
+        lead_chars=280,
+    )
+    # LEAD final = 0.90 * 1.15 = 1.035 > BURIED = 1.0 * 1.0
     assert [c["capture_id"] for c in on] == ["LEAD", "BURIED"]
 
 
@@ -428,9 +501,23 @@ def test_rerank_url_hit_overrides_higher_bm25() -> None:
             domain="news.example",
         ),
     ]
-    off = _rerank(cands, ["bitcoin"], title_boost=0.0, url_boost=0.0)
+    off = _rerank(
+        cands,
+        ["bitcoin"],
+        title_boost=0.0,
+        url_boost=0.0,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+    )
     assert [c["capture_id"] for c in off] == ["A", "B"]
-    on = _rerank(cands, ["bitcoin"], title_boost=0.0, url_boost=0.25)
+    on = _rerank(
+        cands,
+        ["bitcoin"],
+        title_boost=0.0,
+        url_boost=0.25,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+    )
     assert [c["capture_id"] for c in on] == ["B", "A"]
 
 
@@ -447,7 +534,14 @@ def test_rerank_url_boost_falls_back_to_canonical_url() -> None:
             domain="x.test",
         ),
     ]
-    out = _rerank(cands, ["bitcoin"], title_boost=0.0, url_boost=0.25)
+    out = _rerank(
+        cands,
+        ["bitcoin"],
+        title_boost=0.0,
+        url_boost=0.25,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+    )
     assert [c["capture_id"] for c in out] == ["B", "A"]
 
 

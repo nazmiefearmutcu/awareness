@@ -73,8 +73,9 @@ _RERANK_TITLE_PHRASE_BOOST = 0.35  # Wp: ordered multi-term title phrase multipl
 _RERANK_TITLE_EXACT_BOOST = 0.4  # We: title tokens == query terms multiplies by 1+We
 _RERANK_URL_BOOST = 0.25         # Wu: full url/domain term coverage multiplies by 1+Wu
 _RERANK_URL_PHRASE_BOOST = 0.2   # Wup: ordered multi-term URL-slug phrase multiplies by 1+Wup
+_RERANK_LEAD_HIT_BOOST = 0.15    # Wh: bag-of-words lead term coverage multiplies by 1+Wh
 _RERANK_LEAD_PHRASE_BOOST = 0.2   # Wl: ordered multi-term phrase in lead text multiplies by 1+Wl
-_RERANK_LEAD_CHARS = 280         # news lede window (chars) for lead-phrase credit
+_RERANK_LEAD_CHARS = 280         # news lede window (chars) for lead hit/phrase credit
 _RERANK_LEN_PIVOT = 4000         # chars; docs up to here are not length-damped
 _RERANK_LEN_FLOOR = 0.75         # the most a very long doc can be damped to
 _RERANK_RECENCY_WEIGHT = 0.0     # Wr: 0 disables the recency prior (off by default)
@@ -1781,6 +1782,34 @@ def _url_phrase_frac(url: str, domain: str, terms: list[str]) -> float:
     return 0.5
 
 
+def _lead_hit_frac(
+    text: str,
+    terms: list[str],
+    *,
+    lead_chars: int = _RERANK_LEAD_CHARS,
+) -> float:
+    """Fraction of distinct query terms that occur in the document lead ``[0, 1]``.
+
+    Complements ordered lead-phrase credit: bag-of-words coverage in the lede
+    promotes single-term and unordered multi-term matches that appear early
+    (the news answer) over the same terms buried deep in a long body. Credit
+    is computed on the first ``lead_chars`` characters only.
+
+    * ``1.0`` — every query term appears in the lead window
+    * ``0.5`` — half the terms appear (etc.)
+    * ``0.0`` — no terms, empty lead, or zero window
+    """
+    if not terms:
+        return 0.0
+    if lead_chars <= 0:
+        return 0.0
+    lead = (text or "")[:lead_chars].lower()
+    if not lead.strip():
+        return 0.0
+    hits = sum(1 for t in terms if t and t in lead)
+    return hits / len(terms)
+
+
 def _lead_phrase_frac(
     text: str,
     terms: list[str],
@@ -1876,6 +1905,7 @@ def _rerank(
     title_exact_boost: float = _RERANK_TITLE_EXACT_BOOST,
     url_boost: float = _RERANK_URL_BOOST,
     url_phrase_boost: float = _RERANK_URL_PHRASE_BOOST,
+    lead_hit_boost: float = _RERANK_LEAD_HIT_BOOST,
     lead_phrase_boost: float = _RERANK_LEAD_PHRASE_BOOST,
     lead_chars: int = _RERANK_LEAD_CHARS,
     len_pivot: int = _RERANK_LEN_PIVOT,
@@ -1886,9 +1916,9 @@ def _rerank(
 ) -> list[dict[str, Any]]:
     """Re-rank BM25 candidates (already in raw-score DESC order) by multiplying
     the min-max-normalized BM25 score with independent title / title-phrase /
-    title-exact / url / url-phrase / lead-phrase / length / recency factors.
-    Returns a NEW ordered list; input row dicts are not mutated. Stable: equal
-    final scores keep the incoming BM25 order.
+    title-exact / url / url-phrase / lead-hit / lead-phrase / length / recency
+    factors. Returns a NEW ordered list; input row dicts are not mutated.
+    Stable: equal final scores keep the incoming BM25 order.
 
     Each candidate dict carries ``score`` (raw BM25), ``title``, ``text``,
     optional ``url`` / ``canonical_url`` / ``domain``, and a timestamp
@@ -1926,6 +1956,9 @@ def _rerank(
         url_phrase_f = 1.0 + url_phrase_boost * _url_phrase_frac(
             str(url_blob), str(domain_blob), terms
         )
+        lead_hit_f = 1.0 + lead_hit_boost * _lead_hit_frac(
+            str(text), terms, lead_chars=lead_chars
+        )
         lead_f = 1.0 + lead_phrase_boost * _lead_phrase_frac(
             str(text), terms, lead_chars=lead_chars
         )
@@ -1944,6 +1977,7 @@ def _rerank(
             * exact_f
             * url_f
             * url_phrase_f
+            * lead_hit_f
             * lead_f
             * len_f
             * rec_f
