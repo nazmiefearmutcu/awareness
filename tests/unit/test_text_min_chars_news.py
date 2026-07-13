@@ -308,3 +308,70 @@ async def test_tail_recrawl_accepts_100_char_news_via_real_extract(monkeypatch) 
 
     assert len(caps) == 1
     assert len(caps[0].text) == len(paragraph)
+    # Short news body would fail bulk floor (200) but was kept via news floor.
+    from awareness.obs.metrics import get_metrics
+    assert get_metrics().counter_sum("tail.news_floor_kept") >= 1
+
+
+@pytest.mark.asyncio
+async def test_bulk_path_does_not_count_news_floor_kept(monkeypatch) -> None:
+    """Non-news extract that passes bulk min must not increment news_floor_kept."""
+    from awareness.config import get_settings
+    from awareness.normalize.html import HtmlExtraction
+    from awareness.obs.metrics import get_metrics
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "text_min_chars", 50)
+    monkeypatch.setattr(settings, "text_min_chars_news", 40)
+    monkeypatch.setattr(settings, "text_max_chars", 1_500_000)
+
+    body = "y" * 80  # above both floors
+    url = "https://example.com/longish"
+
+    def real_html_to_text(html_in, *, url=None, min_chars=200, max_chars=1_500_000):
+        nt = normalize_text(body, title="Bulk", min_chars=min_chars, max_chars=max_chars)
+        if nt.discarded_reason:
+            return None
+        return HtmlExtraction(
+            text=nt,
+            title=nt.title,
+            published_ts=None,
+            canonical_url_hint=url,
+            language_hint="en",
+            raw_metadata={},
+        )
+
+    get_mock = AsyncMock(
+        side_effect=lambda client, u, **kw: httpx.Response(
+            200,
+            text=f"<html><body><p>{body}</p></body></html>",
+            headers={"Content-Type": "text/html"},
+            request=httpx.Request("GET", u),
+        )
+    )
+    partition = PartitionSpec(
+        source_type=SourceKind.TAIL_RECRAWL,
+        partition_key=f"tail:{canonical_url(url) or url}",
+        payload={"url": url, "discovery_channel": "manual"},
+    )
+    before = get_metrics().counter_sum("tail.news_floor_kept")
+    with (
+        patch("awareness.sources.tail_recrawl.is_public_http_url", return_value=True),
+        patch("awareness.sources.tail_recrawl._get_public_url", get_mock),
+        patch("awareness.sources.tail_recrawl.html_to_text", side_effect=real_html_to_text),
+    ):
+        adapter = TailRecrawlAdapter()
+        caps = [c async for c in adapter.run_partition(partition, _context())]
+
+    assert len(caps) == 1
+    assert get_metrics().counter_sum("tail.news_floor_kept") == before
+
+
+def test_schema_documents_text_min_chars_news() -> None:
+    from awareness.config import schema as cfg_schema
+
+    fld = cfg_schema.get_field("text_min_chars_news")
+    assert fld is not None
+    assert fld.default == 80
+    assert "RSS" in fld.description or "news" in fld.description.lower()
+    assert "text_min_chars" in fld.description

@@ -176,6 +176,13 @@ class TailRecrawlAdapter(Adapter):
             get_metrics().inc("tail.text_too_short", labels={"domain": dom})
             return
         text = ext.text.text
+        # Observability: news floor accepted a body the bulk floor would drop.
+        bulk_min = int(settings.text_min_chars)
+        if min_chars < bulk_min and len(text) < bulk_min:
+            get_metrics().inc(
+                "tail.news_floor_kept",
+                labels={"domain": dom, "discovery": str(discovery_channel or "")[:48]},
+            )
         ch = compute_content_hash(text)
         sim = simhash64(text)
 

@@ -179,7 +179,9 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
     ),
     ConfigField(
         "text_min_chars_news", "Corpus filters", KIND_INT, 80,
-        "Lower minimum text length for RSS/Atom/GDELT/sitemap-discovered pages.",
+        "Lower minimum text length for RSS/Atom/GDELT/sitemap-discovered pages "
+        "(effective floor is max(40, min(text_min_chars, text_min_chars_news)); "
+        "docs kept only by this floor increment metric tail.news_floor_kept).",
         minimum=0, maximum=100_000_000,
     ),
     ConfigField(
