@@ -26,6 +26,16 @@ def test_canonical_url_drops_tracking_params() -> None:
     assert "id=42" in out
 
 
+def test_canonical_url_strips_any_utm_prefix_and_extra_trackers() -> None:
+    raw = (
+        "https://news.example/article?id=7"
+        "&utm_custom_channel=newsletter"
+        "&gbraid=abc&wbraid=def&igshid=1&mkt_tok=x"
+    )
+    out = canonical_url(raw)
+    assert out == "https://news.example/article?id=7"
+
+
 def test_canonical_url_drops_fragment_and_sorts_query() -> None:
     a = canonical_url("https://x.test/p?b=2&a=1#section")
     b = canonical_url("https://x.test/p?a=1&b=2")
@@ -36,6 +46,41 @@ def test_canonical_url_handles_garbage() -> None:
     assert canonical_url("") is None
     assert canonical_url(None) is None
     assert canonical_url("not a url") is None
+
+
+def test_canonical_url_strips_www_for_news_identity() -> None:
+    """Same article via www vs apex must share one canonical identity."""
+    with_www = canonical_url("https://www.bbc.co.uk/news/world-123")
+    without = canonical_url("https://bbc.co.uk/news/world-123")
+    assert with_www == without == "https://bbc.co.uk/news/world-123"
+    # Case-insensitive www. after host lowercasing.
+    assert canonical_url("https://WWW.Example.COM/story") == "https://example.com/story"
+    # Do not strip non-www labels.
+    assert canonical_url("https://www2.example.com/x") == "https://www2.example.com/x"
+    assert canonical_url("https://m.example.com/x") == "https://m.example.com/x"
+
+
+def test_canonical_url_normalizes_trailing_slash() -> None:
+    """Trailing slash is identity-noise for article paths; root stays ``/``."""
+    assert canonical_url("https://news.example/world/1/") == "https://news.example/world/1"
+    assert canonical_url("https://news.example/world/1") == "https://news.example/world/1"
+    a = canonical_url("https://news.example/a/b/")
+    b = canonical_url("https://news.example/a/b")
+    assert a == b == "https://news.example/a/b"
+    # Empty / root path stays a single slash.
+    assert canonical_url("https://news.example") == "https://news.example/"
+    assert canonical_url("https://news.example/") == "https://news.example/"
+
+
+def test_canonical_url_www_and_trailing_slash_compose() -> None:
+    """Fetch-gate identity: www + slash + trackers collapse together."""
+    variants = [
+        "https://www.reuters.com/world/article-9/",
+        "https://reuters.com/world/article-9",
+        "https://WWW.reuters.com/world/article-9/?utm_source=rss&fbclid=1",
+    ]
+    canonicals = {canonical_url(u) for u in variants}
+    assert canonicals == {"https://reuters.com/world/article-9"}
 
 
 def test_domain_of_returns_etld_plus_one() -> None:

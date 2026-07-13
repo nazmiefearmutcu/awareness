@@ -9,6 +9,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import tldextract
 
 # Tracking params that should be stripped during canonicalization.
+# Any query key matching these names (case-insensitive) or starting with
+# ``utm_`` is removed so the same article under different campaign wrappers
+# collapses to one identity for the fetch gate / dedup keys.
 _TRACKING_PARAMS: frozenset[str] = frozenset(
     {
         "utm_source",
@@ -20,13 +23,32 @@ _TRACKING_PARAMS: frozenset[str] = frozenset(
         "utm_name",
         "gclid",
         "gclsrc",
+        "gbraid",
+        "wbraid",
+        "dclid",
         "fbclid",
-        "mc_cid",
-        "mc_eid",
+        "twclid",
         "msclkid",
         "yclid",
+        "igshid",
+        "mc_cid",
+        "mc_eid",
+        "mkt_tok",
         "_hsenc",
         "_hsmi",
+        "_openstat",
+        "li_fat_id",
+        "s_kwcid",
+        "ncid",
+        "icid",
+        "pk_campaign",
+        "pk_kwd",
+        "pk_source",
+        "pk_medium",
+        "mtm_campaign",
+        "mtm_kwd",
+        "mtm_source",
+        "mtm_medium",
         "ref",
         "ref_src",
         "ref_url",
@@ -41,14 +63,43 @@ _TRACKING_PARAMS: frozenset[str] = frozenset(
 _TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
 
 
+def _is_tracking_param(key: str) -> bool:
+    kl = key.lower()
+    return kl in _TRACKING_PARAMS or kl.startswith("utm_")
+
+
+def _strip_www_host(netloc: str) -> str:
+    """Strip a leading ``www.`` label from host (preserve userinfo / port)."""
+    if "@" in netloc:
+        userinfo, _, hostport = netloc.rpartition("@")
+        return f"{userinfo}@{_strip_www_host(hostport)}"
+    # IPv6 literals are bracketed; never treat them as www hosts.
+    if netloc.startswith("["):
+        return netloc
+    if netloc.startswith("www."):
+        return netloc[4:]
+    return netloc
+
+
+def _normalize_path(path: str) -> str:
+    """Normalize path for identity: empty → ``/``; strip a single trailing slash."""
+    if not path:
+        return "/"
+    # Keep bare root as ``/``; collapse ``/foo/`` → ``/foo`` (and multi-segment).
+    if len(path) > 1 and path.endswith("/"):
+        return path[:-1]
+    return path
+
+
 def canonical_url(url: str | None) -> str | None:
     """Canonicalize a URL for dedup/identity purposes.
 
     Operations:
       - scheme/host lowercased
       - default ports dropped
-      - trailing slash on path normalized only for paths == "/"
-      - tracking query parameters stripped
+      - leading ``www.`` stripped from host (common news alias)
+      - path trailing slash normalized (``/`` kept; ``/foo/`` → ``/foo``)
+      - tracking query parameters stripped (incl. any ``utm_*``)
       - remaining query keys sorted
       - fragment dropped
     """
@@ -69,12 +120,16 @@ def canonical_url(url: str | None) -> str | None:
         if (scheme, port) in (("http", "80"), ("https", "443")):
             netloc = host
 
-    path = parts.path or "/"
-    if path == "":
-        path = "/"
+    netloc = _strip_www_host(netloc)
+
+    path = _normalize_path(parts.path or "/")
 
     # Filter and sort query params for stable identity.
-    pairs = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k.lower() not in _TRACKING_PARAMS]
+    pairs = [
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if not _is_tracking_param(k)
+    ]
     pairs.sort()
     query = urlencode(pairs, doseq=True)
 
