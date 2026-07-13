@@ -30,6 +30,7 @@ from awareness.schemas.doc import DocCapture, SourceKind
 from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
 from awareness.util.timeutil import to_utc, utcnow
+from awareness.util.urls import canonical_url
 
 logger = get_logger("sources.gdelt")
 GDELT_BASE = "http://data.gdeltproject.org/gdeltv2"
@@ -104,10 +105,15 @@ class GdeltAdapter(Adapter):
         get_metrics().inc("gdelt.urls_discovered", value=len(urls), labels={"slot": slot})
         enqueue = context.extras.setdefault("enqueue", [])
         for u in urls:
+            cu = canonical_url(u)
+            if not cu:
+                continue
             enqueue.append(
                 PartitionSpec(
                     source_type=SourceKind.TAIL_RECRAWL,
-                    partition_key=f"tail-gdelt:{u}",
+                    # Same key shape as feeds.py so UNIQUE(job_id, partition_key)
+                    # collapses cross-source duplicates (RSS vs GDELT).
+                    partition_key=f"tail:{cu}",
                     payload={
                         "url": u,
                         "discovery_channel": f"gdelt:{slot}",
