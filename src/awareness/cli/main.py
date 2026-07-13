@@ -1654,6 +1654,119 @@ def format_fts_summary_line(summary: dict[str, Any]) -> str:
     return "FTS      " + "  ".join(bits)
 
 
+def summarize_warc_repair_metrics_table(snap: dict[str, Any]) -> dict[str, Any] | None:
+    """Aggregate WARC range-repair metrics for the CLI table summary strip.
+
+    Returns None when the snapshot has no ``warc_repair.*`` series.
+    """
+    counters = list(snap.get("counters") or [])
+    histograms = list(snap.get("histograms") or [])
+    docs_emitted = 0.0
+    fetch_attempts = 0.0
+    fetch_ok = 0.0
+    fetch_http_error = 0.0
+    fetch_network_error = 0.0
+    parse_attempts = 0.0
+    parse_emitted = 0.0
+    parse_empty = 0.0
+    has_warc = False
+    for c in counters:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if name not in (
+            "warc_repair.docs_emitted",
+            "warc_repair.fetch_attempts",
+            "warc_repair.parse_attempts",
+        ):
+            continue
+        has_warc = True
+        val = float(c.get("value") or 0)
+        labels = c.get("labels") or {}
+        outcome = labels.get("outcome")
+        if name == "warc_repair.docs_emitted":
+            docs_emitted += val
+        elif name == "warc_repair.fetch_attempts":
+            fetch_attempts += val
+            if outcome == "ok":
+                fetch_ok += val
+            elif outcome == "http_error":
+                fetch_http_error += val
+            elif outcome == "network_error":
+                fetch_network_error += val
+        elif name == "warc_repair.parse_attempts":
+            parse_attempts += val
+            if outcome == "emitted":
+                parse_emitted += val
+            elif outcome == "empty":
+                parse_empty += val
+    fetch_weighted = 0.0
+    fetch_count = 0
+    parse_weighted = 0.0
+    parse_count = 0
+    for h in histograms:
+        if not isinstance(h, dict):
+            continue
+        name = str(h.get("name") or "")
+        if name not in ("warc_repair.fetch_seconds", "warc_repair.parse_seconds"):
+            continue
+        has_warc = True
+        n = int(h.get("count") or 0)
+        if n <= 0:
+            continue
+        p95 = float(h.get("p95") or 0.0)
+        if name == "warc_repair.fetch_seconds":
+            fetch_count += n
+            fetch_weighted += p95 * n
+        else:
+            parse_count += n
+            parse_weighted += p95 * n
+    if not has_warc:
+        return None
+    return {
+        "docs_emitted": int(docs_emitted),
+        "fetch_attempts": int(fetch_attempts),
+        "fetch_ok": int(fetch_ok),
+        "fetch_http_error": int(fetch_http_error),
+        "fetch_network_error": int(fetch_network_error),
+        "parse_attempts": int(parse_attempts),
+        "parse_emitted": int(parse_emitted),
+        "parse_empty": int(parse_empty),
+        "fetch_p95": (fetch_weighted / fetch_count) if fetch_count else None,
+        "parse_p95": (parse_weighted / parse_count) if parse_count else None,
+    }
+
+
+def format_warc_repair_summary_line(summary: dict[str, Any]) -> str:
+    """Render a single operator-facing WARC repair summary line (no Rich markup)."""
+    bits: list[str] = []
+    docs = int(summary.get("docs_emitted") or 0)
+    if docs:
+        bits.append(f"docs={docs}")
+    attempts = int(summary.get("fetch_attempts") or 0)
+    ok = int(summary.get("fetch_ok") or 0)
+    if attempts:
+        bits.append(f"fetch={ok}/{attempts} ok")
+        http_err = int(summary.get("fetch_http_error") or 0)
+        net_err = int(summary.get("fetch_network_error") or 0)
+        if http_err:
+            bits.append(f"http_err={http_err}")
+        if net_err:
+            bits.append(f"net_err={net_err}")
+    fetch_p95 = summary.get("fetch_p95")
+    if fetch_p95 is not None:
+        bits.append(f"fetch_p95={_format_metric_duration(float(fetch_p95))}")
+    parse_p95 = summary.get("parse_p95")
+    if parse_p95 is not None:
+        bits.append(f"parse_p95={_format_metric_duration(float(parse_p95))}")
+    empty = int(summary.get("parse_empty") or 0)
+    if empty:
+        bits.append(f"empty={empty}")
+    if not bits:
+        bits.append("idle")
+    return "WARC     " + "  ".join(bits)
+
+
 def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
     """Render a human-readable metrics summary (uptime + top series)."""
     uptime = float(snap.get("uptime_seconds") or 0.0)
@@ -1686,6 +1799,11 @@ def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
     if fts_summary is not None:
         console.print(
             f"[bold cyan]{escape(format_fts_summary_line(fts_summary))}[/bold cyan]"
+        )
+    warc_summary = summarize_warc_repair_metrics_table(snap)
+    if warc_summary is not None:
+        console.print(
+            f"[bold cyan]{escape(format_warc_repair_summary_line(warc_summary))}[/bold cyan]"
         )
 
     counters = list(snap.get("counters") or [])
