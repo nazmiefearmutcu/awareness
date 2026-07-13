@@ -53,7 +53,7 @@ from awareness.schemas.jobs import BackfillRequest
 from awareness.storage.duckdb_index import DuckDbIndex
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
-from awareness.util.timeutil import coerce_relative_end, to_utc
+from awareness.util.timeutil import coerce_relative_end, inclusive_end, to_utc
 from awareness.workers.engine import WorkerEngine
 
 logger = get_logger("api")
@@ -434,7 +434,7 @@ def create_app() -> FastAPI:
         source: str | None = Query(None),
     ) -> list[dict[str, Any]]:
         idx = _get_index()
-        end_dt = to_utc(end) if end else coerce_relative_end("now")
+        end_dt = inclusive_end(to_utc(end)) if end else coerce_relative_end("now")
         where = ["fetch_ts >= $start", "fetch_ts <= $end"]
         params: dict[str, Any] = {"start": to_utc(start), "end": end_dt}
         if domain:
@@ -456,7 +456,7 @@ def create_app() -> FastAPI:
     @app.get("/counts")
     def counts(start: datetime, end: datetime | None = None) -> dict[str, Any]:
         idx = _get_index()
-        end_dt = to_utc(end) if end else coerce_relative_end("now")
+        end_dt = inclusive_end(to_utc(end)) if end else coerce_relative_end("now")
         p = {"start": to_utc(start), "end": end_dt}
         total = idx.execute("SELECT COUNT(*) AS n FROM captures WHERE fetch_ts BETWEEN $start AND $end", p)
         by_source = idx.execute(
@@ -491,7 +491,7 @@ def create_app() -> FastAPI:
             params["start"] = to_utc(start)
         if end is not None:
             where.append("fetch_ts <= $end")
-            params["end"] = to_utc(end)
+            params["end"] = inclusive_end(to_utc(end))
         if domain:
             where.append("domain = $dom")
             params["dom"] = domain
@@ -555,7 +555,7 @@ def create_app() -> FastAPI:
             source=source,
             domain=domain,
             start=to_utc(start) if start else None,
-            end=to_utc(end) if end else None,
+            end=inclusive_end(to_utc(end)) if end else None,
             mode=(mode or s.search_default_mode),
             fields=field_list,
             max_results=s.search_max_results,

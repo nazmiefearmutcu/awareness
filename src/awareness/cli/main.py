@@ -49,7 +49,7 @@ from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
 from datetime import datetime
 
-from awareness.util.timeutil import coerce_relative_end, to_utc
+from awareness.util.timeutil import coerce_relative_end, inclusive_end, to_utc
 from awareness.workers.engine import WorkerEngine
 
 app = typer.Typer(no_args_is_help=False, help="Awareness — public text internet awareness engine")
@@ -1719,7 +1719,7 @@ def inspect(
         iceberg_warehouse=settings.iceberg_warehouse,
     )
     start_dt = to_utc(start)
-    end_dt = coerce_relative_end(end)
+    end_dt = inclusive_end(coerce_relative_end(end))
     where = ["fetch_ts >= $start", "fetch_ts <= $end"]
     params: dict[str, Any] = {"start": start_dt, "end": end_dt}
     if domain:
@@ -1767,7 +1767,7 @@ def counts(
         iceberg_warehouse=settings.iceberg_warehouse,
     )
     start_dt = to_utc(start)
-    end_dt = coerce_relative_end(end)
+    end_dt = inclusive_end(coerce_relative_end(end))
     try:
         by_source = idx.execute(
             """
@@ -2556,7 +2556,7 @@ def browse(
     
     # Empty start means no lower bound so historical backfills remain visible.
     start_dt = to_utc(start) if (start or "").strip() else None
-    end_dt = coerce_relative_end(end)
+    end_dt = inclusive_end(coerce_relative_end(end))
     
     # Clear screen
     print("\033[H\033[2J\033[3J", end="")
@@ -2709,7 +2709,7 @@ def _resolve_search_window(start: str, end: str) -> tuple[datetime | None, datet
     """
     s = (start or "").strip().lower()
     start_dt = None if s in ("", "all", "all time", "alltime", "any") else to_utc(start)
-    end_dt = coerce_relative_end(end)
+    end_dt = inclusive_end(coerce_relative_end(end))
     return start_dt, end_dt
 
 
