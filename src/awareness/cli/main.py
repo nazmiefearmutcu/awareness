@@ -2661,7 +2661,7 @@ def browse(
             )
             
         console.print(table)
-        
+
         rprint("\n[bold cyan]Navigation Commands:[/bold cyan]")
         rprint("  • [bold]n[/bold]     : Next page")
         rprint("  • [bold]p[/bold]     : Previous page")
@@ -2700,6 +2700,31 @@ def browse(
                 rprint("[red]Invalid document index.[/red]")
 
 
+
+
+
+def _print_search_domain_facets(facets: dict[str, Any] | None) -> None:
+    """Print a one-line domain facets summary when the search payload includes them."""
+    if not facets:
+        return
+    domains = facets.get("domains") or []
+    if not isinstance(domains, list) or not domains:
+        return
+    parts: list[str] = []
+    for item in domains:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("domain") or "").strip()
+        if not name:
+            continue
+        n = item.get("n")
+        if n is not None:
+            parts.append(f"{name} ({int(n)})")
+        else:
+            parts.append(name)
+    if not parts:
+        return
+    rprint(f"[dim]Domains:[/dim] {', '.join(parts)}")
 
 
 def _print_search_diagnostics(diagnostics: dict[str, Any] | None) -> None:
@@ -2815,6 +2840,7 @@ def search(
             f"(Found {total} documents, showing top {len(rows)}{capped}, "
             f"Mode: {used_mode}, Fields: {','.join(res.get('fields', field_list))}, Ranked: {ranked})"
         )
+        _print_search_domain_facets(res.get("facets"))
         rprint("-" * 80)
         for r in rows:
             title = r["title"] or "No Title"
@@ -2894,7 +2920,8 @@ def search(
             )
             
         console.print(table)
-        
+        _print_search_domain_facets(res.get("facets"))
+
         rprint("\n[bold cyan]Navigation Commands:[/bold cyan]")
         rprint("  • [bold]n[/bold]     : Next page")
         rprint("  • [bold]p[/bold]     : Previous page")
