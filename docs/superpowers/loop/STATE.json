@@ -1,11 +1,11 @@
 {
-  "iteration": 13,
-  "phase": "search_dedup_scrape_quality_gaps",
+  "iteration": 14,
+  "phase": "cli_filter_ci_align_feed_quality",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "commits_ahead": 105,
+  "commits_ahead": 108,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed URL identity collapse for m/mobile/amp + http→https + AMP path/query (707b825); namespace-agnostic sitemap loc parse (c3d165a); case-insensitive source_type on search+browse (45ff802). Next: streaming WET (C3-T3) / Iceberg compaction / CLI source filter CI align / more feed quality."
+  "notes": "Landed CLI case-insensitive source+domain filters across browse/list/export (86c9e0e); feed guid/id HTTP permalink fallback + in-feed/sitemap canonical URL dedupe (feeds commit). Next: streaming WET (C3-T3) / Iceberg compaction / more scrape reliability."
 }
