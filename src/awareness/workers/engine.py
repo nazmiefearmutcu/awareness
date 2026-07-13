@@ -394,6 +394,11 @@ class WorkerEngine:
                     and outcome.hamming <= TIGHT_NEAR_STORE_THRESHOLD
                 )
                 if outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.REVISION) or tight_near:
+                    if tight_near:
+                        get_metrics().inc(
+                            "dedup.tight_near_skipped",
+                            labels={"source": task.source_type.value},
+                        )
                     dedup_dropped += 1
                     self._total_docs_processed += 1
                     bytes_processed += len(cap.text)

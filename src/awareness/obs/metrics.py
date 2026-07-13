@@ -85,6 +85,11 @@ class MetricsRegistry:
     def add(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
         self.inc(name, value, labels)
 
+    def counter_sum(self, name: str) -> float:
+        """Sum all label series for a counter name (0.0 if none)."""
+        with self._lock:
+            return float(sum(v for (n, _), v in self._counters.items() if n == name))
+
     def set(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
         with self._lock:
             self._gauges[(name, self._labels_key(labels))] = value

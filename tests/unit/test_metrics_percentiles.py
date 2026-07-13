@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 
-from awareness.obs.metrics import _Histogram
+from awareness.obs.metrics import MetricsRegistry, _Histogram
 
 
 def test_percentiles_on_full_sample() -> None:
@@ -34,3 +34,12 @@ def test_empty_histogram_percentiles_are_zero() -> None:
     h = _Histogram()
     d = h.as_dict()
     assert d["p50"] == 0.0 and d["p95"] == 0.0 and d["p99"] == 0.0
+
+
+def test_counter_sum_aggregates_labels() -> None:
+    m = MetricsRegistry()
+    m.inc("tail.fetch_skipped_seen", labels={"domain": "a.example"})
+    m.inc("tail.fetch_skipped_seen", value=2.0, labels={"domain": "b.example"})
+    m.inc("other", value=99.0)
+    assert m.counter_sum("tail.fetch_skipped_seen") == 3.0
+    assert m.counter_sum("missing") == 0.0

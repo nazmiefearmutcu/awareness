@@ -14,6 +14,7 @@ from awareness.schemas.doc import SourceKind
 from awareness.sources.base import AdapterContext, PartitionSpec
 from awareness.sources.tail_recrawl import TailRecrawlAdapter
 from awareness.storage.state import StateDB
+from awareness.obs.metrics import get_metrics
 from awareness.util.urls import canonical_url
 
 
@@ -151,9 +152,11 @@ async def test_second_run_skips_http_for_same_url(tmp_path) -> None:
     assert get_mock.await_count == 1
     assert state.was_url_fetched(canonical_url(url) or url)
 
+    before = get_metrics().counter_sum("tail.fetch_skipped_seen")
     caps2 = await _collect(adapter, _partition(url), _context(state), get_mock=get_mock)
     assert caps2 == []
     assert get_mock.await_count == 1  # no second HTTP GET
+    assert get_metrics().counter_sum("tail.fetch_skipped_seen") == before + 1
 
 
 @pytest.mark.asyncio

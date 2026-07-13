@@ -18,7 +18,7 @@ Endpoints:
     GET  /captures/{id}/related  — sibling captures in the same dup_group
     GET  /search                 — BM25-ranked full-text search w/ snippets
     GET  /counts                 — counts grouped by source & domain
-    GET  /dedup-stats            — dedup index stats
+    GET  /dedup-stats            — dedup index stats + process skip counters
     GET  /jobsearch/sources      — public job boards catalog
     GET  /jobsearch/profile      — personalization profile
     PUT  /jobsearch/profile      — save profile
@@ -274,7 +274,12 @@ def create_app() -> FastAPI:
     def dedup_stats() -> dict[str, Any]:
         if _State.state is None:
             raise HTTPException(500, "not initialized")
-        return _State.state.dedup_stats()
+        stats: dict[str, Any] = dict(_State.state.dedup_stats())
+        # Process-local skip counters (also on GET /metrics). Cheap sums over labels.
+        m = get_metrics()
+        stats["fetch_skipped_seen"] = int(m.counter_sum("tail.fetch_skipped_seen"))
+        stats["tight_near_skipped"] = int(m.counter_sum("dedup.tight_near_skipped"))
+        return stats
 
     @app.post("/backfill")
     def submit_backfill(body: BackfillBody) -> dict[str, Any]:

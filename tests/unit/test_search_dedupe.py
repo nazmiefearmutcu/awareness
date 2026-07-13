@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from awareness.dedup.engine import DedupDecision, DedupOutcome
+from awareness.obs.metrics import get_metrics
 from awareness.planner.planner import Planner
 from awareness.schemas.doc import DocCapture, RobotsDecision, SourceKind, SourceRef
 from awareness.storage.duckdb_index import (
@@ -499,11 +500,13 @@ async def test_worker_tight_near_dup_skips_batch_buffer(
     )
     state.add_tasks([task])
 
+    before_tight = get_metrics().counter_sum("dedup.tight_near_skipped")
     await engine._run_task(task)
 
     buffered_urls = [c.url for c in engine._batch_buffer]
     assert "https://a.test/base" in buffered_urls
     assert "https://b.test/tight" not in buffered_urls, "tight NEAR_DUP must not be buffered"
+    assert get_metrics().counter_sum("dedup.tight_near_skipped") == before_tight + 1
     assert "https://c.test/loose" in buffered_urls, "loose NEAR_DUP must still be buffered"
     assert "https://d.test/unique" in buffered_urls
 
