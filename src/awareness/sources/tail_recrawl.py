@@ -144,6 +144,7 @@ class TailRecrawlAdapter(Adapter):
             except RetryableHTTPError:
                 # Transient failure exhausted retries — task layer requeues.
                 get_metrics().inc("tail.fetch_errors", labels={"domain": dom})
+                get_metrics().inc("tail.retryable_http_error", labels={"domain": dom})
                 raise
             except httpx.HTTPError as exc:
                 logger.warning("tail_fetch_failed", url=url, err=str(exc))

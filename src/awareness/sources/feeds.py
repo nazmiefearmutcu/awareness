@@ -200,6 +200,10 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
                 return []
             body = r.content
     except RetryableHTTPError:
+        get_metrics().inc(
+            "feeds.retryable_http_error",
+            labels={"kind": "rss"},
+        )
         raise
     except httpx.HTTPError as exc:
         logger.warning("feed_fetch_failed", url=url, err=str(exc))
@@ -232,6 +236,10 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
                 return []
             body = r.content
     except RetryableHTTPError:
+        get_metrics().inc(
+            "feeds.retryable_http_error",
+            labels={"kind": "sitemap"},
+        )
         raise
     except httpx.HTTPError as exc:
         logger.warning("sitemap_fetch_failed", url=url, err=str(exc))

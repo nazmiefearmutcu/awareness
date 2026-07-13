@@ -162,3 +162,69 @@ async def test_read_sitemap_non_200_increments_metric(monkeypatch: pytest.Monkey
     urls = await _read_sitemap("https://example.com/forbidden.xml", "TestBot/1.0")
     assert urls == []
     assert get_metrics().counter_sum("feeds.fetch_non_200") == before + 1
+
+
+@pytest.mark.asyncio
+async def test_read_feed_retryable_error_increments_metric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exhausted transient retries raise and count feeds.retryable_http_error."""
+    from awareness.obs.metrics import get_metrics
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    original = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr("awareness.sources.feeds.httpx.AsyncClient", factory)
+
+    real = get_with_retries
+
+    async def fast_get(client, url, **kwargs):
+        kwargs.setdefault("base_delay", 0.0)
+        kwargs.setdefault("max_attempts", 3)
+        return await real(client, url, **kwargs)
+
+    monkeypatch.setattr("awareness.sources.feeds.get_with_retries", fast_get)
+
+    before = get_metrics().counter_sum("feeds.retryable_http_error")
+    with pytest.raises(RetryableHTTPError):
+        await _read_feed("https://example.com/feed.xml", "TestBot/1.0")
+    assert get_metrics().counter_sum("feeds.retryable_http_error") == before + 1
+
+
+@pytest.mark.asyncio
+async def test_read_sitemap_retryable_error_increments_metric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from awareness.obs.metrics import get_metrics
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    original = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr("awareness.sources.feeds.httpx.AsyncClient", factory)
+
+    real = get_with_retries
+
+    async def fast_get(client, url, **kwargs):
+        kwargs.setdefault("base_delay", 0.0)
+        kwargs.setdefault("max_attempts", 3)
+        return await real(client, url, **kwargs)
+
+    monkeypatch.setattr("awareness.sources.feeds.get_with_retries", fast_get)
+
+    before = get_metrics().counter_sum("feeds.retryable_http_error")
+    with pytest.raises(RetryableHTTPError):
+        await _read_sitemap("https://example.com/sitemap.xml", "TestBot/1.0")
+    assert get_metrics().counter_sum("feeds.retryable_http_error") == before + 1
+
