@@ -439,31 +439,25 @@ class DuckDbIndex:
     def _source_signature(self) -> tuple[Any, ...]:
         """Cheap fingerprint of the on-disk corpus (JSONL chunks + Iceberg metadata).
 
-        Changes whenever a staging chunk is added/rotated or the Iceberg table
-        gains a snapshot, so :meth:`_refresh_views_if_stale` can skip the
-        expensive view rebuild while still picking up new data.
+        Per-file path + mtime_ns + size so content replacement at the same
+        path (or same row count) still invalidates views and FTS. Iceberg
+        metadata mtimes cover snapshot advances.
         """
         captures_root = self._jsonl_dir / "captures"
         jsonl: tuple[Any, ...] = ()
         if captures_root.exists():
             entries = []
             try:
-                partition_dirs = set()
                 for p in _iter_staging_jsonl(captures_root):
                     try:
                         if p.is_file() and _is_staging_jsonl(p):
-                            partition_dirs.add(p.parent)
-                    except OSError:
-                        continue
-                for d in sorted(partition_dirs):
-                    try:
-                        st = d.stat()
-                        entries.append((str(d), st.st_mtime_ns))
+                            st = p.stat()
+                            entries.append((str(p), st.st_mtime_ns, st.st_size))
                     except OSError:
                         continue
             except OSError:
                 pass
-            jsonl = tuple(entries)
+            jsonl = tuple(sorted(entries))
         iceberg: tuple[Any, ...] = ()
         wh = self._iceberg_warehouse
         if wh and not str(wh).startswith(("s3://", "s3a://", "gs://", "gcs://")):
@@ -663,8 +657,10 @@ class DuckDbIndex:
         """Build/refresh the FTS index on a materialized captures table.
 
         DuckDB's FTS extension requires a real table. We materialize the
-        captures view into ``captures_idx`` and rebuild the index whenever
-        the row count changes. Returns True if FTS is ready to use.
+        captures view into ``captures_idx`` and rebuild whenever the source
+        signature changes (not merely row count), so content replacement at
+        the same cardinality still refreshes BM25. Returns True if FTS is
+        ready to use.
         """
         if not self._fts_available:
             return False
@@ -682,10 +678,7 @@ class DuckDbIndex:
             return False
         if count == 0:
             return False
-        if count == self._fts_built_for_count:
-            self._fts_built_signature = self._views_signature
-            return True
-        # Rebuild materialized table + FTS index.
+        # Rebuild materialized table + FTS index on any signature change.
         try:
             conn.execute(
                 """
