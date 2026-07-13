@@ -106,6 +106,37 @@ def crawl_ids_for_range(start: datetime, end: datetime) -> list[str]:
     return out
 
 
+def _normalize_domain_filter(domains: list[str] | None) -> set[str] | None:
+    """Reduce requested domains to their registered eTLD+1 so a subdomain
+    request (news.bbc.co.uk) matches records whose domain_of is bbc.co.uk."""
+    if not domains:
+        return None
+    normalized = {domain_of(d) or domain_of(f"http://{d}") or d.lower() for d in domains}
+    return {d for d in normalized if d} or None
+
+
+def _record_passes_domain_filter(url: str, domains_filter: set[str] | None) -> bool:
+    if not domains_filter:
+        return True
+    cu = canonical_url(url)
+    dom = domain_of(cu) if cu else None
+    return dom in domains_filter
+
+
+def _record_passes_quality(text: str, *, enabled: bool, lang: str | None = None) -> bool:
+    """WET records below Gopher/C4 content quality are dropped when ``enabled``.
+
+    English-leaning Gopher gates only judge English; a record admitted in
+    another language passes through unjudged (no silent data loss for
+    non-English WET text).
+    """
+    if not enabled:
+        return True
+    if lang is not None and not str(lang).lower().startswith("en"):
+        return True
+    return gopher_quality(text).ok
+
+
 class CommonCrawlWetAdapter(Adapter):
     source_type = SourceKind.COMMON_CRAWL_WET
 

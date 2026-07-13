@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     text_min_chars: int = 200
     text_max_chars: int = 1_500_000
 
+    # ── Common Crawl WET ────────────────────────────────────────────────
+    wet_quality_filter: bool = True  # drop Gopher/C4-low-quality WET records before storing
+
     # ── storage destinations (where captures are written) ────────────────
     # These three toggles are the TAIL/BODY write destinations. Set them with
     # ``awareness configure`` (a wizard) or ``awareness config set``.
