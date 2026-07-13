@@ -382,6 +382,27 @@ function renderCapsDiagnostics(data, isSearch) {
 }
 
 
+/** Sync is-active / aria-pressed on facet chips from current filter fields. */
+function syncFacetChipSelection() {
+  const box = $("#caps-facets");
+  if (!box) return;
+  const activeDomain = ($("#caps-domain")?.value || "").trim().toLowerCase();
+  const activeSource = ($("#caps-source")?.value || "").trim().toLowerCase();
+  box.querySelectorAll(".facet-chip[data-facet-kind]").forEach((chip) => {
+    const kind = chip.getAttribute("data-facet-kind") || "";
+    let on = false;
+    if (kind === "domain") {
+      const v = (chip.getAttribute("data-facet-value") || "").toLowerCase();
+      on = !!(activeDomain && v && activeDomain === v);
+    } else if (kind === "source") {
+      const v = (chip.getAttribute("data-facet-value") || "").toLowerCase();
+      on = !!(activeSource && v && activeSource === v);
+    }
+    chip.classList.toggle("is-active", on);
+    chip.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+
 /** Domain + source facet chips under the search box (facets.domains / facets.sources). */
 function renderCapsFacets(data, isSearch) {
   const box = $("#caps-facets");
@@ -395,15 +416,17 @@ function renderCapsFacets(data, isSearch) {
     return;
   }
 
-  const activeDomain = ($("#caps-domain")?.value || "").trim().toLowerCase();
   for (const item of domains) {
     const dom = String(item.domain || item.Domain || "").trim();
     if (!dom) continue;
     const n = item.n != null ? Number(item.n) : null;
     const chip = el("button", {
       type: "button",
-      class: "facet-chip" + (activeDomain && activeDomain === dom.toLowerCase() ? " is-active" : ""),
+      class: "facet-chip",
       title: n != null ? `${dom} (${n} matches)` : dom,
+      "data-facet-kind": "domain",
+      "data-facet-value": dom.toLowerCase(),
+      "aria-pressed": "false",
       onclick: () => {
         const field = $("#caps-domain");
         if (!field) return;
@@ -413,6 +436,8 @@ function renderCapsFacets(data, isSearch) {
         } else {
           field.value = dom;
         }
+        // Immediate selected-state feedback (do not wait for search round-trip).
+        syncFacetChipSelection();
         void loadCaptures(true);
       },
     });
@@ -423,16 +448,17 @@ function renderCapsFacets(data, isSearch) {
     box.appendChild(chip);
   }
 
-  const activeSource = ($("#caps-source")?.value || "").trim().toLowerCase();
   for (const item of sources) {
     const src = String(item.source_type || item.source || "").trim();
     if (!src) continue;
     const n = item.n != null ? Number(item.n) : null;
     const chip = el("button", {
       type: "button",
-      class: "facet-chip facet-chip-source"
-        + (activeSource && activeSource === src.toLowerCase() ? " is-active" : ""),
+      class: "facet-chip facet-chip-source",
       title: n != null ? `source ${src} (${n} matches)` : `source ${src}`,
+      "data-facet-kind": "source",
+      "data-facet-value": src.toLowerCase(),
+      "aria-pressed": "false",
       onclick: () => {
         const field = $("#caps-source");
         if (!field) return;
@@ -450,6 +476,7 @@ function renderCapsFacets(data, isSearch) {
         } else {
           field.value = src;
         }
+        syncFacetChipSelection();
         void loadCaptures(true);
       },
     });
@@ -460,6 +487,7 @@ function renderCapsFacets(data, isSearch) {
     box.appendChild(chip);
   }
 
+  syncFacetChipSelection();
   box.hidden = box.childNodes.length === 0;
 }
 
@@ -475,7 +503,9 @@ async function loadCaptures(reset = false) {
   const meta = $("#caps-meta");
   meta.textContent = "loading…";
   renderCapsDiagnostics(null, false);
-  renderCapsFacets(null, false);
+  // Keep facet chips visible during reload so domain/source selected state
+  // stays highlighted (chips are replaced when the response arrives).
+  syncFacetChipSelection();
 
   // Search-mode hits /search (BM25 ranked, with snippets); browse-mode hits
   // /captures (chronological).

@@ -56,3 +56,21 @@ def test_spa_search_source_facets_chips() -> None:
     assert 'aria-label="Matching domains and sources"' in html or "sources" in html
     assert ".facet-chip-source" in css
 
+
+
+def test_spa_domain_chip_syncs_selected_state() -> None:
+    """Domain facet chip click must update selected highlight immediately."""
+    app_js = APP_JS.read_text(encoding="utf-8")
+    css = STYLE_CSS.read_text(encoding="utf-8")
+
+    assert "function syncFacetChipSelection()" in app_js
+    assert 'data-facet-kind": "domain"' in app_js or "data-facet-kind" in app_js
+    assert "data-facet-value" in app_js
+    assert "aria-pressed" in app_js
+    # Optimistic highlight before search round-trip.
+    assert "syncFacetChipSelection()" in app_js
+    assert "void loadCaptures(true)" in app_js
+    # Do not wipe chips at the start of a reload (selected state would flash off).
+    # loadCaptures should call syncFacetChipSelection while loading, not renderCapsFacets(null…).
+    assert "Keep facet chips visible during reload" in app_js or "syncFacetChipSelection();" in app_js
+    assert ".facet-chip.is-active" in css

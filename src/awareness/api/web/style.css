@@ -743,9 +743,13 @@ code {
   color: var(--fg-strong);
 }
 .facet-chip.is-active {
-  border-color: rgba(255, 255, 255, 0.35);
-  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(120, 180, 255, 0.55);
+  background: rgba(80, 140, 255, 0.16);
   color: var(--fg-strong);
+  box-shadow: 0 0 0 1px rgba(120, 180, 255, 0.18);
+}
+.facet-chip.is-active[data-facet-kind="domain"] {
+  border-color: rgba(120, 180, 255, 0.7);
 }
 .facet-chip .facet-n {
   font-variant-numeric: tabular-nums;
