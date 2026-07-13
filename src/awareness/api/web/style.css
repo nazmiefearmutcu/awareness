@@ -2169,3 +2169,17 @@ code {
   .tail-big { flex-direction: column; align-items: flex-start; }
   .kv-row { grid-template-columns: 1fr; }
 }
+
+/* Retry visibility */
+.tn-attempts {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--amber, #e0a050);
+  border: 1px solid rgba(224, 160, 80, 0.35);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+.tn-retry-ic { color: var(--amber, #e0a050); width: 1.2em; text-align: center; }
+.ctr-retry .ctr-num { color: var(--amber, #e0a050); }
+.job-retry-fail, .job-retry-dead { color: var(--rose, #f08080); }

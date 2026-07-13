@@ -412,6 +412,8 @@ def create_app() -> FastAPI:
                 "task_status_counts": {},
                 "running_tasks": [],
                 "recent_completed": [],
+                "retry_scheduled_count": 0,
+                "retry_scheduled": [],
                 "per_seed": {"feeds": [], "fetch": {}},
                 "recent_chunks": [],
             }
@@ -436,6 +438,8 @@ def create_app() -> FastAPI:
             "task_status_counts": counts,
             "running_tasks": state.list_running_tasks(job_id, limit=12) if live else [],
             "recent_completed": state.list_recent_completed_tasks(job_id, limit=10),
+            "retry_scheduled_count": state.count_retry_scheduled(job_id) if live else 0,
+            "retry_scheduled": state.list_retry_scheduled_tasks(job_id, limit=10) if live else [],
             "per_seed": state.per_seed_progress(job_id) if live else {"feeds": [], "fetch": {}},
             "recent_chunks": state.list_recent_manifests(limit=8),
         }

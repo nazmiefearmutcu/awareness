@@ -773,6 +773,49 @@ class StateDB:
                 for r in s.scalars(stmt)
             ]
 
+    def count_retry_scheduled(self, job_id: str) -> int:
+        """Count PENDING tasks waiting on a future next_attempt_at backoff."""
+        with self.session() as s:
+            now = _utcnow()
+            n = s.scalar(
+                select(func.count())
+                .select_from(TaskRow)
+                .where(
+                    TaskRow.job_id == job_id,
+                    TaskRow.status == TaskStatus.PENDING.value,
+                    TaskRow.next_attempt_at.is_not(None),
+                    TaskRow.next_attempt_at > now,
+                )
+            )
+            return int(n or 0)
+
+    def list_retry_scheduled_tasks(self, job_id: str, limit: int = 12) -> list[dict[str, Any]]:
+        """PENDING tasks whose retry backoff has not elapsed yet (newest lease first)."""
+        with self.session() as s:
+            now = _utcnow()
+            stmt = (
+                select(TaskRow)
+                .where(
+                    TaskRow.job_id == job_id,
+                    TaskRow.status == TaskStatus.PENDING.value,
+                    TaskRow.next_attempt_at.is_not(None),
+                    TaskRow.next_attempt_at > now,
+                )
+                .order_by(TaskRow.next_attempt_at.asc())
+                .limit(limit)
+            )
+            return [
+                {
+                    "task_id": r.task_id,
+                    "source_type": r.source_type,
+                    "partition_key": r.partition_key,
+                    "attempts": r.attempts,
+                    "next_attempt_at": r.next_attempt_at.isoformat() if r.next_attempt_at else None,
+                    "last_error": r.last_error,
+                }
+                for r in s.scalars(stmt)
+            ]
+
     def list_recent_completed_tasks(self, job_id: str, limit: int = 12) -> list[dict[str, Any]]:
         """Return most recently completed tasks for a job, latest first."""
         with self.session() as s:

@@ -266,6 +266,23 @@ async function refreshDashboard() {
   return { status, dedup };
 }
 
+function appendJobRetryBits(counters, j) {
+  // Surface failure / dead-letter counters when non-zero so operators can see
+  // retry exhaustion without digging into task tables.
+  const failed = Number(j.tasks_failed || 0);
+  const dead = Number(j.tasks_dead_lettered || 0);
+  if (failed > 0) {
+    counters.appendChild(document.createTextNode(" · "));
+    counters.appendChild(el("b", { class: "job-retry-fail", text: fmt(failed) }));
+    counters.appendChild(document.createTextNode(" failed"));
+  }
+  if (dead > 0) {
+    counters.appendChild(document.createTextNode(" · "));
+    counters.appendChild(el("b", { class: "job-retry-dead", text: fmt(dead) }));
+    counters.appendChild(document.createTextNode(" dead-lettered"));
+  }
+}
+
 function renderJobStrip(root, jobs) {
   clear(root);
   if (!jobs.length) {
@@ -287,6 +304,7 @@ function renderJobStrip(root, jobs) {
     counters.appendChild(document.createTextNode(" docs · "));
     counters.appendChild(el("b", { text: fmt(j.docs_dedup_dropped) }));
     counters.appendChild(document.createTextNode(" folded"));
+    appendJobRetryBits(counters, j);
 
     const badge = el("span", { class: "badge badge-" + j.status, text: j.status });
     const row = el("div", { class: "job-row" }, idCell, progress, counters, badge);
@@ -816,6 +834,7 @@ function renderJobsFull(jobs) {
     counters.appendChild(el("b", { text: fmt(j.docs_dedup_dropped) }));
     counters.appendChild(document.createTextNode(" folded · "));
     counters.appendChild(document.createTextNode(j.started_at ? "started " + ago(j.started_at, false) : "queued"));
+    appendJobRetryBits(counters, j);
 
     const badge = el("span", { class: "badge badge-" + j.status, text: j.status });
 
@@ -906,7 +925,12 @@ async function loadTailView() {
   cwrap.appendChild(ctr("completed", counts.completed || 0, "ctr-done"));
   cwrap.appendChild(ctr("docs captured", job.docs_emitted || 0, "ctr-docs"));
   cwrap.appendChild(ctr("folded", job.docs_dedup_dropped || 0, "ctr-folded"));
+  const retryN = Number(data.retry_scheduled_count || 0);
+  if (retryN > 0) cwrap.appendChild(ctr("retrying", retryN, "ctr-retry"));
   if (counts.failed) cwrap.appendChild(ctr("failed", counts.failed, "ctr-failed"));
+  if (counts.dead_lettered) cwrap.appendChild(ctr("dead-lettered", counts.dead_lettered, "ctr-failed"));
+  const deadJob = Number(job.tasks_dead_lettered || 0);
+  if (deadJob > 0 && !counts.dead_lettered) cwrap.appendChild(ctr("dead-lettered", deadJob, "ctr-failed"));
 
   // Now fetching
   const nowList = $("#tail-now-list");
@@ -936,8 +960,47 @@ async function loadTailView() {
       li.appendChild(el("span", { class: "tn-spin", "aria-hidden": "true" }));
       li.appendChild(el("span", { class: "tn-source", text: r.source_type }));
       li.appendChild(el("span", { class: "tn-target", title: r.partition_key, text: shortPartition(r.partition_key) }));
+      const attempts = Number(r.attempts || 0);
+      if (attempts > 1) {
+        li.appendChild(el("span", {
+          class: "tn-attempts",
+          text: "try " + attempts,
+          title: "Task attempt " + attempts + " (prior failures backed off)",
+        }));
+      }
       li.appendChild(el("span", { class: "tn-elapsed", text: r.started_at ? ago(r.started_at, true) : "" }));
       nowList.appendChild(li);
+    }
+  }
+
+  // Retry backlog (PENDING with future next_attempt_at)
+  const retryList = data.retry_scheduled || [];
+  const retryHost = $("#tail-retry-list");
+  const retryMetaEl = $("#tail-retry-meta");
+  if (retryHost) {
+    clear(retryHost);
+    if (retryMetaEl) retryMetaEl.textContent = retryN > 0 ? `${retryN} waiting` : "—";
+    if (retryList.length === 0) {
+      retryHost.appendChild(el("li", { class: "muted-li" }, t.running ? "No tasks waiting on retry backoff." : "—"));
+    } else {
+      for (const r of retryList) {
+        const li = el("li", { class: "tn-row" });
+        li.appendChild(el("span", { class: "tn-retry-ic", "aria-hidden": "true" }, "↻"));
+        li.appendChild(el("span", { class: "tn-source", text: r.source_type }));
+        li.appendChild(el("span", { class: "tn-target", title: r.partition_key, text: shortPartition(r.partition_key) }));
+        const att = Number(r.attempts || 0);
+        li.appendChild(el("span", {
+          class: "tn-attempts",
+          text: att ? ("try " + att) : "retry",
+          title: r.last_error || "scheduled retry",
+        }));
+        li.appendChild(el("span", {
+          class: "tn-elapsed",
+          text: r.next_attempt_at ? ("next " + ago(r.next_attempt_at, true)) : "",
+          title: r.next_attempt_at || "",
+        }));
+        retryHost.appendChild(li);
+      }
     }
   }
 
