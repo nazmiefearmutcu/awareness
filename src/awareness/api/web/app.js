@@ -570,6 +570,84 @@ function summarizeFinewebMetrics(metricsSnap) {
 }
 
 /**
+ * WARC range-repair fetch/parse metrics from /metrics (process-local).
+ * Pure — no DOM. Surfaces targeted Common Crawl byte-range repair health
+ * (fetch outcomes, parse emit rate, latency) without ranking concerns.
+ */
+function summarizeWarcRepairMetrics(metricsSnap) {
+  const empty = {
+    docsEmitted: 0,
+    fetchAttempts: 0,
+    fetchOk: 0,
+    fetchHttpError: 0,
+    fetchNetworkError: 0,
+    parseAttempts: 0,
+    parseEmitted: 0,
+    parseEmpty: 0,
+    fetchP95: null,
+    parseP95: null,
+  };
+  if (!metricsSnap || typeof metricsSnap !== "object") return empty;
+  const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
+  let docsEmitted = 0;
+  let fetchAttempts = 0;
+  let fetchOk = 0;
+  let fetchHttpError = 0;
+  let fetchNetworkError = 0;
+  let parseAttempts = 0;
+  let parseEmitted = 0;
+  let parseEmpty = 0;
+  for (const c of counters) {
+    if (!c) continue;
+    const n = c.name;
+    const v = Number(c.value) || 0;
+    const outcome = (c.labels && c.labels.outcome) || "";
+    if (n === "warc_repair.docs_emitted") docsEmitted += v;
+    else if (n === "warc_repair.fetch_attempts") {
+      fetchAttempts += v;
+      if (outcome === "ok") fetchOk += v;
+      else if (outcome === "http_error") fetchHttpError += v;
+      else if (outcome === "network_error") fetchNetworkError += v;
+    } else if (n === "warc_repair.parse_attempts") {
+      parseAttempts += v;
+      if (outcome === "emitted") parseEmitted += v;
+      else if (outcome === "empty") parseEmpty += v;
+    }
+  }
+  const hists = Array.isArray(metricsSnap.histograms) ? metricsSnap.histograms : [];
+  let fetchWeighted = 0;
+  let fetchCount = 0;
+  let parseWeighted = 0;
+  let parseCount = 0;
+  for (const h of hists) {
+    if (!h) continue;
+    const n = Number(h.count) || 0;
+    if (n <= 0) continue;
+    const p95 = Number(h.p95);
+    if (!Number.isFinite(p95)) continue;
+    if (h.name === "warc_repair.fetch_seconds") {
+      fetchCount += n;
+      fetchWeighted += p95 * n;
+    } else if (h.name === "warc_repair.parse_seconds") {
+      parseCount += n;
+      parseWeighted += p95 * n;
+    }
+  }
+  return {
+    docsEmitted,
+    fetchAttempts,
+    fetchOk,
+    fetchHttpError,
+    fetchNetworkError,
+    parseAttempts,
+    parseEmitted,
+    parseEmpty,
+    fetchP95: fetchCount > 0 ? fetchWeighted / fetchCount : null,
+    parseP95: parseCount > 0 ? parseWeighted / parseCount : null,
+  };
+}
+
+/**
  * FTS path metrics from /metrics (full rebuild / incremental / restore).
  * Pure — no DOM. Used by dashboard KPIs so operators see whether search is
  * paying for rematerialize vs fingerprint restore (not ranking-related).
@@ -1202,6 +1280,43 @@ async function refreshDashboard() {
     ftsRowsSub.textContent = fts.indexedRows
       ? "captures_idx after last build"
       : "no FTS materialize yet";
+  }
+
+  const warc = summarizeWarcRepairMetrics(metricsSnap);
+  setKPI("kpi-dash-warc-docs", warc.docsEmitted);
+  const warcDocsSub = $("#kpi-dash-warc-docs-sub");
+  if (warcDocsSub) {
+    if (warc.parseAttempts) {
+      warcDocsSub.textContent = `${fmt(warc.parseEmitted)} emitted · ${fmt(warc.parseEmpty)} empty parse`;
+    } else {
+      warcDocsSub.textContent = "range-repair captures this process";
+    }
+  }
+  const warcFetchP95Node = $("#kpi-dash-warc-fetch-p95");
+  if (warcFetchP95Node) {
+    warcFetchP95Node.textContent = formatFetchLatency(warc.fetchP95);
+    warcFetchP95Node.classList.toggle(
+      "is-zero",
+      !warc.fetchAttempts && warc.fetchP95 == null
+    );
+  }
+  const warcFetchP95Sub = $("#kpi-dash-warc-fetch-p95-sub");
+  if (warcFetchP95Sub) {
+    warcFetchP95Sub.textContent = warc.fetchAttempts
+      ? `${fmt(warc.fetchOk)} ok / ${fmt(warc.fetchAttempts)} attempts · process`
+      : "byte-range fetch latency";
+  }
+  setKPI("kpi-dash-warc-attempts", warc.fetchAttempts);
+  const warcAttSub = $("#kpi-dash-warc-attempts-sub");
+  if (warcAttSub) {
+    if (warc.fetchAttempts) {
+      const bits = [`${fmt(warc.fetchOk)} ok`];
+      if (warc.fetchHttpError) bits.push(`${fmt(warc.fetchHttpError)} http`);
+      if (warc.fetchNetworkError) bits.push(`${fmt(warc.fetchNetworkError)} net`);
+      warcAttSub.textContent = bits.join(" · ");
+    } else {
+      warcAttSub.textContent = "range-fetch attempts this process";
+    }
   }
 
   $("#kpi-captures-sub").textContent = (docsTotal ? `${fmt(docsTotal)} emitted across jobs` : "across the corpus");
