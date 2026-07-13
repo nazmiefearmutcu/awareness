@@ -33,6 +33,7 @@ from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
 from awareness.util.http import (
     RetryableHTTPError,
+    decode_http_text,
     get_shared_async_client,
     get_with_retries,
 )
@@ -73,6 +74,52 @@ def _maybe_decompress_body(body: bytes) -> bytes:
     if body.startswith(b"\xef\xbb\xbf"):
         return body[3:]
     return body
+
+
+def decode_feed_text(
+    body: bytes,
+    *,
+    content_type: str | None = None,
+) -> tuple[str, str]:
+    """Decode a feed/sitemap body to text with Content-Type charset awareness.
+
+    Feeds are XML/JSON, not HTML, so meta-charset sniffing is skipped. Order
+    matches :func:`decode_http_text` (header → clean UTF-8 → detector → replace).
+    Returns ``(text, encoding_label)``.
+    """
+    return decode_http_text(
+        body,
+        content_type=content_type,
+        peek_html_meta=False,
+        use_detector=True,
+    )
+
+
+def _body_for_xml_parser(
+    body: bytes,
+    *,
+    content_type: str | None = None,
+    kind: str = "rss",
+) -> bytes | str:
+    """Return bytes for UTF-8 / undeclared feeds, or unicode when charset is known.
+
+    ``feedparser`` and ``lxml`` accept either; non-UTF-8 bodies without an XML
+    encoding declaration parse more reliably as unicode after charset decode.
+    """
+    text, encoding = decode_feed_text(body, content_type=content_type)
+    get_metrics().inc(
+        "feeds.decode_charset",
+        labels={"kind": kind, "encoding": encoding or "unknown"},
+    )
+    # Keep raw bytes when the codec is UTF-8 family so XML declaration + binary
+    # paths stay stable for gzip-stripped payloads that are already clean.
+    if encoding in ("utf-8", "utf-8-replace", "ascii") and not content_type:
+        return body
+    if encoding in ("utf-8", "ascii"):
+        # Declared UTF-8 via Content-Type — bytes still fine and preserve exact
+        # wire form for feedparser's own encoding sniff.
+        return body
+    return text
 
 
 def _is_http_url(value: Any) -> bool:
@@ -224,13 +271,21 @@ def json_feed_item_url(item: Any, base_url: str | None = None) -> str | None:
     return None
 
 
-def parse_json_feed_urls(body: bytes | str, base_url: str | None = None) -> list[str] | None:
+def parse_json_feed_urls(
+    body: bytes | str,
+    base_url: str | None = None,
+    *,
+    content_type: str | None = None,
+) -> list[str] | None:
     """Extract item URLs from a JSON Feed document, or ``None`` if not JSON Feed.
 
     Detects JSON Feed by a top-level ``version`` containing ``jsonfeed.org``
     and/or an ``items`` array of objects. Plain JSON arrays/objects without
     that shape return ``None`` so callers can fall through to feedparser.
     Relative item URLs resolve against *base_url* (the feed document URL).
+
+    Byte bodies use charset-aware decoding (``Content-Type`` charset first)
+    so Latin-1 / Windows-125x JSON feeds are not dropped as undecodable.
     """
     if not body:
         return None
@@ -239,13 +294,11 @@ def parse_json_feed_urls(body: bytes | str, base_url: str | None = None) -> list
         sample = body.lstrip()[:1]
         if sample and sample not in (b"{", b"["):
             return None
-        try:
-            text = body.decode("utf-8")
-        except UnicodeDecodeError:
-            try:
-                text = body.decode("utf-8-sig")
-            except UnicodeDecodeError:
-                return None
+        text, encoding = decode_feed_text(body, content_type=content_type)
+        get_metrics().inc(
+            "feeds.decode_charset",
+            labels={"kind": "json", "encoding": encoding or "unknown"},
+        )
     else:
         text = body
     stripped = text.lstrip()
@@ -545,6 +598,7 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
         if not r.content:
             return []
         body = _maybe_decompress_body(r.content)
+        ctype = r.headers.get("content-type") or r.headers.get("Content-Type")
     except RetryableHTTPError:
         get_metrics().inc(
             "feeds.retryable_http_error",
@@ -556,12 +610,13 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
         return []
     # JSON Feed (https://www.jsonfeed.org/) — try before feedparser so modern
     # application/feed+json responses are not silently dropped as empty RSS.
-    json_urls = parse_json_feed_urls(body, base_url=url)
+    json_urls = parse_json_feed_urls(body, base_url=url, content_type=ctype)
     if json_urls is not None:
         get_metrics().inc("feeds.json_feed_parsed", labels={"kind": "json"})
         return dedupe_feed_urls(json_urls)
 
-    parsed = feedparser.parse(body)
+    parse_input = _body_for_xml_parser(body, content_type=ctype, kind="rss")
+    parsed = feedparser.parse(parse_input)
     out: list[str] = []
     for entry in parsed.entries:
         # Resolve relative entry links against the feed URL (common on
@@ -594,6 +649,7 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
         if not r.content:
             return []
         body = _maybe_decompress_body(r.content)
+        ctype = r.headers.get("content-type") or r.headers.get("Content-Type")
     except RetryableHTTPError:
         get_metrics().inc(
             "feeds.retryable_http_error",
@@ -604,11 +660,29 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
         logger.warning("sitemap_fetch_failed", url=url, err=str(exc))
         return []
 
+    parse_input = _body_for_xml_parser(body, content_type=ctype, kind="sitemap")
     try:
-        root = etree.fromstring(body)
+        if isinstance(parse_input, str):
+            root = etree.fromstring(parse_input.encode("utf-8"))
+        else:
+            root = etree.fromstring(parse_input)
     except (etree.XMLSyntaxError, OSError, ValueError) as exc:
-        logger.warning("sitemap_parse_failed", url=url, err=str(exc))
-        return []
+        # Retry once with full charset decode → UTF-8 re-encode when the wire
+        # bytes were not UTF-8 and lacked an XML encoding declaration.
+        if isinstance(parse_input, (bytes, bytearray)):
+            try:
+                text, enc = decode_feed_text(body, content_type=ctype)
+                get_metrics().inc(
+                    "feeds.decode_charset",
+                    labels={"kind": "sitemap_retry", "encoding": enc or "unknown"},
+                )
+                root = etree.fromstring(text.encode("utf-8"))
+            except (etree.XMLSyntaxError, OSError, ValueError) as exc2:
+                logger.warning("sitemap_parse_failed", url=url, err=str(exc2))
+                return []
+        else:
+            logger.warning("sitemap_parse_failed", url=url, err=str(exc))
+            return []
 
     out: list[str] = []
     tag = etree.QName(root.tag).localname
