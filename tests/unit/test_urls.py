@@ -746,6 +746,87 @@ def test_canonical_url_unwraps_google_url_redirect() -> None:
     )
 
 
+def test_canonical_url_unwraps_reddit_outbound() -> None:
+    """out.reddit.com/?url=… outbound wrappers collapse onto the origin."""
+    assert (
+        canonical_url(
+            "https://out.reddit.com/123?url=https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://www.out.reddit.com/?url="
+            "http%3A%2F%2Fm.news.example%2Fstory%2Famp&token=abc"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; Reddit wrapper params dropped.
+    assert (
+        canonical_url(
+            "https://out.reddit.com/?url="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dreddit"
+            "&token=x&app_name=web"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing url= → no unwrap.
+    bare = canonical_url("https://out.reddit.com/?token=x")
+    assert bare is not None
+    assert "out.reddit.com" in bare
+    # Ordinary reddit.com post path is not an outbound redirect.
+    post = canonical_url("https://www.reddit.com/r/news/comments/abc/story/")
+    assert post is not None
+    assert "reddit.com/r/news" in post
+    # Nested Reddit outbound must not loop.
+    nested = canonical_url(
+        "https://out.reddit.com/?url="
+        "https%3A%2F%2Fout.reddit.com%2F%3Furl%3Dx"
+    )
+    assert nested is not None
+    assert "out.reddit.com" in nested
+
+
+def test_canonical_url_unwraps_youtube_redirect() -> None:
+    """youtube.com/redirect?q=… external-link wrappers collapse onto the origin."""
+    assert (
+        canonical_url(
+            "https://www.youtube.com/redirect?q=https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://m.youtube.com/redirect?event=video_description&q="
+            "http%3A%2F%2Fm.news.example%2Fstory%2Famp"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; YouTube wrapper params dropped.
+    assert (
+        canonical_url(
+            "https://youtube.com/redirect?event=video_description&redir_token=x&q="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dyt"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Free-text q= (not an absolute URL) → no unwrap.
+    free = canonical_url("https://www.youtube.com/redirect?q=bitcoin+price")
+    assert free is not None
+    assert "youtube.com" in free
+    # Ordinary watch path is not a redirect.
+    watch = canonical_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    assert watch is not None
+    assert "youtube.com/watch" in watch
+    # Nested YouTube redirect must not loop.
+    nested = canonical_url(
+        "https://www.youtube.com/redirect?q="
+        "https%3A%2F%2Fwww.youtube.com%2Fredirect%3Fq%3Dx"
+    )
+    assert nested is not None
+    assert "youtube.com" in nested
+
+
 def test_canonical_url_strips_search_and_cms_noise() -> None:
     """Google/MSN search wrappers and CMS feed/trackback paths are identity-noise."""
     assert (

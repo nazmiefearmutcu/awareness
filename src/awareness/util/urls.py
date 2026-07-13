@@ -202,6 +202,23 @@ _LINKEDIN_REDIRECT_PATHS: frozenset[str] = frozenset(
     }
 )
 
+# Reddit outbound click-through hosts (``out.reddit.com/…?url=…``).
+_REDDIT_OUTBOUND_HOSTS: frozenset[str] = frozenset(
+    {
+        "out.reddit.com",
+    }
+)
+
+# YouTube external-link redirect hosts (``youtube.com/redirect?q=…``).
+# ``m.`` kept explicitly — unwrap runs before alias-host stripping.
+_YOUTUBE_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "youtube.com",
+        "m.youtube.com",
+        "youtube-nocookie.com",
+    }
+)
+
 # Suffix for Microsoft Outlook Safe Links rewrite hosts
 # (``nam01.safelinks.protection.outlook.com``, ``*.safelinks.protection.outlook.com``).
 _OUTLOOK_SAFELINKS_SUFFIX = "safelinks.protection.outlook.com"
@@ -743,6 +760,63 @@ def _unwrap_linkedin_redirect(netloc: str, path: str, query: str) -> str | None:
     return _validate_embedded_origin_url(origin, refuse_hosts=_LINKEDIN_REDIRECT_HOSTS)
 
 
+def _unwrap_reddit_outbound(netloc: str, query: str) -> str | None:
+    """Extract the origin URL from a Reddit ``out.reddit.com/?url=…`` wrapper.
+
+    Forms:
+
+    * ``https://out.reddit.com/…?url=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://out.reddit.com/?url=http%3A%2F%2Fm.example.com%2Fx&token=…``
+
+    Any path on the outbound host is treated as a redirector when ``url=`` is
+    present. Ordinary reddit.com post/comment URLs are not rewritten.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _REDDIT_OUTBOUND_HOSTS:
+        return None
+    origin = _query_param(query, "url")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(origin, refuse_hosts=_REDDIT_OUTBOUND_HOSTS)
+
+
+def _unwrap_youtube_redirect(netloc: str, path: str, query: str) -> str | None:
+    """Extract the origin URL from a YouTube ``/redirect?q=…`` external link.
+
+    Forms:
+
+    * ``https://www.youtube.com/redirect?q=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://m.youtube.com/redirect?event=video_description&q=http%3A%2F%2Fm.example.com%2Fx``
+
+    Only the ``/redirect`` path is rewritten so ordinary watch/search URLs stay
+    on YouTube identity. Prefer ``q=`` (YouTube's origin param); fall back to
+    ``url=`` when present.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _YOUTUBE_REDIRECT_HOSTS:
+        return None
+    p = (path or "").rstrip("/") or "/"
+    if p.lower() != "/redirect":
+        return None
+    # YouTube uses q= for the destination; accept url= as a defensive alias.
+    origin = _query_param(query, "q", "url")
+    if not origin:
+        return None
+    # q= may be free text on non-redirect paths; we already gated on /redirect.
+    # Still require absolute / scheme-relative so garbage q= values stay put.
+    if not (
+        origin.lower().startswith(("http://", "https://")) or origin.startswith("//")
+    ):
+        return None
+    return _validate_embedded_origin_url(origin, refuse_hosts=_YOUTUBE_REDIRECT_HOSTS)
+
+
 def _normalize_path(path: str) -> str:
     """Normalize path for identity: empty → ``/``; strip AMP/print/index noise + slash."""
     if not path:
@@ -869,6 +943,8 @@ def canonical_url(url: str | None) -> str | None:
       - DuckDuckGo ``/l/?uddg=…`` click redirects rewritten to origin
       - Instagram ``l.instagram.com/?u=…`` click redirects rewritten to origin
       - LinkedIn ``/safety/go`` and ``/redir/redirect`` ``url=`` wrappers rewritten
+      - Reddit ``out.reddit.com/?url=…`` outbound wrappers rewritten to origin
+      - YouTube ``/redirect?q=…`` external-link redirects rewritten to origin
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
@@ -915,7 +991,7 @@ def canonical_url(url: str | None) -> str | None:
     # Share / cache wrappers → origin article before other host/path identity.
     # Order: AMP CDN, AMP viewers, Wayback, then query-embedded origins
     # (Translate, Facebook, Google /url, Outlook Safe Links, DuckDuckGo /l,
-    # Instagram, LinkedIn safety/redir).
+    # Instagram, LinkedIn safety/redir, Reddit outbound, YouTube /redirect).
     unwrapped = _unwrap_amp_cdn(netloc, path)
     if unwrapped is not None:
         netloc, path = unwrapped
@@ -931,7 +1007,7 @@ def canonical_url(url: str | None) -> str | None:
                 # Origin query (wrapper query reattached when it belonged to origin).
                 parts = parts._replace(query=origin_q)
             else:
-                # Query-embedded origins (share / SERP / mail / DDG / IG / LI).
+                # Query-embedded origins (share / SERP / mail / social outbound).
                 embedded = (
                     _unwrap_translate(netloc, parts.query)
                     or _unwrap_facebook_redirect(netloc, parts.query)
@@ -940,6 +1016,8 @@ def canonical_url(url: str | None) -> str | None:
                     or _unwrap_duckduckgo_redirect(netloc, path, parts.query)
                     or _unwrap_instagram_redirect(netloc, parts.query)
                     or _unwrap_linkedin_redirect(netloc, path, parts.query)
+                    or _unwrap_reddit_outbound(netloc, parts.query)
+                    or _unwrap_youtube_redirect(netloc, path, parts.query)
                 )
                 if embedded is not None:
                     try:
