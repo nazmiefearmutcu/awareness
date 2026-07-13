@@ -7,7 +7,9 @@ import httpx
 import pytest
 
 from awareness.util.http import (
+    RETRYABLE_STATUS,
     RetryableHTTPError,
+    _retry_after_seconds,
     acquire_fetch_slot,
     get_with_retries,
     global_fetch_semaphore,
@@ -121,3 +123,77 @@ async def test_get_with_retries_acquires_fetch_slot(monkeypatch: pytest.MonkeyPa
     # One acquisition per attempt (retry after 503, then success).
     assert enters["n"] == 2
     assert calls["n"] == 2
+
+
+def test_408_is_retryable_status() -> None:
+    assert 408 in RETRYABLE_STATUS
+
+
+async def test_retries_then_succeeds_on_408() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return httpx.Response(408)
+        return httpx.Response(200, content=b"ok")
+
+    async with _client_with_handler(handler) as client:
+        resp = await get_with_retries(
+            client, "https://example.test/x", max_attempts=4, base_delay=0.0
+        )
+    assert resp.status_code == 200
+    assert calls["n"] == 2
+
+
+def test_retry_after_delta_seconds() -> None:
+    resp = httpx.Response(429, headers={"Retry-After": "12"})
+    assert _retry_after_seconds(resp) == 12.0
+
+
+def test_retry_after_http_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HTTP-date Retry-After is converted to a non-negative delay from now."""
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+
+    fixed_now = datetime(2026, 7, 13, 12, 0, 0, tzinfo=UTC)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001
+            if tz is None:
+                return fixed_now.replace(tzinfo=None)
+            return fixed_now.astimezone(tz)
+
+    monkeypatch.setattr("awareness.util.http.datetime", _FixedDateTime)
+
+    future = fixed_now + timedelta(seconds=45)
+    resp = httpx.Response(503, headers={"Retry-After": format_datetime(future, usegmt=True)})
+    delay = _retry_after_seconds(resp)
+    assert delay is not None
+    assert abs(delay - 45.0) < 1.0
+
+
+def test_retry_after_http_date_past_is_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+
+    fixed_now = datetime(2026, 7, 13, 12, 0, 0, tzinfo=UTC)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001
+            if tz is None:
+                return fixed_now.replace(tzinfo=None)
+            return fixed_now.astimezone(tz)
+
+    monkeypatch.setattr("awareness.util.http.datetime", _FixedDateTime)
+
+    past = fixed_now - timedelta(seconds=30)
+    resp = httpx.Response(503, headers={"Retry-After": format_datetime(past, usegmt=True)})
+    assert _retry_after_seconds(resp) == 0.0
+
+
+def test_retry_after_garbage_returns_none() -> None:
+    resp = httpx.Response(503, headers={"Retry-After": "not-a-date"})
+    assert _retry_after_seconds(resp) is None

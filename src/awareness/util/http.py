@@ -15,6 +15,8 @@ import asyncio
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -23,7 +25,8 @@ from awareness.obs.logging import get_logger
 logger = get_logger("util.http")
 
 # Status codes worth retrying (transient/overload). A 404/410 is permanent.
-RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+# 408 Request Timeout is transient (client may retry with the same request).
+RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 DEFAULT_MAX_ATTEMPTS = 4
 DEFAULT_BASE_DELAY = 0.5
 DEFAULT_MAX_DELAY = 30.0
@@ -92,13 +95,31 @@ def _backoff_delay(attempt: int, base_delay: float, retry_after: float | None) -
 
 
 def _retry_after_seconds(resp: httpx.Response) -> float | None:
+    """Parse ``Retry-After`` as delta-seconds or HTTP-date.
+
+    Returns seconds to wait (clamped ≥ 0), or ``None`` when the header is
+    missing / unparseable so callers fall back to exponential backoff.
+    """
     raw = resp.headers.get("retry-after")
     if not raw:
         return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    # Delta-seconds (preferred / common for 429/503).
     try:
-        return float(raw)
+        return max(0.0, float(raw))
     except ValueError:
-        return None  # HTTP-date form: ignore, fall back to exponential backoff
+        pass
+    # HTTP-date form (RFC 7231): absolute timestamp → delay from now.
+    try:
+        dt = parsedate_to_datetime(raw)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    delay = (dt - datetime.now(UTC)).total_seconds()
+    return max(0.0, delay)
 
 
 async def get_with_retries(
