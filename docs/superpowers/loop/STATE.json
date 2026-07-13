@@ -1,11 +1,11 @@
 {
-  "iteration": 8,
-  "phase": "systems",
+  "iteration": 9,
+  "phase": "search_polish+scrape_reliability",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "commits_ahead": 83,
-  "unit_suite": "505 green (1 skipped datasets; not slow)",
+  "commits_ahead": 91,
+  "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed job/tail retry visibility (a2394d6), search recency_boost meta (d12d645), collapsible related panel (4aed851). Next: SPA Settings editable, metrics export, or Iceberg compaction."
+  "notes": "Landed HTTP-date Retry-After+408 (b0cab01), gzip feeds+Atom links (b919788), case-insensitive domain+language facets (a0dc296). Next: SPA language chips / metrics export / Iceberg compaction / pooled httpx."
 }
