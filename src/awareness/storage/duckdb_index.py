@@ -608,6 +608,10 @@ class DuckDbIndex:
         # Build a unified ``captures`` view that casts timestamps to TIMESTAMPTZ
         # so BETWEEN/range queries against datetime parameters work.
         # We try to load and union the Iceberg warehouse captures when available.
+        present = {
+            str(r[0]) for r in conn.execute("DESCRIBE staging_captures_raw").fetchall()
+        }
+        staging_proj = _staging_projection(present)
         iceberg_ok = False
         if self._iceberg_warehouse:
             try:
@@ -635,22 +639,11 @@ class DuckDbIndex:
 
         try:
             if iceberg_ok:
-                conn.execute(
-                    """
+                conn.execute(  # nosemgrep
+                    f"""
                     CREATE OR REPLACE VIEW captures_raw_union AS
                     SELECT
-                      doc_id, capture_id, parent_doc_or_dup_group,
-                      source_type, source_name, source_locator,
-                      source_shard, source_offset_or_record_id,
-                      discovery_channel, job_id, batch_id, ingest_version,
-                      url, canonical_url, domain,
-                      TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
-                      TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
-                      TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
-                      TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
-                      content_type, http_status, etag, title, text, language,
-                      content_hash, TRY_CAST(near_dup_hash AS BIGINT) AS near_dup_hash, robots_decision,
-                      terms_note_if_relevant
+                      {staging_proj}
                     FROM staging_captures_raw
                     UNION ALL
                     SELECT
@@ -680,22 +673,11 @@ class DuckDbIndex:
                     """
                 )
             else:
-                conn.execute(
-                    """
+                conn.execute(  # nosemgrep
+                    f"""
                     CREATE OR REPLACE VIEW captures AS
                     SELECT
-                      doc_id, capture_id, parent_doc_or_dup_group,
-                      source_type, source_name, source_locator,
-                      source_shard, source_offset_or_record_id,
-                      discovery_channel, job_id, batch_id, ingest_version,
-                      url, canonical_url, domain,
-                      TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
-                      TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
-                      TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
-                      TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
-                      content_type, http_status, etag, title, text, language,
-                      content_hash, TRY_CAST(near_dup_hash AS BIGINT) AS near_dup_hash, robots_decision,
-                      terms_note_if_relevant
+                      {staging_proj}
                     FROM staging_captures_raw;
                     """
                 )
