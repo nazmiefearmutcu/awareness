@@ -402,6 +402,10 @@ function summarizeStorageObsMetrics(metricsSnap) {
     icebergRows: 0,
     icebergBatches: 0,
     icebergAppendP95: null,
+    icebergCompactedRows: 0,
+    icebergCompactManifests: 0,
+    icebergCompactOk: 0,
+    icebergCompactP95: null,
     jsonlRecords: 0,
     jsonlChunks: 0,
     jsonlCommitP95: null,
@@ -424,6 +428,9 @@ function summarizeStorageObsMetrics(metricsSnap) {
   const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
   let icebergRows = 0;
   let icebergBatches = 0;
+  let icebergCompactedRows = 0;
+  let icebergCompactManifests = 0;
+  let icebergCompactOk = 0;
   let jsonlRecords = 0;
   let jsonlChunks = 0;
   let robotsFetchAttempts = 0;
@@ -432,6 +439,15 @@ function summarizeStorageObsMetrics(metricsSnap) {
     if (!c) continue;
     if (c.name === "iceberg.appended_rows") icebergRows += Number(c.value) || 0;
     if (c.name === "iceberg.append_batches") icebergBatches += Number(c.value) || 0;
+    if (c.name === "iceberg.compacted_rows") icebergCompactedRows += Number(c.value) || 0;
+    if (c.name === "iceberg.compact_manifests") {
+      const v = Number(c.value) || 0;
+      icebergCompactManifests += v;
+      const labels = c.labels || {};
+      if (labels.outcome === "ok" || labels.outcome === "empty") {
+        icebergCompactOk += v;
+      }
+    }
     if (c.name === "jsonl.records_committed") jsonlRecords += Number(c.value) || 0;
     if (c.name === "jsonl.chunks_committed") jsonlChunks += Number(c.value) || 0;
     if (c.name === "robots.fetch_attempts") {
@@ -451,6 +467,8 @@ function summarizeStorageObsMetrics(metricsSnap) {
   let jsonlHistCount = 0;
   let robotsWeightedP95 = 0;
   let robotsHistCount = 0;
+  let compactWeightedP95 = 0;
+  let compactHistCount = 0;
   for (const h of hists) {
     if (!h) continue;
     const n = Number(h.count) || 0;
@@ -466,6 +484,9 @@ function summarizeStorageObsMetrics(metricsSnap) {
     } else if (h.name === "robots.fetch_seconds") {
       robotsHistCount += n;
       robotsWeightedP95 += p95 * n;
+    } else if (h.name === "iceberg.compact_seconds") {
+      compactHistCount += n;
+      compactWeightedP95 += p95 * n;
     }
   }
   return {
@@ -477,6 +498,10 @@ function summarizeStorageObsMetrics(metricsSnap) {
     icebergRows,
     icebergBatches,
     icebergAppendP95: histCount > 0 ? weightedP95 / histCount : null,
+    icebergCompactedRows,
+    icebergCompactManifests,
+    icebergCompactOk,
+    icebergCompactP95: compactHistCount > 0 ? compactWeightedP95 / compactHistCount : null,
     jsonlRecords,
     jsonlChunks,
     jsonlCommitP95: jsonlHistCount > 0 ? jsonlWeightedP95 / jsonlHistCount : null,
@@ -576,6 +601,25 @@ async function refreshDashboard() {
     iceSub.textContent = storageObs.icebergBatches
       ? `${fmt(storageObs.icebergBatches)} batches · p95 ${p95}`
       : "appended this process";
+  }
+  // Iceberg compact (warehouse fold of JSONL staging → table).
+  const compactP95Node = $("#kpi-dash-compact-p95");
+  if (compactP95Node) {
+    compactP95Node.textContent = formatFetchLatency(storageObs.icebergCompactP95);
+    compactP95Node.classList.toggle("is-zero", !storageObs.icebergCompactManifests);
+  }
+  const compactP95Sub = $("#kpi-dash-compact-p95-sub");
+  if (compactP95Sub) {
+    compactP95Sub.textContent = storageObs.icebergCompactManifests
+      ? `${fmt(storageObs.icebergCompactOk)}/${fmt(storageObs.icebergCompactManifests)} ok · fold`
+      : "no compact runs this process";
+  }
+  setKPI("kpi-dash-compact-rows", storageObs.icebergCompactedRows);
+  const compactRowsSub = $("#kpi-dash-compact-rows-sub");
+  if (compactRowsSub) {
+    compactRowsSub.textContent = storageObs.icebergCompactManifests
+      ? `${fmt(storageObs.icebergCompactManifests)} manifests folded`
+      : "rows folded this process";
   }
   setKPI("kpi-dash-jsonl-records", storageObs.jsonlRecords);
   const jsonlSub = $("#kpi-dash-jsonl-records-sub");
