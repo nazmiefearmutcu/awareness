@@ -287,6 +287,27 @@ function renderJobStrip(root, jobs) {
 const caps = { limit: 30, offset: 0, total: 0 };
 let capsSearchTimer = null;
 
+/** Show empty-search diagnostics.hints under the results list; hide otherwise. */
+function renderCapsDiagnostics(data, isSearch) {
+  const box = $("#caps-diagnostics");
+  if (!box) return;
+  const hints = (isSearch && data && Number(data.total) === 0)
+    ? ((data.diagnostics && data.diagnostics.hints) || [])
+    : [];
+  clear(box);
+  if (!hints.length) {
+    box.hidden = true;
+    return;
+  }
+  box.appendChild(el("p", { class: "caps-diagnostics-title", text: "No results — suggestions" }));
+  const ul = el("ul");
+  for (const h of hints) {
+    ul.appendChild(el("li", { text: String(h) }));
+  }
+  box.appendChild(ul);
+  box.hidden = false;
+}
+
 async function loadCaptures(reset = false) {
   if (reset) caps.offset = 0;
   const q = $("#caps-search").value.trim();
@@ -298,6 +319,7 @@ async function loadCaptures(reset = false) {
   const list = $("#caps-list");
   const meta = $("#caps-meta");
   meta.textContent = "loading…";
+  renderCapsDiagnostics(null, false);
 
   // Search-mode hits /search (BM25 ranked, with snippets); browse-mode hits
   // /captures (chronological).
@@ -326,6 +348,7 @@ async function loadCaptures(reset = false) {
     const data = await api(url);
     caps.total = data.total;
     renderCaps(list, data.rows || [], { search: q, ranked: !!data.ranked });
+    renderCapsDiagnostics(data, isSearch);
     const from = data.total ? caps.offset + 1 : 0;
     const to = Math.min(caps.offset + (data.rows || []).length, data.total);
     if (isSearch) {
@@ -341,6 +364,7 @@ async function loadCaptures(reset = false) {
   } catch (err) {
     console.error(err);
     meta.textContent = "query failed: " + err.message;
+    renderCapsDiagnostics(null, false);
   }
 }
 

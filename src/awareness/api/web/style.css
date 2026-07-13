@@ -768,6 +768,30 @@ code {
   font-family: var(--mono);
 }
 
+.caps-diagnostics {
+  margin: 8px 0 4px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--fg-dim);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.015);
+}
+.caps-diagnostics-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-dim);
+}
+.caps-diagnostics ul {
+  margin: 0;
+  padding-left: 1.2em;
+}
+.caps-diagnostics li {
+  margin: 2px 0;
+  line-height: 1.4;
+}
+
 /* Capture list */
 .caps-list {
   list-style: none;
