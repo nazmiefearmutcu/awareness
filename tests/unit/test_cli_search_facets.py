@@ -30,6 +30,7 @@ def _write_doc(
     text: str,
     domain: str,
     source_type: str = "rss",
+    language: str | None = "en",
 ) -> None:
     day = root / "data" / "jsonl" / "captures" / "2026" / "06" / "01"
     day.mkdir(parents=True, exist_ok=True)
@@ -43,6 +44,7 @@ def _write_doc(
         fetch_ts="2026-06-01T12:00:00+00:00",
         title=title,
         text=text,
+        language=language,
     )
     (day / f"chunk-{idx}.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
 
@@ -60,6 +62,22 @@ def test_search_prints_domain_facets_summary(tmp_project: Path) -> None:
     assert "b.example" in result.output
     # Count annotations present for the top domain.
     assert "a.example (2)" in result.output or "a.example(2)" in result.output
+
+
+def test_search_prints_language_facets_summary(tmp_project: Path) -> None:
+    _write_doc(
+        tmp_project, 1, title="Alpha one", text="alpha news",
+        domain="a.example", language="en",
+    )
+    _write_doc(
+        tmp_project, 2, title="Alpha two", text="alpha again",
+        domain="b.example", language="tr",
+    )
+    result = runner.invoke(app, ["search", "alpha", "--no-interactive", "--mode", "substring"])
+    assert result.exit_code == 0, result.output
+    assert "Languages:" in result.output
+    assert "en" in result.output
+    assert "tr" in result.output
 
 
 def test_search_omits_domain_facets_when_empty(tmp_project: Path) -> None:

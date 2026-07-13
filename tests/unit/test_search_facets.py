@@ -28,6 +28,7 @@ def _write_doc(
     text: str,
     domain: str,
     source_type: str = "rss",
+    language: str | None = "en",
 ) -> None:
     day = root / "captures" / "2026" / "06" / "01"
     day.mkdir(parents=True, exist_ok=True)
@@ -41,6 +42,7 @@ def _write_doc(
         fetch_ts="2026-06-01T12:00:00+00:00",
         title=title,
         text=text,
+        language=language,
     )
     (day / f"chunk-{idx}.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
 
@@ -49,13 +51,13 @@ def _write_doc(
 def faceted_index(tmp_path: Path) -> DuckDbIndex:
     jsonl_dir = tmp_path / "jsonl"
     # Shared term "alpha" across domains so facets are non-trivial.
-    _write_doc(jsonl_dir, 1, title="Alpha news", text="alpha one", domain="a.example")
-    _write_doc(jsonl_dir, 2, title="Alpha again", text="alpha two", domain="a.example")
-    _write_doc(jsonl_dir, 3, title="Alpha other", text="alpha three", domain="b.example")
+    _write_doc(jsonl_dir, 1, title="Alpha news", text="alpha one", domain="a.example", language="en")
+    _write_doc(jsonl_dir, 2, title="Alpha again", text="alpha two", domain="a.example", language="en")
+    _write_doc(jsonl_dir, 3, title="Alpha other", text="alpha three", domain="b.example", language="tr")
     _write_doc(
         jsonl_dir, 4,
         title="Alpha wet", text="alpha four",
-        domain="c.example", source_type="common_crawl_wet",
+        domain="c.example", source_type="common_crawl_wet", language="en",
     )
     _write_doc(jsonl_dir, 5, title="Sports", text="football only", domain="sports.example")
     return DuckDbIndex(
@@ -90,6 +92,25 @@ def test_search_facets_sources_present(faceted_index: DuckDbIndex) -> None:
     assert by_src.get("common_crawl_wet", 0) == 1
 
 
+def test_search_facets_languages_present(faceted_index: DuckDbIndex) -> None:
+    res = faceted_index.search("alpha", mode="prefix")
+    assert res["total"] >= 3
+    langs = res["facets"]["languages"]
+    by_lang = {str(row["language"]): int(row["n"]) for row in langs}
+    assert by_lang.get("en", 0) >= 2
+    assert by_lang.get("tr", 0) == 1
+
+
+def test_search_domain_filter_case_insensitive(faceted_index: DuckDbIndex) -> None:
+    """Domain filter matches regardless of user/SPA casing."""
+    upper = faceted_index.search("alpha", mode="substring", domain="A.EXAMPLE")
+    lower = faceted_index.search("alpha", mode="substring", domain="a.example")
+    assert upper["total"] == lower["total"]
+    assert upper["total"] >= 1
+    for row in upper["rows"]:
+        assert str(row.get("domain") or "").lower() == "a.example"
+
+
 def test_search_facets_omitted_when_empty(faceted_index: DuckDbIndex) -> None:
     res = faceted_index.search("zzzz-no-match-zzzz", mode="substring")
     assert res["total"] == 0
@@ -108,3 +129,4 @@ def test_search_facets_fts_when_available(
     assert res.get("ranked") is True
     assert res["facets"]["domains"]
     assert res["facets"]["domains"][0]["domain"] == "a.example"
+    assert res["facets"].get("languages")

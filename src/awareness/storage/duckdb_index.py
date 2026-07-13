@@ -1107,6 +1107,13 @@ class DuckDbIndex:
                 f"WHERE c.source_type IS NOT NULL AND CAST(c.source_type AS VARCHAR) != '' "
                 f"GROUP BY c.source_type ORDER BY n DESC LIMIT {lim}"
             )
+            lang_sql = (
+                f"SELECT c.language AS language, "
+                f"COUNT(DISTINCT c.capture_id)::BIGINT AS n "
+                f"{base} "
+                f"WHERE c.language IS NOT NULL AND CAST(c.language AS VARCHAR) != '' "
+                f"GROUP BY c.language ORDER BY n DESC LIMIT {lim}"
+            )
         else:
             w = where_sql or "1=1"
             p = {k: v for k, v in params.items() if f"${k}" in w}
@@ -1121,17 +1128,26 @@ class DuckDbIndex:
                 f"AND CAST(source_type AS VARCHAR) != '' "
                 f"GROUP BY source_type ORDER BY n DESC LIMIT {lim}"
             )
+            lang_sql = (
+                f"SELECT language, COUNT(*)::BIGINT AS n FROM captures "
+                f"WHERE ({w}) AND language IS NOT NULL "
+                f"AND CAST(language AS VARCHAR) != '' "
+                f"GROUP BY language ORDER BY n DESC LIMIT {lim}"
+            )
         try:
             domains = self._rows(conn, dom_sql, p)
             sources = self._rows(conn, src_sql, p)
+            languages = self._rows(conn, lang_sql, p)
         except duckdb.Error as exc:
             logger.warning("search_facets_failed", kind=kind, err=str(exc))
-            return {"domains": [], "sources": []}
+            return {"domains": [], "sources": [], "languages": []}
         for row in domains:
             row["n"] = int(row["n"])
         for row in sources:
             row["n"] = int(row["n"])
-        return {"domains": domains, "sources": sources}
+        for row in languages:
+            row["n"] = int(row["n"])
+        return {"domains": domains, "sources": sources, "languages": languages}
 
     def search(
         self,
@@ -1222,8 +1238,10 @@ class DuckDbIndex:
                     w.append("source_type = $src")
                     p["src"] = source
                 if domain:
-                    w.append("domain = $dom")
-                    p["dom"] = domain
+                    # Case-insensitive: users/SPA may pass Example.COM while
+                    # captures store lower-cased eTLD+1 from URL parsing.
+                    w.append("lower(domain) = $dom")
+                    p["dom"] = str(domain).strip().lower()
                 if start is not None:
                     w.append("fetch_ts >= $start")
                     p["start"] = start

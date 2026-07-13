@@ -2781,6 +2781,10 @@ def _print_search_domain_facets(facets: dict[str, Any] | None) -> None:
     if sources:
         rprint(f"[dim]Sources:[/dim] {', '.join(sources)}")
 
+    languages = _facet_parts(facets.get("languages") or [], name_keys=("language", "lang"))
+    if languages:
+        rprint(f"[dim]Languages:[/dim] {', '.join(languages)}")
+
 
 def _print_search_diagnostics(diagnostics: dict[str, Any] | None) -> None:
     """Render empty-result diagnostics as a short Rich panel.
