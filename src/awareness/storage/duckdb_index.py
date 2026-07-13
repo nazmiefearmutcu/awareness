@@ -1243,8 +1243,9 @@ class DuckDbIndex:
                 w: list[str] = []
                 p: dict[str, Any] = {}
                 if source:
-                    w.append("source_type = $src")
-                    p["src"] = source
+                    # Case-insensitive: SPA/CLI may pass RSS vs rss / Tail_Recrawl.
+                    w.append("lower(source_type) = $src")
+                    p["src"] = str(source).strip().lower()
                 if domain:
                     # Case-insensitive: users/SPA may pass Example.COM while
                     # captures store lower-cased eTLD+1 from URL parsing.

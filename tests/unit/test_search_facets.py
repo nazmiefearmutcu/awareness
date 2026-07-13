@@ -111,6 +111,19 @@ def test_search_domain_filter_case_insensitive(faceted_index: DuckDbIndex) -> No
         assert str(row.get("domain") or "").lower() == "a.example"
 
 
+def test_search_source_filter_case_insensitive(faceted_index: DuckDbIndex) -> None:
+    """Source filter matches regardless of user/SPA casing (RSS vs rss)."""
+    upper = faceted_index.search("alpha", mode="substring", source="RSS")
+    lower = faceted_index.search("alpha", mode="substring", source="rss")
+    wet = faceted_index.search("alpha", mode="substring", source="Common_Crawl_Wet")
+    assert upper["total"] == lower["total"]
+    assert upper["total"] >= 2
+    for row in upper["rows"]:
+        assert str(row.get("source_type") or "").lower() == "rss"
+    assert wet["total"] == 1
+    assert str(wet["rows"][0].get("source_type") or "").lower() == "common_crawl_wet"
+
+
 def test_search_language_filter(faceted_index: DuckDbIndex) -> None:
     """Language filter narrows matches and is case-insensitive."""
     en = faceted_index.search("alpha", mode="substring", language="EN")

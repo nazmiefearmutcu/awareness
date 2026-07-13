@@ -487,11 +487,11 @@ def create_app() -> FastAPI:
         where = ["fetch_ts >= $start", "fetch_ts <= $end"]
         params: dict[str, Any] = {"start": to_utc(start), "end": end_dt}
         if domain:
-            where.append("domain = $dom")
-            params["dom"] = domain
+            where.append("lower(domain) = $dom")
+            params["dom"] = str(domain).strip().lower()
         if source:
-            where.append("source_type = $src")
-            params["src"] = source
+            where.append("lower(source_type) = $src")
+            params["src"] = str(source).strip().lower()
         sql = f"""
             SELECT doc_id, capture_id, source_type, source_name, fetch_ts,
                    domain, title, length(text) AS text_len, language
@@ -547,8 +547,9 @@ def create_app() -> FastAPI:
             where.append("lower(domain) = $dom")
             params["dom"] = str(domain).strip().lower()
         if source:
-            where.append("source_type = $src")
-            params["src"] = source
+            # Case-insensitive: RSS vs rss / Common_Crawl_Wet vs common_crawl_wet.
+            where.append("lower(source_type) = $src")
+            params["src"] = str(source).strip().lower()
         if language:
             where.append("lower(language) = $lang")
             params["lang"] = str(language).strip().lower()
