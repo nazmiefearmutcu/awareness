@@ -18,5 +18,5 @@ tail_poll_seconds: 60.0
 terminal_mute_duplicates: true
 text_max_chars: 1500000
 text_min_chars: 200
-user_agent: AwarenessBot/0.1 (+https://github.com/nazmiefearmutcu/claude; public-text-research)
+user_agent: AwarenessBot/0.1 (+https://github.com/nazmiefearmutcu/awareness; public-text-research)
 worker_concurrency: 4

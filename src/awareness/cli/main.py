@@ -1667,13 +1667,18 @@ def tail_check_seeds(
     rprint(f"[bold cyan]Validating {len(all_feeds)} configuration seeds...[/bold cyan]\n")
     
     async def validate_all():
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        ua = get_settings().user_agent
+        async with httpx.AsyncClient(
+            timeout=10.0,
+            follow_redirects=True,
+            headers={"User-Agent": ua},
+        ) as client:
             robots = RobotsCache()
             robots._client = client
             
             table = Table("Type", "Seed URL", "HTTP Status", "Robots.txt", "Parser Status")
             for url, kind in all_feeds:
-                allowed = await robots.is_allowed(url, "AwarenessBot/0.1")
+                allowed = await robots.is_allowed(url, ua)
                 robots_status = "[green]Allowed[/green]" if allowed else "[red]Disallowed[/red]"
                 
                 try:

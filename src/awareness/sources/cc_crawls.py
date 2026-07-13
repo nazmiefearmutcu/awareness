@@ -83,7 +83,13 @@ def _catalog_from_payload(payload: list[dict]) -> list[Crawl]:
 
 def _fetch_catalog() -> list[Crawl] | None:
     try:
-        resp = httpx.get(COLLINFO_URL, timeout=_CATALOG_TIMEOUT, follow_redirects=True)
+        settings = get_settings()
+        resp = httpx.get(
+            COLLINFO_URL,
+            timeout=_CATALOG_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": settings.user_agent},
+        )
         if resp.status_code != 200:
             return None
         return _catalog_from_payload(resp.json())
