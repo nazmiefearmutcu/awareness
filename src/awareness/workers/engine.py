@@ -358,7 +358,7 @@ class WorkerEngine:
             ingest_version=settings.ingest_version,
             checkpoint=init_checkpoint,
             is_stopping=self.is_stopping,
-            extras={"robots": self._robots},
+            extras={"robots": self._robots, "state": self._state},
         )
         partition = PartitionSpec(
             source_type=task.source_type,

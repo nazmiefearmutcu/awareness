@@ -185,6 +185,18 @@ class TailRow(Base):
     pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+
+class UrlFetchLogRow(Base):
+    """Successful HTTP fetches keyed by canonical URL (skip re-fetch gate)."""
+
+    __tablename__ = "url_fetch_log"
+    canonical_url: Mapped[str] = mapped_column(String, primary_key=True)
+    first_doc_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_content_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class RobotsCacheRow(Base):
     __tablename__ = "robots_cache"
     site: Mapped[str] = mapped_column(String, primary_key=True)
@@ -1208,3 +1220,52 @@ class StateDB:
                 )
             )
             s.commit()
+
+    # ── url fetch log (tail_recrawl skip gate) ───────────────────────────
+    def record_url_fetch(
+        self,
+        canonical_url: str,
+        doc_id: str | None = None,
+        content_hash: str | None = None,
+        *,
+        http_status: int | None = None,
+    ) -> None:
+        """Record a successful fetch of ``canonical_url`` (upsert)."""
+        if not canonical_url:
+            return
+        with self.session() as s:
+            row = s.get(UrlFetchLogRow, canonical_url)
+            if row is None:
+                s.add(
+                    UrlFetchLogRow(
+                        canonical_url=canonical_url,
+                        first_doc_id=doc_id,
+                        last_content_hash=content_hash,
+                        fetched_at=_utcnow(),
+                        http_status=http_status,
+                    )
+                )
+            else:
+                if row.first_doc_id is None and doc_id:
+                    row.first_doc_id = doc_id
+                if content_hash is not None:
+                    row.last_content_hash = content_hash
+                row.fetched_at = _utcnow()
+                if http_status is not None:
+                    row.http_status = http_status
+            s.commit()
+
+    def was_url_fetched(self, canonical_url: str) -> bool:
+        """True if ``canonical_url`` was previously recorded as successfully fetched."""
+        if not canonical_url:
+            return False
+        with self.session() as s:
+            return s.get(UrlFetchLogRow, canonical_url) is not None
+
+    def get_url_fetch(self, canonical_url: str) -> UrlFetchLogRow | None:
+        """Return the fetch-log row for ``canonical_url``, or None."""
+        if not canonical_url:
+            return None
+        with self.session() as s:
+            return s.get(UrlFetchLogRow, canonical_url)
+

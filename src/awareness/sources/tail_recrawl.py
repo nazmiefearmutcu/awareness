@@ -56,6 +56,7 @@ class TailRecrawlAdapter(Adapter):
     ) -> AsyncIterator[DocCapture]:
         url = partition.payload["url"]
         discovery_channel = partition.payload.get("discovery_channel", "tail")
+        force_refresh = bool(partition.payload.get("force_refresh"))
         if not is_public_http_url(url):
             get_metrics().inc("tail.blocked_internal_url")
             return
@@ -66,6 +67,19 @@ class TailRecrawlAdapter(Adapter):
         settings = get_settings()
         limiter: PerDomainLimiter = context.extras.get("limiter") or _global_limiter(settings)
         robots: RobotsCache = context.extras.get("robots") or _global_robots(settings)
+        state = context.extras.get("state")
+
+        # Exact-URL gate: skip HTTP when this canonical URL was already fetched.
+        pre_cu = canonical_url(url)
+        if (
+            state is not None
+            and pre_cu
+            and not force_refresh
+            and state.was_url_fetched(pre_cu)
+        ):
+            get_metrics().inc("tail.fetch_skipped_seen", labels={"domain": dom})
+            logger.debug("tail_skip_already_fetched", url=url, canonical_url=pre_cu)
+            return
 
         # Robots check.
         try:
@@ -115,6 +129,27 @@ class TailRecrawlAdapter(Adapter):
         observed_ts = utcnow()
         cu = canonical_url(ext.canonical_url_hint or url) or canonical_url(url)
         did = doc_id_for(cu, ch)
+
+        # Durable fetch log so future partitions for this URL skip HTTP.
+        # Record before yield so a consumer that stops early still gates next time.
+        if state is not None:
+            try:
+                # Record extract-resolved canonical (and pre-fetch key if different).
+                state.record_url_fetch(
+                    cu or pre_cu,
+                    doc_id=did,
+                    content_hash=ch,
+                    http_status=int(r.status_code),
+                )
+                if pre_cu and cu and pre_cu != cu:
+                    state.record_url_fetch(
+                        pre_cu,
+                        doc_id=did,
+                        content_hash=ch,
+                        http_status=int(r.status_code),
+                    )
+            except Exception as exc:
+                logger.warning("url_fetch_log_failed", url=url, err=str(exc))
 
         yield DocCapture(
             doc_id=did,
