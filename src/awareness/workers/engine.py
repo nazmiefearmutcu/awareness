@@ -22,7 +22,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from awareness.config import get_settings
-from awareness.dedup.engine import DedupDecision, DedupEngine
+from awareness.dedup.engine import DedupDecision, DedupEngine, TIGHT_NEAR_STORE_THRESHOLD
 from awareness.filters import TopicFilter
 from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
@@ -384,9 +384,16 @@ class WorkerEngine:
                     labels={"decision": outcome.decision.value, "source": task.source_type.value},
                 )
                 # EXACT_DUP / REVISION: skip durable storage — same bytes already
-                # on disk (different URL or same URL re-fetch). NEAR_DUP still
-                # persists for provenance of near-matches. Stats track the fold.
-                if outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.REVISION):
+                # on disk (different URL or same URL re-fetch). Tight NEAR_DUP
+                # (Hamming ≤ TIGHT_NEAR_STORE_THRESHOLD) likewise skips full-text
+                # re-store; looser NEAR_DUP still persists for provenance.
+                # parent_doc_or_dup_group is always set by the dedup engine.
+                tight_near = (
+                    outcome.decision == DedupDecision.NEAR_DUP
+                    and outcome.hamming is not None
+                    and outcome.hamming <= TIGHT_NEAR_STORE_THRESHOLD
+                )
+                if outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.REVISION) or tight_near:
                     dedup_dropped += 1
                     self._total_docs_processed += 1
                     bytes_processed += len(cap.text)

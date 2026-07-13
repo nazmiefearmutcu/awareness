@@ -106,8 +106,8 @@ if PyIceberg fails. The compaction path can lift JSONL → Iceberg later.
   (Manku/Jain pigeonhole) for O(1)-per-band lookup of near-duplicates.
 
 Dedup labels captures `NEW`, `REVISION`, `EXACT_DUP`, `NEAR_DUP`. The worker
-skips durable storage for `EXACT_DUP` (same content already stored under
-another URL); `NEAR_DUP` / `REVISION` / `NEW` still persist for provenance.
+skips durable storage for `EXACT_DUP` / `REVISION` and for tight `NEAR_DUP`
+(Hamming ≤ 12); looser `NEAR_DUP` and `NEW` still persist for provenance.
 Downstream readers fold captures into canonical documents with
 `WHERE doc_id = parent_doc_or_dup_group`. Search collapses hits by
 `content_hash` so top-K never shows syndicated copies twice.

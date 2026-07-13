@@ -4,6 +4,7 @@ Regression for data-quality hard gates:
   * top-K search must not show the same parent_doc_or_dup_group twice
   * top-K search must not show the same content_hash twice (when parent unset)
   * EXACT_DUP captures must not be re-persisted to JSONL
+  * tight NEAR_DUP (Hamming ≤12) must not be re-persisted; loose NEAR_DUP still is
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from awareness.dedup.engine import DedupDecision, DedupOutcome
 from awareness.planner.planner import Planner
 from awareness.schemas.doc import DocCapture, RobotsDecision, SourceKind, SourceRef
 from awareness.storage.duckdb_index import (
@@ -399,3 +401,118 @@ async def test_worker_exact_dup_skips_batch_buffer(tmp_project: Path, monkeypatc
     # NEW + unique third doc emitted; EXACT_DUP counted as dropped not emitted.
     assert job.docs_emitted == 2
     assert job.docs_dedup_dropped >= 1
+
+
+@pytest.mark.asyncio
+async def test_worker_tight_near_dup_skips_batch_buffer(
+    tmp_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NEAR_DUP with Hamming ≤ TIGHT_NEAR_STORE_THRESHOLD must not be buffered."""
+    state = StateDB(f"sqlite:///{tmp_project / 'state.db'}")
+    state.init()
+    planner = Planner(state)
+    engine = WorkerEngine(state, planner, concurrency=1, silent_progress=True)
+
+    cap_new = _make_cap(
+        "https://a.test/base",
+        " ".join(["Canonical article body for near-dup storage policy."] * 20),
+    )
+    cap_tight = _make_cap(
+        "https://b.test/tight",
+        " ".join(["Tight near-duplicate body that should skip store."] * 20),
+        observed_str="2024-01-02T00:00:00+00:00",
+    )
+    cap_loose = _make_cap(
+        "https://c.test/loose",
+        " ".join(["Loose near-duplicate body that should still store."] * 20),
+        observed_str="2024-01-03T00:00:00+00:00",
+    )
+    cap_unique = _make_cap(
+        "https://d.test/unique",
+        " ".join(["Completely unrelated unique document content keep path."] * 20),
+        observed_str="2024-01-04T00:00:00+00:00",
+    )
+
+    # Controlled decisions: real simhash distances are flaky for unit policy tests.
+    outcomes = {
+        cap_new.doc_id: DedupOutcome(
+            decision=DedupDecision.NEW, dup_group=cap_new.doc_id, reason="new_content"
+        ),
+        cap_tight.doc_id: DedupOutcome(
+            decision=DedupDecision.NEAR_DUP,
+            dup_group=cap_new.doc_id,
+            reason="simhash128_hamming=5",
+            hamming=5,
+        ),
+        cap_loose.doc_id: DedupOutcome(
+            decision=DedupDecision.NEAR_DUP,
+            dup_group=cap_new.doc_id,
+            reason="simhash128_hamming=18",
+            hamming=18,
+        ),
+        cap_unique.doc_id: DedupOutcome(
+            decision=DedupDecision.NEW, dup_group=cap_unique.doc_id, reason="new_content"
+        ),
+    }
+
+    def fake_evaluate(cap: DocCapture) -> DedupOutcome:
+        out = outcomes[cap.doc_id]
+        cap.parent_doc_or_dup_group = out.dup_group
+        return out
+
+    engine._dedup.evaluate = fake_evaluate  # type: ignore[method-assign]
+
+    async def fake_run_partition(partition, context):
+        yield cap_new
+        yield cap_tight
+        yield cap_loose
+        yield cap_unique
+
+    adapter = MagicMock()
+    adapter.run_partition = fake_run_partition
+    engine._registry = MagicMock()
+    engine._registry.get.return_value = adapter
+    engine._topic_filter_for = lambda _job_id: None  # type: ignore[method-assign]
+    engine._is_tty = False
+
+    async def noop_flush(force: bool = False) -> None:
+        return None
+
+    engine._flush = noop_flush  # type: ignore[method-assign]
+
+    from awareness.schemas.jobs import JobKind, JobState, JobStatus, TaskState
+
+    state.create_job(
+        JobState(
+            job_id="j-near",
+            kind=JobKind.BACKFILL,
+            status=JobStatus.RUNNING,
+            request={"sources": ["local_fixture"]},
+        )
+    )
+    task = TaskState(
+        task_id="t-near",
+        job_id="j-near",
+        source_type=SourceKind.LOCAL_FIXTURE,
+        partition_key="pk",
+        payload={},
+    )
+    state.add_tasks([task])
+
+    await engine._run_task(task)
+
+    buffered_urls = [c.url for c in engine._batch_buffer]
+    assert "https://a.test/base" in buffered_urls
+    assert "https://b.test/tight" not in buffered_urls, "tight NEAR_DUP must not be buffered"
+    assert "https://c.test/loose" in buffered_urls, "loose NEAR_DUP must still be buffered"
+    assert "https://d.test/unique" in buffered_urls
+
+    # parent linkage still applied for the tight skip path
+    assert cap_tight.parent_doc_or_dup_group == cap_new.doc_id
+    assert cap_loose.parent_doc_or_dup_group == cap_new.doc_id
+
+    job = state.get_job("j-near")
+    assert job is not None
+    # NEW + loose NEAR_DUP + unique NEW stored; tight NEAR_DUP dropped only.
+    assert job.docs_emitted == 3
+    assert job.docs_dedup_dropped >= 2  # tight (skip) + loose (store+count)

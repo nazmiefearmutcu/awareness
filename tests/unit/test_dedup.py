@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from awareness.dedup.engine import DedupDecision, DedupEngine
+from awareness.dedup.engine import DedupDecision, DedupEngine, DedupOutcome
 from awareness.schemas.doc import DocCapture, RobotsDecision, SourceKind, SourceRef
 from awareness.storage.state import StateDB
 from awareness.util.hashing import content_hash, doc_id_for, simhash64
@@ -78,6 +78,17 @@ def test_dedup_near_duplicate(tmp_path: Path) -> None:
     out = eng.evaluate(b)
     # Either NEAR_DUP (caught by simhash) or EXACT_DUP if normalized text matches.
     assert out.decision in (DedupDecision.NEAR_DUP, DedupDecision.EXACT_DUP, DedupDecision.NEW)
+    if out.decision == DedupDecision.NEAR_DUP:
+        assert out.hamming is not None
+        assert 0 <= out.hamming <= 12
+        assert f"simhash128_hamming={out.hamming}" == out.reason
+    else:
+        assert out.hamming is None
+
+
+def test_dedup_outcome_hamming_default_none() -> None:
+    out = DedupOutcome(decision=DedupDecision.NEW, dup_group="d1", reason="new_content")
+    assert out.hamming is None
 
 
 def test_dedup_stats_grow(tmp_path: Path) -> None:

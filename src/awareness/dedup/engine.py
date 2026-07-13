@@ -3,7 +3,10 @@
 Design principles (per spec):
 - Decision only: the worker decides what to persist. EXACT_DUP captures are
   skipped at storage time (content already on disk under another URL);
-  NEAR_DUP / REVISION / NEW still land for provenance.
+  REVISION is likewise skipped (same bytes re-fetched). Tight NEAR_DUP
+  (Hamming ≤ :data:`TIGHT_NEAR_STORE_THRESHOLD`) is also skipped — near-
+  identical text is not worth a second full-text row. Looser NEAR_DUP and
+  NEW still land for provenance.
 - ``parent_doc_or_dup_group`` is set so downstream queries can fold captures
   into canonical docs (``WHERE doc_id = parent_doc_or_dup_group``).
 - Decision space:
@@ -33,6 +36,11 @@ logger = get_logger("dedup")
 # guarantee covers it — see tests/unit/test_dedup_invariant.py.
 DEFAULT_NEAR_THRESHOLD = 24
 
+# NEAR_DUP captures at or below this Hamming distance are treated like
+# EXACT_DUP for storage: count as a dedup drop, do not re-store full text.
+# Distances in (threshold, near_threshold] still persist for provenance.
+TIGHT_NEAR_STORE_THRESHOLD = 12
+
 
 class DedupDecision(str, Enum):
     NEW = "new"
@@ -46,6 +54,8 @@ class DedupOutcome:
     decision: DedupDecision
     dup_group: str
     reason: str
+    # Hamming distance for NEAR_DUP decisions (simhash128); None otherwise.
+    hamming: int | None = None
 
     @property
     def is_unique(self) -> bool:
@@ -103,6 +113,7 @@ class DedupEngine:
                     decision=DedupDecision.NEAR_DUP,
                     dup_group=best_doc,
                     reason=f"simhash128_hamming={best_dist}",
+                    hamming=best_dist,
                 )
 
         # Step 3: brand new canonical doc.
