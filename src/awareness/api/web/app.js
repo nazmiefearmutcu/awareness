@@ -611,6 +611,13 @@ async function loadCaptures(reset = false) {
     renderCapsFacets(data, isSearch);
     const from = data.total ? caps.offset + 1 : 0;
     const to = Math.min(caps.offset + (data.rows || []).length, data.total);
+    // Active filter bits shown on both search and browse meta lines so the
+    // language/domain/source fields stay visibly synced with the last request.
+    const filterBits = [];
+    if (source) filterBits.push("source=" + source);
+    if (domain) filterBits.push("domain=" + domain);
+    if (language) filterBits.push("language=" + language);
+    const filterSuffix = filterBits.length ? " · " + filterBits.join(" · ") : "";
     if (isSearch) {
       const modeLabel = formatSearchModeLabel(data.mode, !!data.ranked);
       let metaLine = `${from}–${to} of ${fmt(data.total)} matches · ${modeLabel}`;
@@ -618,10 +625,11 @@ async function loadCaptures(reset = false) {
       if (Number.isFinite(rb) && rb > 0) {
         metaLine += ` · recency=${rb}`;
       }
-      meta.textContent = metaLine;
+      meta.textContent = metaLine + filterSuffix;
     } else {
       const fold = hideDups ? " · unique groups" : "";
-      meta.textContent = `${from}–${to} of ${fmt(data.total)} captures · chronological${fold}`;
+      meta.textContent =
+        `${from}–${to} of ${fmt(data.total)} captures · chronological${fold}` + filterSuffix;
     }
     $("#caps-pos").textContent = data.total ? `${from}–${to} of ${fmt(data.total)}` : "—";
     $("#caps-prev").disabled = caps.offset <= 0;
@@ -1934,6 +1942,18 @@ $("#caps-search")?.addEventListener("input", () => {
 });
 $("#caps-source")?.addEventListener("change", () => loadCaptures(true));
 $("#caps-mode")?.addEventListener("change", () => loadCaptures(true));
+// Domain + language text fields: keep browse/search filters in sync with the
+// form (Enter applies; change fires on commit/blur). Chips already call loadCaptures.
+function applyCapsTextFilter(ev) {
+  if (ev && ev.type === "keydown" && ev.key !== "Enter") return;
+  if (ev && ev.type === "keydown") ev.preventDefault();
+  syncFacetChipSelection();
+  void loadCaptures(true);
+}
+$("#caps-language")?.addEventListener("change", applyCapsTextFilter);
+$("#caps-language")?.addEventListener("keydown", applyCapsTextFilter);
+$("#caps-domain")?.addEventListener("change", applyCapsTextFilter);
+$("#caps-domain")?.addEventListener("keydown", applyCapsTextFilter);
 $("#caps-unique")?.addEventListener("change", () => {
   writeCapsHideDuplicates(!!$("#caps-unique").checked);
   loadCaptures(true);

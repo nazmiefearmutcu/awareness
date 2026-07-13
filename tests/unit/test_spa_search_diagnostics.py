@@ -107,3 +107,28 @@ def test_spa_search_meta_shows_recency_boost_when_nonzero() -> None:
     assert "data.recency_boost" in app_js
     assert "recency=" in app_js
     assert "Number.isFinite(rb) && rb > 0" in app_js
+
+
+def test_spa_browse_meta_syncs_language_field() -> None:
+    """Browse (no-query) meta line surfaces language= from #caps-language."""
+    app_js = APP_JS.read_text(encoding="utf-8")
+    # Both search and browse meta share filterBits (source/domain/language).
+    assert 'filterBits.push("language=" + language)' in app_js
+    assert "filterSuffix" in app_js
+    assert "chronological" in app_js
+    # Browse path must still send language on /captures (not only /search).
+    assert 'params.set("language", language)' in app_js
+    assert 'url = "/captures?"' in app_js
+
+
+def test_spa_language_and_domain_fields_apply_on_enter_and_change() -> None:
+    """Text filter fields re-load captures on Enter/change so browse stays synced."""
+    app_js = APP_JS.read_text(encoding="utf-8")
+    assert "function applyCapsTextFilter(ev)" in app_js
+    assert 'addEventListener("change", applyCapsTextFilter)' in app_js
+    assert 'addEventListener("keydown", applyCapsTextFilter)' in app_js
+    # Both language and domain fields are wired (parity with source select).
+    assert '$("#caps-language")' in app_js
+    assert '$("#caps-domain")' in app_js
+    assert "syncFacetChipSelection()" in app_js
+    assert "void loadCaptures(true)" in app_js
