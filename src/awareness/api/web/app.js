@@ -570,6 +570,62 @@ function summarizeFinewebMetrics(metricsSnap) {
 }
 
 /**
+ * Worker task wall-clock + failure metrics from /metrics (process-local).
+ * Pure — no DOM. Surfaces partition SLA latency and fail outcomes
+ * (retry / dead_letter / no_adapter) without ranking concerns.
+ */
+function summarizeTaskMetrics(metricsSnap) {
+  const empty = {
+    completed: 0,
+    failed: 0,
+    retry: 0,
+    deadLetter: 0,
+    noAdapter: 0,
+    durationP95: null,
+  };
+  if (!metricsSnap || typeof metricsSnap !== "object") return empty;
+  const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
+  let completed = 0;
+  let failed = 0;
+  let retry = 0;
+  let deadLetter = 0;
+  let noAdapter = 0;
+  for (const c of counters) {
+    if (!c) continue;
+    const n = c.name;
+    const v = Number(c.value) || 0;
+    const outcome = (c.labels && c.labels.outcome) || "";
+    if (n === "tasks.completed") completed += v;
+    else if (n === "tasks.failed") {
+      failed += v;
+      if (outcome === "retry") retry += v;
+      else if (outcome === "dead_letter") deadLetter += v;
+      else if (outcome === "no_adapter") noAdapter += v;
+    }
+  }
+  const hists = Array.isArray(metricsSnap.histograms) ? metricsSnap.histograms : [];
+  let weighted = 0;
+  let histCount = 0;
+  for (const h of hists) {
+    if (!h || h.name !== "tasks.duration_seconds") continue;
+    const n = Number(h.count) || 0;
+    if (n <= 0) continue;
+    const p95 = Number(h.p95);
+    if (!Number.isFinite(p95)) continue;
+    histCount += n;
+    weighted += p95 * n;
+  }
+  return {
+    completed,
+    failed,
+    retry,
+    deadLetter,
+    noAdapter,
+    durationP95: histCount > 0 ? weighted / histCount : null,
+  };
+}
+
+/**
  * WARC range-repair fetch/parse metrics from /metrics (process-local).
  * Pure — no DOM. Surfaces targeted Common Crawl byte-range repair health
  * (fetch outcomes, parse emit rate, latency) without ranking concerns.
@@ -1316,6 +1372,43 @@ async function refreshDashboard() {
       warcAttSub.textContent = bits.join(" · ");
     } else {
       warcAttSub.textContent = "range-fetch attempts this process";
+    }
+  }
+
+  const tasks = summarizeTaskMetrics(metricsSnap);
+  setKPI("kpi-dash-tasks-completed", tasks.completed);
+  const tasksDoneSub = $("#kpi-dash-tasks-completed-sub");
+  if (tasksDoneSub) {
+    tasksDoneSub.textContent = tasks.completed
+      ? "worker partitions this process"
+      : "no completed partitions yet";
+  }
+  const tasksP95Node = $("#kpi-dash-tasks-p95");
+  if (tasksP95Node) {
+    tasksP95Node.textContent = formatFetchLatency(tasks.durationP95);
+    tasksP95Node.classList.toggle(
+      "is-zero",
+      !tasks.completed && !tasks.failed && tasks.durationP95 == null
+    );
+  }
+  const tasksP95Sub = $("#kpi-dash-tasks-p95-sub");
+  if (tasksP95Sub) {
+    const samples = tasks.completed + tasks.failed;
+    tasksP95Sub.textContent = samples
+      ? `${fmt(samples)} timed · process`
+      : "wall-clock partition latency";
+  }
+  setKPI("kpi-dash-tasks-failed", tasks.failed);
+  const tasksFailSub = $("#kpi-dash-tasks-failed-sub");
+  if (tasksFailSub) {
+    if (tasks.failed) {
+      const bits = [];
+      if (tasks.retry) bits.push(`${fmt(tasks.retry)} retry`);
+      if (tasks.deadLetter) bits.push(`${fmt(tasks.deadLetter)} dead`);
+      if (tasks.noAdapter) bits.push(`${fmt(tasks.noAdapter)} no-adapter`);
+      tasksFailSub.textContent = bits.join(" · ") || "failure outcomes this process";
+    } else {
+      tasksFailSub.textContent = "retry · dead-letter · no-adapter";
     }
   }
 
