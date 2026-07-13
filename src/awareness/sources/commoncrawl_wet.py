@@ -9,8 +9,12 @@ Architecture:
 - ``plan(req)`` translates [start, end] into a set of crawl_ids that overlap
   the window, then enumerates WET shards via the canonical
   ``wet.paths.gz`` index file for each crawl.
-- ``run_partition(partition)`` streams a single WET file with ``warcio``, yields
-  one ``DocCapture`` per ``WARC-Type: conversion`` record.
+- ``run_partition(partition)`` streams a single WET file with ``warcio`` one
+  record at a time (``ArchiveIterator``), converts each conversion record to a
+  ``DocCapture``, and yields through a bounded ``asyncio.Queue`` sized by
+  ``settings.bounded_queue_size``. Peak in-flight captures are O(queue depth),
+  not O(shard size); the consumer applies backpressure so the parser cannot
+  race ahead and materialize the whole shard as a list.
 - Checkpoint stores ``last_offset`` or ``last_record_id`` so re-runs resume.
 
 We use the official ``s3://commoncrawl/...`` paths over HTTPS:
@@ -29,9 +33,9 @@ in ``run_partition`` so the planner stays cheap.
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ProcessPoolExecutor
 import gzip
-from collections.abc import AsyncIterator
+import threading
+from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -59,16 +63,6 @@ from awareness.util.urls import canonical_url, domain_of
 logger = get_logger("sources.cc_wet")
 
 CC_BASE = "https://data.commoncrawl.org"
-
-
-_PROCESS_POOL: ProcessPoolExecutor | None = None
-
-
-def _get_process_pool() -> ProcessPoolExecutor:
-    global _PROCESS_POOL
-    if _PROCESS_POOL is None:
-        _PROCESS_POOL = ProcessPoolExecutor()
-    return _PROCESS_POOL
 
 
 def _iso_year_weeks(start: datetime, end: datetime) -> list[tuple[int, int]]:
@@ -274,7 +268,7 @@ class CommonCrawlWetAdapter(Adapter):
                             )
                             return
                         tmp = local.with_suffix(local.suffix + ".tmp")
-                        with open(tmp, "wb") as fh:
+                        with open(tmp, "wb") as fh:  # noqa: ASYNC230
                             async for chunk in resp.aiter_bytes(1 << 20):
                                 if context.is_stopping():
                                     fh.close()
@@ -287,38 +281,32 @@ class CommonCrawlWetAdapter(Adapter):
                 logger.warning("cc_wet_shard_download_failed", err=str(exc))
                 return
 
-        # Parse on a worker thread so we don't block the event loop.
-        await asyncio.get_event_loop().run_in_executor(
-            None, _ensure_warcio_available
-        )
+        # warcio import check off the event loop; parse streams on a worker
+        # thread into a bounded queue (never materialize the full shard).
+        await asyncio.get_running_loop().run_in_executor(None, _ensure_warcio_available)
 
-        # Yield captures parsed from the cached file.
-        loop = asyncio.get_event_loop()
-        caps = await loop.run_in_executor(
-            _get_process_pool(),
-            _parse_wet_to_captures,
-            local,
-            crawl_id,
-            shard_path,
-            domains_filter,
-            languages_filter,
-            context.user_agent,
-            context.job_id,
-            context.task_id,
-            context.batch_id,
-            context.ingest_version,
-        )
-        for cap in caps:
-            if context.is_stopping():
-                return
+        async for cap in _stream_wet_captures(
+            path=local,
+            crawl_id=crawl_id,
+            shard_path=shard_path,
+            domains_filter=domains_filter,
+            languages_filter=languages_filter,
+            user_agent=context.user_agent,
+            job_id=context.job_id,
+            task_id=context.task_id,
+            batch_id=context.batch_id,
+            ingest_version=context.ingest_version,
+            is_stopping=context.is_stopping,
+            queue_maxsize=max(1, int(settings.bounded_queue_size)),
+        ):
             yield cap
 
 
 def _ensure_warcio_available() -> None:
-    import warcio  # noqa: F401
+    import warcio  # noqa: F401, PLC0415
 
 
-def _parse_wet_to_captures(
+def _iter_wet_captures(
     path: Path,
     crawl_id: str,
     shard_path: str,
@@ -329,16 +317,26 @@ def _parse_wet_to_captures(
     task_id: str,
     batch_id: str,
     ingest_version: str,
-) -> list[DocCapture]:
-    """Synchronous WET parser used inside a worker thread."""
+    *,
+    should_stop: threading.Event | None = None,
+) -> Iterator[DocCapture]:
+    """Yield ``DocCapture`` one WARC conversion record at a time.
+
+    Uses ``warcio.ArchiveIterator`` over a file handle so the WET/WARC body is
+    never loaded wholesale. Each record's payload is read, converted, and
+    yielded; the caller (bounded queue consumer) decides retention. No list of
+    captures is accumulated here.
+    """
     from warcio.archiveiterator import ArchiveIterator  # noqa: PLC0415
 
     settings = get_settings()
-    out: list[DocCapture] = []
     seen_in_shard = 0
+    captures_emitted = 0
 
     with open(path, "rb") as fh:
         for record in ArchiveIterator(fh):
+            if should_stop is not None and should_stop.is_set():
+                break
             seen_in_shard += 1
             if record.rec_type != "conversion":
                 continue
@@ -357,11 +355,15 @@ def _parse_wet_to_captures(
                 text_raw = raw.decode("utf-8", "replace")
             except (UnicodeDecodeError, AttributeError):
                 continue
+            # Free the raw bytes as soon as we have text; text_raw may still be
+            # large but is one record, not the whole shard.
+            del raw
             norm = normalize_text(
                 text_raw,
                 min_chars=settings.text_min_chars,
                 max_chars=settings.text_max_chars,
             )
+            del text_raw
             if norm.discarded_reason:
                 continue
             lang = detect_language(norm.text) or None
@@ -412,12 +414,136 @@ def _parse_wet_to_captures(
                 content_type="text/plain",
                 http_status=200,
             )
-            out.append(cap)
+            captures_emitted += 1
+            yield cap
+
     logger.info(
         "cc_wet_shard_parsed",
         crawl_id=crawl_id,
         shard=shard_path,
         records_seen=seen_in_shard,
-        captures_emitted=len(out),
+        captures_emitted=captures_emitted,
     )
-    return out
+
+
+def _parse_wet_to_captures(
+    path: Path,
+    crawl_id: str,
+    shard_path: str,
+    domains_filter: set[str] | None,
+    languages_filter: set[str] | None,
+    user_agent: str,
+    job_id: str,
+    task_id: str,
+    batch_id: str,
+    ingest_version: str,
+) -> list[DocCapture]:
+    """Collect all captures from a WET file (tests / sync callers).
+
+    Production shard execution uses :func:`_stream_wet_captures` so memory stays
+    bounded by ``settings.bounded_queue_size`` rather than shard length.
+    """
+    return list(
+        _iter_wet_captures(
+            path,
+            crawl_id,
+            shard_path,
+            domains_filter,
+            languages_filter,
+            user_agent,
+            job_id,
+            task_id,
+            batch_id,
+            ingest_version,
+        )
+    )
+
+
+async def _stream_wet_captures(
+    *,
+    path: Path,
+    crawl_id: str,
+    shard_path: str,
+    domains_filter: set[str] | None,
+    languages_filter: set[str] | None,
+    user_agent: str,
+    job_id: str,
+    task_id: str,
+    batch_id: str,
+    ingest_version: str,
+    is_stopping,
+    queue_maxsize: int = 1024,
+) -> AsyncIterator[DocCapture]:
+    """Parse a WET shard on a worker thread; yield via a bounded asyncio queue.
+
+    The producer thread iterates warcio records and ``put``s each capture into
+    ``asyncio.Queue(maxsize=queue_maxsize)``. A full queue blocks the producer
+    (via ``run_coroutine_threadsafe(...).result()``), so in-flight
+    ``DocCapture`` objects never exceed the queue depth plus one in-flight put.
+    ``None`` is the end sentinel. Early stop drains the queue so the producer
+    cannot hang on a blocked put.
+    """
+    queue: asyncio.Queue[DocCapture | None] = asyncio.Queue(maxsize=max(1, queue_maxsize))
+    loop = asyncio.get_running_loop()
+    stop = threading.Event()
+    errors: list[BaseException] = []
+
+    def _produce() -> None:
+        try:
+            for cap in _iter_wet_captures(
+                path,
+                crawl_id,
+                shard_path,
+                domains_filter,
+                languages_filter,
+                user_agent,
+                job_id,
+                task_id,
+                batch_id,
+                ingest_version,
+                should_stop=stop,
+            ):
+                if stop.is_set():
+                    break
+                # Backpressure: block until the async consumer drains a slot.
+                fut = asyncio.run_coroutine_threadsafe(queue.put(cap), loop)
+                fut.result()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            try:
+                asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
+            except Exception as exc:  # loop may already be closed on shutdown
+                logger.debug("cc_wet_stream_sentinel_failed", err=str(exc))
+
+    producer = loop.run_in_executor(None, _produce)
+    try:
+        while True:
+            if is_stopping():
+                stop.set()
+                # Drain so a blocked producer put can complete, then exit.
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        break
+                break
+            item = await queue.get()
+            if item is None:
+                break
+            yield item
+    finally:
+        stop.set()
+        # If the consumer aborted (GeneratorExit / cancel), keep draining so
+        # the producer is not stuck forever on a full queue.
+        if not producer.done():
+            while not producer.done():
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=0.05)
+                except TimeoutError:
+                    continue
+                if item is None:
+                    break
+        await producer
+
+    if errors:
+        raise errors[0]

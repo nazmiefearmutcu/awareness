@@ -65,7 +65,7 @@ async def test_run_partition_wet_shard_process_pool(tmp_project: Path) -> None:
         is_stopping=lambda: False,
     )
 
-    # 4. Execute the parser (which now runs in the ProcessPoolExecutor)
+    # 4. Execute the parser (streams via bounded asyncio.Queue on a worker thread)
     captures = []
     async for cap in adapter.run_partition(partition, context):
         captures.append(cap)
