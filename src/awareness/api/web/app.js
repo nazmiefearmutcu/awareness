@@ -275,6 +275,7 @@ function summarizeDiscoveryMetrics(metricsSnap) {
     gdeltEnqueued: 0,
     gdeltFetchOk: 0,
     gdeltFetchAttempts: 0,
+    gdeltFetchP95: null,
     tailFetches: 0,
     discovered: 0,
     feedNon200: 0,
@@ -325,14 +326,21 @@ function summarizeDiscoveryMetrics(metricsSnap) {
   const hists = Array.isArray(metricsSnap.histograms) ? metricsSnap.histograms : [];
   let feedWeightedP95 = 0;
   let feedHistCount = 0;
+  let gdeltWeightedP95 = 0;
+  let gdeltHistCount = 0;
   for (const h of hists) {
-    if (!h || h.name !== "feeds.fetch_seconds") continue;
+    if (!h) continue;
     const n = Number(h.count) || 0;
     if (n <= 0) continue;
     const p95 = Number(h.p95);
     if (!Number.isFinite(p95)) continue;
-    feedHistCount += n;
-    feedWeightedP95 += p95 * n;
+    if (h.name === "feeds.fetch_seconds") {
+      feedHistCount += n;
+      feedWeightedP95 += p95 * n;
+    } else if (h.name === "gdelt.fetch_seconds") {
+      gdeltHistCount += n;
+      gdeltWeightedP95 += p95 * n;
+    }
   }
   return {
     feedsUrls,
@@ -340,6 +348,7 @@ function summarizeDiscoveryMetrics(metricsSnap) {
     gdeltEnqueued,
     gdeltFetchOk,
     gdeltFetchAttempts,
+    gdeltFetchP95: gdeltHistCount > 0 ? gdeltWeightedP95 / gdeltHistCount : null,
     tailFetches,
     discovered: feedsUrls + gdeltUrls,
     feedNon200,
@@ -351,6 +360,44 @@ function summarizeDiscoveryMetrics(metricsSnap) {
     feedFetchOk,
     feedFetchP95: feedHistCount > 0 ? feedWeightedP95 / feedHistCount : null,
   };
+}
+
+/**
+ * Format a duration in seconds for staging age KPIs (compact, operator-facing).
+ * Pure — no DOM. Mirrors CLI-ish age (s / m / h / d).
+ */
+function formatAgeSeconds(sec) {
+  if (sec == null || !Number.isFinite(sec) || sec < 0) return "—";
+  if (sec < 60) return Math.max(0, Math.round(sec)) + "s";
+  if (sec < 3600) return Math.round(sec / 60) + "m";
+  if (sec < 86400) {
+    const h = Math.floor(sec / 3600);
+    const m = Math.round((sec % 3600) / 60);
+    return m ? `${h}h${m}m` : `${h}h`;
+  }
+  const d = Math.floor(sec / 86400);
+  const h = Math.round((sec % 86400) / 3600);
+  return h ? `${d}d${h}h` : `${d}d`;
+}
+
+/**
+ * Normalize GET /staging summary for dashboard KPIs. Pure — no DOM.
+ */
+function summarizeStagingBacklog(stagingSnap) {
+  const empty = {
+    pendingCount: 0,
+    totalRecords: 0,
+    totalBytes: 0,
+    oldestAgeSeconds: null,
+  };
+  if (!stagingSnap || typeof stagingSnap !== "object") return empty;
+  const pendingCount = Number(stagingSnap.pending_count) || 0;
+  const totalRecords = Number(stagingSnap.total_records) || 0;
+  const totalBytes = Number(stagingSnap.total_bytes) || 0;
+  let oldestAgeSeconds = null;
+  const age = Number(stagingSnap.oldest_age_seconds);
+  if (Number.isFinite(age) && age >= 0) oldestAgeSeconds = age;
+  return { pendingCount, totalRecords, totalBytes, oldestAgeSeconds };
 }
 
 /**
@@ -515,12 +562,14 @@ function formatHitRatio(ratio) {
 }
 
 async function refreshDashboard() {
-  let status, dedup, metricsSnap;
+  let status, dedup, metricsSnap, stagingSnap;
   try {
-    [status, dedup, metricsSnap] = await Promise.all([
+    [status, dedup, metricsSnap, stagingSnap] = await Promise.all([
       api("/status"),
       api("/dedup-stats"),
       api("/metrics").catch(() => null),
+      // Lightweight backlog summary (no per-manifest list) for fold lag KPIs.
+      api("/staging?include_manifests=false").catch(() => null),
     ]);
   } catch (e) { console.error(e); return; }
 
@@ -705,6 +754,56 @@ async function refreshDashboard() {
     } else {
       wetSub.textContent = "Gopher/C4 filter this process";
     }
+  }
+
+  // JSONL staging backlog age (GET /staging — warehouse fold lag).
+  const staging = summarizeStagingBacklog(stagingSnap);
+  setKPI("kpi-dash-staging-pending", staging.pendingCount);
+  const stagingPendingSub = $("#kpi-dash-staging-pending-sub");
+  if (stagingPendingSub) {
+    stagingPendingSub.textContent = staging.pendingCount
+      ? `${fmt(staging.totalRecords)} rows · fold lag`
+      : "caught up · no pending manifests";
+  }
+  const stagingAgeNode = $("#kpi-dash-staging-age");
+  if (stagingAgeNode) {
+    stagingAgeNode.textContent = staging.pendingCount
+      ? formatAgeSeconds(staging.oldestAgeSeconds)
+      : "—";
+    stagingAgeNode.classList.toggle(
+      "is-zero",
+      !staging.pendingCount || staging.oldestAgeSeconds == null
+    );
+  }
+  const stagingAgeSub = $("#kpi-dash-staging-age-sub");
+  if (stagingAgeSub) {
+    if (staging.pendingCount && staging.oldestAgeSeconds != null) {
+      stagingAgeSub.textContent = `${fmt(staging.pendingCount)} pending · warehouse fold lag`;
+    } else if (staging.pendingCount) {
+      stagingAgeSub.textContent = `${fmt(staging.pendingCount)} pending · age unknown`;
+    } else {
+      stagingAgeSub.textContent = "warehouse fold lag";
+    }
+  }
+
+  // GDELT GKG slot fetch latency + attempts (process-local).
+  const gdeltP95Node = $("#kpi-dash-gdelt-p95");
+  if (gdeltP95Node) {
+    gdeltP95Node.textContent = formatFetchLatency(discovery.gdeltFetchP95);
+    gdeltP95Node.classList.toggle("is-zero", !discovery.gdeltFetchAttempts);
+  }
+  const gdeltP95Sub = $("#kpi-dash-gdelt-p95-sub");
+  if (gdeltP95Sub) {
+    gdeltP95Sub.textContent = discovery.gdeltFetchAttempts
+      ? `${fmt(discovery.gdeltFetchOk)}/${fmt(discovery.gdeltFetchAttempts)} ok · process`
+      : "no GDELT slot fetches yet";
+  }
+  setKPI("kpi-dash-gdelt-attempts", discovery.gdeltFetchAttempts);
+  const gdeltAttSub = $("#kpi-dash-gdelt-attempts-sub");
+  if (gdeltAttSub) {
+    gdeltAttSub.textContent = discovery.gdeltFetchAttempts
+      ? `${fmt(discovery.gdeltUrls)} urls · ${fmt(discovery.gdeltEnqueued)} enqueued`
+      : "slot GETs this process";
   }
 
   $("#kpi-captures-sub").textContent = (docsTotal ? `${fmt(docsTotal)} emitted across jobs` : "across the corpus");
