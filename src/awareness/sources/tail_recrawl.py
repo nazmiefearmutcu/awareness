@@ -33,7 +33,7 @@ from awareness.util.hashing import (
 from awareness.util.hashing import (
     content_hash as compute_content_hash,
 )
-from awareness.util.http import acquire_fetch_slot
+from awareness.util.http import RetryableHTTPError, get_with_retries
 from awareness.util.ratelimit import PerDomainLimiter
 from awareness.util.robots import RobotsCache
 from awareness.util.timeutil import parse_http_date, utcnow
@@ -128,19 +128,23 @@ class TailRecrawlAdapter(Adapter):
             return
 
         crawl_delay = robots.crawl_delay(url)
+        # Order: robots already checked → domain limiter (delay + slot) →
+        # get_with_retries (process-wide fetch slot around each GET only).
         async with limiter.domain(dom, override_delay=crawl_delay):
             try:
-                # Global cap bounds total open sockets across all domains.
-                async with acquire_fetch_slot():
-                    async with httpx.AsyncClient(
-                        timeout=settings.request_timeout_sec,
-                        follow_redirects=False,
-                        headers={"User-Agent": context.user_agent},
-                    ) as client:
-                        r = await _get_public_url(client, url)
-                        if r is None:
-                            get_metrics().inc("tail.blocked_internal_url", labels={"domain": dom})
-                            return
+                async with httpx.AsyncClient(
+                    timeout=settings.request_timeout_sec,
+                    follow_redirects=False,
+                    headers={"User-Agent": context.user_agent},
+                ) as client:
+                    r = await _get_public_url(client, url)
+                    if r is None:
+                        get_metrics().inc("tail.blocked_internal_url", labels={"domain": dom})
+                        return
+            except RetryableHTTPError:
+                # Transient failure exhausted retries — task layer requeues.
+                get_metrics().inc("tail.fetch_errors", labels={"domain": dom})
+                raise
             except httpx.HTTPError as exc:
                 logger.warning("tail_fetch_failed", url=url, err=str(exc))
                 get_metrics().inc("tail.fetch_errors", labels={"domain": dom})
@@ -245,7 +249,8 @@ async def _get_public_url(client: httpx.AsyncClient, url: str, *, max_redirects:
     for _ in range(max_redirects + 1):
         if not is_public_http_url(current_url):
             return None
-        response = await client.get(current_url)
+        # get_with_retries acquires the global fetch slot per attempt (no outer slot).
+        response = await get_with_retries(client, current_url)
         if not response.is_redirect:
             return response
 

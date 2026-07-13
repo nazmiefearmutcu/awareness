@@ -28,6 +28,7 @@ from awareness.obs.metrics import get_metrics
 from awareness.schemas.doc import DocCapture, SourceKind
 from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
+from awareness.util.http import RetryableHTTPError, get_with_retries
 from awareness.util.robots import extract_sitemap_urls
 from awareness.util.urls import canonical_url, is_homepage_url, is_public_http_url
 
@@ -183,10 +184,16 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
     """RSS / Atom — fetch and parse."""
     try:
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            r = await client.get(url, headers={"User-Agent": user_agent})
+            # Transient 429/5xx retried inside get_with_retries (global slot held
+            # only during each GET). Exhausted retries raise RetryableHTTPError.
+            r = await get_with_retries(
+                client, url, headers={"User-Agent": user_agent}
+            )
             if r.status_code != 200 or not r.content:
                 return []
             body = r.content
+    except RetryableHTTPError:
+        raise
     except httpx.HTTPError as exc:
         logger.warning("feed_fetch_failed", url=url, err=str(exc))
         return []
@@ -203,10 +210,15 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
     """Parse a sitemap or sitemap-index. Follows one level of nesting by default."""
     try:
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            r = await client.get(url, headers={"User-Agent": user_agent})
+            # Same retry policy as feeds / CC discovery: transient → retry/raise.
+            r = await get_with_retries(
+                client, url, headers={"User-Agent": user_agent}
+            )
             if r.status_code != 200 or not r.content:
                 return []
             body = r.content
+    except RetryableHTTPError:
+        raise
     except httpx.HTTPError as exc:
         logger.warning("sitemap_fetch_failed", url=url, err=str(exc))
         return []
