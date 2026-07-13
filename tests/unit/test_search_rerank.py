@@ -25,6 +25,7 @@ from awareness.storage.duckdb_index import (
     _url_exact_frac,
     _url_hit_frac,
     _url_phrase_frac,
+    _url_prefix_frac,
     _url_slug_tokens,
 )
 
@@ -583,6 +584,8 @@ def test_rerank_url_hit_overrides_higher_bm25() -> None:
         ["bitcoin"],
         title_boost=0.0,
         url_boost=0.0,
+        url_prefix_boost=0.0,
+        url_exact_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
     )
@@ -592,6 +595,8 @@ def test_rerank_url_hit_overrides_higher_bm25() -> None:
         ["bitcoin"],
         title_boost=0.0,
         url_boost=0.25,
+        url_prefix_boost=0.0,
+        url_exact_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
     )
@@ -655,8 +660,9 @@ def test_rerank_url_phrase_overrides_scattered_url_hits() -> None:
         url_boost=0.25,
         url_phrase_boost=0.0,
         url_exact_boost=0.0,
+        url_prefix_boost=0.0,
     )
-    # Without phrase boost: equal url_f → BM25 order (SCATTER first).
+    # Without phrase/prefix boost: equal url_f → BM25 order (SCATTER first).
     assert [c["capture_id"] for c in off] == ["SCATTER", "PHRASE"]
     on = _rerank(
         cands,
@@ -666,6 +672,7 @@ def test_rerank_url_phrase_overrides_scattered_url_hits() -> None:
         url_boost=0.25,
         url_phrase_boost=0.2,
         url_exact_boost=0.0,
+        url_prefix_boost=0.0,
     )
     # PHRASE final = 0.85 * 1.25 * 1.2 = 1.275
     # SCATTER final = 1.0 * 1.25 * 1.0 = 1.25
@@ -829,11 +836,205 @@ def test_rerank_url_exact_falls_back_to_canonical_url() -> None:
         url_boost=0.0,
         url_phrase_boost=0.0,
         url_exact_boost=0.3,
+        url_prefix_boost=0.0,
         lead_hit_boost=0.0,
         lead_phrase_boost=0.0,
         domain_nav_boost=0.0,
     )
     # B final = 0.85 * 1.3 = 1.105 > A = 1.0
+    assert [c["capture_id"] for c in out] == ["B", "A"]
+
+
+# ── _url_prefix_frac ─────────────────────────────────────────────────────
+def test_url_prefix_frac_empty_is_zero() -> None:
+    assert _url_prefix_frac("https://x.test/bitcoin-price", "x.test", []) == 0.0
+    assert _url_prefix_frac("", "x.test", ["bitcoin"]) == 0.0
+    assert _url_prefix_frac("https://x.test/", "x.test", ["bitcoin"]) == 0.0
+    assert _url_prefix_frac("   ", "x.test", ["bitcoin"]) == 0.0
+
+
+def test_url_prefix_frac_single_and_multi_term() -> None:
+    """Leaf slug token stream must start with the query terms (ordered)."""
+    assert (
+        _url_prefix_frac(
+            "https://news.example/world/bitcoin-surges-overnight",
+            "news.example",
+            ["bitcoin"],
+        )
+        == 1.0
+    )
+    assert (
+        _url_prefix_frac(
+            "https://news.example/world/bitcoin-price-surges",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 1.0
+    )
+    # Exact slug is also a prefix of itself.
+    assert (
+        _url_prefix_frac(
+            "https://news.example/world/bitcoin-price",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 1.0
+    )
+    assert (
+        _url_prefix_frac(
+            "https://news.example/BITCOIN-PRICE-JUMPS.html",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 1.0
+    )
+
+
+def test_url_prefix_frac_rejects_mid_slug_and_reorder() -> None:
+    # Phrase may match mid-slug; prefix requires the leaf slug *start*.
+    assert (
+        _url_prefix_frac(
+            "https://news.example/world/markets-bitcoin-price-jump",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 0.0
+    )
+    assert (
+        _url_prefix_frac(
+            "https://news.example/world/price-of-bitcoin-jumps",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 0.0
+    )
+    assert (
+        _url_prefix_frac(
+            "https://news.example/world/bitcoin",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 0.0
+    )
+    assert (
+        _url_prefix_frac(
+            "https://news.example/markets-only",
+            "news.example",
+            ["bitcoin"],
+        )
+        == 0.0
+    )
+
+
+def test_rerank_url_prefix_overrides_mid_slug_phrase() -> None:
+    """Slug leading with the query outranks a mid-slug ordered phrase.
+
+    MID has higher raw BM25 and an ordered phrase buried after a section
+    crumb in the leaf slug. PREFIX leads with the query. Neutral titles /
+    leads so only url_prefix_f differs when boost is on.
+    """
+    cands = [
+        _cand(
+            "MID",
+            1.0,
+            title="n",
+            text="t",
+            url="https://news.example/world/markets-bitcoin-price-jump",
+            domain="news.example",
+        ),
+        _cand(
+            "PREFIX",
+            0.85,
+            title="n",
+            text="t",
+            url="https://news.example/world/bitcoin-price-surges-overnight",
+            domain="news.example",
+        ),
+    ]
+    off = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        title_prefix_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.2,
+        url_exact_boost=0.0,
+        url_prefix_boost=0.0,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+        domain_nav_boost=0.0,
+    )
+    # Both get url_phrase_f (MID ordered-with-gap 0.5, PREFIX contiguous 1.0)
+    # so without prefix boost PREFIX may already win on phrase; pin BM25 order
+    # only when phrase boost is also off.
+    off_no_phrase = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        title_prefix_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        url_exact_boost=0.0,
+        url_prefix_boost=0.0,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+        domain_nav_boost=0.0,
+    )
+    assert [c["capture_id"] for c in off_no_phrase] == ["MID", "PREFIX"]
+    on = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        title_prefix_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        url_exact_boost=0.0,
+        url_prefix_boost=0.2,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+        domain_nav_boost=0.0,
+    )
+    # PREFIX final = 0.85 * 1.2 = 1.02 > MID = 1.0 * 1.0
+    assert [c["capture_id"] for c in on] == ["PREFIX", "MID"]
+    # Keep the off (with phrase) result used only to exercise the path.
+    assert {c["capture_id"] for c in off} == {"MID", "PREFIX"}
+
+
+def test_rerank_url_prefix_falls_back_to_canonical_url() -> None:
+    """Missing ``url`` still scores slug prefix via ``canonical_url``."""
+    cands = [
+        _cand("A", 1.0, title="n", text="t", domain="x.test"),
+        _cand(
+            "B",
+            0.85,
+            title="n",
+            text="t",
+            canonical_url="https://x.test/topic/bitcoin-rally",
+            domain="x.test",
+        ),
+    ]
+    out = _rerank(
+        cands,
+        ["bitcoin"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        title_prefix_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        url_exact_boost=0.0,
+        url_prefix_boost=0.2,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+        domain_nav_boost=0.0,
+    )
+    # B final = 0.85 * 1.2 = 1.02 > A = 1.0
     assert [c["capture_id"] for c in out] == ["B", "A"]
 
 

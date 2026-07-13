@@ -75,6 +75,7 @@ _RERANK_TITLE_PREFIX_BOOST = 0.25  # Wtp: title tokens start with query multipli
 _RERANK_URL_BOOST = 0.25         # Wu: full url/domain term coverage multiplies by 1+Wu
 _RERANK_URL_PHRASE_BOOST = 0.2   # Wup: ordered multi-term URL-slug phrase multiplies by 1+Wup
 _RERANK_URL_EXACT_BOOST = 0.3    # Wue: last path-slug tokens == query terms multiplies by 1+Wue
+_RERANK_URL_PREFIX_BOOST = 0.2   # Wupr: leaf slug tokens start with query multiplies by 1+Wupr
 _RERANK_DOMAIN_NAV_BOOST = 0.3   # Wd: domain-label term coverage multiplies by 1+Wd
 _RERANK_LEAD_HIT_BOOST = 0.15    # Wh: bag-of-words lead term coverage multiplies by 1+Wh
 _RERANK_LEAD_PHRASE_BOOST = 0.2   # Wl: ordered multi-term phrase in lead text multiplies by 1+Wl
@@ -1858,6 +1859,30 @@ def _url_exact_frac(url: str, _domain: str, terms: list[str]) -> float:
     return 1.0 if tokens == cleaned else 0.0
 
 
+def _url_prefix_frac(url: str, _domain: str, terms: list[str]) -> float:
+    """1.0 when leaf URL-slug tokens start with the query terms (ordered prefix).
+
+    Exact equality covers slugs that *are* the query. Prefix captures the
+    common news pattern where the leaf slug leads with the query and continues
+    (``/world/bitcoin-price-surges-overnight`` for ``bitcoin price``). Mid-slug
+    phrase matches still get phrase credit without this boost.
+
+    * ``1.0`` — ``slug_tokens[:len(terms)] == cleaned terms``
+    * ``0.0`` — empty terms/slug, slug shorter than query, or prefix mismatch
+
+    Works for single-term queries (``/bitcoin-rally`` vs ``bitcoin``) unlike
+    phrase frac, which short-circuits below two terms. ``_domain`` is accepted
+    for signature parity with other URL scorers and is unused (slug only).
+    """
+    cleaned = [t for t in terms if t]
+    if not cleaned:
+        return 0.0
+    tokens = _url_slug_tokens(url)
+    if len(tokens) < len(cleaned):
+        return 0.0
+    return 1.0 if tokens[: len(cleaned)] == cleaned else 0.0
+
+
 def _domain_labels(domain: str) -> set[str]:
     """Alphanumeric host labels (len≥2) from a domain string.
 
@@ -2017,6 +2042,7 @@ def _rerank(
     url_boost: float = _RERANK_URL_BOOST,
     url_phrase_boost: float = _RERANK_URL_PHRASE_BOOST,
     url_exact_boost: float = _RERANK_URL_EXACT_BOOST,
+    url_prefix_boost: float = _RERANK_URL_PREFIX_BOOST,
     domain_nav_boost: float = _RERANK_DOMAIN_NAV_BOOST,
     lead_hit_boost: float = _RERANK_LEAD_HIT_BOOST,
     lead_phrase_boost: float = _RERANK_LEAD_PHRASE_BOOST,
@@ -2029,10 +2055,10 @@ def _rerank(
 ) -> list[dict[str, Any]]:
     """Re-rank BM25 candidates (already in raw-score DESC order) by multiplying
     the min-max-normalized BM25 score with independent title / title-phrase /
-    title-exact / title-prefix / url / url-phrase / url-exact / domain-nav /
-    lead-hit / lead-phrase / length / recency factors. Returns a NEW ordered
-    list; input row dicts are not mutated. Stable: equal final scores keep the
-    incoming BM25 order.
+    title-exact / title-prefix / url / url-phrase / url-exact / url-prefix /
+    domain-nav / lead-hit / lead-phrase / length / recency factors. Returns a
+    NEW ordered list; input row dicts are not mutated. Stable: equal final
+    scores keep the incoming BM25 order.
 
     Each candidate dict carries ``score`` (raw BM25), ``title``, ``text``,
     optional ``url`` / ``canonical_url`` / ``domain``, and a timestamp
@@ -2074,6 +2100,9 @@ def _rerank(
         url_exact_f = 1.0 + url_exact_boost * _url_exact_frac(
             str(url_blob), str(domain_blob), terms
         )
+        url_prefix_f = 1.0 + url_prefix_boost * _url_prefix_frac(
+            str(url_blob), str(domain_blob), terms
+        )
         domain_nav_f = 1.0 + domain_nav_boost * _domain_nav_frac(str(domain_blob), terms)
         lead_hit_f = 1.0 + lead_hit_boost * _lead_hit_frac(
             str(text), terms, lead_chars=lead_chars
@@ -2098,6 +2127,7 @@ def _rerank(
             * url_f
             * url_phrase_f
             * url_exact_f
+            * url_prefix_f
             * domain_nav_f
             * lead_hit_f
             * lead_f
