@@ -84,12 +84,14 @@
 | C4+ | dedup | Unwrap Facebook l.php + Google /url click redirects for fetch-gate identity | ✅ |
 | C4+ | search | Lead-text (lede) ordered phrase boost in BM25 re-rank | ✅ |
 | C4+ | dedup | Unwrap Outlook Safe Links + DuckDuckGo /l/ for fetch-gate identity | ✅ |
+| C4+ | search | Lead-text bag-of-words term coverage boost in BM25 re-rank | ✅ |
+| C4+ | dedup | Unwrap Instagram l.instagram.com + LinkedIn safety/redir for fetch-gate identity | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~147 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~149 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** lead-text phrase re-rank (`a0a7cc4`), Outlook Safe Links + DDG identity (`fa524c8`)
+- **Latest:** lead-text bag-of-words hit re-rank (`f87c6fb`), Instagram + LinkedIn identity (`cb4d6e7`)
 
 ## Rules
 
