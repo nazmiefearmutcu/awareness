@@ -1,16 +1,18 @@
 {
-  "iteration": 45,
-  "phase": "spa_wet_parse_jsonl_sync_cli_strips",
+  "iteration": 46,
+  "phase": "fts_obs_warc_repair_spa_cli",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "0cb285b",
+  "head_sha": "ba57dac",
   "product_shas": [
-    "aca4725",
-    "0cb285b"
+    "b594d06",
+    "d9ef922",
+    "d53ebc6",
+    "ba57dac"
   ],
-  "commits_ahead": 216,
-  "unit_suite": "green (865 passed, 1 skipped datasets; not slow)",
+  "commits_ahead": 221,
+  "unit_suite": "green (876 passed, 1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): SPA KPIs for WET parse/download + JSONL mid-chunk sync/orphans (aca4725); CLI metrics table WET + JSONL sync summary strips (0cb285b). Next: FTS polish (non-ranking), scrape quality gaps, storage compact polish."
+  "notes": "DIVERSE wave (no ranking/unwrap): FTS full/incremental/restore metrics (b594d06 storage/obs); WARC repair range-fetch+parse metrics (d9ef922 scrape/obs); SPA FTS build KPIs (d53ebc6); CLI FTS metrics strip (ba57dac). Next: compact polish, task duration metrics, export/CLI storage gaps."
 }

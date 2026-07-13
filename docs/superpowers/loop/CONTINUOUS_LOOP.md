@@ -134,12 +134,16 @@
 | C4+ | scrape/obs | WET shard download/parse latency + records_seen metrics | ✅ |
 | C4+ | spa | Dashboard WET parse p95 / download / records-seen + JSONL sync/orphan KPIs | ✅ |
 | C4+ | cli/obs | metrics table WET parse + JSONL sync summary strips | ✅ |
+| C4+ | storage/obs | FTS full/incremental/restore path metrics + latency + indexed rows | ✅ |
+| C4+ | scrape/obs | WARC repair range-fetch + parse latency/outcome metrics | ✅ |
+| C4+ | spa | Dashboard FTS builds / p95 / indexed rows KPIs | ✅ |
+| C4+ | cli/obs | metrics table FTS build summary strip | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~216 commits ahead of `main`)
-- **Unit suite:** green (non-slow; datasets skip as configured) — **865 passed, 1 skipped**
-- **Latest:** Diverse wave — SPA WET parse + JSONL sync KPIs (`aca4725`), CLI metrics strips (`0cb285b`)
+- **Branch:** `loop/continuous-dev` (~221 commits ahead of `main`)
+- **Unit suite:** green (non-slow; datasets skip as configured) — **876 passed, 1 skipped**
+- **Latest:** Diverse wave — FTS metrics (`b594d06`), WARC repair scrape metrics (`d9ef922`), SPA FTS KPIs (`d53ebc6`), CLI FTS strip (`ba57dac`)
 
 ## Rules
 
