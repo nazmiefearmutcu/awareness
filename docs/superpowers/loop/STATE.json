@@ -1,16 +1,16 @@
 {
-  "iteration": 43,
-  "phase": "fineweb_spa_kpis_cli_metrics_polish",
+  "iteration": 44,
+  "phase": "storage_crash_safe_flush_wet_parse_metrics",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "0a7c7c9",
+  "head_sha": "7010895",
   "product_shas": [
-    "042e5b4",
-    "0a7c7c9"
+    "3217c80",
+    "7010895"
   ],
-  "commits_ahead": 210,
-  "unit_suite": "green (848 passed, 1 skipped datasets; not slow)",
+  "commits_ahead": 213,
+  "unit_suite": "green (856 passed, 1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): FineWeb SPA admit/filter/load KPIs (042e5b4); CLI metrics table FineWeb summary + ms latency polish (0a7c7c9). Next: storage crash-safe flush, FTS polish (non-ranking), scrape/obs gap metrics."
+  "notes": "DIVERSE wave (no ranking/unwrap): storage crash-safe mid-chunk JSONL sync + orphan temp recovery (3217c80); CC-WET download/parse latency + records_seen metrics (7010895). Next: SPA KPIs for jsonl.sync/WET parse, FTS polish (non-ranking), CLI metrics strips."
 }

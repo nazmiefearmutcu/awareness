@@ -130,12 +130,14 @@
 | C4+ | spa | Dashboard staging backlog age + GDELT fetch p95/attempts KPIs | ✅ |
 | C4+ | spa | Dashboard FineWeb admit/filter + load p95/attempts KPIs | ✅ |
 | C4+ | cli/obs | metrics table FineWeb summary strip + human duration polish | ✅ |
+| C4+ | storage/obs | Crash-safe mid-chunk JSONL fsync + orphan `.tmp` recovery | ✅ |
+| C4+ | scrape/obs | WET shard download/parse latency + records_seen metrics | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~210 commits ahead of `main`)
-- **Unit suite:** green (non-slow; datasets skip as configured) — **848 passed, 1 skipped**
-- **Latest:** Diverse wave — FineWeb SPA KPIs (`042e5b4`), CLI FineWeb metrics table polish (`0a7c7c9`)
+- **Branch:** `loop/continuous-dev` (~213 commits ahead of `main`)
+- **Unit suite:** green (non-slow; datasets skip as configured) — **856 passed, 1 skipped**
+- **Latest:** Diverse wave — storage crash-safe JSONL flush (`3217c80`), WET download/parse metrics (`7010895`)
 
 ## Rules
 
