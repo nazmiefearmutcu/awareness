@@ -635,6 +635,85 @@ def test_canonical_url_unwraps_duckduckgo_redirect() -> None:
     assert "duckduckgo.com" in nested
 
 
+def test_canonical_url_unwraps_instagram_click_redirect() -> None:
+    """l.instagram.com/?u=… click wrappers collapse onto the origin."""
+    assert (
+        canonical_url(
+            "https://l.instagram.com/?u=https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://www.l.instagram.com/?u="
+            "http%3A%2F%2Fm.news.example%2Fstory%2Famp&e=AT123"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; Instagram wrapper params dropped.
+    assert (
+        canonical_url(
+            "https://l.instagram.com/?u="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dig"
+            "&e=AT&s=1"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing u= → no unwrap.
+    bare = canonical_url("https://l.instagram.com/?e=AT")
+    assert bare is not None
+    assert "l.instagram.com" in bare
+    # Nested Instagram redirect must not loop.
+    nested = canonical_url(
+        "https://l.instagram.com/?u="
+        "https%3A%2F%2Fl.instagram.com%2F%3Fu%3Dx"
+    )
+    assert nested is not None
+    assert "l.instagram.com" in nested
+
+
+def test_canonical_url_unwraps_linkedin_safety_redirect() -> None:
+    """linkedin.com/safety/go?url=… (and redir/redirect) collapse onto origin."""
+    assert (
+        canonical_url(
+            "https://www.linkedin.com/safety/go?url="
+            "https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://linkedin.com/redir/redirect?url="
+            "http%3A%2F%2Fm.news.example%2Fstory%2Famp&trk=public"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; LinkedIn wrapper params dropped.
+    assert (
+        canonical_url(
+            "https://www.linkedin.com/safety/go?url="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dli"
+            "&trk=flagship"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing url= → no unwrap.
+    bare = canonical_url("https://www.linkedin.com/safety/go?trk=x")
+    assert bare is not None
+    assert "linkedin.com" in bare
+    # Ordinary LinkedIn profile path is not a redirect.
+    profile = canonical_url("https://www.linkedin.com/in/someone")
+    assert profile is not None
+    assert "linkedin.com/in/someone" in profile
+    # Nested LinkedIn redirect must not loop.
+    nested = canonical_url(
+        "https://www.linkedin.com/safety/go?url="
+        "https%3A%2F%2Fwww.linkedin.com%2Fsafety%2Fgo%3Furl%3Dx"
+    )
+    assert nested is not None
+    assert "linkedin.com" in nested
+
+
 def test_canonical_url_unwraps_google_url_redirect() -> None:
     """google.com/url?url=… (or q= absolute URL) collapses onto the origin."""
     assert (

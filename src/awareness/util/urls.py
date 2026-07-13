@@ -181,6 +181,27 @@ _DUCKDUCKGO_REDIRECT_HOSTS: frozenset[str] = frozenset(
     }
 )
 
+# Instagram click-through host (``l.instagram.com/?u=…``).
+_INSTAGRAM_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "l.instagram.com",
+    }
+)
+
+# LinkedIn external-link warning / redir hosts
+# (``linkedin.com/safety/go?url=…``, ``linkedin.com/redir/redirect?url=…``).
+_LINKEDIN_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "linkedin.com",
+    }
+)
+_LINKEDIN_REDIRECT_PATHS: frozenset[str] = frozenset(
+    {
+        "/safety/go",
+        "/redir/redirect",
+    }
+)
+
 # Suffix for Microsoft Outlook Safe Links rewrite hosts
 # (``nam01.safelinks.protection.outlook.com``, ``*.safelinks.protection.outlook.com``).
 _OUTLOOK_SAFELINKS_SUFFIX = "safelinks.protection.outlook.com"
@@ -673,6 +694,55 @@ def _unwrap_duckduckgo_redirect(netloc: str, path: str, query: str) -> str | Non
     return _validate_embedded_origin_url(origin, refuse_hosts=_DUCKDUCKGO_REDIRECT_HOSTS)
 
 
+def _unwrap_instagram_redirect(netloc: str, query: str) -> str | None:
+    """Extract the origin URL from an Instagram ``l.instagram.com/?u=…`` wrapper.
+
+    Forms:
+
+    * ``https://l.instagram.com/?u=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://l.instagram.com/?u=http%3A%2F%2Fm.example.com%2Fx&e=AT…``
+
+    Any path on the click-through host is treated as a redirector when ``u=``
+    is present (IG puts the origin in the query, not a fixed path).
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _INSTAGRAM_REDIRECT_HOSTS:
+        return None
+    origin = _query_param(query, "u")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(origin, refuse_hosts=_INSTAGRAM_REDIRECT_HOSTS)
+
+
+def _unwrap_linkedin_redirect(netloc: str, path: str, query: str) -> str | None:
+    """Extract the origin URL from a LinkedIn external-link redirect.
+
+    Forms:
+
+    * ``https://www.linkedin.com/safety/go?url=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://linkedin.com/redir/redirect?url=http%3A%2F%2Fm.example.com%2Fx``
+
+    Only known redirect paths are rewritten so profiles (``/in/…``), posts,
+    and feed URLs stay on LinkedIn identity.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _LINKEDIN_REDIRECT_HOSTS:
+        return None
+    p = (path or "").rstrip("/") or "/"
+    if p.lower() not in _LINKEDIN_REDIRECT_PATHS:
+        return None
+    origin = _query_param(query, "url")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(origin, refuse_hosts=_LINKEDIN_REDIRECT_HOSTS)
+
+
 def _normalize_path(path: str) -> str:
     """Normalize path for identity: empty → ``/``; strip AMP/print/index noise + slash."""
     if not path:
@@ -797,6 +867,8 @@ def canonical_url(url: str | None) -> str | None:
       - Google ``/url?url=…`` (or ``q=``) click redirects rewritten to origin
       - Outlook Safe Links (``*.safelinks.protection.outlook.com/?url=…``) rewritten
       - DuckDuckGo ``/l/?uddg=…`` click redirects rewritten to origin
+      - Instagram ``l.instagram.com/?u=…`` click redirects rewritten to origin
+      - LinkedIn ``/safety/go`` and ``/redir/redirect`` ``url=`` wrappers rewritten
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
@@ -842,7 +914,8 @@ def canonical_url(url: str | None) -> str | None:
 
     # Share / cache wrappers → origin article before other host/path identity.
     # Order: AMP CDN, AMP viewers, Wayback, then query-embedded origins
-    # (Translate, Facebook, Google /url, Outlook Safe Links, DuckDuckGo /l).
+    # (Translate, Facebook, Google /url, Outlook Safe Links, DuckDuckGo /l,
+    # Instagram, LinkedIn safety/redir).
     unwrapped = _unwrap_amp_cdn(netloc, path)
     if unwrapped is not None:
         netloc, path = unwrapped
@@ -858,13 +931,15 @@ def canonical_url(url: str | None) -> str | None:
                 # Origin query (wrapper query reattached when it belonged to origin).
                 parts = parts._replace(query=origin_q)
             else:
-                # Query-embedded origins (share / SERP / mail / DDG wrappers).
+                # Query-embedded origins (share / SERP / mail / DDG / IG / LI).
                 embedded = (
                     _unwrap_translate(netloc, parts.query)
                     or _unwrap_facebook_redirect(netloc, parts.query)
                     or _unwrap_google_url_redirect(netloc, path, parts.query)
                     or _unwrap_outlook_safelinks(netloc, parts.query)
                     or _unwrap_duckduckgo_redirect(netloc, path, parts.query)
+                    or _unwrap_instagram_redirect(netloc, parts.query)
+                    or _unwrap_linkedin_redirect(netloc, path, parts.query)
                 )
                 if embedded is not None:
                     try:
