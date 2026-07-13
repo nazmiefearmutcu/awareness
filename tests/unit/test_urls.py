@@ -282,6 +282,91 @@ def test_canonical_url_embed_comments_compose_with_aliases() -> None:
     assert {canonical_url(u) for u in variants} == {"https://news.example/world/story"}
 
 
+def test_canonical_url_strips_mobile_lite_app_paths() -> None:
+    """Mobile/lite/app path mirrors collapse onto the desktop article path."""
+    assert (
+        canonical_url("https://news.example/world/story/mobile")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/lite")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/app")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/touch")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/mobile.html")
+        == "https://news.example/world/story"
+    )
+    # Leading mobile segments (``/m/…``, ``/mobile/…``).
+    assert (
+        canonical_url("https://news.example/m/world/story")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/mobile/world/story")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/lite/world/story")
+        == "https://news.example/world/story"
+    )
+    # Bare root markers are kept (not rewritten to empty).
+    assert canonical_url("https://news.example/mobile") == "https://news.example/mobile"
+    assert canonical_url("https://news.example/m") == "https://news.example/m"
+    # Mid-path token names must not be stripped.
+    assert (
+        canonical_url("https://news.example/mobile-apps/a")
+        == "https://news.example/mobile-apps/a"
+    )
+
+
+def test_canonical_url_drops_first_page_query() -> None:
+    """``page=1`` / ``p=1`` are identity-noise; later pages stay distinct."""
+    assert (
+        canonical_url("https://news.example/world/story?page=1")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story?p=1&id=9")
+        == "https://news.example/world/story?id=9"
+    )
+    assert (
+        canonical_url("https://news.example/world/story?pg=01&id=9")
+        == "https://news.example/world/story?id=9"
+    )
+    assert (
+        canonical_url("https://news.example/world/story?paged=1")
+        == "https://news.example/world/story"
+    )
+    # page=2+ is a different document slice — keep it.
+    assert (
+        canonical_url("https://news.example/world/story?page=2")
+        == "https://news.example/world/story?page=2"
+    )
+    assert (
+        canonical_url("https://news.example/world/story?p=3&id=9")
+        == "https://news.example/world/story?id=9&p=3"
+    )
+
+
+def test_canonical_url_mobile_page_compose_with_aliases() -> None:
+    """Mobile path + first-page query compose with host aliases and trackers."""
+    variants = [
+        "https://www.news.example/m/world/story?page=1&utm_source=rss",
+        "https://m.news.example/world/story/mobile?p=1",
+        "http://news.example/mobile/world/story/?pg=1&si=x",
+        "https://news.example/world/story",
+    ]
+    assert {canonical_url(u) for u in variants} == {"https://news.example/world/story"}
+
+
 def test_domain_of_returns_etld_plus_one() -> None:
     assert domain_of("https://news.bbc.co.uk/x") == "bbc.co.uk"
     assert domain_of("https://example.com/y") == "example.com"

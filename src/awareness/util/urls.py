@@ -113,6 +113,49 @@ _EMBED_COMMENTS_SHARE_PATH_SUFFIXES: tuple[str, ...] = (
     "/shared",
 )
 
+# Path suffixes that mark mobile / lite / app CMS mirrors of the same article.
+# Applied after embed/comments so those wrappers still win when stacked;
+# only trailing whole-segment markers are stripped. Bare ``/mobile`` (root-only)
+# is kept so a site whose homepage is literally ``/mobile`` is not emptied.
+_MOBILE_LITE_APP_PATH_SUFFIXES: tuple[str, ...] = (
+    "/mobile",
+    "/mobile.html",
+    "/mobile.htm",
+    "/lite",
+    "/lite.html",
+    "/lite.htm",
+    "/app",
+    "/app.html",
+    "/app.htm",
+    "/touch",
+    "/touch.html",
+)
+
+# Leading path segments used by mobile/lite CMS mirrors (like ``/amp/…``).
+# ``/m/`` is the common single-letter mobile prefix; require a following
+# segment so bare ``/m`` is not rewritten to empty.
+_MOBILE_LITE_LEADING_SEGMENTS: tuple[str, ...] = (
+    "/m/",
+    "/mobile/",
+    "/lite/",
+    "/app/",
+    "/touch/",
+)
+
+# First-page pagination query keys: ``page=1`` / ``p=1`` are identity-noise
+# (same document as omitting the param). Higher pages (page=2+) stay.
+_FIRST_PAGE_QUERY_KEYS: frozenset[str] = frozenset(
+    {
+        "page",
+        "p",
+        "pg",
+        "paged",
+        "pagina",
+        "page_num",
+        "pagenum",
+    }
+)
+
 # Default document names that are identity-noise for CMS article paths.
 _INDEX_BASENAMES: tuple[str, ...] = (
     "/index.html",
@@ -140,11 +183,16 @@ def _is_noise_query_pair(key: str, value: str) -> bool:
     ``feature=embed`` when it is not a pure share/print flag is still stripped
     for ``feature`` because CMS share wrappers dominate in news crawls).
     """
+    kl = key.lower()
+    val = value.strip().lower()
+    # First-page pagination is identity-noise (``?page=1`` ≡ no page param).
+    # Keep page=2+ so multi-page articles retain distinct fetch-gate keys.
+    if kl in _FIRST_PAGE_QUERY_KEYS:
+        return val in ("", "1", "01")
     if not _is_tracking_param(key):
         # ``view=print`` / ``display=print`` appear without being in the key set.
-        kl = key.lower()
         if kl in ("view", "display", "mode", "format"):
-            return value.strip().lower() in (
+            return val in (
                 "print",
                 "printable",
                 "printview",
@@ -152,10 +200,9 @@ def _is_noise_query_pair(key: str, value: str) -> bool:
                 "amphtml",
             )
         return False
-    kl = key.lower()
     # ``output`` is only noise when it marks AMP/print; keep other values.
     if kl == "output":
-        return value.strip().lower() in (
+        return val in (
             "amp",
             "amphtml",
             "htmlamp",
@@ -241,6 +288,28 @@ def _normalize_path(path: str) -> str:
             path = path[: -(len(s) + 1)]
             lower = path.lower()
             break
+    # Leading mobile/lite/app segment (``/m/world/story`` → ``/world/story``,
+    # ``/mobile/world/story`` → ``/world/story``). Segment must be followed by
+    # more path so bare ``/m`` is not emptied.
+    for lead in _MOBILE_LITE_LEADING_SEGMENTS:
+        if lower.startswith(lead) and len(path) > len(lead):
+            path = path[len(lead) - 1 :]  # keep leading ``/`` of remainder
+            lower = path.lower()
+            break
+    # Trailing mobile/lite/app CMS mirrors (``/world/story/mobile`` →
+    # ``/world/story``). Require a parent segment so bare ``/mobile`` is kept.
+    for suffix in _MOBILE_LITE_APP_PATH_SUFFIXES:
+        s = suffix.rstrip("/")
+        if not s:
+            continue
+        if lower.endswith(s) and len(path) > len(s):
+            path = path[: -len(s)]
+            lower = path.lower()
+            break
+        if lower.endswith(s + "/") and len(path) > len(s) + 1:
+            path = path[: -(len(s) + 1)]
+            lower = path.lower()
+            break
     # CMS default document names: ``/world/story/index.html`` → ``/world/story``
     # and ``/index.html`` → ``/``. Basename always starts with ``/`` so
     # mid-segment names like ``/myindex.html`` are never stripped.
@@ -280,10 +349,12 @@ def canonical_url(url: str | None) -> str | None:
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
       - embed/comments/share path suffixes stripped (``/embed``, ``/comments``, …)
+      - mobile/lite/app path prefixes and suffixes stripped (``/m/…``, ``/mobile``, …)
       - CMS default basenames stripped (``/index.html``, ``/index.php``, …)
       - trailing ``.html`` / ``.htm`` stripped (``/story.html`` → ``/story``)
       - path trailing slash normalized (``/`` kept; ``/foo/`` → ``/foo``)
       - tracking / AMP / print / share query parameters stripped (incl. ``utm_*``)
+      - first-page pagination query params stripped (``page=1``, ``p=1``, …)
       - remaining query keys sorted
       - fragment dropped
 
