@@ -286,6 +286,8 @@ function renderJobStrip(root, jobs) {
 // ── Captures view ─────────────────────────────────────────────
 const caps = { limit: 30, offset: 0, total: 0 };
 let capsSearchTimer = null;
+/** Last search terms for re-highlighting title/body in the capture reader. */
+let lastSearchTerms = [];
 
 /** Show empty-search diagnostics.hints under the results list; hide otherwise. */
 function renderCapsDiagnostics(data, isSearch) {
@@ -347,6 +349,15 @@ async function loadCaptures(reset = false) {
   try {
     const data = await api(url);
     caps.total = data.total;
+    if (isSearch) {
+      const rows = data.rows || [];
+      const fromRow = rows.find((r) => Array.isArray(r.terms) && r.terms.length)?.terms;
+      lastSearchTerms = fromRow && fromRow.length
+        ? fromRow.slice()
+        : q.split(/[^\w']+/).filter((t) => t.length >= 2);
+    } else {
+      lastSearchTerms = [];
+    }
     renderCaps(list, data.rows || [], { search: q, ranked: !!data.ranked });
     renderCapsDiagnostics(data, isSearch);
     const from = data.total ? caps.offset + 1 : 0;
@@ -462,7 +473,14 @@ async function openReader(cid) {
 
   clear(body);
   body.appendChild(el("div", { class: "reader-eyebrow-source", text: (d.source_type || "") + " · " + (d.source_name || "") }));
-  body.appendChild(el("h1", { class: "reader-title", text: d.title || "(untitled)" }));
+  const titleText = d.title || "(untitled)";
+  if (lastSearchTerms.length) {
+    const titleNode = el("h1", { class: "reader-title" });
+    titleNode.appendChild(highlightedFragment(titleText, lastSearchTerms));
+    body.appendChild(titleNode);
+  } else {
+    body.appendChild(el("h1", { class: "reader-title", text: titleText }));
+  }
 
   const byline = el("div", { class: "reader-byline" });
   function bk(label, value, opts = {}) {
@@ -490,7 +508,14 @@ async function openReader(cid) {
   if (d.url) bk("source", d.url, { link: true });
   body.appendChild(byline);
 
-  body.appendChild(el("div", { class: "reader-text", text: d.text || "(empty)" }));
+  const bodyText = d.text || "(empty)";
+  if (lastSearchTerms.length) {
+    const textNode = el("div", { class: "reader-text" });
+    textNode.appendChild(highlightedFragment(bodyText, lastSearchTerms));
+    body.appendChild(textNode);
+  } else {
+    body.appendChild(el("div", { class: "reader-text", text: bodyText }));
+  }
 
   const meta = el("div", { class: "reader-meta" });
   meta.appendChild(el("div", { class: "reader-meta-title", text: "provenance & identity" }));
