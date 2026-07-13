@@ -45,6 +45,7 @@ from awareness.planner.planner import Planner
 from awareness.schemas.doc import SourceKind
 from awareness.schemas.jobs import BackfillRequest
 from awareness.storage.duckdb_index import DuckDbIndex
+from awareness.cli.export_util import query_export_captures, write_export_jsonl
 from awareness.dedup.engine import DEFAULT_NEAR_THRESHOLD
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
@@ -2986,10 +2987,26 @@ def compact(
 
 @app.command()
 def export(
-    output: Path = typer.Option(..., "--output", "-o", help="File path or folder to save exported documents"),
+    output: Path = typer.Option(
+        ...,
+        "--output",
+        "--out",
+        "-o",
+        help="File path (jsonl) or folder (txt) for exported documents",
+    ),
     domain: str = typer.Option("", "--domain", help="Filter documents by domain"),
     source: str = typer.Option("", "--source", help="Filter documents by source type"),
     format_type: str = typer.Option("jsonl", "--format", help="Export format: 'jsonl' or 'txt'"),
+    limit: int = typer.Option(
+        1000,
+        "--limit",
+        help="Max rows to export (0 = all matching)",
+    ),
+    unique: str = typer.Option(
+        "none",
+        "--unique",
+        help="Collapse duplicates: none | content | group",
+    ),
 ) -> None:
     """Export captured documents into a single JSONL file or raw text files folder."""
     state, _ = _bootstrap()
@@ -2999,44 +3016,36 @@ def export(
         jsonl_dir=settings.staging_jsonl_dir(),
         iceberg_warehouse=settings.iceberg_warehouse,
     )
-    
-    where = []
-    params = {}
-    if domain:
-        where.append("domain = $dom")
-        params["dom"] = domain
-    if source:
-        where.append("source_type = $src")
-        params["src"] = source
-        
-    where_sql = " WHERE " + " AND ".join(where) if where else ""
-    sql = f"""
-        SELECT doc_id, capture_id, source_type, source_name, canonical_url, fetch_ts, domain, title, text, language
-        FROM captures
-        {where_sql}
-        ORDER BY fetch_ts DESC
-    """
-    
+
     rprint("[yellow]Fetching documents to export...[/yellow]")
     try:
-        rows = idx.execute(sql, params)
+        rows = query_export_captures(
+            idx,
+            limit=limit,
+            unique=unique,
+            domain=domain,
+            source=source,
+        )
+    except ValueError as e:
+        rprint(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from e
     except Exception as e:
         rprint(f"[red]Failed to query captures: {e}[/red]")
         return
-        
+
     if not rows:
         rprint("[yellow]No captures matched your filters.[/yellow]")
         return
-        
+
     rprint(f"[bold cyan]Found {len(rows)} documents to export.[/bold cyan]")
-    
+
     if format_type.lower() == "jsonl":
         try:
-            output.parent.mkdir(parents=True, exist_ok=True)
-            with open(output, "w", encoding="utf-8") as f:
-                for r in rows:
-                    f.write(json.dumps(r, default=str, ensure_ascii=False) + "\n")
-            rprint(f"[green]✔ Successfully exported documents to JSONL file: [bold]{output}[/bold][/green]")
+            n = write_export_jsonl(output, rows)
+            rprint(
+                f"[green]✔ Successfully exported {n} documents to JSONL file: "
+                f"[bold]{output}[/bold][/green]"
+            )
         except Exception as e:
             rprint(f"[red]Export failed: {e}[/red]")
     elif format_type.lower() == "txt":
@@ -3047,10 +3056,12 @@ def export(
                 doc_id = r["doc_id"]
                 safe_title = re.sub(r"[^0-9a-zA-Z\-_]", "", r["title"] or "")[:40]
                 filename = f"{safe_title}_{doc_id[:8]}.txt" if safe_title else f"{doc_id}.txt"
-                p = output / filename
-                p.write_text(r["text"] or "", encoding="utf-8")
+                (output / filename).write_text(r["text"] or "", encoding="utf-8")
                 written += 1
-            rprint(f"[green]✔ Successfully exported {written} document text files to folder: [bold]{output}[/bold][/green]")
+            rprint(
+                f"[green]✔ Successfully exported {written} document text files to folder: "
+                f"[bold]{output}[/bold][/green]"
+            )
         except Exception as e:
             rprint(f"[red]Export failed: {e}[/red]")
     else:
