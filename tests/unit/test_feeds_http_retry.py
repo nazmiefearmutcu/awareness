@@ -9,6 +9,9 @@ import httpx
 import pytest
 
 from awareness.sources.feeds import (
+    FEED_ACCEPT,
+    SITEMAP_ACCEPT,
+    _coerce_http_url,
     _maybe_decompress_body,
     _read_feed,
     _read_sitemap,
@@ -295,6 +298,31 @@ def test_maybe_decompress_body_gunzips() -> None:
     assert _maybe_decompress_body(b"") == b""
 
 
+def test_maybe_decompress_body_strips_utf8_bom() -> None:
+    raw = b"<rss/>"
+    assert _maybe_decompress_body(b"\xef\xbb\xbf" + raw) == raw
+    assert _maybe_decompress_body(gzip.compress(b"\xef\xbb\xbf" + raw)) == raw
+
+
+def test_coerce_http_url_absolute_and_relative() -> None:
+    assert _coerce_http_url("https://example.com/a") == "https://example.com/a"
+    assert _coerce_http_url("mailto:a@b.com") is None
+    assert _coerce_http_url("/story/1") is None  # no base
+    assert (
+        _coerce_http_url("/story/1", "https://example.com/feed.xml")
+        == "https://example.com/story/1"
+    )
+    assert (
+        _coerce_http_url("posts/2", "https://example.com/blog/rss")
+        == "https://example.com/blog/posts/2"
+    )
+    assert (
+        _coerce_http_url("//cdn.example.com/x", "https://example.com/feed")
+        == "https://cdn.example.com/x"
+    )
+    assert _coerce_http_url("tag:example.com,2026:1", "https://example.com/f") is None
+
+
 def test_entry_primary_url_prefers_link() -> None:
     entry = SimpleNamespace(link="https://example.com/a", links=[])
     assert entry_primary_url(entry) == "https://example.com/a"
@@ -322,7 +350,28 @@ def test_entry_primary_url_fallback_any_http() -> None:
 
 def test_entry_primary_url_skips_non_http() -> None:
     entry = SimpleNamespace(link="mailto:a@b.com", links=[{"href": "/relative"}])
+    # Without base_url, relative paths are not absolute http(s).
     assert entry_primary_url(entry) is None
+
+
+def test_entry_primary_url_resolves_relative_against_base() -> None:
+    """Relative <link> / Atom hrefs resolve against the feed document URL."""
+    entry = SimpleNamespace(link="/story/9", links=[])
+    assert (
+        entry_primary_url(entry, base_url="https://news.example.com/rss.xml")
+        == "https://news.example.com/story/9"
+    )
+    atom = SimpleNamespace(
+        link=None,
+        links=[{"rel": "alternate", "href": "posts/42"}],
+    )
+    assert (
+        entry_primary_url(atom, base_url="https://blog.example.com/feed/")
+        == "https://blog.example.com/feed/posts/42"
+    )
+    # mailto still rejected even with a base.
+    bad = SimpleNamespace(link="mailto:a@b.com", links=[])
+    assert entry_primary_url(bad, base_url="https://example.com/f") is None
 
 
 @pytest.mark.asyncio
@@ -545,3 +594,71 @@ async def test_read_feed_uses_feedburner_origlink(
 
     urls = await _read_feed("https://feeds.example.com/rss", "TestBot/1.0")
     assert urls == ["https://example.com/real-story/42"]
+
+
+RSS_RELATIVE_LINKS = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example</title>
+    <item>
+      <title>Relative story</title>
+      <link>/stories/relative-1</link>
+    </item>
+    <item>
+      <title>Absolute story</title>
+      <link>https://example.com/stories/abs-2</link>
+    </item>
+  </channel>
+</rss>
+"""
+
+
+@pytest.mark.asyncio
+async def test_read_feed_resolves_relative_entry_links(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Path-only RSS links become absolute against the feed URL."""
+    seen_accept: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_accept.append(request.headers.get("Accept", ""))
+        return httpx.Response(200, content=RSS_RELATIVE_LINKS)
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+
+    urls = await _read_feed("https://example.com/feed.xml", "TestBot/1.0")
+    assert "https://example.com/stories/relative-1" in urls
+    assert "https://example.com/stories/abs-2" in urls
+    assert len(urls) == 2
+    # Content negotiation header present so CDNs return XML.
+    assert seen_accept and "rss" in seen_accept[0].lower()
+
+
+SITEMAP_RELATIVE = b"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>/page-rel</loc></url>
+  <url><loc>https://example.com/page-abs</loc></url>
+</urlset>
+"""
+
+
+@pytest.mark.asyncio
+async def test_read_sitemap_resolves_relative_locs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_accept: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_accept.append(request.headers.get("Accept", ""))
+        return httpx.Response(200, content=SITEMAP_RELATIVE)
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+    urls = await _read_sitemap("https://example.com/sitemap.xml", "TestBot/1.0")
+    assert urls == ["https://example.com/page-rel", "https://example.com/page-abs"]
+    assert seen_accept and "xml" in seen_accept[0].lower()
+
+
+def test_feed_accept_headers_declare_xml_types() -> None:
+    assert "rss" in FEED_ACCEPT.lower()
+    assert "atom" in FEED_ACCEPT.lower()
+    assert "xml" in SITEMAP_ACCEPT.lower()

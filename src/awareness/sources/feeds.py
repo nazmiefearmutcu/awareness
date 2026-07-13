@@ -18,6 +18,7 @@ import gzip as _gzip
 from collections.abc import AsyncIterator, Iterable, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 import feedparser
 import httpx
@@ -43,6 +44,13 @@ logger = get_logger("sources.feeds")
 # oldest entries are dropped when the cap is exceeded.
 SEEN_URLS_CAP = 5000
 
+# Content negotiation: many CDNs gate XML feeds without a sensible Accept.
+FEED_ACCEPT = (
+    "application/rss+xml, application/atom+xml, application/xml;q=0.9, "
+    "text/xml;q=0.8, */*;q=0.1"
+)
+SITEMAP_ACCEPT = "application/xml, text/xml, application/gzip, */*;q=0.1"
+
 
 def _maybe_decompress_body(body: bytes) -> bytes:
     """Decompress gzip-wrapped feed/sitemap bodies (magic ``1f 8b``).
@@ -50,22 +58,56 @@ def _maybe_decompress_body(body: bytes) -> bytes:
     Many publishers serve ``.xml.gz`` sitemaps and some CDNs gzip RSS even
     without ``Content-Encoding`` after httpx has already decoded the transfer
     encoding. Corrupt gzip falls through to the raw bytes so parsers can fail
-    clearly.
+    clearly. UTF-8 BOM is stripped so lxml/feedparser do not choke on it.
     """
-    if not body or not body.startswith(b"\x1f\x8b"):
+    if not body:
         return body
-    try:
-        return _gzip.decompress(body)
-    except OSError as exc:
-        logger.warning("feed_body_gunzip_failed", err=str(exc))
-        return body
+    if body.startswith(b"\x1f\x8b"):
+        try:
+            body = _gzip.decompress(body)
+        except OSError as exc:
+            logger.warning("feed_body_gunzip_failed", err=str(exc))
+            # Fall through: still try BOM strip on the raw bytes.
+    if body.startswith(b"\xef\xbb\xbf"):
+        return body[3:]
+    return body
 
 
 def _is_http_url(value: Any) -> bool:
     return isinstance(value, str) and value.startswith(("http://", "https://"))
 
 
-def _entry_attr_http_url(entry: Any, *attrs: str) -> str | None:
+def _coerce_http_url(value: Any, base_url: str | None = None) -> str | None:
+    """Return an absolute http(s) URL, resolving relatives against *base_url*.
+
+    Skips non-http schemes (mailto:, tag:, urn:, javascript:). Relative paths
+    (``/story/1``, ``../a``, protocol-relative ``//cdn…``) resolve via
+    ``urljoin`` when *base_url* is a usable http(s) base (the feed/sitemap
+    URL). Without a base, only absolute http(s) values are accepted.
+    """
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    if _is_http_url(s):
+        return s
+    # Explicit non-http schemes must not be rewritten by urljoin.
+    scheme, _, rest = s.partition(":")
+    if rest and scheme and scheme.lower() not in ("http", "https") and not s.startswith("//"):
+        # scheme present and not http(s) or protocol-relative → reject.
+        if "/" not in scheme and scheme.isalpha():
+            return None
+    if base_url and _is_http_url(base_url):
+        resolved = urljoin(base_url, s)
+        if _is_http_url(resolved):
+            return resolved
+    return None
+
+
+def _entry_attr_http_url(
+    entry: Any, *attrs: str, base_url: str | None = None
+) -> str | None:
     """First http(s) URL found among named entry attributes (or nested dicts)."""
     for attr in attrs:
         value = getattr(entry, attr, None)
@@ -73,12 +115,13 @@ def _entry_attr_http_url(entry: Any, *attrs: str) -> str | None:
             value = entry.get(attr)
         if isinstance(value, dict):
             value = value.get("value") or value.get("href") or value.get("url")
-        if _is_http_url(value):
-            return str(value)
+        coerced = _coerce_http_url(value, base_url)
+        if coerced is not None:
+            return coerced
     return None
 
 
-def entry_primary_url(entry: Any) -> str | None:
+def entry_primary_url(entry: Any, base_url: str | None = None) -> str | None:
     """Best article URL from a feedparser entry (RSS link or Atom links[]).
 
     Prefers publisher-original permalinks when present:
@@ -87,9 +130,10 @@ def entry_primary_url(entry: Any) -> str | None:
        (feedparser exposes these as ``feedburner_origlink`` etc.) — these
        beat FeedBurner / syndication proxy ``link`` values so the fetch gate
        keys the real article URL instead of a redirector.
-    2. ``entry.link`` when it is an http(s) URL.
+    2. ``entry.link`` when it is an http(s) URL (or relative resolved against
+       *base_url*, typically the feed URL).
     3. ``entry.links`` for ``rel=alternate`` (Atom default) then any http(s)
-       href.
+       href (also resolved when relative).
     4. ``entry.id`` / ``entry.guid`` when that value is itself an http(s) URL
        (common when publishers put the permalink only in ``guid`` / Atom
        ``id``).
@@ -104,13 +148,15 @@ def entry_primary_url(entry: Any) -> str | None:
         "phoenix_origlink",
         "origlink",
         "feedburner:origLink",  # raw namespace form if present
+        base_url=base_url,
     )
     if orig is not None:
         return orig
 
     link = getattr(entry, "link", None)
-    if _is_http_url(link):
-        return str(link)
+    coerced_link = _coerce_http_url(link, base_url)
+    if coerced_link is not None:
+        return coerced_link
 
     links = getattr(entry, "links", None) or []
     fallback: str | None = None
@@ -121,9 +167,9 @@ def entry_primary_url(entry: Any) -> str | None:
         else:
             href = getattr(ln, "href", None)
             rel = getattr(ln, "rel", None)
-        if not _is_http_url(href):
+        href_s = _coerce_http_url(href, base_url)
+        if href_s is None:
             continue
-        href_s = str(href)
         # Atom: alternate is the HTML article; self is often the entry id.
         if rel in (None, "", "alternate"):
             return href_s
@@ -138,8 +184,9 @@ def entry_primary_url(entry: Any) -> str | None:
         value = getattr(entry, attr, None)
         if isinstance(value, dict):
             value = value.get("value") or value.get("href")
-        if _is_http_url(value):
-            return str(value)
+        coerced = _coerce_http_url(value, base_url)
+        if coerced is not None:
+            return coerced
     return None
 
 
@@ -316,7 +363,9 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
         # Transient 429/5xx retried inside get_with_retries (global slot held
         # only during each GET). Exhausted retries raise RetryableHTTPError.
         r = await get_with_retries(
-            client, url, headers={"User-Agent": user_agent}
+            client,
+            url,
+            headers={"User-Agent": user_agent, "Accept": FEED_ACCEPT},
         )
         if r.status_code != 200:
             logger.warning("feed_fetch_non_200", url=url, status=r.status_code)
@@ -340,7 +389,9 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
     parsed = feedparser.parse(body)
     out: list[str] = []
     for entry in parsed.entries:
-        link = entry_primary_url(entry)
+        # Resolve relative entry links against the feed URL (common on
+        # self-hosted / legacy RSS where <link>/story</link> is path-only).
+        link = entry_primary_url(entry, base_url=url)
         if link:
             out.append(link)
     # Collapse scheme/slash/utm variants so one article → one tail enqueue.
@@ -354,7 +405,9 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
         client = await get_shared_async_client(timeout=60.0, follow_redirects=True)
         # Same retry policy as feeds / CC discovery: transient → retry/raise.
         r = await get_with_retries(
-            client, url, headers={"User-Agent": user_agent}
+            client,
+            url,
+            headers={"User-Agent": user_agent, "Accept": SITEMAP_ACCEPT},
         )
         if r.status_code != 200:
             logger.warning("sitemap_fetch_non_200", url=url, status=r.status_code)
@@ -387,27 +440,34 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
     if tag == "sitemapindex":
         if depth <= 0:
             return out
-        for loc in _sitemap_loc_texts(root, parent_local="sitemap"):
+        for loc in _sitemap_loc_texts(root, parent_local="sitemap", base_url=url):
             out.extend(await _read_sitemap(loc, user_agent, depth=depth - 1))
     else:
-        out.extend(_sitemap_loc_texts(root, parent_local="url"))
+        out.extend(_sitemap_loc_texts(root, parent_local="url", base_url=url))
     # Same article listed twice (http vs https, utm wrappers) → one identity.
     return dedupe_feed_urls(out)
 
 
-def _sitemap_loc_texts(root: Any, *, parent_local: str) -> list[str]:
+def _sitemap_loc_texts(
+    root: Any, *, parent_local: str, base_url: str | None = None
+) -> list[str]:
     """Collect ``<loc>`` text under ``parent_local`` elements, any namespace.
 
     Standard sitemaps use ``{http://www.sitemaps.org/schemas/sitemap/0.9}``,
     but many publishers emit un-namespaced or default-namespaced XML. Matching
-    on local-name keeps discovery working for both.
+    on local-name keeps discovery working for both. Relative locs resolve
+    against *base_url* (the sitemap document URL).
     """
     ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+
+    def _abs(loc: str) -> str | None:
+        return _coerce_http_url(loc, base_url)
+
     # Fast path: standard sitemap namespace.
     found = [
-        (el.text or "").strip()
+        abs_loc
         for el in root.findall(f"{ns}{parent_local}/{ns}loc")
-        if (el.text or "").strip()
+        if (abs_loc := _abs((el.text or "").strip()))
     ]
     if found:
         return found
@@ -426,6 +486,7 @@ def _sitemap_loc_texts(root: Any, *, parent_local: str) -> list[str]:
             except (ValueError, TypeError):
                 continue
             loc = (child.text or "").strip()
-            if loc:
-                out.append(loc)
+            abs_loc = _abs(loc) if loc else None
+            if abs_loc:
+                out.append(abs_loc)
     return out
