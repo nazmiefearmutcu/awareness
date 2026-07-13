@@ -1,16 +1,16 @@
 {
-  "iteration": 44,
-  "phase": "storage_crash_safe_flush_wet_parse_metrics",
+  "iteration": 45,
+  "phase": "spa_wet_parse_jsonl_sync_cli_strips",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "7010895",
+  "head_sha": "0cb285b",
   "product_shas": [
-    "3217c80",
-    "7010895"
+    "aca4725",
+    "0cb285b"
   ],
-  "commits_ahead": 213,
-  "unit_suite": "green (856 passed, 1 skipped datasets; not slow)",
+  "commits_ahead": 216,
+  "unit_suite": "green (865 passed, 1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): storage crash-safe mid-chunk JSONL sync + orphan temp recovery (3217c80); CC-WET download/parse latency + records_seen metrics (7010895). Next: SPA KPIs for jsonl.sync/WET parse, FTS polish (non-ranking), CLI metrics strips."
+  "notes": "DIVERSE wave (no ranking/unwrap): SPA KPIs for WET parse/download + JSONL mid-chunk sync/orphans (aca4725); CLI metrics table WET + JSONL sync summary strips (0cb285b). Next: FTS polish (non-ranking), scrape quality gaps, storage compact polish."
 }

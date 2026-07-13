@@ -132,12 +132,14 @@
 | C4+ | cli/obs | metrics table FineWeb summary strip + human duration polish | ✅ |
 | C4+ | storage/obs | Crash-safe mid-chunk JSONL fsync + orphan `.tmp` recovery | ✅ |
 | C4+ | scrape/obs | WET shard download/parse latency + records_seen metrics | ✅ |
+| C4+ | spa | Dashboard WET parse p95 / download / records-seen + JSONL sync/orphan KPIs | ✅ |
+| C4+ | cli/obs | metrics table WET parse + JSONL sync summary strips | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~213 commits ahead of `main`)
-- **Unit suite:** green (non-slow; datasets skip as configured) — **856 passed, 1 skipped**
-- **Latest:** Diverse wave — storage crash-safe JSONL flush (`3217c80`), WET download/parse metrics (`7010895`)
+- **Branch:** `loop/continuous-dev` (~216 commits ahead of `main`)
+- **Unit suite:** green (non-slow; datasets skip as configured) — **865 passed, 1 skipped**
+- **Latest:** Diverse wave — SPA WET parse + JSONL sync KPIs (`aca4725`), CLI metrics strips (`0cb285b`)
 
 ## Rules
 
