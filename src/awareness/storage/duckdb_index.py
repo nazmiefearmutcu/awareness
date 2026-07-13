@@ -34,7 +34,7 @@ except ImportError:
     HAS_FCNTL = False
 
 from awareness.obs.logging import get_logger
-from awareness.util.lang import append_language_filter
+from awareness.util.lang import append_language_filter, primary_language_sql
 
 logger = get_logger("storage.duckdb")
 
@@ -1113,12 +1113,15 @@ class DuckDbIndex:
                 f"WHERE c.source_type IS NOT NULL AND CAST(c.source_type AS VARCHAR) != '' "
                 f"GROUP BY c.source_type ORDER BY n DESC LIMIT {lim}"
             )
+            # Primary BCP-47 tags so en / en-US / en_GB roll into one "en" chip.
+            lang_prim = primary_language_sql("c.language")
             lang_sql = (
-                f"SELECT c.language AS language, "
+                f"SELECT {lang_prim} AS language, "
                 f"COUNT(DISTINCT c.capture_id)::BIGINT AS n "
                 f"{base} "
                 f"WHERE c.language IS NOT NULL AND CAST(c.language AS VARCHAR) != '' "
-                f"GROUP BY c.language ORDER BY n DESC LIMIT {lim}"
+                f"AND {lang_prim} != '' "
+                f"GROUP BY 1 ORDER BY n DESC LIMIT {lim}"
             )
         else:
             w = where_sql or "1=1"
@@ -1134,11 +1137,14 @@ class DuckDbIndex:
                 f"AND CAST(source_type AS VARCHAR) != '' "
                 f"GROUP BY source_type ORDER BY n DESC LIMIT {lim}"
             )
+            # Primary BCP-47 tags so SPA chips match filter semantics (language=en).
+            lang_prim = primary_language_sql("language")
             lang_sql = (
-                f"SELECT language, COUNT(*)::BIGINT AS n FROM captures "
+                f"SELECT {lang_prim} AS language, COUNT(*)::BIGINT AS n FROM captures "
                 f"WHERE ({w}) AND language IS NOT NULL "
                 f"AND CAST(language AS VARCHAR) != '' "
-                f"GROUP BY language ORDER BY n DESC LIMIT {lim}"
+                f"AND {lang_prim} != '' "
+                f"GROUP BY 1 ORDER BY n DESC LIMIT {lim}"
             )
         try:
             domains = self._rows(conn, dom_sql, p)

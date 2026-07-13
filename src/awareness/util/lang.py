@@ -28,11 +28,19 @@ def primary_language_tag(language: str | None) -> str | None:
     return tag.split("-", 1)[0]
 
 
-# DuckDB expression: normalize stored language then take primary subtag.
-# Keep in sync with ``primary_language_tag`` (underscore → hyphen, lower, split).
-PRIMARY_LANGUAGE_SQL = (
-    "split_part(lower(replace(CAST(language AS VARCHAR), '_', '-')), '-', 1)"
-)
+def primary_language_sql(column: str = "language") -> str:
+    """DuckDB expression: normalize *column* then take the BCP-47 primary subtag.
+
+    Keep in sync with ``primary_language_tag`` (underscore → hyphen, lower, split).
+    *column* must be a trusted identifier (code-owned, never request input).
+    """
+    return (
+        f"split_part(lower(replace(CAST({column} AS VARCHAR), '_', '-')), '-', 1)"
+    )
+
+
+# Default over the bare ``language`` column (counts / facet WHERE path).
+PRIMARY_LANGUAGE_SQL = primary_language_sql("language")
 
 
 def language_sql_filter(

@@ -101,6 +101,31 @@ def test_search_facets_languages_present(faceted_index: DuckDbIndex) -> None:
     assert by_lang.get("tr", 0) == 1
 
 
+def test_search_facets_languages_roll_up_primary_tags(tmp_path: Path) -> None:
+    """Regional language tags collapse into one primary-subtag facet chip."""
+    jsonl_dir = tmp_path / "jsonl"
+    _write_doc(jsonl_dir, 1, title="Alpha bare", text="alpha one", domain="a.example", language="en")
+    _write_doc(jsonl_dir, 2, title="Alpha US", text="alpha two", domain="b.example", language="en-US")
+    _write_doc(jsonl_dir, 3, title="Alpha UK", text="alpha three", domain="c.example", language="en_GB")
+    _write_doc(jsonl_dir, 4, title="Alpha tr", text="alpha four", domain="d.example", language="tr")
+    idx = DuckDbIndex(
+        db_path=tmp_path / "duckdb" / "metadata.duckdb",
+        jsonl_dir=jsonl_dir,
+        iceberg_warehouse=None,
+    )
+    res = idx.search("alpha", mode="substring")
+    assert res["total"] == 4
+    langs = res["facets"]["languages"]
+    by_lang = {str(row["language"]): int(row["n"]) for row in langs}
+    assert by_lang.get("en") == 3
+    assert by_lang.get("tr") == 1
+    # Raw regional tags must not appear as separate facet buckets.
+    assert "en-us" not in by_lang
+    assert "en-US" not in by_lang
+    assert "en_gb" not in by_lang
+    assert "en_GB" not in by_lang
+
+
 def test_search_domain_filter_case_insensitive(faceted_index: DuckDbIndex) -> None:
     """Domain filter matches regardless of user/SPA casing."""
     upper = faceted_index.search("alpha", mode="substring", domain="A.EXAMPLE")

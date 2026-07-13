@@ -13,6 +13,7 @@ from awareness.util.lang import (
     append_language_filter,
     language_sql_filter,
     normalize_language_tag,
+    primary_language_sql,
     primary_language_tag,
 )
 
@@ -47,6 +48,13 @@ def test_primary_language_tag() -> None:
     assert primary_language_tag("en_GB") == "en"
     assert primary_language_tag("zh-Hans-CN") == "zh"
     assert primary_language_tag("TR") == "tr"
+
+
+def test_primary_language_sql_column() -> None:
+    """Helper parameterizes the SQL column (bare vs qualified c.language)."""
+    assert primary_language_sql() == PRIMARY_LANGUAGE_SQL
+    assert "c.language" in primary_language_sql("c.language")
+    assert primary_language_sql("c.language").startswith("split_part(")
 
 
 def test_language_sql_filter_primary_matches_subtags() -> None:
