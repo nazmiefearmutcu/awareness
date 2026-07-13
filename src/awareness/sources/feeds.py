@@ -28,7 +28,8 @@ from awareness.obs.metrics import get_metrics
 from awareness.schemas.doc import DocCapture, SourceKind
 from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
-from awareness.util.urls import canonical_url
+from awareness.util.robots import extract_sitemap_urls
+from awareness.util.urls import canonical_url, is_homepage_url, is_public_http_url
 
 logger = get_logger("sources.feeds")
 
@@ -127,9 +128,55 @@ class FeedsAdapter(Adapter):
                     },
                 )
             )
+
+        # C3-T6 partial: bare-domain homepage seeds → robots Sitemap: discovery once.
+        if is_homepage_url(url) and not context.checkpoint.get("robots_sitemaps_discovered"):
+            discovered = await _enqueue_robots_sitemaps(url, context)
+            context.checkpoint["robots_sitemaps_discovered"] = True
+            if discovered:
+                get_metrics().inc(
+                    "feeds.robots_sitemaps_discovered",
+                    value=discovered,
+                    labels={"channel": kind},
+                )
+
         return
         if False:  # pragma: no cover
             yield
+
+
+async def _enqueue_robots_sitemaps(seed_url: str, context: AdapterContext) -> int:
+    """Discover Sitemap: URLs from robots.txt for a homepage seed; enqueue once.
+
+    Returns the number of public sitemap partitions enqueued. Missing robots
+    cache, empty body, or non-public sitemap URLs are no-ops.
+    """
+    robots = context.extras.get("robots") if context.extras else None
+    if robots is None or not hasattr(robots, "get_robots_txt"):
+        return 0
+    try:
+        body = await robots.get_robots_txt(seed_url, context.user_agent)
+    except Exception as exc:  # noqa: BLE001 — discovery must not fail the seed
+        logger.warning("robots_sitemap_discover_failed", seed=seed_url, err=str(exc))
+        return 0
+
+    enqueue = context.extras.setdefault("enqueue", [])
+    added = 0
+    for sm_url in extract_sitemap_urls(body):
+        if not is_public_http_url(sm_url):
+            continue
+        key = canonical_url(sm_url) or sm_url
+        enqueue.append(
+            PartitionSpec(
+                source_type=SourceKind.RSS,
+                partition_key=f"sitemap:{key}",
+                payload={"kind": "sitemap", "url": sm_url},
+            )
+        )
+        added += 1
+    if added:
+        logger.info("robots_sitemaps_discovered", seed=seed_url, count=added)
+    return added
 
 
 async def _read_feed(url: str, user_agent: str) -> list[str]:

@@ -10,7 +10,7 @@ import pytest
 import httpx
 
 from awareness.storage.state import StateDB
-from awareness.util.robots import RobotsCache, RobotsEntry
+from awareness.util.robots import RobotsCache, RobotsEntry, extract_sitemap_urls
 
 
 @pytest.mark.asyncio
@@ -119,3 +119,44 @@ async def test_robots_cache_error_handling(tmp_path: Path):
         row = db.get_robots_cache("https://example.com")
         assert row is not None
         assert "Disallow: /" in row.robots_txt
+
+
+def test_extract_sitemap_urls_parses_directives_and_dedupes() -> None:
+    body = """
+User-agent: *
+Disallow: /private
+
+Sitemap: https://example.com/sitemap.xml
+sitemap: https://example.com/news-sitemap.xml  # case-insensitive
+Sitemap: https://example.com/sitemap.xml
+# Sitemap: https://example.com/commented-out.xml
+Sitemap:
+Sitemap: https://cdn.example.com/index.xml
+"""
+    assert extract_sitemap_urls(body) == [
+        "https://example.com/sitemap.xml",
+        "https://example.com/news-sitemap.xml",
+        "https://cdn.example.com/index.xml",
+    ]
+
+
+def test_extract_sitemap_urls_empty_and_none() -> None:
+    assert extract_sitemap_urls(None) == []
+    assert extract_sitemap_urls("") == []
+    assert extract_sitemap_urls("User-agent: *\nDisallow: /\n") == []
+
+
+@pytest.mark.asyncio
+async def test_get_robots_txt_returns_body_with_sitemaps() -> None:
+    cache = RobotsCache(state_db=None, ttl=60)
+    body = "User-agent: *\nAllow: /\nSitemap: https://example.com/sitemap.xml\n"
+    with patch("awareness.util.robots._get_public_robots_url", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = httpx.Response(200, text=body)
+        got = await cache.get_robots_txt("https://example.com/", "TestBot")
+        assert got is not None
+        assert "Sitemap: https://example.com/sitemap.xml" in got
+        assert extract_sitemap_urls(got) == ["https://example.com/sitemap.xml"]
+        # Second call hits memory cache (no extra fetch).
+        again = await cache.get_robots_txt("https://example.com/page", "TestBot")
+        assert again == got
+        assert mock_fetch.call_count == 1

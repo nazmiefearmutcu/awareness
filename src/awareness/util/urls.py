@@ -113,6 +113,32 @@ def is_http_url(url: str | None) -> bool:
     return scheme in ("http", "https")
 
 
+def is_homepage_url(url: str | None) -> bool:
+    """True when ``url`` is an HTTP(S) bare-domain homepage (path ``/`` only).
+
+    Used by tail seed discovery: a seed like ``https://example.com`` or
+    ``https://example.com/`` is homepage-like; feed paths and query strings
+    are not.
+    """
+    if not url:
+        return False
+    try:
+        parts = urlsplit(url.strip())
+    except (ValueError, AttributeError):
+        return False
+    if parts.scheme.lower() not in ("http", "https"):
+        return False
+    if not parts.netloc:
+        return False
+    path = parts.path or "/"
+    if path not in ("", "/"):
+        return False
+    # Query or fragment means a specific resource, not a bare homepage seed.
+    if parts.query or parts.fragment:
+        return False
+    return True
+
+
 def is_public_http_url(url: str | None) -> bool:  # noqa: PLR0911
     """Return whether ``url`` is HTTP(S) and resolves only to public IPs.
 

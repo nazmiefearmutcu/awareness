@@ -24,6 +24,33 @@ if TYPE_CHECKING:
 logger = get_logger("util.robots")
 
 
+def extract_sitemap_urls(robots_body: str | None) -> list[str]:
+    """Parse absolute Sitemap: directive URLs from a robots.txt body.
+
+    Per RFC 9309, Sitemap values are absolute URLs. Directives are matched
+    case-insensitively; inline comments after ``#`` are stripped. Order is
+    preserved and duplicates are dropped.
+    """
+    if not robots_body:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw_line in robots_body.splitlines():
+        # Strip inline comments before parsing the directive.
+        line = raw_line.split("#", 1)[0].strip()
+        if not line or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        if key.strip().lower() != "sitemap":
+            continue
+        url = value.strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+    return out
+
+
 async def _get_public_robots_url(
     client: httpx.AsyncClient,
     url: str,
@@ -228,3 +255,20 @@ class RobotsCache:
             except Exception as exc:
                 logger.warning("robots_db_crawl_delay_failed", site=site, err=str(exc))
         return e.crawl_delay if e else None
+
+    async def get_robots_txt(self, url: str, user_agent: str) -> str | None:
+        """Return the robots.txt body for the site of ``url`` (cached).
+
+        Reuses the same memory/DB/network path as ``is_allowed``. Returns
+        ``None`` when the URL has no usable site key; otherwise the body
+        string (possibly empty when robots is missing or fetch failed).
+        """
+        site = self._site_key(url)
+        if not site:
+            return None
+        # Populate / refresh cache via the existing allow-check path.
+        await self.is_allowed(f"{site}/", user_agent)
+        entry = self._entries.get(site)
+        if entry is None:
+            return None
+        return entry.robots_txt if entry.robots_txt is not None else ""

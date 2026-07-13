@@ -2,7 +2,13 @@
 
 import socket
 
-from awareness.util.urls import canonical_url, domain_of, is_http_url, is_public_http_url
+from awareness.util.urls import (
+    canonical_url,
+    domain_of,
+    is_homepage_url,
+    is_http_url,
+    is_public_http_url,
+)
 
 
 def test_canonical_url_lowercases_scheme_host_and_strips_default_port() -> None:
@@ -71,3 +77,15 @@ def test_is_public_http_url_allows_dns_names_that_resolve_public(monkeypatch) ->
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
     assert is_public_http_url("https://news.example/article")
+
+
+def test_is_homepage_url() -> None:
+    assert is_homepage_url("https://example.com")
+    assert is_homepage_url("https://example.com/")
+    assert is_homepage_url("http://news.example.org/")
+    assert not is_homepage_url("https://example.com/feed.xml")
+    assert not is_homepage_url("https://example.com/?utm=1")
+    assert not is_homepage_url("https://example.com/#top")
+    assert not is_homepage_url("ftp://example.com/")
+    assert not is_homepage_url("")
+    assert not is_homepage_url(None)
