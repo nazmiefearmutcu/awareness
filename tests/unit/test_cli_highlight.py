@@ -19,7 +19,16 @@ _FULL_KEYS = (
     "near_dup_hash", "robots_decision", "terms_note_if_relevant",
 )
 
-def _write_doc(root: Path, idx: int, *, title: str, text: str, domain: str = "example.com") -> None:
+def _write_doc(
+    root: Path,
+    idx: int,
+    *,
+    title: str,
+    text: str,
+    domain: str = "example.com",
+    content_hash: str | None = None,
+    fetch_ts: str = "2026-06-01T12:00:00+00:00",
+) -> None:
     day = root / "data" / "jsonl" / "captures" / "2026" / "06" / "01"
     day.mkdir(parents=True, exist_ok=True)
     rec: dict[str, object] = {k: None for k in _FULL_KEYS}
@@ -29,9 +38,10 @@ def _write_doc(root: Path, idx: int, *, title: str, text: str, domain: str = "ex
         source_type="rss",
         domain=domain,
         url=f"https://{domain}/{idx}",
-        fetch_ts="2026-06-01T12:00:00+00:00",
+        fetch_ts=fetch_ts,
         title=title,
         text=text,
+        content_hash=content_hash,
     )
     (day / f"chunk-{idx}.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
 
@@ -147,3 +157,52 @@ def test_browse_calls_highlight_tokens(tmp_project: Path, monkeypatch: pytest.Mo
     assert result.exit_code == 0
     assert len(called) > 0
     assert any(c[1] == "sports" for c in called)
+
+
+def test_browse_unique_content_collapses_and_shows_flag(tmp_project: Path) -> None:
+    """browse --unique content folds same content_hash and labels the pager."""
+    body = "Shared body text about climate policy updates worldwide."
+    _write_doc(
+        tmp_project,
+        10,
+        title="Climate old copy",
+        text=body,
+        content_hash="hash-shared",
+        fetch_ts="2026-06-01T10:00:00+00:00",
+    )
+    _write_doc(
+        tmp_project,
+        11,
+        title="Climate newest copy",
+        text=body,
+        content_hash="hash-shared",
+        fetch_ts="2026-06-01T14:00:00+00:00",
+    )
+    _write_doc(
+        tmp_project,
+        12,
+        title="Unrelated markets brief",
+        text="Stock indices rose in afternoon trading session.",
+        content_hash="hash-other",
+        fetch_ts="2026-06-01T12:00:00+00:00",
+    )
+
+    raw = runner.invoke(app, ["browse"], input="q\n")
+    assert raw.exit_code == 0
+    assert "Climate old copy" in raw.output
+    assert "Climate newest copy" in raw.output
+    assert "unique=content" not in raw.output
+
+    folded = runner.invoke(app, ["browse", "--unique", "content"], input="q\n")
+    assert folded.exit_code == 0
+    assert "unique=content" in folded.output
+    assert "Climate newest copy" in folded.output
+    assert "Climate old copy" not in folded.output
+    assert "Unrelated markets brief" in folded.output
+
+
+def test_browse_unique_invalid_mode(tmp_project: Path) -> None:
+    result = runner.invoke(app, ["browse", "--unique", "bogus"], input="q\n")
+    assert result.exit_code == 2
+    assert "invalid unique mode" in result.output.lower()
+

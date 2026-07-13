@@ -45,7 +45,7 @@ from awareness.planner.planner import Planner
 from awareness.schemas.doc import SourceKind
 from awareness.schemas.jobs import BackfillRequest
 from awareness.storage.duckdb_index import DuckDbIndex
-from awareness.cli.export_util import query_export_captures, write_export_jsonl
+from awareness.cli.export_util import export_fold_key_sql, query_export_captures, write_export_jsonl
 from awareness.dedup.engine import DEFAULT_NEAR_THRESHOLD
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
@@ -2574,6 +2574,11 @@ def browse(
     domain: str = typer.Option("", "--domain", help="Filter by domain"),
     source: str = typer.Option("", "--source", help="Filter by source"),
     query: str = typer.Option("", "--query", "-q", help="Search query/terms to highlight"),
+    unique: str = typer.Option(
+        "none",
+        "--unique",
+        help="Collapse duplicates: none | content | group (newest fetch_ts per key)",
+    ),
 ) -> None:
     """Interactively browse and read captured text documents from the terminal."""
     state, _ = _bootstrap()
@@ -2583,7 +2588,14 @@ def browse(
         jsonl_dir=settings.staging_jsonl_dir(),
         iceberg_warehouse=settings.iceberg_warehouse,
     )
-    
+
+    unique_mode = (unique or "none").strip().lower() or "none"
+    try:
+        fold_key = export_fold_key_sql(unique_mode)
+    except ValueError as e:
+        rprint(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from e
+
     # Empty start means no lower bound so historical backfills remain visible.
     start_dt = to_utc(start) if (start or "").strip() else None
     end_dt = inclusive_end(coerce_relative_end(end))
@@ -2618,13 +2630,28 @@ def browse(
                 params["q_term"] = f"%{query}%"
             
         where_sql = " AND ".join(where)
-        sql = f"""
-            SELECT doc_id, domain, title, fetch_ts, source_type, text
-            FROM captures
-            WHERE {where_sql}
-            ORDER BY fetch_ts DESC
-            LIMIT {limit} OFFSET {offset}
-        """
+        browse_select = "doc_id, domain, title, fetch_ts, source_type, text"
+        if fold_key is None:
+            sql = f"""
+                SELECT {browse_select}
+                FROM captures
+                WHERE {where_sql}
+                ORDER BY fetch_ts DESC
+                LIMIT {limit} OFFSET {offset}
+            """
+        else:
+            sql = f"""
+                SELECT * EXCLUDE (_fold_key) FROM (
+                  SELECT DISTINCT ON ({fold_key})
+                    {browse_select},
+                    {fold_key} AS _fold_key
+                  FROM captures
+                  WHERE {where_sql}
+                  ORDER BY {fold_key}, fetch_ts DESC
+                ) _folded
+                ORDER BY fetch_ts DESC
+                LIMIT {limit} OFFSET {offset}
+            """
         
         try:
             rows = idx.execute(sql, params)
@@ -2647,8 +2674,14 @@ def browse(
                 offset = max(0, offset - limit)
                 continue
                 
-        # Display table
-        table = Table(title=f"Awareness Documents - Page {offset // limit + 1} (Offset: {offset})")
+        # Display table (surface active unique fold so operators see the mode)
+        unique_label = f" unique={unique_mode}" if unique_mode != "none" else ""
+        table = Table(
+            title=(
+                f"Awareness Documents - Page {offset // limit + 1} "
+                f"(Offset: {offset}{unique_label})"
+            )
+        )
         table.add_column("#", justify="center", style="yellow")
         table.add_column("Domain", style="cyan")
         table.add_column("Title", style="white")

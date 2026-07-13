@@ -370,7 +370,7 @@ COMMAND_CATEGORIES: list[tuple[str, list[tuple[str, str]]]] = [
     ]),
     ("Explore your corpus", [
         ("search", "Search captures (ranked; --mode/--fields/--max-results)"),
-        ("browse", "Page through captures & read full text"),
+        ("browse", "Page through captures & read full text (--unique)"),
         ("inspect", "Tabular query by date / domain / source"),
         ("counts", "Aggregate counts by source & domain"),
         ("export", "Export captures to JSONL/txt (--limit, --unique)"),
