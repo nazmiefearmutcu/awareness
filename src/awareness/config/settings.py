@@ -106,6 +106,7 @@ class Settings(BaseSettings):
     text_max_chars: int = 1_500_000
 
     # ── Common Crawl WET ────────────────────────────────────────────────
+    cc_wet_max_shards_per_crawl: int = 4  # cap WET shards planned per crawl discovery
     wet_quality_filter: bool = True  # drop Gopher/C4-low-quality WET records before storing
 
     # ── storage destinations (where captures are written) ────────────────
