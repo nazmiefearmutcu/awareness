@@ -17,6 +17,7 @@ from awareness.storage.duckdb_index import (
     _title_phrase_frac,
     _to_epoch,
     _url_hit_frac,
+    _url_phrase_frac,
 )
 
 
@@ -93,6 +94,65 @@ def test_url_hit_frac_empty_url_and_domain_is_zero() -> None:
 
 def test_url_hit_frac_is_case_insensitive() -> None:
     assert _url_hit_frac("https://X.TEST/BITCOIN", "X.TEST", ["bitcoin"]) == 1.0
+
+
+# ── _url_phrase_frac ─────────────────────────────────────────────────────
+def test_url_phrase_frac_requires_multi_term_ordered_match() -> None:
+    """Single-term queries do not get a URL phrase bonus (url_hit covers them)."""
+    assert _url_phrase_frac("https://ex.com/bitcoin-price", "ex.com", ["bitcoin"]) == 0.0
+    assert _url_phrase_frac("https://ex.com/x", "ex.com", []) == 0.0
+
+
+def test_url_phrase_frac_contiguous_slug_is_one() -> None:
+    """Hyphenated slug ``bitcoin-price`` → contiguous phrase after normalize."""
+    assert (
+        _url_phrase_frac(
+            "https://news.example/world/bitcoin-price-rally",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 1.0
+    )
+    assert (
+        _url_phrase_frac(
+            "https://news.example/BITCOIN-PRICE",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 1.0
+    )
+
+
+def test_url_phrase_frac_ordered_with_gap_is_half() -> None:
+    """Terms in order but not contiguous (gap slug segment) → partial credit."""
+    assert (
+        _url_phrase_frac(
+            "https://news.example/world/bitcoin-overnight-price-surge",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 0.5
+    )
+
+
+def test_url_phrase_frac_out_of_order_is_zero() -> None:
+    """Bag-of-words slug hit without ordered span is not a phrase hit."""
+    assert (
+        _url_phrase_frac(
+            "https://news.example/world/price-of-bitcoin-jumps",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 0.0
+    )
+    assert (
+        _url_phrase_frac(
+            "https://news.example/markets-only",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 0.0
+    )
 
 
 # ── _length_factor ───────────────────────────────────────────────────────
@@ -257,6 +317,54 @@ def test_rerank_url_boost_falls_back_to_canonical_url() -> None:
     ]
     out = _rerank(cands, ["bitcoin"], title_boost=0.0, url_boost=0.25)
     assert [c["capture_id"] for c in out] == ["B", "A"]
+
+
+def test_rerank_url_phrase_overrides_scattered_url_hits() -> None:
+    """Ordered contiguous URL slug phrase beats equal URL coverage without order.
+
+    Both docs hit every term in the URL (same url_hit_frac). Only PHRASE forms
+    the contiguous slug ``bitcoin-price``; with url_phrase boost on, PHRASE
+    ranks first despite lower raw BM25.
+    """
+    cands = [
+        _cand(
+            "SCATTER",
+            1.0,
+            title="n",
+            text="t",
+            url="https://news.example/world/price-of-bitcoin-jumps",
+            domain="news.example",
+        ),
+        _cand(
+            "PHRASE",
+            0.85,
+            title="n",
+            text="t",
+            url="https://news.example/world/bitcoin-price-surges",
+            domain="news.example",
+        ),
+    ]
+    off = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        url_boost=0.25,
+        url_phrase_boost=0.0,
+    )
+    # Without phrase boost: equal url_f → BM25 order (SCATTER first).
+    assert [c["capture_id"] for c in off] == ["SCATTER", "PHRASE"]
+    on = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        url_boost=0.25,
+        url_phrase_boost=0.2,
+    )
+    # PHRASE final = 0.85 * 1.25 * 1.2 = 1.275
+    # SCATTER final = 1.0 * 1.25 * 1.0 = 1.25
+    assert [c["capture_id"] for c in on] == ["PHRASE", "SCATTER"]
 
 
 def test_rerank_preserves_bm25_order_on_ties() -> None:

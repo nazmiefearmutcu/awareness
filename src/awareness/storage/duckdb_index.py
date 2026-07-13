@@ -71,6 +71,7 @@ DEFAULT_SEARCH_MAX_RESULTS = 200
 _RERANK_TITLE_BOOST = 0.5        # Wt: full title-term coverage multiplies score by 1+Wt
 _RERANK_TITLE_PHRASE_BOOST = 0.35  # Wp: ordered multi-term title phrase multiplies by 1+Wp
 _RERANK_URL_BOOST = 0.25         # Wu: full url/domain term coverage multiplies by 1+Wu
+_RERANK_URL_PHRASE_BOOST = 0.2   # Wup: ordered multi-term URL-slug phrase multiplies by 1+Wup
 _RERANK_LEN_PIVOT = 4000         # chars; docs up to here are not length-damped
 _RERANK_LEN_FLOOR = 0.75         # the most a very long doc can be damped to
 _RERANK_RECENCY_WEIGHT = 0.0     # Wr: 0 disables the recency prior (off by default)
@@ -1700,6 +1701,54 @@ def _url_hit_frac(url: str, domain: str, terms: list[str]) -> float:
     return hits / len(terms)
 
 
+def _url_token_blob(url: str, domain: str) -> str:
+    """Lowercased domain+URL with path separators collapsed to spaces.
+
+    Hyphenated news slugs (``/bitcoin-price-rally``) become space-joined tokens
+    so ordered multi-term phrase checks mirror title phrase matching.
+    """
+    import re
+
+    raw = f"{domain or ''} {url or ''}".lower()
+    if not raw.strip():
+        return ""
+    # Treat path/query punctuation as token boundaries (not word characters).
+    spaced = re.sub(r"[^a-z0-9']+", " ", raw)
+    return " ".join(spaced.split())
+
+
+def _url_phrase_frac(url: str, domain: str, terms: list[str]) -> float:
+    """Ordered multi-term URL-slug phrase quality in ``[0, 1]``.
+
+    Bag-of-words URL coverage (``_url_hit_frac``) does not distinguish
+    ``/bitcoin-price-surge`` from ``/price-of-bitcoin-jumps`` for the query
+    ``bitcoin price``. Phrase credit on the separator-normalized URL blob:
+
+    * ``1.0`` — all terms appear as a contiguous space-joined substring
+    * ``0.5`` — all terms appear in query order with gaps allowed
+    * ``0.0`` — fewer than two terms, missing terms, or out-of-order only
+
+    Single-term queries return ``0.0`` so the phrase factor does not double
+    the ordinary URL-hit boost.
+    """
+    cleaned = [t for t in terms if t]
+    if len(cleaned) < 2:
+        return 0.0
+    low = _url_token_blob(url, domain)
+    if not low:
+        return 0.0
+    phrase = " ".join(cleaned)
+    if phrase in low:
+        return 1.0
+    pos = 0
+    for t in cleaned:
+        idx = low.find(t, pos)
+        if idx < 0:
+            return 0.0
+        pos = idx + len(t)
+    return 0.5
+
+
 def _length_factor(text_len: int, *, pivot: int = _RERANK_LEN_PIVOT, floor: float = _RERANK_LEN_FLOOR) -> float:
     """1.0 for docs up to `pivot` chars, decaying toward `floor` for longer ones.
 
@@ -1754,6 +1803,7 @@ def _rerank(
     title_boost: float = _RERANK_TITLE_BOOST,
     title_phrase_boost: float = _RERANK_TITLE_PHRASE_BOOST,
     url_boost: float = _RERANK_URL_BOOST,
+    url_phrase_boost: float = _RERANK_URL_PHRASE_BOOST,
     len_pivot: int = _RERANK_LEN_PIVOT,
     len_floor: float = _RERANK_LEN_FLOOR,
     recency_weight: float = _RERANK_RECENCY_WEIGHT,
@@ -1762,9 +1812,9 @@ def _rerank(
 ) -> list[dict[str, Any]]:
     """Re-rank BM25 candidates (already in raw-score DESC order) by multiplying
     the min-max-normalized BM25 score with independent title / title-phrase /
-    url / length / recency factors. Returns a NEW ordered list; input row
-    dicts are not mutated. Stable: equal final scores keep the incoming BM25
-    order.
+    url / url-phrase / length / recency factors. Returns a NEW ordered list;
+    input row dicts are not mutated. Stable: equal final scores keep the
+    incoming BM25 order.
 
     Each candidate dict carries ``score`` (raw BM25), ``title``, ``text``,
     optional ``url`` / ``canonical_url`` / ``domain``, and a timestamp
@@ -1797,6 +1847,9 @@ def _rerank(
         url_blob = c.get("url") or c.get("canonical_url") or ""
         domain_blob = c.get("domain") or ""
         url_f = 1.0 + url_boost * _url_hit_frac(str(url_blob), str(domain_blob), terms)
+        url_phrase_f = 1.0 + url_phrase_boost * _url_phrase_frac(
+            str(url_blob), str(domain_blob), terms
+        )
         len_f = _length_factor(len(c.get("text") or ""), pivot=len_pivot, floor=len_floor)
         doc_epoch = _to_epoch(c.get("published_ts") or c.get("fetch_ts")) if recency_on else None
         rec_f = _recency_factor(
@@ -1805,7 +1858,7 @@ def _rerank(
             halflife_days=recency_halflife_days,
             weight=recency_weight,
         )
-        return norm * title_f * phrase_f * url_f * len_f * rec_f
+        return norm * title_f * phrase_f * url_f * url_phrase_f * len_f * rec_f
 
     finals = [final_score(c, raw) for c, raw in zip(candidates, scores, strict=True)]
     # Sort by descending final score; ties keep original BM25 order (lower index
