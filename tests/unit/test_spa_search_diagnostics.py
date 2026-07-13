@@ -53,8 +53,24 @@ def test_spa_search_source_facets_chips() -> None:
     assert "facet-chip-source" in app_js
     assert "source_type" in app_js
     assert "caps-source" in app_js
-    assert 'aria-label="Matching domains and sources"' in html or "sources" in html
+    assert "sources" in html
     assert ".facet-chip-source" in css
+
+
+def test_spa_search_language_facets_chips() -> None:
+    """SPA renders language facet chips and wires language filter to search."""
+    app_js = APP_JS.read_text(encoding="utf-8")
+    html = Path("src/awareness/api/web/index.html").read_text(encoding="utf-8")
+    css = STYLE_CSS.read_text(encoding="utf-8")
+
+    assert 'id="caps-language"' in html
+    assert "facets.languages" in app_js or "facets.languages" in app_js
+    assert "facet-chip-lang" in app_js
+    assert 'data-facet-kind": "language"' in app_js or 'data-facet-kind"] === "language"' in app_js or 'kind === "language"' in app_js
+    assert 'params.set("language"' in app_js
+    assert "caps-language" in app_js
+    assert ".facet-chip-lang" in css
+    assert 'data-facet-kind="language"' in css or "language" in css
 
 
 
@@ -82,6 +98,7 @@ def test_spa_empty_diagnostics_shows_domain_filter() -> None:
     assert "diag.filters" in app_js
     assert 'metaParts.push("domain=" + domainFilter)' in app_js
     assert 'metaParts.push("source=" + sourceFilter)' in app_js
+    assert 'metaParts.push("language=" + languageFilter)' in app_js
 
 
 def test_spa_search_meta_shows_recency_boost_when_nonzero() -> None:

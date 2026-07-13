@@ -518,6 +518,7 @@ def create_app() -> FastAPI:
         end: datetime | None = Query(None),
         domain: str | None = Query(None),
         source: str | None = Query(None),
+        language: str | None = Query(None, description="BCP-47 language tag filter"),
         search: str | None = Query(None),
         unique: Literal["none", "content", "group"] = Query(
             "none",
@@ -539,6 +540,9 @@ def create_app() -> FastAPI:
         if source:
             where.append("source_type = $src")
             params["src"] = source
+        if language:
+            where.append("lower(language) = $lang")
+            params["lang"] = str(language).strip().lower()
         if search:
             where.append("(title ILIKE $q OR text ILIKE $q)")
             params["q"] = f"%{search}%"
@@ -586,6 +590,7 @@ def create_app() -> FastAPI:
         offset: int = Query(0, ge=0),
         source: str | None = Query(None),
         domain: str | None = Query(None),
+        language: str | None = Query(None, description="BCP-47 language tag filter"),
         start: datetime | None = Query(None),
         end: datetime | None = Query(None),
         mode: str | None = Query(None, description="auto | fts | prefix | substring"),
@@ -604,6 +609,7 @@ def create_app() -> FastAPI:
             offset=offset,
             source=source,
             domain=domain,
+            language=language,
             start=to_utc(start) if start else None,
             end=inclusive_end(to_utc(end)) if end else None,
             mode=(mode or s.search_default_mode),

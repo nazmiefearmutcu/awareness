@@ -294,6 +294,7 @@ def build_search_diagnostics(
     end: Any = None,
     source: str | None = None,
     domain: str | None = None,
+    language: str | None = None,
     requested_mode: str | None = None,
 ) -> dict[str, Any]:
     """Build an empty-result diagnostic payload with actionable hints.
@@ -311,12 +312,14 @@ def build_search_diagnostics(
                 hints.append("FTS unavailable; used prefix/substring mode.")
         if start is not None:
             hints.append("Date window may exclude older captures.")
-        if source or domain:
+        if source or domain or language:
             parts: list[str] = []
             if domain:
                 parts.append("domain")
             if source:
                 parts.append("source")
+            if language:
+                parts.append("language")
             hints.append(
                 f"{'/'.join(parts).capitalize()} filter may exclude matching captures."
             )
@@ -332,7 +335,7 @@ def build_search_diagnostics(
             else:
                 # substring + single term still missed — keep hints non-empty.
                 hints.append(
-                    "No substring matches; try different terms or drop domain/source filters."
+                    "No substring matches; try different terms or drop domain/source/language filters."
                 )
 
     # Deduplicate while preserving order.
@@ -357,12 +360,14 @@ def build_search_diagnostics(
             "end": _serialize_window_bound(end),
         }
     # Surface active filters so CLI/SPA empty-state UX can show what was applied
-    # (hints alone don't make the active domain/source filter obvious).
+    # (hints alone don't make the active domain/source/language filter obvious).
     filters: dict[str, str] = {}
     if domain:
         filters["domain"] = str(domain)
     if source:
         filters["source"] = str(source)
+    if language:
+        filters["language"] = str(language)
     if filters:
         diag["filters"] = filters
     return diag
@@ -1157,6 +1162,7 @@ class DuckDbIndex:
         offset: int = 0,
         source: str | None = None,
         domain: str | None = None,
+        language: str | None = None,
         start: Any = None,
         end: Any = None,
         mode: str = DEFAULT_SEARCH_MODE,
@@ -1171,6 +1177,7 @@ class DuckDbIndex:
         ``financial``. ``fields`` restricts substring/prefix matching to a
         whitelisted subset of :data:`ALLOWED_SEARCH_FIELDS`. ``max_results``
         is a hard ceiling on rows materialized in one call (overload guard).
+        ``language`` filters by BCP-47 language tag (case-insensitive).
         """
         query = (query or "").strip()
         mode = (mode or DEFAULT_SEARCH_MODE).strip().lower()
@@ -1224,13 +1231,14 @@ class DuckDbIndex:
                 end=end,
                 source=source,
                 domain=domain,
+                language=language,
                 requested_mode=mode,
             )
             return empty
 
         with self._lock, self._connection_context() as conn:
 
-            # Shared range/source/domain filters.
+            # Shared range/source/domain/language filters.
             def base_filters() -> tuple[list[str], dict[str, Any]]:
                 w: list[str] = []
                 p: dict[str, Any] = {}
@@ -1242,6 +1250,10 @@ class DuckDbIndex:
                     # captures store lower-cased eTLD+1 from URL parsing.
                     w.append("lower(domain) = $dom")
                     p["dom"] = str(domain).strip().lower()
+                if language:
+                    # Case-insensitive BCP-47 tags (en / EN / en-US).
+                    w.append("lower(language) = $lang")
+                    p["lang"] = str(language).strip().lower()
                 if start is not None:
                     w.append("fetch_ts >= $start")
                     p["start"] = start
@@ -1569,6 +1581,7 @@ class DuckDbIndex:
                     end=end,
                     source=source,
                     domain=domain,
+                    language=language,
                     requested_mode=requested_mode,
                 )
             return payload

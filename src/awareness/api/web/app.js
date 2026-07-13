@@ -374,12 +374,14 @@ function renderCapsDiagnostics(data, isSearch) {
     const e = win.end != null ? String(win.end).slice(0, 10) : "…";
     metaParts.push("window=" + s + "→" + e);
   }
-  // Active domain/source filters from diagnostics.filters (or form fields as fallback).
+  // Active domain/source/language filters from diagnostics.filters (or form fields).
   const filters = diag.filters && typeof diag.filters === "object" ? diag.filters : {};
   const domainFilter = String(filters.domain || $("#caps-domain")?.value || "").trim();
   const sourceFilter = String(filters.source || $("#caps-source")?.value || "").trim();
+  const languageFilter = String(filters.language || $("#caps-language")?.value || "").trim();
   if (domainFilter) metaParts.push("domain=" + domainFilter);
   if (sourceFilter) metaParts.push("source=" + sourceFilter);
+  if (languageFilter) metaParts.push("language=" + languageFilter);
   // Phrase empty-state must stay informative even if the API omitted hints.
   if (modeUsed.toLowerCase() === "phrase") {
     const hasPhraseHint = hints.some((h) => /phrase|quotes/i.test(String(h)));
@@ -412,6 +414,7 @@ function syncFacetChipSelection() {
   if (!box) return;
   const activeDomain = ($("#caps-domain")?.value || "").trim().toLowerCase();
   const activeSource = ($("#caps-source")?.value || "").trim().toLowerCase();
+  const activeLang = ($("#caps-language")?.value || "").trim().toLowerCase();
   box.querySelectorAll(".facet-chip[data-facet-kind]").forEach((chip) => {
     const kind = chip.getAttribute("data-facet-kind") || "";
     let on = false;
@@ -421,13 +424,16 @@ function syncFacetChipSelection() {
     } else if (kind === "source") {
       const v = (chip.getAttribute("data-facet-value") || "").toLowerCase();
       on = !!(activeSource && v && activeSource === v);
+    } else if (kind === "language") {
+      const v = (chip.getAttribute("data-facet-value") || "").toLowerCase();
+      on = !!(activeLang && v && activeLang === v);
     }
     chip.classList.toggle("is-active", on);
     chip.setAttribute("aria-pressed", on ? "true" : "false");
   });
 }
 
-/** Domain + source facet chips under the search box (facets.domains / facets.sources). */
+/** Domain + source + language facet chips (facets.domains / sources / languages). */
 function renderCapsFacets(data, isSearch) {
   const box = $("#caps-facets");
   if (!box) return;
@@ -435,7 +441,8 @@ function renderCapsFacets(data, isSearch) {
   const facets = isSearch && data && data.facets ? data.facets : null;
   const domains = facets && Array.isArray(facets.domains) ? facets.domains : [];
   const sources = facets && Array.isArray(facets.sources) ? facets.sources : [];
-  if (!domains.length && !sources.length) {
+  const languages = facets && Array.isArray(facets.languages) ? facets.languages : [];
+  if (!domains.length && !sources.length && !languages.length) {
     box.hidden = true;
     return;
   }
@@ -511,6 +518,37 @@ function renderCapsFacets(data, isSearch) {
     box.appendChild(chip);
   }
 
+  for (const item of languages) {
+    const lang = String(item.language || item.lang || "").trim();
+    if (!lang) continue;
+    const n = item.n != null ? Number(item.n) : null;
+    const chip = el("button", {
+      type: "button",
+      class: "facet-chip facet-chip-lang",
+      title: n != null ? `language ${lang} (${n} matches)` : `language ${lang}`,
+      "data-facet-kind": "language",
+      "data-facet-value": lang.toLowerCase(),
+      "aria-pressed": "false",
+      onclick: () => {
+        const field = $("#caps-language");
+        if (!field) return;
+        // Toggle: second click on the active chip clears the language filter.
+        if ((field.value || "").trim().toLowerCase() === lang.toLowerCase()) {
+          field.value = "";
+        } else {
+          field.value = lang;
+        }
+        syncFacetChipSelection();
+        void loadCaptures(true);
+      },
+    });
+    chip.appendChild(document.createTextNode(lang));
+    if (n != null && !Number.isNaN(n)) {
+      chip.appendChild(el("span", { class: "facet-n", text: String(n) }));
+    }
+    box.appendChild(chip);
+  }
+
   syncFacetChipSelection();
   box.hidden = box.childNodes.length === 0;
 }
@@ -520,6 +558,7 @@ async function loadCaptures(reset = false) {
   const q = $("#caps-search").value.trim();
   const source = $("#caps-source").value;
   const domain = $("#caps-domain").value.trim();
+  const language = ($("#caps-language")?.value || "").trim();
   const start = $("#caps-start").value;
   const end = $("#caps-end").value;
 
@@ -527,8 +566,8 @@ async function loadCaptures(reset = false) {
   const meta = $("#caps-meta");
   meta.textContent = "loading…";
   renderCapsDiagnostics(null, false);
-  // Keep facet chips visible during reload so domain/source selected state
-  // stays highlighted (chips are replaced when the response arrives).
+  // Keep facet chips visible during reload so domain/source/language selected
+  // state stays highlighted (chips are replaced when the response arrives).
   syncFacetChipSelection();
 
   // Search-mode hits /search (BM25 ranked, with snippets); browse-mode hits
@@ -538,6 +577,7 @@ async function loadCaptures(reset = false) {
   params.set("offset", caps.offset);
   if (source) params.set("source", source);
   if (domain) params.set("domain", domain);
+  if (language) params.set("language", language);
   if (start) params.set("start", start);
   if (end) params.set("end", end);
   const hideDups = !!$("#caps-unique")?.checked;
@@ -1880,6 +1920,7 @@ $("#caps-reset")?.addEventListener("click", () => {
   $("#caps-search").value = "";
   $("#caps-source").value = "";
   $("#caps-domain").value = "";
+  if ($("#caps-language")) $("#caps-language").value = "";
   $("#caps-start").value = "";
   $("#caps-end").value = "";
   applyCapsHideDuplicates(CAPS_HIDE_DUP_DEFAULT);

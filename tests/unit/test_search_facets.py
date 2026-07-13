@@ -111,6 +111,20 @@ def test_search_domain_filter_case_insensitive(faceted_index: DuckDbIndex) -> No
         assert str(row.get("domain") or "").lower() == "a.example"
 
 
+def test_search_language_filter(faceted_index: DuckDbIndex) -> None:
+    """Language filter narrows matches and is case-insensitive."""
+    en = faceted_index.search("alpha", mode="substring", language="EN")
+    tr = faceted_index.search("alpha", mode="substring", language="tr")
+    assert en["total"] >= 2
+    assert tr["total"] == 1
+    for row in en["rows"]:
+        assert str(row.get("language") or "").lower() == "en"
+    for row in tr["rows"]:
+        assert str(row.get("language") or "").lower() == "tr"
+    # Facets on a language-filtered search still include languages.
+    assert en.get("facets", {}).get("languages")
+
+
 def test_search_facets_omitted_when_empty(faceted_index: DuckDbIndex) -> None:
     res = faceted_index.search("zzzz-no-match-zzzz", mode="substring")
     assert res["total"] == 0

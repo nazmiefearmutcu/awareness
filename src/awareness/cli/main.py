@@ -2816,6 +2816,8 @@ def _print_search_diagnostics(diagnostics: dict[str, Any] | None) -> None:
             meta.append(f"domain={filters['domain']}")
         if filters.get("source"):
             meta.append(f"source={filters['source']}")
+        if filters.get("language"):
+            meta.append(f"language={filters['language']}")
     title = "No results — suggestions"
     if meta:
         title = f"{title} ({', '.join(meta)})"
@@ -2844,6 +2846,7 @@ def search(
     end: str = typer.Option("now", "--end", help="End date range"),
     domain: str = typer.Option("", "--domain", help="Filter by domain"),
     source: str = typer.Option("", "--source", help="Filter by source"),
+    language: str = typer.Option("", "--lang", help="Filter by BCP-47 language tag (e.g. en, tr)"),
     mode: str = typer.Option("", "--mode", "-m", help="Match mode: auto | fts | prefix | substring (default from config)"),
     fields: str = typer.Option("", "--fields", "-f", help="Comma-list of columns to match: title,text,domain,url (default from config)"),
     limit: int = typer.Option(0, "--limit", "-l", help="Results per page (0 = config default)"),
@@ -2886,6 +2889,7 @@ def search(
             offset=0,
             source=source if source else None,
             domain=domain if domain else None,
+            language=language if language else None,
             start=start_dt,
             end=end_dt,
             mode=mode,
@@ -2931,6 +2935,7 @@ def search(
             offset=offset,
             source=source if source else None,
             domain=domain if domain else None,
+            language=language if language else None,
             start=start_dt,
             end=end_dt,
             mode=mode,

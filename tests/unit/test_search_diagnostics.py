@@ -185,6 +185,19 @@ def test_build_search_diagnostics_includes_domain_filter() -> None:
     assert any("domain" in h.lower() for h in diag["hints"])
 
 
+def test_build_search_diagnostics_includes_language_filter() -> None:
+    """Language filter is first-class in diagnostics.filters and filter hints."""
+    diag = build_search_diagnostics(
+        mode_used="prefix",
+        fts_available=True,
+        query_terms=["alpha"],
+        corpus_size=10,
+        language="tr",
+    )
+    assert diag["filters"] == {"language": "tr"}
+    assert any("language" in h.lower() for h in diag["hints"])
+
+
 def test_empty_search_with_domain_surfaces_filters(tmp_path: Path) -> None:
     """Zero-hit search with --domain carries filters.domain in diagnostics."""
     jsonl_dir = tmp_path / "jsonl"
