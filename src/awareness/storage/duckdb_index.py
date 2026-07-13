@@ -69,6 +69,7 @@ DEFAULT_SEARCH_MAX_RESULTS = 200
 # the top-`max_results` BM25 candidates with independent, bounded multiplicative
 # factors; all-neutral collapses to identity (pure BM25 order preserved).
 _RERANK_TITLE_BOOST = 0.5        # Wt: full title-term coverage multiplies score by 1+Wt
+_RERANK_URL_BOOST = 0.25         # Wu: full url/domain term coverage multiplies by 1+Wu
 _RERANK_LEN_PIVOT = 4000         # chars; docs up to here are not length-damped
 _RERANK_LEN_FLOOR = 0.75         # the most a very long doc can be damped to
 _RERANK_RECENCY_WEIGHT = 0.0     # Wr: 0 disables the recency prior (off by default)
@@ -1647,6 +1648,23 @@ def _title_hit_frac(title: str, terms: list[str]) -> float:
     return hits / len(terms)
 
 
+def _url_hit_frac(url: str, domain: str, terms: list[str]) -> float:
+    """Fraction of distinct query terms that occur in domain or URL (case-insensitive).
+
+    News URLs often embed topic tokens in the path (``/world/bitcoin-rally``) or
+    the publisher domain. A lighter boost than title still promotes the article
+    whose slug matches the query over a long body-only BM25 match.
+    """
+    if not terms:
+        return 0.0
+    # Domain + full URL (path/query) so both ``bbc`` and ``bitcoin`` path tokens hit.
+    low = f"{domain or ''} {url or ''}".lower()
+    if not low.strip():
+        return 0.0
+    hits = sum(1 for t in terms if t and t in low)
+    return hits / len(terms)
+
+
 def _length_factor(text_len: int, *, pivot: int = _RERANK_LEN_PIVOT, floor: float = _RERANK_LEN_FLOOR) -> float:
     """1.0 for docs up to `pivot` chars, decaying toward `floor` for longer ones.
 
@@ -1699,6 +1717,7 @@ def _rerank(
     terms: list[str],
     *,
     title_boost: float = _RERANK_TITLE_BOOST,
+    url_boost: float = _RERANK_URL_BOOST,
     len_pivot: int = _RERANK_LEN_PIVOT,
     len_floor: float = _RERANK_LEN_FLOOR,
     recency_weight: float = _RERANK_RECENCY_WEIGHT,
@@ -1706,12 +1725,13 @@ def _rerank(
     ref_epoch: float | None = None,
 ) -> list[dict[str, Any]]:
     """Re-rank BM25 candidates (already in raw-score DESC order) by multiplying
-    the min-max-normalized BM25 score with independent title / length / recency
-    factors. Returns a NEW ordered list; input row dicts are not mutated. Stable:
-    equal final scores keep the incoming BM25 order.
+    the min-max-normalized BM25 score with independent title / url / length /
+    recency factors. Returns a NEW ordered list; input row dicts are not
+    mutated. Stable: equal final scores keep the incoming BM25 order.
 
-    Each candidate dict carries ``score`` (raw BM25), ``title``, ``text`` and a
-    timestamp (``published_ts`` or ``fetch_ts``).
+    Each candidate dict carries ``score`` (raw BM25), ``title``, ``text``,
+    optional ``url`` / ``canonical_url`` / ``domain``, and a timestamp
+    (``published_ts`` or ``fetch_ts``).
     """
     if len(candidates) <= 1:
         return list(candidates)
@@ -1735,6 +1755,9 @@ def _rerank(
     def final_score(c: dict[str, Any], raw: float) -> float:
         norm = (raw / max_score) if max_score > 0 else 0.0
         title_f = 1.0 + title_boost * _title_hit_frac(c.get("title") or "", terms)
+        url_blob = c.get("url") or c.get("canonical_url") or ""
+        domain_blob = c.get("domain") or ""
+        url_f = 1.0 + url_boost * _url_hit_frac(str(url_blob), str(domain_blob), terms)
         len_f = _length_factor(len(c.get("text") or ""), pivot=len_pivot, floor=len_floor)
         doc_epoch = _to_epoch(c.get("published_ts") or c.get("fetch_ts")) if recency_on else None
         rec_f = _recency_factor(
@@ -1743,7 +1766,7 @@ def _rerank(
             halflife_days=recency_halflife_days,
             weight=recency_weight,
         )
-        return norm * title_f * len_f * rec_f
+        return norm * title_f * url_f * len_f * rec_f
 
     finals = [final_score(c, raw) for c, raw in zip(candidates, scores, strict=True)]
     # Sort by descending final score; ties keep original BM25 order (lower index

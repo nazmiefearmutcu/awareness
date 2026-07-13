@@ -15,6 +15,7 @@ from awareness.storage.duckdb_index import (
     _rerank,
     _title_hit_frac,
     _to_epoch,
+    _url_hit_frac,
 )
 
 
@@ -31,6 +32,39 @@ def test_title_hit_frac_counts_distinct_terms() -> None:
 
 def test_title_hit_frac_is_case_insensitive() -> None:
     assert _title_hit_frac("BITCOIN", ["bitcoin"]) == 1.0
+
+
+# ── _url_hit_frac ────────────────────────────────────────────────────────
+def test_url_hit_frac_no_terms_is_zero() -> None:
+    assert _url_hit_frac("https://ex.com/bitcoin", "ex.com", []) == 0.0
+
+
+def test_url_hit_frac_counts_path_and_domain_terms() -> None:
+    assert (
+        _url_hit_frac(
+            "https://news.example/world/bitcoin-rally",
+            "news.example",
+            ["bitcoin", "rally"],
+        )
+        == 1.0
+    )
+    assert (
+        _url_hit_frac(
+            "https://news.example/markets",
+            "news.example",
+            ["bitcoin", "markets"],
+        )
+        == 0.5
+    )
+    assert _url_hit_frac("https://x.test/a", "x.test", ["bitcoin"]) == 0.0
+
+
+def test_url_hit_frac_empty_url_and_domain_is_zero() -> None:
+    assert _url_hit_frac("", "", ["bitcoin"]) == 0.0
+
+
+def test_url_hit_frac_is_case_insensitive() -> None:
+    assert _url_hit_frac("https://X.TEST/BITCOIN", "X.TEST", ["bitcoin"]) == 1.0
 
 
 # ── _length_factor ───────────────────────────────────────────────────────
@@ -88,6 +122,9 @@ def _cand(
     ts: object = None,
     published_ts: object = None,
     fetch_ts: object = None,
+    url: str | None = None,
+    domain: str | None = None,
+    canonical_url: str | None = None,
 ) -> dict[str, object]:
     """Build a candidate row. ``ts`` is a shorthand for fetch_ts (legacy tests)."""
     row: dict[str, object] = {
@@ -99,6 +136,12 @@ def _cand(
     }
     if published_ts is not None:
         row["published_ts"] = published_ts
+    if url is not None:
+        row["url"] = url
+    if domain is not None:
+        row["domain"] = domain
+    if canonical_url is not None:
+        row["canonical_url"] = canonical_url
     return row
 
 
@@ -109,6 +152,50 @@ def test_rerank_title_hit_overrides_higher_bm25() -> None:
     cands = [_cand("A", 1.0, title="markets today", text="bitcoin bitcoin"),
              _cand("B", 0.8, title="bitcoin surges", text="the asset gained")]
     out = _rerank(cands, ["bitcoin"], title_boost=0.5)
+    assert [c["capture_id"] for c in out] == ["B", "A"]
+
+
+def test_rerank_url_hit_overrides_higher_bm25() -> None:
+    # A: higher raw BM25, term only in long body. B: lower BM25, term in URL path.
+    # With Wu=0.25: B final = 0.85 * 1.25 = 1.0625 > A = 1.0 * 1.0.
+    cands = [
+        _cand(
+            "A",
+            1.0,
+            title="markets today",
+            text="bitcoin " * 20,
+            url="https://news.example/markets/today",
+            domain="news.example",
+        ),
+        _cand(
+            "B",
+            0.85,
+            title="markets today",
+            text="brief note",
+            url="https://news.example/world/bitcoin-rally",
+            domain="news.example",
+        ),
+    ]
+    off = _rerank(cands, ["bitcoin"], title_boost=0.0, url_boost=0.0)
+    assert [c["capture_id"] for c in off] == ["A", "B"]
+    on = _rerank(cands, ["bitcoin"], title_boost=0.0, url_boost=0.25)
+    assert [c["capture_id"] for c in on] == ["B", "A"]
+
+
+def test_rerank_url_boost_falls_back_to_canonical_url() -> None:
+    """Missing ``url`` still scores path hits via ``canonical_url``."""
+    cands = [
+        _cand("A", 1.0, title="n", text="t", domain="x.test"),
+        _cand(
+            "B",
+            0.85,
+            title="n",
+            text="t",
+            canonical_url="https://x.test/topic/bitcoin",
+            domain="x.test",
+        ),
+    ]
+    out = _rerank(cands, ["bitcoin"], title_boost=0.0, url_boost=0.25)
     assert [c["capture_id"] for c in out] == ["B", "A"]
 
 
