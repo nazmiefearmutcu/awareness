@@ -1,12 +1,12 @@
 {
-  "iteration": 17,
-  "phase": "search_lang_facets_primary_html_url_identity",
+  "iteration": 18,
+  "phase": "source_facets_case_scrape_relative_spa_settings",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "732d893d6c866c74df4d77327d0c270f403dc66e",
-  "commits_ahead": 119,
+  "head_sha": "ef69c188f2c686c284e48b3d68f8aaef6e718d04",
+  "commits_ahead": 122,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed language facets primary-tag rollup (39a70e2) so en/en-US/en_GB share one SPA chip; trailing .html/.htm path collapse for fetch-gate identity (732d893). Next: Iceberg compaction / SPA settings polish / source facet case-normalize / more scrape reliability."
+  "notes": "Landed source facet case-normalize (e66524d) for facets.sources + /counts by_source; relative feed/sitemap URL resolve + Accept + BOM (793aae8); SPA Settings dirty/sticky/Cmd-S (ef69c18). Next: Iceberg compaction / more scrape reliability / search ranking."
 }
