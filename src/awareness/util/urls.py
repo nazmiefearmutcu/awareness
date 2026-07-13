@@ -98,6 +98,21 @@ _PRINT_PATH_SUFFIXES: tuple[str, ...] = (
     "/print.htm",
 )
 
+# Path suffixes that mark embed / comments / share CMS mirrors of the same article.
+# Applied after print so ``/story/print`` still wins when both appear; only
+# trailing whole-segment markers are stripped (not mid-path tokens like
+# ``/comments-section/…``). Bare ``/embed`` (root-only) is kept so a site
+# whose homepage is literally ``/embed`` is not rewritten to empty.
+_EMBED_COMMENTS_SHARE_PATH_SUFFIXES: tuple[str, ...] = (
+    "/embed",
+    "/embed.html",
+    "/embed.htm",
+    "/comments",
+    "/comment",
+    "/share",
+    "/shared",
+)
+
 # Default document names that are identity-noise for CMS article paths.
 _INDEX_BASENAMES: tuple[str, ...] = (
     "/index.html",
@@ -211,6 +226,21 @@ def _normalize_path(path: str) -> str:
             path = path[: -(len(s) + 1)]
             lower = path.lower()
             break
+    # Embed / comments / share CMS mirrors (``/world/story/embed`` →
+    # ``/world/story``). Require a parent segment so bare ``/embed`` is kept.
+    for suffix in _EMBED_COMMENTS_SHARE_PATH_SUFFIXES:
+        s = suffix.rstrip("/")
+        if not s:
+            continue
+        # Path must be longer than the suffix itself (not root-only marker).
+        if lower.endswith(s) and len(path) > len(s):
+            path = path[: -len(s)]
+            lower = path.lower()
+            break
+        if lower.endswith(s + "/") and len(path) > len(s) + 1:
+            path = path[: -(len(s) + 1)]
+            lower = path.lower()
+            break
     # CMS default document names: ``/world/story/index.html`` → ``/world/story``
     # and ``/index.html`` → ``/``. Basename always starts with ``/`` so
     # mid-segment names like ``/myindex.html`` are never stripped.
@@ -249,6 +279,7 @@ def canonical_url(url: str | None) -> str | None:
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
+      - embed/comments/share path suffixes stripped (``/embed``, ``/comments``, …)
       - CMS default basenames stripped (``/index.html``, ``/index.php``, …)
       - trailing ``.html`` / ``.htm`` stripped (``/story.html`` → ``/story``)
       - path trailing slash normalized (``/`` kept; ``/foo/`` → ``/foo``)

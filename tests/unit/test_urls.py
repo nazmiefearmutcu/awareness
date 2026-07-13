@@ -232,6 +232,56 @@ def test_canonical_url_print_share_index_compose() -> None:
     assert {canonical_url(u) for u in variants} == {"https://news.example/world/story"}
 
 
+def test_canonical_url_strips_embed_comments_share_paths() -> None:
+    """CMS embed/comments/share path mirrors collapse onto the article path."""
+    assert (
+        canonical_url("https://news.example/world/story/embed")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/embed.html")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/comments")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/comment")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/comments/")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/share")
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url("https://news.example/world/story/shared")
+        == "https://news.example/world/story"
+    )
+    # Mid-path token names must not be stripped (``/comments-section/…`` stays).
+    assert (
+        canonical_url("https://news.example/comments-section/a")
+        == "https://news.example/comments-section/a"
+    )
+    # Bare root embed is not stripped to empty (keep path identity for /embed).
+    assert canonical_url("https://news.example/embed") == "https://news.example/embed"
+
+
+def test_canonical_url_embed_comments_compose_with_aliases() -> None:
+    """Embed/comments/share paths compose with host aliases and trackers."""
+    variants = [
+        "https://www.news.example/world/story/embed?utm_source=rss",
+        "https://m.news.example/world/story/comments/",
+        "http://news.example/world/story/share?si=x",
+        "https://news.example/world/story",
+    ]
+    assert {canonical_url(u) for u in variants} == {"https://news.example/world/story"}
+
+
 def test_domain_of_returns_etld_plus_one() -> None:
     assert domain_of("https://news.bbc.co.uk/x") == "bbc.co.uk"
     assert domain_of("https://example.com/y") == "example.com"
