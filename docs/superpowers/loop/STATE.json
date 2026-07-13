@@ -1,17 +1,16 @@
 {
-  "iteration": 41,
-  "phase": "sitemap_depth_labels_staging_api_spa_compact_kpis",
+  "iteration": 42,
+  "phase": "fineweb_stream_metrics_spa_staging_gdelt_kpis",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "d09402a",
+  "head_sha": "42e36b4",
   "product_shas": [
-    "9a5fc69",
-    "948ab5d",
-    "d09402a"
+    "958949e",
+    "42e36b4"
   ],
-  "commits_ahead": 204,
-  "unit_suite": "green (1 skipped datasets; not slow)",
+  "commits_ahead": 207,
+  "unit_suite": "green (840 passed, 1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): sitemap probe depth=root|nested on feeds.fetch_* (9a5fc69); GET /staging + status staging age line (948ab5d); SPA Iceberg compact p95/rows KPIs (d09402a). Next: GDELT SPA KPIs, fineweb stream metrics, FTS polish (non-ranking), staging age on dashboard."
+  "notes": "DIVERSE wave (no ranking/unwrap): FineWeb stream load/admit/filter metrics (958949e); SPA staging backlog age + GDELT fetch p95/attempts KPIs (42e36b4). Next: FTS polish (non-ranking), FineWeb SPA KPIs, CLI metrics table polish for fineweb., storage crash-safe flush."
 }

@@ -126,12 +126,14 @@
 | C4+ | scrape/obs | Sitemap probe depth labels (root vs nested) on feed fetch metrics | ✅ |
 | C4+ | api/cli/storage | `GET /staging` backlog + age; `status` staging line | ✅ |
 | C4+ | spa | Dashboard Iceberg compact p95 + compacted rows KPIs | ✅ |
+| C4+ | scrape/obs | FineWeb stream load/admit/filter metrics + load/partition hist | ✅ |
+| C4+ | spa | Dashboard staging backlog age + GDELT fetch p95/attempts KPIs | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~204 commits ahead of `main`)
-- **Unit suite:** green (non-slow; datasets skip as configured) — **829 passed, 1 skipped**
-- **Latest:** Diverse wave — sitemap depth labels (`9a5fc69`), GET /staging + status age (`948ab5d`), SPA compact KPIs (`d09402a`)
+- **Branch:** `loop/continuous-dev` (~207 commits ahead of `main`)
+- **Unit suite:** green (non-slow; datasets skip as configured) — **840 passed, 1 skipped**
+- **Latest:** Diverse wave — FineWeb stream metrics (`958949e`), SPA staging age + GDELT fetch KPIs (`42e36b4`)
 
 ## Rules
 
