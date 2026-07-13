@@ -12,6 +12,7 @@ Why this shape:
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.exceptions import NamespaceAlreadyExistsError, NoSuchTableError, TableAlreadyExistsError
 
 from awareness.obs.logging import get_logger
+from awareness.obs.metrics import get_metrics
 from awareness.storage.iceberg_schema import (
     CAPTURES_TABLE_IDENTIFIER,
     ICEBERG_PARTITION_SPEC,
@@ -158,10 +160,27 @@ class IcebergWriter:
             if self._table is None:
                 self.ensure_table()
             assert self._table is not None
-            tbl = _to_arrow(rows, self._arrow_schema)
-            self._table.append(tbl)
-            logger.info("iceberg_appended", n=len(rows))
-            return len(rows)
+            t0 = time.perf_counter()
+            outcome = "ok"
+            try:
+                tbl = _to_arrow(rows, self._arrow_schema)
+                self._table.append(tbl)
+            except Exception:
+                outcome = "error"
+                get_metrics().inc("iceberg.append_errors")
+                raise
+            finally:
+                elapsed = max(0.0, time.perf_counter() - t0)
+                get_metrics().observe(
+                    "iceberg.append_seconds",
+                    elapsed,
+                    labels={"outcome": outcome},
+                )
+            n = len(rows)
+            get_metrics().inc("iceberg.appended_rows", value=float(n))
+            get_metrics().inc("iceberg.append_batches", labels={"outcome": "ok"})
+            logger.info("iceberg_appended", n=n, seconds=round(elapsed, 4))
+            return n
 
     def close(self) -> None:
         # PyIceberg manages its own connections; nothing to do explicitly.
