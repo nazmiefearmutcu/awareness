@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from awareness.obs.logging import get_logger
+from awareness.obs.metrics import get_metrics
 
 logger = get_logger("storage.jsonl")
 
@@ -120,6 +121,9 @@ class JsonlStagingWriter:
     def _commit_current(self) -> Path | None:
         if self._fh is None or self._current_path is None:
             return None
+        t0 = time.perf_counter()
+        records = self._current_records
+        nbytes = self._current_bytes
         try:
             self._fsync_handle()
         except OSError:
@@ -152,11 +156,19 @@ class JsonlStagingWriter:
 
         self._committed_files.append(finalized)
         self._current_path = None
+        elapsed = max(0.0, time.perf_counter() - t0)
+        # Process-local staging observability (mirrors Iceberg append metrics).
+        m = get_metrics()
+        m.inc("jsonl.chunks_committed")
+        m.inc("jsonl.records_committed", value=float(records))
+        m.inc("jsonl.bytes_committed", value=float(nbytes))
+        m.observe("jsonl.commit_seconds", elapsed)
         logger.info(
             "jsonl_chunk_committed",
             path=str(finalized),
-            records=self._current_records,
-            bytes=self._current_bytes,
+            records=records,
+            bytes=nbytes,
+            seconds=round(elapsed, 4),
         )
         return finalized
 
@@ -182,6 +194,8 @@ class JsonlStagingWriter:
                 written += 1
             if self._should_rotate_time():
                 self._commit_current()
+        if written:
+            get_metrics().inc("jsonl.records_written", value=float(written))
         return written
 
     def _should_rotate(self, next_payload: bytes) -> bool:
