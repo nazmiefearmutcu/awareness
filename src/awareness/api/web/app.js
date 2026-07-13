@@ -573,7 +573,12 @@ async function loadCaptures(reset = false) {
     const to = Math.min(caps.offset + (data.rows || []).length, data.total);
     if (isSearch) {
       const modeLabel = formatSearchModeLabel(data.mode, !!data.ranked);
-      meta.textContent = `${from}–${to} of ${fmt(data.total)} matches · ${modeLabel}`;
+      let metaLine = `${from}–${to} of ${fmt(data.total)} matches · ${modeLabel}`;
+      const rb = Number(data.recency_boost);
+      if (Number.isFinite(rb) && rb > 0) {
+        metaLine += ` · recency=${rb}`;
+      }
+      meta.textContent = metaLine;
     } else {
       const fold = hideDups ? " · unique groups" : "";
       meta.textContent = `${from}–${to} of ${fmt(data.total)} captures · chronological${fold}`;

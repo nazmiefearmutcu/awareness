@@ -82,3 +82,11 @@ def test_spa_empty_diagnostics_shows_domain_filter() -> None:
     assert "diag.filters" in app_js
     assert 'metaParts.push("domain=" + domainFilter)' in app_js
     assert 'metaParts.push("source=" + sourceFilter)' in app_js
+
+
+def test_spa_search_meta_shows_recency_boost_when_nonzero() -> None:
+    """Search meta line appends recency=W when payload.recency_boost > 0."""
+    app_js = APP_JS.read_text(encoding="utf-8")
+    assert "data.recency_boost" in app_js
+    assert "recency=" in app_js
+    assert "Number.isFinite(rb) && rb > 0" in app_js

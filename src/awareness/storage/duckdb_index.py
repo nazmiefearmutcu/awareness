@@ -1460,6 +1460,15 @@ class DuckDbIndex:
                 "fields": cols,
                 "query": query,
             }
+            # Surface active recency re-rank weight when configured (>0).
+            # SPA/CLI can show "recency=…" without re-reading settings.
+            try:
+                from awareness.config import get_settings as _get_settings
+                _rw = float(getattr(_get_settings(), "search_recency_boost", 0.0) or 0.0)
+            except Exception:
+                _rw = 0.0
+            if _rw > 0:
+                payload["recency_boost"] = _rw
             # Facets over the matching set (not just this page) when total > 0.
             if total > 0 and facet_ctx is not None:
                 f_kind, f_base, f_where, f_params = facet_ctx

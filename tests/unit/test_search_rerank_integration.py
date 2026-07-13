@@ -79,3 +79,23 @@ def test_rerank_still_respects_max_results_cap(tmp_path: Path) -> None:
         _write_doc(jsonl, i, title=f"Financial report {i}", text="financial financial")
     res = _index(tmp_path).search("financial", mode="auto", limit=100, max_results=3)
     assert len(res["rows"]) <= 3
+
+
+def test_search_payload_omits_recency_boost_when_zero(tmp_path: Path, monkeypatch) -> None:
+    from awareness.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "search_recency_boost", 0.0)
+    jsonl = tmp_path / "jsonl"
+    _write_doc(jsonl, 0, title="Bitcoin rally", text="bitcoin is a cryptocurrency")
+    res = _index(tmp_path).search("bitcoin", mode="auto")
+    assert "recency_boost" not in res
+
+
+def test_search_payload_includes_recency_boost_when_nonzero(tmp_path: Path, monkeypatch) -> None:
+    from awareness.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "search_recency_boost", 0.35)
+    jsonl = tmp_path / "jsonl"
+    _write_doc(jsonl, 0, title="Bitcoin rally", text="bitcoin is a cryptocurrency")
+    res = _index(tmp_path).search("bitcoin", mode="auto")
+    assert res.get("recency_boost") == 0.35
