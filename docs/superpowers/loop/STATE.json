@@ -1,16 +1,16 @@
 {
-  "iteration": 29,
-  "phase": "domain_nav_rerank_slack_whatsapp_identity",
+  "iteration": 30,
+  "phase": "title_prefix_rerank_telegram_hrefli_identity",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "2c66620926ae685d6ebd38b93af2bdb796a08fab",
+  "head_sha": "1cf53e2faead7d0debb8baf4b6b3e4bfd6c642a7",
   "product_shas": [
-    "2604be1ac14274ed0295d365c3b2ba217bc7bc62",
-    "2c66620926ae685d6ebd38b93af2bdb796a08fab"
+    "ea3e561c2c95b5f9578307e5e0b4fd2c15a766d8",
+    "1cf53e2faead7d0debb8baf4b6b3e4bfd6c642a7"
   ],
-  "commits_ahead": 156,
+  "commits_ahead": 159,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed domain-label navigational re-rank boost (2604be1), Slack slack-redir.net + WhatsApp l.wl.co unwrap for fetch-gate identity (2c66620). Next: scrape reliability / facets / more SERP identity / fuzzy search leftovers."
+  "notes": "Landed title-prefix navigational re-rank boost (ea3e561), Telegram t.me/share|/iv + href.li unwrap for fetch-gate identity (1cf53e2). Next: scrape reliability / facets / more SERP identity / fuzzy search leftovers."
 }

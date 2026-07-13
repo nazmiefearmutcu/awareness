@@ -90,12 +90,14 @@
 | C4+ | dedup | Unwrap Reddit out.reddit.com + YouTube /redirect for fetch-gate identity | ✅ |
 | C4+ | search | Domain-label navigational boost in BM25 re-rank | ✅ |
 | C4+ | dedup | Unwrap Slack slack-redir.net + WhatsApp l.wl.co for fetch-gate identity | ✅ |
+| C4+ | search | Title-prefix token navigational boost in BM25 re-rank | ✅ |
+| C4+ | dedup | Unwrap Telegram t.me/share|/iv + href.li for fetch-gate identity | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~156 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~159 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** domain-label navigational re-rank (`2604be1`), Slack + WhatsApp identity (`2c66620`)
+- **Latest:** title-prefix navigational re-rank (`ea3e561`), Telegram + href.li identity (`1cf53e2`)
 
 ## Rules
 
