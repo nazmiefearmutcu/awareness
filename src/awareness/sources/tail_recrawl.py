@@ -41,6 +41,41 @@ from awareness.util.urls import canonical_url, domain_of, is_public_http_url
 
 logger = get_logger("sources.tail_recrawl")
 
+# Discovery channels / source_kind values that produce short legitimate news.
+_NEWS_SOURCE_MARKERS = ("rss", "atom", "gdelt", "sitemap")
+_NEWS_MIN_FLOOR = 40
+
+
+def is_news_discovery(
+    discovery_channel: str | None = None,
+    source_kind: str | None = None,
+) -> bool:
+    """True when the URL came from RSS/Atom/GDELT/sitemap-style discovery."""
+    kind = (source_kind or "").strip().lower()
+    if kind.startswith(_NEWS_SOURCE_MARKERS):
+        return True
+    channel = (discovery_channel or "").strip().lower()
+    return channel.startswith(_NEWS_SOURCE_MARKERS)
+
+
+def resolve_text_min_chars(
+    settings,
+    *,
+    discovery_channel: str | None = None,
+    source_kind: str | None = None,
+) -> int:
+    """Effective min_chars for HTML extract: news sources use a lower floor.
+
+    News floor is ``max(40, min(text_min_chars, text_min_chars_news))`` so bulk
+    defaults (200) do not drop short feed articles, while a user who lowers
+    ``text_min_chars`` still gets that lower bound for news.
+    """
+    base = int(settings.text_min_chars)
+    if not is_news_discovery(discovery_channel, source_kind):
+        return base
+    news = int(getattr(settings, "text_min_chars_news", 80))
+    return max(_NEWS_MIN_FLOOR, min(base, news))
+
 
 class TailRecrawlAdapter(Adapter):
     source_type = SourceKind.TAIL_RECRAWL
@@ -121,7 +156,18 @@ class TailRecrawlAdapter(Adapter):
             return
 
         html = r.text
-        ext = html_to_text(html, url=url)
+        source_kind = partition.payload.get("source_kind")
+        min_chars = resolve_text_min_chars(
+            settings,
+            discovery_channel=discovery_channel,
+            source_kind=source_kind if isinstance(source_kind, str) else None,
+        )
+        ext = html_to_text(
+            html,
+            url=url,
+            min_chars=min_chars,
+            max_chars=settings.text_max_chars,
+        )
         if ext is None:
             get_metrics().inc("tail.text_too_short", labels={"domain": dom})
             return

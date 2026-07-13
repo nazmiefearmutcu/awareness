@@ -178,6 +178,11 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
         minimum=0, maximum=100_000_000,
     ),
     ConfigField(
+        "text_min_chars_news", "Corpus filters", KIND_INT, 80,
+        "Lower minimum text length for RSS/Atom/GDELT/sitemap-discovered pages.",
+        minimum=0, maximum=100_000_000,
+    ),
+    ConfigField(
         "text_max_chars", "Corpus filters", KIND_INT, 1_500_000,
         "Drop documents whose extracted text is longer than this.",
         minimum=1, maximum=1_000_000_000,

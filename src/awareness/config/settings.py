@@ -103,6 +103,8 @@ class Settings(BaseSettings):
 
     # ── corpus filters ───────────────────────────────────────────────────
     text_min_chars: int = 200
+    # Lower floor for RSS/Atom/GDELT/sitemap-discovered pages (short news stubs).
+    text_min_chars_news: int = 80
     text_max_chars: int = 1_500_000
 
     # ── Common Crawl WET ────────────────────────────────────────────────

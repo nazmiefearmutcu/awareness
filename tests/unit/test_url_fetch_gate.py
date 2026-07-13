@@ -106,7 +106,9 @@ async def _collect(
         patch("awareness.sources.tail_recrawl._get_public_url", get_mock),
         patch(
             "awareness.sources.tail_recrawl.html_to_text",
-            side_effect=lambda html, url=None: _fake_extraction(url or partition.payload["url"]),
+            side_effect=lambda html, url=None, min_chars=200, max_chars=1_500_000: _fake_extraction(
+                url or partition.payload["url"]
+            ),
         ),
     ):
         out = []

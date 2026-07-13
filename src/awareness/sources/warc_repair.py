@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from awareness.config import get_settings
 from awareness.normalize.html import html_to_text
 from awareness.normalize.text import detect_language
 from awareness.obs.logging import get_logger
@@ -65,6 +66,7 @@ class WarcRepairAdapter(Adapter):
             return
 
         # Parse the WARC record from the byte range.
+        settings = get_settings()
         cap = await asyncio.get_event_loop().run_in_executor(
             None,
             _parse_warc_record,
@@ -78,6 +80,8 @@ class WarcRepairAdapter(Adapter):
             context.task_id,
             context.batch_id,
             context.ingest_version,
+            settings.text_min_chars,
+            settings.text_max_chars,
         )
         if cap is not None:
             yield cap
@@ -94,6 +98,8 @@ def _parse_warc_record(
     task_id: str,
     batch_id: str,
     ingest_version: str,
+    min_chars: int = 200,
+    max_chars: int = 1_500_000,
 ) -> DocCapture | None:
     from warcio.archiveiterator import ArchiveIterator  # noqa: PLC0415
 
@@ -111,7 +117,7 @@ def _parse_warc_record(
                 html = record.content_stream().read().decode("utf-8", "replace")
             except (UnicodeDecodeError, AttributeError, OSError):
                 return None
-            ext = html_to_text(html, url=target)
+            ext = html_to_text(html, url=target, min_chars=min_chars, max_chars=max_chars)
             if ext is None:
                 return None
             text = ext.text.text
