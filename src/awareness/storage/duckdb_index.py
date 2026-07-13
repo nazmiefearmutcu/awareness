@@ -73,6 +73,7 @@ _RERANK_TITLE_PHRASE_BOOST = 0.35  # Wp: ordered multi-term title phrase multipl
 _RERANK_TITLE_EXACT_BOOST = 0.4  # We: title tokens == query terms multiplies by 1+We
 _RERANK_URL_BOOST = 0.25         # Wu: full url/domain term coverage multiplies by 1+Wu
 _RERANK_URL_PHRASE_BOOST = 0.2   # Wup: ordered multi-term URL-slug phrase multiplies by 1+Wup
+_RERANK_URL_EXACT_BOOST = 0.3    # Wue: last path-slug tokens == query terms multiplies by 1+Wue
 _RERANK_LEAD_HIT_BOOST = 0.15    # Wh: bag-of-words lead term coverage multiplies by 1+Wh
 _RERANK_LEAD_PHRASE_BOOST = 0.2   # Wl: ordered multi-term phrase in lead text multiplies by 1+Wl
 _RERANK_LEAD_CHARS = 280         # news lede window (chars) for lead hit/phrase credit
@@ -1782,6 +1783,56 @@ def _url_phrase_frac(url: str, domain: str, terms: list[str]) -> float:
     return 0.5
 
 
+def _url_slug_tokens(url: str) -> list[str]:
+    """Alphanumeric tokens (len≥2) from the last non-empty path segment.
+
+    News article slugs live in the final path segment
+    (``/world/markets/bitcoin-price`` → ``bitcoin-price``). Matching the
+    whole path would require the query to include section crumbs (``world``,
+    ``markets``); the leaf slug is the navigational signal analogous to an
+    exact title.
+    """
+    import re
+    from urllib.parse import urlsplit
+
+    try:
+        path = urlsplit(url or "").path or ""
+    except (ValueError, AttributeError):
+        return []
+    segs = [s for s in path.split("/") if s]
+    if not segs:
+        return []
+    last = segs[-1].lower()
+    for ext in (".html", ".htm", ".php", ".aspx"):
+        if last.endswith(ext) and len(last) > len(ext):
+            last = last[: -len(ext)]
+            break
+    return [t for t in re.findall(r"[A-Za-z0-9']+", last) if len(t) >= 2]
+
+
+def _url_exact_frac(url: str, _domain: str, terms: list[str]) -> float:
+    """1.0 when the leaf URL-slug tokens equal the query terms exactly.
+
+    Phrase credit still fires when the query is a *substring* of a longer
+    slug (``bitcoin-price-surges`` for ``bitcoin price``). Exact equality is
+    a stronger navigational signal: the article slug *is* the query.
+
+    * ``1.0`` — slug tokens == cleaned terms (same order, no extras)
+    * ``0.0`` — empty terms, empty slug, or any mismatch
+
+    Works for single-term queries (``/bitcoin`` vs ``bitcoin``) unlike
+    phrase frac, which short-circuits below two terms. ``_domain`` is accepted
+    for signature parity with other URL scorers and is unused (slug only).
+    """
+    cleaned = [t for t in terms if t]
+    if not cleaned:
+        return 0.0
+    tokens = _url_slug_tokens(url)
+    if not tokens:
+        return 0.0
+    return 1.0 if tokens == cleaned else 0.0
+
+
 def _lead_hit_frac(
     text: str,
     terms: list[str],
@@ -1905,6 +1956,7 @@ def _rerank(
     title_exact_boost: float = _RERANK_TITLE_EXACT_BOOST,
     url_boost: float = _RERANK_URL_BOOST,
     url_phrase_boost: float = _RERANK_URL_PHRASE_BOOST,
+    url_exact_boost: float = _RERANK_URL_EXACT_BOOST,
     lead_hit_boost: float = _RERANK_LEAD_HIT_BOOST,
     lead_phrase_boost: float = _RERANK_LEAD_PHRASE_BOOST,
     lead_chars: int = _RERANK_LEAD_CHARS,
@@ -1916,9 +1968,9 @@ def _rerank(
 ) -> list[dict[str, Any]]:
     """Re-rank BM25 candidates (already in raw-score DESC order) by multiplying
     the min-max-normalized BM25 score with independent title / title-phrase /
-    title-exact / url / url-phrase / lead-hit / lead-phrase / length / recency
-    factors. Returns a NEW ordered list; input row dicts are not mutated.
-    Stable: equal final scores keep the incoming BM25 order.
+    title-exact / url / url-phrase / url-exact / lead-hit / lead-phrase /
+    length / recency factors. Returns a NEW ordered list; input row dicts are
+    not mutated. Stable: equal final scores keep the incoming BM25 order.
 
     Each candidate dict carries ``score`` (raw BM25), ``title``, ``text``,
     optional ``url`` / ``canonical_url`` / ``domain``, and a timestamp
@@ -1956,6 +2008,9 @@ def _rerank(
         url_phrase_f = 1.0 + url_phrase_boost * _url_phrase_frac(
             str(url_blob), str(domain_blob), terms
         )
+        url_exact_f = 1.0 + url_exact_boost * _url_exact_frac(
+            str(url_blob), str(domain_blob), terms
+        )
         lead_hit_f = 1.0 + lead_hit_boost * _lead_hit_frac(
             str(text), terms, lead_chars=lead_chars
         )
@@ -1977,6 +2032,7 @@ def _rerank(
             * exact_f
             * url_f
             * url_phrase_f
+            * url_exact_f
             * lead_hit_f
             * lead_f
             * len_f

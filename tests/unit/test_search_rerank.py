@@ -19,8 +19,10 @@ from awareness.storage.duckdb_index import (
     _title_hit_frac,
     _title_phrase_frac,
     _to_epoch,
+    _url_exact_frac,
     _url_hit_frac,
     _url_phrase_frac,
+    _url_slug_tokens,
 )
 
 
@@ -577,6 +579,7 @@ def test_rerank_url_phrase_overrides_scattered_url_hits() -> None:
         title_phrase_boost=0.0,
         url_boost=0.25,
         url_phrase_boost=0.0,
+        url_exact_boost=0.0,
     )
     # Without phrase boost: equal url_f → BM25 order (SCATTER first).
     assert [c["capture_id"] for c in off] == ["SCATTER", "PHRASE"]
@@ -587,10 +590,175 @@ def test_rerank_url_phrase_overrides_scattered_url_hits() -> None:
         title_phrase_boost=0.0,
         url_boost=0.25,
         url_phrase_boost=0.2,
+        url_exact_boost=0.0,
     )
     # PHRASE final = 0.85 * 1.25 * 1.2 = 1.275
     # SCATTER final = 1.0 * 1.25 * 1.0 = 1.25
     assert [c["capture_id"] for c in on] == ["PHRASE", "SCATTER"]
+
+
+# ── _url_exact_frac / _url_slug_tokens ───────────────────────────────────
+def test_url_slug_tokens_uses_last_path_segment() -> None:
+    assert _url_slug_tokens("https://news.example/world/bitcoin-price") == [
+        "bitcoin",
+        "price",
+    ]
+    assert _url_slug_tokens("https://news.example/bitcoin") == ["bitcoin"]
+    assert _url_slug_tokens("https://news.example/story.html") == ["story"]
+    assert _url_slug_tokens("https://news.example/") == []
+    assert _url_slug_tokens("") == []
+
+
+def test_url_exact_frac_empty_is_zero() -> None:
+    assert _url_exact_frac("https://x.test/bitcoin", "x.test", []) == 0.0
+    assert _url_exact_frac("", "x.test", ["bitcoin"]) == 0.0
+    assert _url_exact_frac("https://x.test/", "x.test", ["bitcoin"]) == 0.0
+
+
+def test_url_exact_frac_single_and_multi_term_match() -> None:
+    assert (
+        _url_exact_frac("https://news.example/world/bitcoin", "news.example", ["bitcoin"])
+        == 1.0
+    )
+    assert (
+        _url_exact_frac(
+            "https://news.example/markets/BITCOIN-PRICE",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 1.0
+    )
+    # Extension stripped from leaf slug.
+    assert (
+        _url_exact_frac(
+            "https://news.example/world/bitcoin-price.html",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 1.0
+    )
+
+
+def test_url_exact_frac_rejects_extra_or_missing_or_reorder() -> None:
+    # Longer slug still gets phrase credit elsewhere; exact requires equality.
+    assert (
+        _url_exact_frac(
+            "https://news.example/world/bitcoin-price-surges",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 0.0
+    )
+    assert (
+        _url_exact_frac(
+            "https://news.example/world/bitcoin",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 0.0
+    )
+    assert (
+        _url_exact_frac(
+            "https://news.example/world/price-bitcoin",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 0.0
+    )
+    # Section crumbs are not part of the leaf slug → no false exact.
+    assert (
+        _url_exact_frac(
+            "https://news.example/bitcoin/price",
+            "news.example",
+            ["bitcoin", "price"],
+        )
+        == 0.0
+    )
+
+
+def test_rerank_url_exact_overrides_partial_slug_match() -> None:
+    """Leaf slug tokens == query beats a longer slug with equal bag/phrase hits.
+
+    Both URLs contain ordered ``bitcoin`` then ``price`` (url_hit + url_phrase
+    full credit). Only EXACT has slug tokens exactly equal to the query; with
+    url_exact boost on, EXACT ranks first despite lower raw BM25.
+    """
+    cands = [
+        _cand(
+            "LONGER",
+            1.0,
+            title="n",
+            text="t",
+            url="https://news.example/world/bitcoin-price-surges",
+            domain="news.example",
+        ),
+        _cand(
+            "EXACT",
+            0.85,
+            title="n",
+            text="t",
+            url="https://news.example/world/bitcoin-price",
+            domain="news.example",
+        ),
+    ]
+    off = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        url_boost=0.25,
+        url_phrase_boost=0.2,
+        url_exact_boost=0.0,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+    )
+    # Without exact boost: equal url_f + url_phrase_f → BM25 order.
+    assert [c["capture_id"] for c in off] == ["LONGER", "EXACT"]
+    on = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        url_boost=0.25,
+        url_phrase_boost=0.2,
+        url_exact_boost=0.3,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+    )
+    # EXACT final = 0.85 * 1.25 * 1.2 * 1.3 = 1.6575
+    # LONGER final = 1.0 * 1.25 * 1.2 * 1.0 = 1.5
+    assert [c["capture_id"] for c in on] == ["EXACT", "LONGER"]
+
+
+def test_rerank_url_exact_falls_back_to_canonical_url() -> None:
+    """Missing ``url`` still scores slug exact via ``canonical_url``."""
+    cands = [
+        _cand("A", 1.0, title="n", text="t", domain="x.test"),
+        _cand(
+            "B",
+            0.85,
+            title="n",
+            text="t",
+            canonical_url="https://x.test/topic/bitcoin",
+            domain="x.test",
+        ),
+    ]
+    out = _rerank(
+        cands,
+        ["bitcoin"],
+        title_boost=0.0,
+        title_phrase_boost=0.0,
+        title_exact_boost=0.0,
+        url_boost=0.0,
+        url_phrase_boost=0.0,
+        url_exact_boost=0.3,
+        lead_hit_boost=0.0,
+        lead_phrase_boost=0.0,
+    )
+    # B final = 0.85 * 1.3 = 1.105 > A = 1.0
+    assert [c["capture_id"] for c in out] == ["B", "A"]
 
 
 def test_rerank_preserves_bm25_order_on_ties() -> None:
