@@ -1089,6 +1089,97 @@ def test_canonical_url_unwraps_pocket_redirect() -> None:
     assert "getpocket.com" in nested
 
 
+def test_canonical_url_unwraps_pinterest_redirect() -> None:
+    """Pinterest pin-create / offsite ``url=`` share wrappers collapse to origin."""
+    assert (
+        canonical_url(
+            "https://www.pinterest.com/pin/create/button/?url="
+            "https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+            "&description=x"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://pinterest.com/pin/create/link/?url="
+            "http%3A%2F%2Fm.news.example%2Fstory%2Famp"
+        )
+        == "https://news.example/story"
+    )
+    assert (
+        canonical_url(
+            "https://www.pinterest.com/offsite/?url="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dpinterest"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Regional host.
+    assert (
+        canonical_url(
+            "https://www.pinterest.co.uk/pin/create/button/?url="
+            "https%3A%2F%2Fnews.example%2Fworld"
+        )
+        == "https://news.example/world"
+    )
+    # Missing url= → no unwrap.
+    bare = canonical_url("https://www.pinterest.com/pin/create/button/?description=x")
+    assert bare is not None
+    assert "pinterest.com" in bare
+    # Ordinary pin pages are not redirectors.
+    pin = canonical_url("https://www.pinterest.com/pin/123456789/")
+    assert pin is not None
+    assert "pinterest.com" in pin
+    # Nested Pinterest wrapper must not loop.
+    nested = canonical_url(
+        "https://www.pinterest.com/offsite/?url="
+        "https%3A%2F%2Fpinterest.com%2Fpin%2Fcreate%2Fbutton%2F%3Furl%3Dx"
+    )
+    assert nested is not None
+    assert "pinterest.com" in nested
+
+
+def test_canonical_url_unwraps_flipboard_redirect() -> None:
+    """Flipboard share/bookmarklet ``url=`` wrappers collapse to origin."""
+    assert (
+        canonical_url(
+            "https://share.flipboard.com/bookmarklet/popout?v=2&title=x&url="
+            "https%3A%2F%2Fwww.news.example%2Fworld%2Fstory"
+        )
+        == "https://news.example/world/story"
+    )
+    assert (
+        canonical_url(
+            "https://flipboard.com/share?url="
+            "http%3A%2F%2Fm.news.example%2Fstory%2Famp"
+        )
+        == "https://news.example/story"
+    )
+    # Origin query retained; Flipboard wrapper params dropped.
+    assert (
+        canonical_url(
+            "https://share.flipboard.com/bookmarklet/popout?url="
+            "https%3A%2F%2Fnews.example%2Fstory%3Fid%3D9%26utm_source%3Dflipboard"
+            "&v=2"
+        )
+        == "https://news.example/story?id=9"
+    )
+    # Missing url= → no unwrap.
+    bare = canonical_url("https://share.flipboard.com/bookmarklet/popout?v=2")
+    assert bare is not None
+    assert "flipboard.com" in bare
+    # Ordinary magazine paths are not redirectors.
+    mag = canonical_url("https://flipboard.com/@user/magazine-title")
+    assert mag is not None
+    assert "flipboard.com" in mag
+    # Nested Flipboard wrapper must not loop.
+    nested = canonical_url(
+        "https://share.flipboard.com/bookmarklet/popout?url="
+        "https%3A%2F%2Fshare.flipboard.com%2Fshare%3Furl%3Dx"
+    )
+    assert nested is not None
+    assert "flipboard.com" in nested
+
+
 def test_canonical_url_strips_search_and_cms_noise() -> None:
     """Google/MSN search wrappers and CMS feed/trackback paths are identity-noise."""
     assert (

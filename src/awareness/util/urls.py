@@ -286,6 +286,35 @@ _POCKET_REDIRECT_PATHS: frozenset[str] = frozenset(
     }
 )
 
+# Pinterest pin-create / offsite share hosts that embed origin in ``url=``.
+_PINTEREST_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "pinterest.com",
+        "pinterest.co.uk",
+        "pinterest.de",
+        "pinterest.fr",
+        "pinterest.ca",
+        "pinterest.jp",
+        "pinterest.com.au",
+    }
+)
+_PINTEREST_REDIRECT_PATH_PREFIXES: tuple[str, ...] = (
+    "/pin/create/",
+    "/offsite",
+)
+
+# Flipboard share bookmarklet hosts (``share.flipboard.com/…?url=…``).
+_FLIPBOARD_REDIRECT_HOSTS: frozenset[str] = frozenset(
+    {
+        "share.flipboard.com",
+        "flipboard.com",
+    }
+)
+_FLIPBOARD_REDIRECT_PATH_PREFIXES: tuple[str, ...] = (
+    "/bookmarklet/",
+    "/share",
+)
+
 # Suffix for Microsoft Outlook Safe Links rewrite hosts
 # (``nam01.safelinks.protection.outlook.com``, ``*.safelinks.protection.outlook.com``).
 _OUTLOOK_SAFELINKS_SUFFIX = "safelinks.protection.outlook.com"
@@ -1062,6 +1091,66 @@ def _unwrap_pocket_redirect(netloc: str, path: str, query: str) -> str | None:
     return _validate_embedded_origin_url(origin, refuse_hosts=_POCKET_REDIRECT_HOSTS)
 
 
+def _unwrap_pinterest_redirect(netloc: str, path: str, query: str) -> str | None:
+    """Extract the origin URL from a Pinterest pin-create / offsite ``url=`` wrapper.
+
+    Forms:
+
+    * ``https://www.pinterest.com/pin/create/button/?url=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://pinterest.com/pin/create/link/?url=http%3A%2F%2Fm.example.com%2Fx``
+    * ``https://www.pinterest.com/offsite/?url=https%3A%2F%2Fexample.com%2Fstory``
+
+    Only pin-create and offsite paths are rewritten so ordinary pin/board URLs
+    stay on Pinterest identity. The origin lives in ``url=``.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _PINTEREST_REDIRECT_HOSTS:
+        return None
+    p = (path or "/").lower()
+    if not any(p == pref.rstrip("/") or p.startswith(pref) for pref in _PINTEREST_REDIRECT_PATH_PREFIXES):
+        return None
+    origin = _query_param(query, "url")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(
+        origin, refuse_hosts=_PINTEREST_REDIRECT_HOSTS
+    )
+
+
+def _unwrap_flipboard_redirect(netloc: str, path: str, query: str) -> str | None:
+    """Extract the origin URL from a Flipboard share ``url=`` wrapper.
+
+    Forms:
+
+    * ``https://share.flipboard.com/bookmarklet/popout?v=2&url=https%3A%2F%2Fexample.com%2Fstory``
+    * ``https://flipboard.com/share?url=http%3A%2F%2Fm.example.com%2Fx``
+
+    Only bookmarklet/share paths are rewritten so magazine/profile pages stay
+    on Flipboard identity.
+    """
+    host = _host_without_port_or_userinfo(netloc)
+    if host is None:
+        return None
+    host = _strip_www_label(host)
+    if host not in _FLIPBOARD_REDIRECT_HOSTS:
+        return None
+    p = (path or "/").lower()
+    if not any(
+        p == pref.rstrip("/") or p.startswith(pref)
+        for pref in _FLIPBOARD_REDIRECT_PATH_PREFIXES
+    ):
+        return None
+    origin = _query_param(query, "url")
+    if not origin:
+        return None
+    return _validate_embedded_origin_url(
+        origin, refuse_hosts=_FLIPBOARD_REDIRECT_HOSTS
+    )
+
+
 def _normalize_path(path: str) -> str:
     """Normalize path for identity: empty → ``/``; strip AMP/print/index noise + slash."""
     if not path:
@@ -1196,6 +1285,8 @@ def canonical_url(url: str | None) -> str | None:
       - href.li privacy wrappers (``href.li/?https://…``) rewritten to origin
       - Tumblr ``t.umblr.com/redirect?z=…`` outbound wrappers rewritten to origin
       - Pocket ``getpocket.com/redirect?url=…`` save wrappers rewritten to origin
+      - Pinterest pin-create / offsite ``url=`` share wrappers rewritten to origin
+      - Flipboard share/bookmarklet ``url=`` wrappers rewritten to origin
       - leading ``www.`` / ``m.`` / ``mobile.`` / ``amp.`` stripped from host
       - AMP path suffixes stripped (``/amp``, ``/amp.html``, leading ``/amp/``)
       - print-view path suffixes stripped (``/print``, ``/print.html``)
@@ -1244,7 +1335,7 @@ def canonical_url(url: str | None) -> str | None:
     # (Translate, Facebook, Google /url, Outlook Safe Links, DuckDuckGo /l,
     # Instagram, LinkedIn safety/redir, Reddit outbound, YouTube /redirect,
     # Slack redir, WhatsApp l.wl.co, Telegram share/iv, href.li, Tumblr
-    # redirect, Pocket redirect).
+    # redirect, Pocket redirect, Pinterest pin-create/offsite, Flipboard share).
     unwrapped = _unwrap_amp_cdn(netloc, path)
     if unwrapped is not None:
         netloc, path = unwrapped
@@ -1277,6 +1368,8 @@ def canonical_url(url: str | None) -> str | None:
                     or _unwrap_href_li(netloc, parts.query)
                     or _unwrap_tumblr_redirect(netloc, path, parts.query)
                     or _unwrap_pocket_redirect(netloc, path, parts.query)
+                    or _unwrap_pinterest_redirect(netloc, path, parts.query)
+                    or _unwrap_flipboard_redirect(netloc, path, parts.query)
                 )
                 if embedded is not None:
                     try:
