@@ -1059,9 +1059,13 @@ function renderRuntimeStatus(health, dedup) {
     row.appendChild(el("div", { class: "kv-val", text: typeof v === "object" ? JSON.stringify(v) : String(v) }));
     root.appendChild(row);
   }
+  // Highlight process skip counters from /dedup-stats (also listed in raw dump below).
+  const d = dedup || {};
+  setKPI("kpi-fetch-skipped", Number(d.fetch_skipped_seen || 0));
+  setKPI("kpi-tight-near", Number(d.tight_near_skipped || 0));
   const dblock = $("#dedup-block");
   clear(dblock);
-  for (const [k, v] of Object.entries(dedup || {})) {
+  for (const [k, v] of Object.entries(d)) {
     const row = el("div", { class: "kv-row" });
     row.appendChild(el("div", { class: "kv-key", text: k }));
     row.appendChild(el("div", { class: "kv-val", text: String(v) }));

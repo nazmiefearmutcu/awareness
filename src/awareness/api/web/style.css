@@ -1711,6 +1711,18 @@ code {
   flex-direction: column;
   gap: 6px;
 }
+/* Settings skip-counter KPIs — monochrome, two-up */
+.dedup-kpis {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 12px 0 0;
+}
+.dedup-kpis .kpi {
+  background: var(--surface);
+  border-color: var(--border);
+}
+.dedup-kpis .kpi-value {
+  color: var(--fg-strong);
+}
 .kv-row {
   display: grid;
   grid-template-columns: 180px 1fr;

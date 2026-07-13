@@ -500,6 +500,18 @@
           <p class="set-sec-desc">Live process health and dedup index (read-only).</p>
         </header>
         <div class="settings" id="settings-block"><p class="muted">Loading…</p></div>
+        <div class="kpi-grid dedup-kpis" id="dedup-kpis" aria-label="Process skip counters">
+          <article class="kpi" aria-labelledby="kpi-fetch-skip-label">
+            <div class="kpi-label" id="kpi-fetch-skip-label">Fetch skipped (seen)</div>
+            <div class="kpi-value" id="kpi-fetch-skipped">—</div>
+            <div class="kpi-sub">URLs already seen, not re-fetched</div>
+          </article>
+          <article class="kpi" aria-labelledby="kpi-tight-near-label">
+            <div class="kpi-label" id="kpi-tight-near-label">Tight near-dup skipped</div>
+            <div class="kpi-value" id="kpi-tight-near">—</div>
+            <div class="kpi-sub">near-dups below store threshold</div>
+          </article>
+        </div>
         <div class="dedup-block" id="dedup-block" style="margin-top:12px">—</div>
       </section>
     </section>
