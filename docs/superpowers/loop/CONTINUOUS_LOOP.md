@@ -60,13 +60,15 @@
 |----|------|------|--------|
 | C3-T1 | systems | Persisted FTS restore + append-only captures_idx | ✅ |
 | C3-T2 | dedup | Union-find cluster resolve for near-dups | ✅ |
+| C3-T4 | search | Pagination correctness after collapse/rerank | ✅ |
+| C3-T5 | scrape | Honor robots crawl-delay under concurrency (limiter race) | ✅ |
 
 ## Next backlog (Cycle 3+)
 
 | ID | Area | Task | Status |
 |----|------|------|--------|
 | C3-T3 | systems | Streaming WET parse (bounded memory) | pending |
-| C3-T4 | search | Pagination correctness | pending |
+| C3-T6 | scrape | Seed discovery (robots Sitemap: + feed probe) | pending |
 
 ## Rules
 
