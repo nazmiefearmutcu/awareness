@@ -435,6 +435,76 @@ function summarizeWetQualityMetrics(metricsSnap) {
 }
 
 /**
+ * FineWeb HF stream counters + load latency from /metrics (process-local).
+ * Pure — no DOM. Sums admitted/filtered/seen rows, load attempts, and weighted
+ * load p95 across dataset labels.
+ */
+function summarizeFinewebMetrics(metricsSnap) {
+  const empty = {
+    admitted: 0,
+    filtered: 0,
+    seen: 0,
+    topReason: null,
+    loadAttempts: 0,
+    loadOk: 0,
+    loadP95: null,
+  };
+  if (!metricsSnap || typeof metricsSnap !== "object") return empty;
+  const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
+  let admitted = 0;
+  let filtered = 0;
+  let seen = 0;
+  let loadAttempts = 0;
+  let loadOk = 0;
+  const byReason = Object.create(null);
+  for (const c of counters) {
+    if (!c) continue;
+    const n = c.name;
+    const v = Number(c.value) || 0;
+    if (n === "fineweb.rows_admitted") admitted += v;
+    else if (n === "fineweb.rows_seen") seen += v;
+    else if (n === "fineweb.rows_filtered") {
+      filtered += v;
+      const reason = (c.labels && c.labels.reason) || "unknown";
+      byReason[reason] = (byReason[reason] || 0) + v;
+    } else if (n === "fineweb.load_attempts") {
+      loadAttempts += v;
+      const labels = c.labels || {};
+      if (labels.outcome === "ok") loadOk += v;
+    }
+  }
+  let topReason = null;
+  let topVal = 0;
+  for (const [r, v] of Object.entries(byReason)) {
+    if (v > topVal) {
+      topVal = v;
+      topReason = r;
+    }
+  }
+  const hists = Array.isArray(metricsSnap.histograms) ? metricsSnap.histograms : [];
+  let weightedP95 = 0;
+  let histCount = 0;
+  for (const h of hists) {
+    if (!h || h.name !== "fineweb.load_seconds") continue;
+    const n = Number(h.count) || 0;
+    if (n <= 0) continue;
+    const p95 = Number(h.p95);
+    if (!Number.isFinite(p95)) continue;
+    histCount += n;
+    weightedP95 += p95 * n;
+  }
+  return {
+    admitted,
+    filtered,
+    seen,
+    topReason,
+    loadAttempts,
+    loadOk,
+    loadP95: histCount > 0 ? weightedP95 / histCount : null,
+  };
+}
+
+/**
  * Pull robots cache hit ratio + robots network fetch + Iceberg/JSONL counters
  * from /metrics. Pure — no DOM. Gauges for robots hit ratio; counters/histograms
  * for network robots probes and storage writes.
@@ -804,6 +874,47 @@ async function refreshDashboard() {
     gdeltAttSub.textContent = discovery.gdeltFetchAttempts
       ? `${fmt(discovery.gdeltUrls)} urls · ${fmt(discovery.gdeltEnqueued)} enqueued`
       : "slot GETs this process";
+  }
+
+  // FineWeb HF stream admit/filter + load latency (process-local).
+  const fineweb = summarizeFinewebMetrics(metricsSnap);
+  setKPI("kpi-dash-fineweb-admitted", fineweb.admitted);
+  const fwAdmSub = $("#kpi-dash-fineweb-admitted-sub");
+  if (fwAdmSub) {
+    if (fineweb.seen || fineweb.admitted) {
+      fwAdmSub.textContent = `${fmt(fineweb.seen)} seen · HF rows kept`;
+    } else {
+      fwAdmSub.textContent = "HF rows kept this process";
+    }
+  }
+  setKPI("kpi-dash-fineweb-filtered", fineweb.filtered);
+  const fwFiltSub = $("#kpi-dash-fineweb-filtered-sub");
+  if (fwFiltSub) {
+    if (fineweb.filtered || fineweb.admitted) {
+      const bits = [`${fmt(fineweb.admitted)} admitted`];
+      if (fineweb.topReason) bits.push(`top: ${fineweb.topReason}`);
+      fwFiltSub.textContent = bits.join(" · ");
+    } else {
+      fwFiltSub.textContent = "empty / lang / domain / short";
+    }
+  }
+  const fwP95Node = $("#kpi-dash-fineweb-p95");
+  if (fwP95Node) {
+    fwP95Node.textContent = formatFetchLatency(fineweb.loadP95);
+    fwP95Node.classList.toggle("is-zero", !fineweb.loadAttempts);
+  }
+  const fwP95Sub = $("#kpi-dash-fineweb-p95-sub");
+  if (fwP95Sub) {
+    fwP95Sub.textContent = fineweb.loadAttempts
+      ? `${fmt(fineweb.loadOk)}/${fmt(fineweb.loadAttempts)} ok · process`
+      : "no FineWeb loads yet";
+  }
+  setKPI("kpi-dash-fineweb-attempts", fineweb.loadAttempts);
+  const fwAttSub = $("#kpi-dash-fineweb-attempts-sub");
+  if (fwAttSub) {
+    fwAttSub.textContent = fineweb.loadAttempts
+      ? `${fmt(fineweb.loadOk)} succeeded`
+      : "dataset loads this process";
   }
 
   $("#kpi-captures-sub").textContent = (docsTotal ? `${fmt(docsTotal)} emitted across jobs` : "across the corpus");
