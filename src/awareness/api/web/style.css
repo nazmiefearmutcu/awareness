@@ -783,6 +783,12 @@ code {
   font-weight: 500;
   color: var(--fg-dim);
 }
+.caps-diagnostics-meta {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--fg-subtle);
+}
 .caps-diagnostics ul {
   margin: 0;
   padding-left: 1.2em;

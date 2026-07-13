@@ -330,24 +330,54 @@ let capsSearchTimer = null;
 /** Last search terms for re-highlighting title/body in the capture reader. */
 let lastSearchTerms = [];
 
-/** Show empty-search diagnostics.hints under the results list; hide otherwise. */
+/** Show empty-search diagnostics (mode/corpus/window + hints); hide otherwise. */
 function renderCapsDiagnostics(data, isSearch) {
   const box = $("#caps-diagnostics");
   if (!box) return;
-  const hints = (isSearch && data && Number(data.total) === 0)
-    ? ((data.diagnostics && data.diagnostics.hints) || [])
-    : [];
   clear(box);
-  if (!hints.length) {
+  if (!isSearch || !data || Number(data.total) !== 0) {
+    box.hidden = true;
+    return;
+  }
+  const diag = data.diagnostics || {};
+  const hints = Array.isArray(diag.hints) ? diag.hints.slice() : [];
+  // Prefer diagnostics.mode_used; fall back to response mode (e.g. phrase).
+  const modeUsed = String(diag.mode_used || data.mode || "").trim();
+  const metaParts = [];
+  if (modeUsed) {
+    metaParts.push("mode=" + formatSearchModeLabel(modeUsed, false));
+  }
+  if (diag.corpus_size != null && diag.corpus_size !== "") {
+    metaParts.push("corpus=" + String(diag.corpus_size));
+  }
+  const win = diag.window;
+  if (win && (win.start != null || win.end != null)) {
+    const s = win.start != null ? String(win.start).slice(0, 10) : "…";
+    const e = win.end != null ? String(win.end).slice(0, 10) : "…";
+    metaParts.push("window=" + s + "→" + e);
+  }
+  // Phrase empty-state must stay informative even if the API omitted hints.
+  if (modeUsed.toLowerCase() === "phrase") {
+    const hasPhraseHint = hints.some((h) => /phrase|quotes/i.test(String(h)));
+    if (!hasPhraseHint) {
+      hints.push("No exact phrase matches; try without quotes or fewer words.");
+    }
+  }
+  if (!metaParts.length && !hints.length) {
     box.hidden = true;
     return;
   }
   box.appendChild(el("p", { class: "caps-diagnostics-title", text: "No results — suggestions" }));
-  const ul = el("ul");
-  for (const h of hints) {
-    ul.appendChild(el("li", { text: String(h) }));
+  if (metaParts.length) {
+    box.appendChild(el("p", { class: "caps-diagnostics-meta", text: metaParts.join(" · ") }));
   }
-  box.appendChild(ul);
+  if (hints.length) {
+    const ul = el("ul");
+    for (const h of hints) {
+      ul.appendChild(el("li", { text: String(h) }));
+    }
+    box.appendChild(ul);
+  }
   box.hidden = false;
 }
 
