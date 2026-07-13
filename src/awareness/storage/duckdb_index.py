@@ -363,41 +363,18 @@ class DuckDbIndex:
 
     @contextlib.contextmanager
     def _connection_context(self):
-        """Acquire process-level file lock and return a DuckDB connection."""
-        lock_path = self._db_path.with_suffix(".lock")
-        with _file_lock(lock_path):
-            conn = None
-            max_retries = 10
-            base_delay = 0.05
-            max_delay = 1.0
-            
-            for attempt in range(max_retries):
-                try:
-                    conn = duckdb.connect(str(self._db_path))
-                    break
-                except duckdb.Error as exc:
-                    exc_str = str(exc).lower()
-                    is_lock_error = any(
-                        msg in exc_str
-                        for msg in ("lock", "resource temporarily unavailable", "permission", "locked", "io error")
-                    )
-                    if is_lock_error and attempt < max_retries - 1:
-                        time.sleep(min(max_delay, base_delay * (2 ** attempt)) * (0.5 + random.random()))
-                    else:
-                        raise
-            
-            try:
-                self._configure_connection(conn)
-                # Check and refresh views if stale
-                self._refresh_views_if_stale(conn)
-                
-                yield conn
-            finally:
-                if conn is not None:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
+        """Yield the long-lived DuckDB connection for a locked critical section.
+
+        Callers (``search``/``execute``/``refresh``) hold ``self._lock`` for the
+        full critical section. We reuse ``connect()``'s memoized ``self._conn``
+        instead of open/close per call so hot search paths skip connection setup
+        and extension reload. View freshness is preserved via
+        ``_refresh_views_if_stale`` on every entry (same as ``related()``).
+        """
+        # connect() re-enters self._lock (RLock) and opens at most once.
+        conn = self.connect()
+        self._refresh_views_if_stale(conn)
+        yield conn
 
     def _configure_connection(self, conn: duckdb.DuckDBPyConnection) -> None:
         """Apply session defaults and load optional extensions on a new connection."""
