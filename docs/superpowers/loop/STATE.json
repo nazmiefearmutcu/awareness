@@ -1,11 +1,11 @@
 {
-  "iteration": 14,
-  "phase": "cli_filter_ci_align_feed_quality",
+  "iteration": 15,
+  "phase": "lang_primary_subtag_url_print_share_identity",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "commits_ahead": 110,
+  "commits_ahead": 113,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed CLI case-insensitive source+domain filters (86c9e0e); feed guid/id HTTP permalink fallback + in-feed/sitemap canonical URL dedupe (2b8afc3); browse pager surfaces source/domain filters (38e2f1c). Next: streaming WET (C3-T3) / Iceberg compaction / more scrape reliability."
+  "notes": "Landed BCP-47 primary language tags matching regional subtags across search/browse/CLI (c3c80ec); print/share/index URL identity collapse for fetch gate (81dc965). Next: counts by_language / Iceberg compaction / more scrape reliability / SPA settings polish."
 }
