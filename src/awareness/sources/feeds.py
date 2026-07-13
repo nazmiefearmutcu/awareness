@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import gzip as _gzip
 import json
+import time
 from collections.abc import AsyncIterator, Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,31 @@ logger = get_logger("sources.feeds")
 # Checkpoint window for feed-level URL cursors. Ordered most-recently-seen;
 # oldest entries are dropped when the cap is exceeded.
 SEEN_URLS_CAP = 5000
+
+
+def _status_class(code: int) -> str:
+    """Map an HTTP status to a coarse class label (``2xx``, ``4xx``, …)."""
+    if code < 100:
+        return "unknown"
+    return f"{code // 100}xx"
+
+
+def _record_feed_fetch(
+    *,
+    kind: str,
+    outcome: str,
+    status_class: str,
+    elapsed: float,
+) -> None:
+    """Emit process-local feed/sitemap fetch counters + latency histogram.
+
+    Labels stay low-cardinality (kind + outcome + status class) so dashboards
+    and ``metrics --prefix feeds`` stay readable under heavy discovery load.
+    """
+    m = get_metrics()
+    labels = {"kind": kind, "outcome": outcome, "status_class": status_class}
+    m.inc("feeds.fetch_attempts", labels=labels)
+    m.observe("feeds.fetch_seconds", max(0.0, elapsed), labels=labels)
 
 # Content negotiation: many CDNs gate XML feeds without a sensible Accept.
 # Prefer RSS/Atom, then JSON Feed (https://www.jsonfeed.org/), then generic XML.
@@ -578,6 +604,7 @@ async def _enqueue_robots_sitemaps(seed_url: str, context: AdapterContext) -> in
 
 async def _read_feed(url: str, user_agent: str) -> list[str]:
     """RSS / Atom — fetch and parse."""
+    t0 = time.perf_counter()
     try:
         # Reuse process-wide pooled client (connection keep-alive across seeds).
         client = await get_shared_async_client(timeout=30.0, follow_redirects=True)
@@ -588,24 +615,49 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
             url,
             headers={"User-Agent": user_agent, "Accept": FEED_ACCEPT},
         )
+        elapsed = time.perf_counter() - t0
         if r.status_code != 200:
             logger.warning("feed_fetch_non_200", url=url, status=r.status_code)
             get_metrics().inc(
                 "feeds.fetch_non_200",
                 labels={"kind": "rss", "status": str(r.status_code)},
             )
+            _record_feed_fetch(
+                kind="rss",
+                outcome="http_error",
+                status_class=_status_class(r.status_code),
+                elapsed=elapsed,
+            )
             return []
+        _record_feed_fetch(
+            kind="rss",
+            outcome="ok",
+            status_class=_status_class(r.status_code),
+            elapsed=elapsed,
+        )
         if not r.content:
             return []
         body = _maybe_decompress_body(r.content)
         ctype = r.headers.get("content-type") or r.headers.get("Content-Type")
     except RetryableHTTPError:
+        _record_feed_fetch(
+            kind="rss",
+            outcome="retry_exhausted",
+            status_class="5xx",
+            elapsed=time.perf_counter() - t0,
+        )
         get_metrics().inc(
             "feeds.retryable_http_error",
             labels={"kind": "rss"},
         )
         raise
     except httpx.HTTPError as exc:
+        _record_feed_fetch(
+            kind="rss",
+            outcome="transport_error",
+            status_class="unknown",
+            elapsed=time.perf_counter() - t0,
+        )
         logger.warning("feed_fetch_failed", url=url, err=str(exc))
         return []
     # JSON Feed (https://www.jsonfeed.org/) — try before feedparser so modern
@@ -630,6 +682,7 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
 
 async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
     """Parse a sitemap or sitemap-index. Follows one level of nesting by default."""
+    t0 = time.perf_counter()
     try:
         # Longer timeout for large sitemap indexes; still pooled by timeout key.
         client = await get_shared_async_client(timeout=60.0, follow_redirects=True)
@@ -639,24 +692,49 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
             url,
             headers={"User-Agent": user_agent, "Accept": SITEMAP_ACCEPT},
         )
+        elapsed = time.perf_counter() - t0
         if r.status_code != 200:
             logger.warning("sitemap_fetch_non_200", url=url, status=r.status_code)
             get_metrics().inc(
                 "feeds.fetch_non_200",
                 labels={"kind": "sitemap", "status": str(r.status_code)},
             )
+            _record_feed_fetch(
+                kind="sitemap",
+                outcome="http_error",
+                status_class=_status_class(r.status_code),
+                elapsed=elapsed,
+            )
             return []
+        _record_feed_fetch(
+            kind="sitemap",
+            outcome="ok",
+            status_class=_status_class(r.status_code),
+            elapsed=elapsed,
+        )
         if not r.content:
             return []
         body = _maybe_decompress_body(r.content)
         ctype = r.headers.get("content-type") or r.headers.get("Content-Type")
     except RetryableHTTPError:
+        _record_feed_fetch(
+            kind="sitemap",
+            outcome="retry_exhausted",
+            status_class="5xx",
+            elapsed=time.perf_counter() - t0,
+        )
         get_metrics().inc(
             "feeds.retryable_http_error",
             labels={"kind": "sitemap"},
         )
         raise
     except httpx.HTTPError as exc:
+        _record_feed_fetch(
+            kind="sitemap",
+            outcome="transport_error",
+            status_class="unknown",
+            elapsed=time.perf_counter() - t0,
+        )
         logger.warning("sitemap_fetch_failed", url=url, err=str(exc))
         return []
 
