@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import threading
+import time
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -289,12 +290,26 @@ class CommonCrawlWetAdapter(Adapter):
         cache_dir.mkdir(parents=True, exist_ok=True)
         local = cache_dir / shard_path.replace("/", "_")
         if not local.exists():
+            t0 = time.perf_counter()
             try:
                 async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
                     async with client.stream(
                         "GET", url, headers={"User-Agent": context.user_agent}
                     ) as resp:
                         if resp.status_code != 200:
+                            elapsed = max(0.0, time.perf_counter() - t0)
+                            get_metrics().inc(
+                                "cc_wet.shard_download_attempts",
+                                labels={
+                                    "crawl_id": crawl_id,
+                                    "outcome": "http_status",
+                                },
+                            )
+                            get_metrics().observe(
+                                "cc_wet.shard_download_seconds",
+                                elapsed,
+                                labels={"outcome": "http_status"},
+                            )
                             logger.warning(
                                 "cc_wet_shard_not_found",
                                 crawl_id=crawl_id,
@@ -308,18 +323,56 @@ class CommonCrawlWetAdapter(Adapter):
                                 if context.is_stopping():
                                     fh.close()
                                     tmp.unlink(missing_ok=True)
+                                    get_metrics().inc(
+                                        "cc_wet.shard_download_attempts",
+                                        labels={
+                                            "crawl_id": crawl_id,
+                                            "outcome": "stopped",
+                                        },
+                                    )
                                     return
                                 fh.write(chunk)
                         tmp.rename(local)
-                logger.info("cc_wet_shard_cached", path=str(local))
+                elapsed = max(0.0, time.perf_counter() - t0)
+                get_metrics().inc(
+                    "cc_wet.shard_download_attempts",
+                    labels={"crawl_id": crawl_id, "outcome": "ok"},
+                )
+                get_metrics().observe(
+                    "cc_wet.shard_download_seconds",
+                    elapsed,
+                    labels={"outcome": "ok"},
+                )
+                logger.info(
+                    "cc_wet_shard_cached",
+                    path=str(local),
+                    seconds=round(elapsed, 4),
+                )
             except httpx.HTTPError as exc:
+                elapsed = max(0.0, time.perf_counter() - t0)
+                get_metrics().inc(
+                    "cc_wet.shard_download_attempts",
+                    labels={"crawl_id": crawl_id, "outcome": "error"},
+                )
+                get_metrics().observe(
+                    "cc_wet.shard_download_seconds",
+                    elapsed,
+                    labels={"outcome": "error"},
+                )
                 logger.warning("cc_wet_shard_download_failed", err=str(exc))
                 return
+        else:
+            get_metrics().inc(
+                "cc_wet.shard_download_attempts",
+                labels={"crawl_id": crawl_id, "outcome": "cache_hit"},
+            )
 
         # warcio import check off the event loop; parse streams on a worker
         # thread into a bounded queue (never materialize the full shard).
         await asyncio.get_running_loop().run_in_executor(None, _ensure_warcio_available)
 
+        parse_t0 = time.perf_counter()
+        captures_out = 0
         async for cap in _stream_wet_captures(
             path=local,
             crawl_id=crawl_id,
@@ -335,7 +388,18 @@ class CommonCrawlWetAdapter(Adapter):
             queue_maxsize=max(1, int(settings.bounded_queue_size)),
             checkpoint=context.checkpoint,
         ):
+            captures_out += 1
             yield cap
+        get_metrics().observe(
+            "cc_wet.shard_parse_seconds",
+            max(0.0, time.perf_counter() - parse_t0),
+            labels={"crawl_id": crawl_id},
+        )
+        get_metrics().inc(
+            "cc_wet.shard_parse_emitted",
+            value=float(captures_out),
+            labels={"crawl_id": crawl_id},
+        )
 
 
 def _ensure_warcio_available() -> None:
@@ -381,118 +445,134 @@ def _iter_wet_captures(
     skip_until_after_record = resume_record_id is not None
     skip_until_after_offset = (not skip_until_after_record) and resume_offset is not None
     resume_hit = False
+    parse_t0 = time.perf_counter()
 
-    with open(path, "rb") as fh:
-        for record in ArchiveIterator(fh):
-            if should_stop is not None and should_stop.is_set():
-                break
-            seen_in_shard += 1
-            rid_header = record.rec_headers.get_header("WARC-Record-ID") or ""
+    try:
+        with open(path, "rb") as fh:
+            for record in ArchiveIterator(fh):
+                if should_stop is not None and should_stop.is_set():
+                    break
+                seen_in_shard += 1
+                rid_header = record.rec_headers.get_header("WARC-Record-ID") or ""
 
-            if skip_until_after_record:
-                if rid_header == resume_record_id:
-                    skip_until_after_record = False
-                    resume_hit = True
-                continue
-            if skip_until_after_offset:
-                if seen_in_shard <= int(resume_offset or 0):
+                if skip_until_after_record:
+                    if rid_header == resume_record_id:
+                        skip_until_after_record = False
+                        resume_hit = True
                     continue
-                skip_until_after_offset = False
-                resume_hit = True
+                if skip_until_after_offset:
+                    if seen_in_shard <= int(resume_offset or 0):
+                        continue
+                    skip_until_after_offset = False
+                    resume_hit = True
 
-            if record.rec_type != "conversion":
-                continue
-            url = record.rec_headers.get_header("WARC-Target-URI")
-            if not url:
-                continue
-            cu = canonical_url(url)
-            dom = domain_of(cu) if cu else None
-            if domains_filter and dom not in domains_filter:
-                continue
-            try:
-                raw = record.content_stream().read()
-            except (OSError, ValueError):
-                continue
-            try:
-                text_raw = raw.decode("utf-8", "replace")
-            except (UnicodeDecodeError, AttributeError):
-                continue
-            # Free the raw bytes as soon as we have text; text_raw may still be
-            # large but is one record, not the whole shard.
-            del raw
-            norm = normalize_text(
-                text_raw,
-                min_chars=settings.text_min_chars,
-                max_chars=settings.text_max_chars,
-            )
-            del text_raw
-            if norm.discarded_reason:
-                continue
-            lang = detect_language(norm.text) or None
-            if languages_filter and lang not in languages_filter:
-                continue
-            # Quality gating runs DOWNSTREAM of language selection so the
-            # English-leaning Gopher gates only judge text the language filter
-            # has already admitted (see normalize/quality.py docstring).
-            qv = _wet_quality_verdict(
-                norm.text, enabled=settings.wet_quality_filter, lang=lang
-            )
-            if not qv.ok:
-                get_metrics().inc(
-                    "cc_wet.quality_filtered",
-                    labels={
-                        "crawl_id": crawl_id,
-                        "reason": qv.reason or "unknown",
-                    },
+                if record.rec_type != "conversion":
+                    continue
+                url = record.rec_headers.get_header("WARC-Target-URI")
+                if not url:
+                    continue
+                cu = canonical_url(url)
+                dom = domain_of(cu) if cu else None
+                if domains_filter and dom not in domains_filter:
+                    continue
+                try:
+                    raw = record.content_stream().read()
+                except (OSError, ValueError):
+                    continue
+                try:
+                    text_raw = raw.decode("utf-8", "replace")
+                except (UnicodeDecodeError, AttributeError):
+                    continue
+                # Free the raw bytes as soon as we have text; text_raw may still be
+                # large but is one record, not the whole shard.
+                del raw
+                norm = normalize_text(
+                    text_raw,
+                    min_chars=settings.text_min_chars,
+                    max_chars=settings.text_max_chars,
                 )
-                continue
-            get_metrics().inc(
-                "cc_wet.records_admitted",
-                labels={"crawl_id": crawl_id},
-            )
+                del text_raw
+                if norm.discarded_reason:
+                    continue
+                lang = detect_language(norm.text) or None
+                if languages_filter and lang not in languages_filter:
+                    continue
+                # Quality gating runs DOWNSTREAM of language selection so the
+                # English-leaning Gopher gates only judge text the language filter
+                # has already admitted (see normalize/quality.py docstring).
+                qv = _wet_quality_verdict(
+                    norm.text, enabled=settings.wet_quality_filter, lang=lang
+                )
+                if not qv.ok:
+                    get_metrics().inc(
+                        "cc_wet.quality_filtered",
+                        labels={
+                            "crawl_id": crawl_id,
+                            "reason": qv.reason or "unknown",
+                        },
+                    )
+                    continue
+                get_metrics().inc(
+                    "cc_wet.records_admitted",
+                    labels={"crawl_id": crawl_id},
+                )
 
-            ch = compute_content_hash(norm.text)
-            sim = simhash64(norm.text)
-            fetched_at = record.rec_headers.get_header("WARC-Date") or ""
-            fetch_ts = to_utc(fetched_at) or utcnow()
-            observed_ts = utcnow()
-            record_id = rid_header
+                ch = compute_content_hash(norm.text)
+                sim = simhash64(norm.text)
+                fetched_at = record.rec_headers.get_header("WARC-Date") or ""
+                fetch_ts = to_utc(fetched_at) or utcnow()
+                observed_ts = utcnow()
+                record_id = rid_header
 
-            did = doc_id_for(cu, ch)
-            cap = DocCapture(
-                doc_id=did,
-                capture_id=capture_id_for(did, observed_ts.isoformat(), shard_path),
-                source=SourceRef(
-                    source_type=SourceKind.COMMON_CRAWL_WET,
-                    source_name=crawl_id,
-                    source_locator=f"{CC_BASE}/{shard_path}",
-                    source_shard=shard_path,
-                    source_offset_or_record_id=record_id,
-                ),
-                discovery_channel=f"cc-wet:{crawl_id}",
-                job_id=job_id,
-                batch_id=batch_id,
-                ingest_version=ingest_version,
-                url=url,
-                canonical_url=cu,
-                domain=dom,
-                fetch_ts=fetch_ts,
-                observed_ts=observed_ts,
-                title=safe_title(None, norm.text),
-                text=norm.text,
-                language=lang,
-                content_hash=ch,
-                near_dup_hash=sim,
-                robots_decision=RobotsDecision.NOT_APPLICABLE,  # bulk corpus
-                content_type="text/plain",
-                http_status=200,
-            )
-            captures_emitted += 1
-            if advance_checkpoint and checkpoint is not None:
-                if record_id:
-                    checkpoint["last_record_id"] = record_id
-                checkpoint["last_offset"] = seen_in_shard
-            yield cap, seen_in_shard
+                did = doc_id_for(cu, ch)
+                cap = DocCapture(
+                    doc_id=did,
+                    capture_id=capture_id_for(did, observed_ts.isoformat(), shard_path),
+                    source=SourceRef(
+                        source_type=SourceKind.COMMON_CRAWL_WET,
+                        source_name=crawl_id,
+                        source_locator=f"{CC_BASE}/{shard_path}",
+                        source_shard=shard_path,
+                        source_offset_or_record_id=record_id,
+                    ),
+                    discovery_channel=f"cc-wet:{crawl_id}",
+                    job_id=job_id,
+                    batch_id=batch_id,
+                    ingest_version=ingest_version,
+                    url=url,
+                    canonical_url=cu,
+                    domain=dom,
+                    fetch_ts=fetch_ts,
+                    observed_ts=observed_ts,
+                    title=safe_title(None, norm.text),
+                    text=norm.text,
+                    language=lang,
+                    content_hash=ch,
+                    near_dup_hash=sim,
+                    robots_decision=RobotsDecision.NOT_APPLICABLE,  # bulk corpus
+                    content_type="text/plain",
+                    http_status=200,
+                )
+                captures_emitted += 1
+                if advance_checkpoint and checkpoint is not None:
+                    if record_id:
+                        checkpoint["last_record_id"] = record_id
+                    checkpoint["last_offset"] = seen_in_shard
+                yield cap, seen_in_shard
+    finally:
+        # Shard-level parse observability (records scanned + wall time in iterator).
+        # Adapter path also records end-to-end queue drain as shard_parse_seconds.
+        # finally runs on normal exhaust and generator close (early stop).
+        get_metrics().inc(
+            "cc_wet.records_seen",
+            value=float(seen_in_shard),
+            labels={"crawl_id": crawl_id},
+        )
+        get_metrics().observe(
+            "cc_wet.iter_parse_seconds",
+            max(0.0, time.perf_counter() - parse_t0),
+            labels={"crawl_id": crawl_id},
+        )
 
     if (resume_record_id is not None or resume_offset is not None) and not resume_hit and seen_in_shard:
         # Cursor pointed past the shard or at an unknown id — nothing to emit.
