@@ -69,6 +69,7 @@ DEFAULT_SEARCH_MAX_RESULTS = 200
 # the top-`max_results` BM25 candidates with independent, bounded multiplicative
 # factors; all-neutral collapses to identity (pure BM25 order preserved).
 _RERANK_TITLE_BOOST = 0.5        # Wt: full title-term coverage multiplies score by 1+Wt
+_RERANK_TITLE_PHRASE_BOOST = 0.35  # Wp: ordered multi-term title phrase multiplies by 1+Wp
 _RERANK_URL_BOOST = 0.25         # Wu: full url/domain term coverage multiplies by 1+Wu
 _RERANK_LEN_PIVOT = 4000         # chars; docs up to here are not length-damped
 _RERANK_LEN_FLOOR = 0.75         # the most a very long doc can be damped to
@@ -1648,6 +1649,40 @@ def _title_hit_frac(title: str, terms: list[str]) -> float:
     return hits / len(terms)
 
 
+def _title_phrase_frac(title: str, terms: list[str]) -> float:
+    """Ordered multi-term title phrase quality in ``[0, 1]``.
+
+    Bag-of-words title coverage (``_title_hit_frac``) does not distinguish
+    ``Bitcoin price surges`` from ``Price of bitcoin jumps`` for the query
+    ``bitcoin price``. Phrase credit:
+
+    * ``1.0`` — all terms appear as a contiguous space-joined substring
+    * ``0.5`` — all terms appear in query order with gaps allowed
+    * ``0.0`` — fewer than two terms, missing terms, or out-of-order only
+
+    Single-term queries return ``0.0`` so the phrase factor does not double
+    the ordinary title-hit boost.
+    """
+    cleaned = [t for t in terms if t]
+    if len(cleaned) < 2:
+        return 0.0
+    low = (title or "").lower()
+    if not low.strip():
+        return 0.0
+    # Contiguous phrase: "bitcoin price" as a substring (case-insensitive).
+    phrase = " ".join(cleaned)
+    if phrase in low:
+        return 1.0
+    # Ordered span with gaps: each term found advancing a cursor.
+    pos = 0
+    for t in cleaned:
+        idx = low.find(t, pos)
+        if idx < 0:
+            return 0.0
+        pos = idx + len(t)
+    return 0.5
+
+
 def _url_hit_frac(url: str, domain: str, terms: list[str]) -> float:
     """Fraction of distinct query terms that occur in domain or URL (case-insensitive).
 
@@ -1717,6 +1752,7 @@ def _rerank(
     terms: list[str],
     *,
     title_boost: float = _RERANK_TITLE_BOOST,
+    title_phrase_boost: float = _RERANK_TITLE_PHRASE_BOOST,
     url_boost: float = _RERANK_URL_BOOST,
     len_pivot: int = _RERANK_LEN_PIVOT,
     len_floor: float = _RERANK_LEN_FLOOR,
@@ -1725,9 +1761,10 @@ def _rerank(
     ref_epoch: float | None = None,
 ) -> list[dict[str, Any]]:
     """Re-rank BM25 candidates (already in raw-score DESC order) by multiplying
-    the min-max-normalized BM25 score with independent title / url / length /
-    recency factors. Returns a NEW ordered list; input row dicts are not
-    mutated. Stable: equal final scores keep the incoming BM25 order.
+    the min-max-normalized BM25 score with independent title / title-phrase /
+    url / length / recency factors. Returns a NEW ordered list; input row
+    dicts are not mutated. Stable: equal final scores keep the incoming BM25
+    order.
 
     Each candidate dict carries ``score`` (raw BM25), ``title``, ``text``,
     optional ``url`` / ``canonical_url`` / ``domain``, and a timestamp
@@ -1754,7 +1791,9 @@ def _rerank(
 
     def final_score(c: dict[str, Any], raw: float) -> float:
         norm = (raw / max_score) if max_score > 0 else 0.0
-        title_f = 1.0 + title_boost * _title_hit_frac(c.get("title") or "", terms)
+        title = c.get("title") or ""
+        title_f = 1.0 + title_boost * _title_hit_frac(title, terms)
+        phrase_f = 1.0 + title_phrase_boost * _title_phrase_frac(title, terms)
         url_blob = c.get("url") or c.get("canonical_url") or ""
         domain_blob = c.get("domain") or ""
         url_f = 1.0 + url_boost * _url_hit_frac(str(url_blob), str(domain_blob), terms)
@@ -1766,7 +1805,7 @@ def _rerank(
             halflife_days=recency_halflife_days,
             weight=recency_weight,
         )
-        return norm * title_f * url_f * len_f * rec_f
+        return norm * title_f * phrase_f * url_f * len_f * rec_f
 
     finals = [final_score(c, raw) for c, raw in zip(candidates, scores, strict=True)]
     # Sort by descending final score; ties keep original BM25 order (lower index

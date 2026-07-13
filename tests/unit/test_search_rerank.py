@@ -14,6 +14,7 @@ from awareness.storage.duckdb_index import (
     _recency_factor,
     _rerank,
     _title_hit_frac,
+    _title_phrase_frac,
     _to_epoch,
     _url_hit_frac,
 )
@@ -32,6 +33,33 @@ def test_title_hit_frac_counts_distinct_terms() -> None:
 
 def test_title_hit_frac_is_case_insensitive() -> None:
     assert _title_hit_frac("BITCOIN", ["bitcoin"]) == 1.0
+
+
+# ── _title_phrase_frac ───────────────────────────────────────────────────
+def test_title_phrase_frac_requires_multi_term_ordered_match() -> None:
+    """Single-term queries do not get a phrase bonus (title_hit covers them)."""
+    assert _title_phrase_frac("Bitcoin surges", ["bitcoin"]) == 0.0
+    assert _title_phrase_frac("Anything", []) == 0.0
+
+
+def test_title_phrase_frac_contiguous_phrase_is_one() -> None:
+    """Joined query terms as a contiguous title substring → full phrase hit."""
+    assert _title_phrase_frac("Bitcoin price rally overnight", ["bitcoin", "price"]) == 1.0
+    assert _title_phrase_frac("BITCOIN PRICE jumps", ["bitcoin", "price"]) == 1.0
+
+
+def test_title_phrase_frac_ordered_with_gap_is_half() -> None:
+    """Terms in order but not contiguous (gap words) → partial phrase credit."""
+    assert (
+        _title_phrase_frac("Bitcoin overnight price surge", ["bitcoin", "price"])
+        == 0.5
+    )
+
+
+def test_title_phrase_frac_out_of_order_is_zero() -> None:
+    """Bag-of-words title hit without ordered span is not a phrase hit."""
+    assert _title_phrase_frac("Price of bitcoin jumps", ["bitcoin", "price"]) == 0.0
+    assert _title_phrase_frac("markets only", ["bitcoin", "price"]) == 0.0
 
 
 # ── _url_hit_frac ────────────────────────────────────────────────────────
@@ -153,6 +181,38 @@ def test_rerank_title_hit_overrides_higher_bm25() -> None:
              _cand("B", 0.8, title="bitcoin surges", text="the asset gained")]
     out = _rerank(cands, ["bitcoin"], title_boost=0.5)
     assert [c["capture_id"] for c in out] == ["B", "A"]
+
+
+def test_rerank_title_phrase_overrides_scattered_title_hits() -> None:
+    """Ordered contiguous title phrase beats equal title coverage without order.
+
+    Both docs hit every term in the title (same title_hit_frac). Only A forms
+    the contiguous phrase "bitcoin price"; with phrase boost on, A ranks first
+    despite lower raw BM25.
+    """
+    cands = [
+        _cand("SCATTER", 1.0, title="Price of bitcoin jumps", text="t"),
+        _cand("PHRASE", 0.85, title="Bitcoin price surges", text="t"),
+    ]
+    off = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.5,
+        title_phrase_boost=0.0,
+        url_boost=0.0,
+    )
+    # Without phrase boost: equal title_f → BM25 order (SCATTER first).
+    assert [c["capture_id"] for c in off] == ["SCATTER", "PHRASE"]
+    on = _rerank(
+        cands,
+        ["bitcoin", "price"],
+        title_boost=0.5,
+        title_phrase_boost=0.35,
+        url_boost=0.0,
+    )
+    # PHRASE final = 0.85 * (1+0.5) * (1+0.35) = 0.85 * 1.5 * 1.35 = 1.72125
+    # SCATTER final = 1.0 * (1+0.5) * 1.0 = 1.5
+    assert [c["capture_id"] for c in on] == ["PHRASE", "SCATTER"]
 
 
 def test_rerank_url_hit_overrides_higher_bm25() -> None:
