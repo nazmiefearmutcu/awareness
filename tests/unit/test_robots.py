@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import httpx
 
+from awareness.obs.metrics import MetricsRegistry
 from awareness.storage.state import StateDB
 from awareness.util.robots import RobotsCache, RobotsEntry, extract_sitemap_urls
 
@@ -160,3 +161,55 @@ async def test_get_robots_txt_returns_body_with_sitemaps() -> None:
         again = await cache.get_robots_txt("https://example.com/page", "TestBot")
         assert again == got
         assert mock_fetch.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_robots_cache_metrics_memory_db_network(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """robots.cache counters distinguish network fill, db restore, and memory hits."""
+    # Isolate global metrics so other tests' counters don't interfere with deltas.
+    isolated = MetricsRegistry()
+    monkeypatch.setattr("awareness.util.robots.get_metrics", lambda: isolated)
+    monkeypatch.setattr("awareness.obs.metrics._REGISTRY", isolated)
+
+    db_path = tmp_path / "state.db"
+    db = StateDB(f"sqlite:///{db_path}")
+    db.init()
+
+    cache1 = RobotsCache(state_db=db, ttl=3600)
+    with patch("awareness.util.robots._get_public_robots_url", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = httpx.Response(
+            200, text="User-agent: *\nDisallow: /secret\n"
+        )
+        await cache1.is_allowed("https://metrics.example/public", "TestBot")
+        await cache1.is_allowed("https://metrics.example/other", "TestBot")
+        assert mock_fetch.call_count == 1
+
+    layers = {
+        c["labels"]["layer"]: c["value"]
+        for c in isolated.snapshot()["counters"]
+        if c["name"] == "robots.cache"
+    }
+    assert layers.get("network", 0) == 1.0
+    assert layers.get("memory", 0) == 1.0  # second call after fill
+
+    # Fresh cache instance: should hit StateDB, not network.
+    cache2 = RobotsCache(state_db=db, ttl=3600)
+    with patch("awareness.util.robots._get_public_robots_url", new_callable=AsyncMock) as mock_fetch:
+        await cache2.is_allowed("https://metrics.example/secret", "TestBot")
+        assert mock_fetch.call_count == 0
+
+    layers = {
+        c["labels"]["layer"]: c["value"]
+        for c in isolated.snapshot()["counters"]
+        if c["name"] == "robots.cache"
+    }
+    assert layers.get("db", 0) == 1.0
+    assert layers.get("network", 0) == 1.0  # unchanged
+    # One more memory hit after db hydrate.
+    await cache2.is_allowed("https://metrics.example/public", "TestBot")
+    layers = {
+        c["labels"]["layer"]: c["value"]
+        for c in isolated.snapshot()["counters"]
+        if c["name"] == "robots.cache"
+    }
+    assert layers.get("memory", 0) >= 2.0

@@ -16,12 +16,18 @@ from urllib.robotparser import RobotFileParser
 import httpx
 
 from awareness.obs.logging import get_logger
+from awareness.obs.metrics import get_metrics
 from awareness.util.urls import is_public_http_url
 
 if TYPE_CHECKING:
     from awareness.storage.state import StateDB
 
 logger = get_logger("util.robots")
+
+
+def _robots_cache_metric(layer: str) -> None:
+    """Count robots cache resolution by layer: memory | db | network."""
+    get_metrics().inc("robots.cache", labels={"layer": layer})
 
 
 def extract_sitemap_urls(robots_body: str | None) -> list[str]:
@@ -175,6 +181,7 @@ class RobotsCache:
         # 1. Check local memory cache
         entry = self._entries.get(site)
         if entry is not None and entry.expires_at >= time.time():
+            _robots_cache_metric("memory")
             if entry.parser is None:
                 return False
             try:
@@ -187,6 +194,7 @@ class RobotsCache:
             try:
                 row = await asyncio.to_thread(self._state_db.get_robots_cache, site)
                 if row is not None and row.expires_at >= time.time():
+                    _robots_cache_metric("db")
                     rp = RobotFileParser()
                     rp.set_url(f"{site}/robots.txt")
                     if row.robots_txt is not None:
@@ -210,6 +218,7 @@ class RobotsCache:
                 logger.warning("robots_db_load_failed", site=site, err=str(e))
 
         # 3. Not in memory/DB or expired -> load and save
+        _robots_cache_metric("network")
         entry = await self._load(site, user_agent)
         self._entries[site] = entry
 
