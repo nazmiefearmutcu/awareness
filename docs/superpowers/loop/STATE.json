@@ -1,17 +1,17 @@
 {
-  "iteration": 39,
-  "phase": "feed_fetch_latency_dlq_bulk_spa_feed_kpis",
+  "iteration": 40,
+  "phase": "robots_fetch_metrics_compact_age_spa_robots_kpis",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "3bb05d0",
+  "head_sha": "fb10cf0",
   "product_shas": [
-    "64318b3",
-    "f10bc45",
-    "3bb05d0"
+    "eac80af",
+    "15943d6",
+    "fb10cf0"
   ],
-  "commits_ahead": 196,
+  "commits_ahead": 200,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "DIVERSE wave (no ranking/unwrap): feed fetch latency+outcome metrics (64318b3); dlq purge-bulk (f10bc45); SPA feed p95/attempts KPIs (3bb05d0). Next: Iceberg compact metrics, FTS polish (non-ranking), JSONL staging age KPI, robots/sitemap probe metrics."
+  "notes": "DIVERSE wave (no ranking/unwrap): robots network fetch latency+outcomes (eac80af); compact --status oldest age + iceberg.compact_* metrics (15943d6); SPA robots fetch p95/attempts KPIs (fb10cf0). Next: Iceberg compact SPA KPI, sitemap probe latency labels, FTS polish (non-ranking), JSONL staging age API."
 }

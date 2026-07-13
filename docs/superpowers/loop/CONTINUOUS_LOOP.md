@@ -120,12 +120,15 @@
 | C4+ | scrape/obs | Feed/sitemap fetch latency hist + outcome counters | ✅ |
 | C4+ | cli/storage | `dlq purge-bulk` multi-row drop without re-arm | ✅ |
 | C4+ | spa | Dashboard feed fetch p95 + attempts KPIs | ✅ |
+| C4+ | scrape/obs | robots.txt network fetch latency + outcome counters | ✅ |
+| C4+ | cli/storage | compact `--status` oldest staging age + `iceberg.compact_*` metrics | ✅ |
+| C4+ | spa | Dashboard robots fetch p95 + attempts KPIs | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~196 commits ahead of `main`)
+- **Branch:** `loop/continuous-dev` (~200 commits ahead of `main`)
 - **Unit suite:** green (non-slow; datasets skip as configured)
-- **Latest:** Diverse wave — feed fetch latency (`64318b3`), `dlq purge-bulk` (`f10bc45`), SPA feed p95/attempts (`3bb05d0`)
+- **Latest:** Diverse wave — robots fetch metrics (`eac80af`), compact age + compact metrics (`15943d6`), SPA robots fetch KPIs (`fb10cf0`)
 
 ## Rules
 
