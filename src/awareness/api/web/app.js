@@ -274,6 +274,9 @@ function summarizeStorageObsMetrics(metricsSnap) {
     icebergRows: 0,
     icebergBatches: 0,
     icebergAppendP95: null,
+    jsonlRecords: 0,
+    jsonlChunks: 0,
+    jsonlCommitP95: null,
   };
   if (!metricsSnap || typeof metricsSnap !== "object") return empty;
   const gauges = Array.isArray(metricsSnap.gauges) ? metricsSnap.gauges : [];
@@ -293,22 +296,33 @@ function summarizeStorageObsMetrics(metricsSnap) {
   const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
   let icebergRows = 0;
   let icebergBatches = 0;
+  let jsonlRecords = 0;
+  let jsonlChunks = 0;
   for (const c of counters) {
     if (!c) continue;
     if (c.name === "iceberg.appended_rows") icebergRows += Number(c.value) || 0;
     if (c.name === "iceberg.append_batches") icebergBatches += Number(c.value) || 0;
+    if (c.name === "jsonl.records_committed") jsonlRecords += Number(c.value) || 0;
+    if (c.name === "jsonl.chunks_committed") jsonlChunks += Number(c.value) || 0;
   }
   const hists = Array.isArray(metricsSnap.histograms) ? metricsSnap.histograms : [];
   let weightedP95 = 0;
   let histCount = 0;
+  let jsonlWeightedP95 = 0;
+  let jsonlHistCount = 0;
   for (const h of hists) {
-    if (!h || h.name !== "iceberg.append_seconds") continue;
+    if (!h) continue;
     const n = Number(h.count) || 0;
     if (n <= 0) continue;
     const p95 = Number(h.p95);
     if (!Number.isFinite(p95)) continue;
-    histCount += n;
-    weightedP95 += p95 * n;
+    if (h.name === "iceberg.append_seconds") {
+      histCount += n;
+      weightedP95 += p95 * n;
+    } else if (h.name === "jsonl.commit_seconds") {
+      jsonlHistCount += n;
+      jsonlWeightedP95 += p95 * n;
+    }
   }
   return {
     robotsHitRatio,
@@ -316,6 +330,9 @@ function summarizeStorageObsMetrics(metricsSnap) {
     icebergRows,
     icebergBatches,
     icebergAppendP95: histCount > 0 ? weightedP95 / histCount : null,
+    jsonlRecords,
+    jsonlChunks,
+    jsonlCommitP95: jsonlHistCount > 0 ? jsonlWeightedP95 / jsonlHistCount : null,
   };
 }
 
@@ -394,6 +411,14 @@ async function refreshDashboard() {
     iceSub.textContent = storageObs.icebergBatches
       ? `${fmt(storageObs.icebergBatches)} batches · p95 ${p95}`
       : "appended this process";
+  }
+  setKPI("kpi-dash-jsonl-records", storageObs.jsonlRecords);
+  const jsonlSub = $("#kpi-dash-jsonl-records-sub");
+  if (jsonlSub) {
+    const p95 = formatFetchLatency(storageObs.jsonlCommitP95);
+    jsonlSub.textContent = storageObs.jsonlChunks
+      ? `${fmt(storageObs.jsonlChunks)} chunks · p95 ${p95}`
+      : "committed this process";
   }
 
   $("#kpi-captures-sub").textContent = (docsTotal ? `${fmt(docsTotal)} emitted across jobs` : "across the corpus");
