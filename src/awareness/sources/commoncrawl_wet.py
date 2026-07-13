@@ -42,7 +42,7 @@ from pathlib import Path
 import httpx
 
 from awareness.config import get_settings
-from awareness.normalize.quality import gopher_quality
+from awareness.normalize.quality import QualityVerdict, gopher_quality
 from awareness.normalize.text import detect_language, normalize_text, safe_title
 from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
@@ -117,18 +117,25 @@ def _record_passes_domain_filter(url: str, domains_filter: set[str] | None) -> b
     return dom in domains_filter
 
 
-def _record_passes_quality(text: str, *, enabled: bool, lang: str | None = None) -> bool:
-    """WET records below Gopher/C4 content quality are dropped when ``enabled``.
+def _wet_quality_verdict(
+    text: str, *, enabled: bool, lang: str | None = None
+) -> QualityVerdict:
+    """Gopher/C4 quality decision for a WET record.
 
     English-leaning Gopher gates only judge English; a record admitted in
     another language passes through unjudged (no silent data loss for
-    non-English WET text).
+    non-English WET text). When the filter is disabled, always ok.
     """
     if not enabled:
-        return True
+        return QualityVerdict(True, None)
     if lang is not None and not str(lang).lower().startswith("en"):
-        return True
-    return gopher_quality(text).ok
+        return QualityVerdict(True, None)
+    return gopher_quality(text)
+
+
+def _record_passes_quality(text: str, *, enabled: bool, lang: str | None = None) -> bool:
+    """WET records below Gopher/C4 content quality are dropped when ``enabled``."""
+    return _wet_quality_verdict(text, enabled=enabled, lang=lang).ok
 
 
 def _resume_cursors(checkpoint: dict | None) -> tuple[str | None, int | None]:
@@ -427,11 +434,22 @@ def _iter_wet_captures(
             # Quality gating runs DOWNSTREAM of language selection so the
             # English-leaning Gopher gates only judge text the language filter
             # has already admitted (see normalize/quality.py docstring).
-            if not _record_passes_quality(
+            qv = _wet_quality_verdict(
                 norm.text, enabled=settings.wet_quality_filter, lang=lang
-            ):
-                get_metrics().inc("cc_wet.quality_filtered", labels={"crawl_id": crawl_id})
+            )
+            if not qv.ok:
+                get_metrics().inc(
+                    "cc_wet.quality_filtered",
+                    labels={
+                        "crawl_id": crawl_id,
+                        "reason": qv.reason or "unknown",
+                    },
+                )
                 continue
+            get_metrics().inc(
+                "cc_wet.records_admitted",
+                labels={"crawl_id": crawl_id},
+            )
 
             ch = compute_content_hash(norm.text)
             sim = simhash64(norm.text)
