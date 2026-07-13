@@ -1,16 +1,16 @@
 {
-  "iteration": 32,
-  "phase": "lead_prefix_rerank_pinterest_flipboard_identity",
+  "iteration": 33,
+  "phase": "lead_exact_rerank_buffer_medium_identity",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "d2113149db69e5aa53879d3423535d7761e56a65",
+  "head_sha": "ca16f7231b6d1be552c274f233e80a9ec02505cf",
   "product_shas": [
-    "5e3e7d634cc24a263b0d4dd4f55819d9fba9d9ef",
-    "d2113149db69e5aa53879d3423535d7761e56a65"
+    "d22b573445797736cc62777e203c6aff245b214c",
+    "ca16f7231b6d1be552c274f233e80a9ec02505cf"
   ],
-  "commits_ahead": 165,
+  "commits_ahead": 168,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed lead-text prefix navigational re-rank boost (5e3e7d6), Pinterest pin-create/offsite + Flipboard share/bookmarklet unwrap for fetch-gate identity (d211314). Next: scrape reliability / facets / more SERP identity / fuzzy search leftovers."
+  "notes": "Landed lead-text exact token equality re-rank boost (d22b573), Buffer compose/add + Medium external-link unwrap for fetch-gate identity (ca16f72). Next: scrape reliability / facets / more SERP identity / fuzzy search leftovers."
 }
