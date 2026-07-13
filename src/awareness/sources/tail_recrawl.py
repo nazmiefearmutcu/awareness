@@ -33,6 +33,7 @@ from awareness.util.hashing import (
 from awareness.util.hashing import (
     content_hash as compute_content_hash,
 )
+from awareness.util.http import acquire_fetch_slot
 from awareness.util.ratelimit import PerDomainLimiter
 from awareness.util.robots import RobotsCache
 from awareness.util.timeutil import parse_http_date, utcnow
@@ -94,15 +95,17 @@ class TailRecrawlAdapter(Adapter):
         crawl_delay = robots.crawl_delay(url)
         async with limiter.domain(dom, override_delay=crawl_delay):
             try:
-                async with httpx.AsyncClient(
-                    timeout=settings.request_timeout_sec,
-                    follow_redirects=False,
-                    headers={"User-Agent": context.user_agent},
-                ) as client:
-                    r = await _get_public_url(client, url)
-                    if r is None:
-                        get_metrics().inc("tail.blocked_internal_url", labels={"domain": dom})
-                        return
+                # Global cap bounds total open sockets across all domains.
+                async with acquire_fetch_slot():
+                    async with httpx.AsyncClient(
+                        timeout=settings.request_timeout_sec,
+                        follow_redirects=False,
+                        headers={"User-Agent": context.user_agent},
+                    ) as client:
+                        r = await _get_public_url(client, url)
+                        if r is None:
+                            get_metrics().inc("tail.blocked_internal_url", labels={"domain": dom})
+                            return
             except httpx.HTTPError as exc:
                 logger.warning("tail_fetch_failed", url=url, err=str(exc))
                 get_metrics().inc("tail.fetch_errors", labels={"domain": dom})

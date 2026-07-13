@@ -1,13 +1,29 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
+
 import httpx
 import pytest
 
-from awareness.util.http import RetryableHTTPError, get_with_retries
+from awareness.util.http import (
+    RetryableHTTPError,
+    acquire_fetch_slot,
+    get_with_retries,
+    global_fetch_semaphore,
+    reset_global_fetch_semaphore,
+)
 
 
 def _client_with_handler(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+@pytest.fixture(autouse=True)
+def _reset_fetch_sem() -> None:
+    reset_global_fetch_semaphore()
+    yield
+    reset_global_fetch_semaphore()
 
 
 async def test_retries_then_succeeds_on_500() -> None:
@@ -52,3 +68,56 @@ async def test_404_is_not_retried_and_returns_response() -> None:
         )
     assert resp.status_code == 404
     assert calls["n"] == 1
+
+
+async def test_global_fetch_semaphore_caps_concurrent_holders() -> None:
+    """Process-wide semaphore must not admit more than ``limit`` holders."""
+    limit = 2
+    holders = 0
+    peak = 0
+    lock = asyncio.Lock()
+
+    async def hold() -> None:
+        nonlocal holders, peak
+        async with acquire_fetch_slot(limit):
+            async with lock:
+                holders += 1
+                peak = max(peak, holders)
+            await asyncio.sleep(0.05)
+            async with lock:
+                holders -= 1
+
+    await asyncio.gather(*[hold() for _ in range(6)])
+    assert peak == limit
+    # Semaphore should be fully released.
+    sem = global_fetch_semaphore(limit)
+    assert sem._value == limit  # noqa: SLF001 — unit probe of free slots
+
+
+async def test_get_with_retries_acquires_fetch_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each HTTP attempt must go through the process-wide fetch slot."""
+    enters = {"n": 0}
+
+    @asynccontextmanager
+    async def fake_slot(limit: int | None = None):
+        enters["n"] += 1
+        yield
+
+    monkeypatch.setattr("awareness.util.http.acquire_fetch_slot", fake_slot)
+
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return httpx.Response(503)
+        return httpx.Response(200, content=b"ok")
+
+    async with _client_with_handler(handler) as client:
+        resp = await get_with_retries(
+            client, "https://example.test/x", max_attempts=4, base_delay=0.0
+        )
+    assert resp.status_code == 200
+    # One acquisition per attempt (retry after 503, then success).
+    assert enters["n"] == 2
+    assert calls["n"] == 2
