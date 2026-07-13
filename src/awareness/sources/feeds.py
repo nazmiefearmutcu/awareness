@@ -70,7 +70,10 @@ def entry_primary_url(entry: Any) -> str | None:
 
     Prefers ``entry.link`` when it is an http(s) URL. Otherwise scans
     ``entry.links`` for ``rel=alternate`` (Atom default) then any http(s)
-    href. Returns ``None`` when no usable URL is present.
+    href. When those are missing, falls back to ``entry.id`` / ``entry.guid``
+    if that value is itself an http(s) URL (common when publishers put the
+    permalink only in ``guid`` / Atom ``id``). Returns ``None`` when no
+    usable URL is present.
     """
     link = getattr(entry, "link", None)
     if _is_http_url(link):
@@ -93,7 +96,42 @@ def entry_primary_url(entry: Any) -> str | None:
             return href_s
         if fallback is None:
             fallback = href_s
-    return fallback
+    if fallback is not None:
+        return fallback
+
+    # RSS guid / Atom id often hold the permanent article URL when <link> is
+    # absent or non-http (tag: URNs, bare guids). Only accept http(s).
+    for attr in ("id", "guid"):
+        value = getattr(entry, attr, None)
+        if isinstance(value, dict):
+            value = value.get("value") or value.get("href")
+        if _is_http_url(value):
+            return str(value)
+    return None
+
+
+def dedupe_feed_urls(urls: Iterable[str]) -> list[str]:
+    """Preserve first-seen order while collapsing canonical URL identity.
+
+    Feeds and sitemaps often list the same article twice (http/https, trailing
+    slash, utm params). Collapsing here prevents double-enqueue of identical
+    tail recrawls within one discovery pass. Original strings are kept for
+    fetch; identity keys are applied again at enqueue.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in urls:
+        if not raw:
+            continue
+        raw_s = str(raw).strip()
+        if not raw_s:
+            continue
+        key = canonical_url(raw_s) or raw_s
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(raw_s)
+    return out
 
 
 def merge_seen_urls(
@@ -272,7 +310,8 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
         link = entry_primary_url(entry)
         if link:
             out.append(link)
-    return out
+    # Collapse scheme/slash/utm variants so one article → one tail enqueue.
+    return dedupe_feed_urls(out)
 
 
 async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
@@ -319,7 +358,8 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
             out.extend(await _read_sitemap(loc, user_agent, depth=depth - 1))
     else:
         out.extend(_sitemap_loc_texts(root, parent_local="url"))
-    return out
+    # Same article listed twice (http vs https, utm wrappers) → one identity.
+    return dedupe_feed_urls(out)
 
 
 def _sitemap_loc_texts(root: Any, *, parent_local: str) -> list[str]:

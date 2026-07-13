@@ -12,6 +12,7 @@ from awareness.sources.feeds import (
     _maybe_decompress_body,
     _read_feed,
     _read_sitemap,
+    dedupe_feed_urls,
     entry_primary_url,
 )
 from awareness.util.http import (
@@ -371,4 +372,107 @@ async def test_read_feed_atom_links_without_link_field(
 
     urls = await _read_feed("https://example.com/atom.xml", "TestBot/1.0")
     assert urls == ["https://example.com/atom-story/1"]
+
+
+def test_entry_primary_url_falls_back_to_http_guid() -> None:
+    """Many RSS feeds put the permalink only in guid when link is empty."""
+    entry = SimpleNamespace(link=None, links=[], id="https://example.com/via-guid/1")
+    assert entry_primary_url(entry) == "https://example.com/via-guid/1"
+
+
+def test_entry_primary_url_ignores_non_http_guid() -> None:
+    entry = SimpleNamespace(
+        link=None,
+        links=[],
+        id="tag:example.com,2026:story-9",
+        guid="urn:uuid:1234",
+    )
+    assert entry_primary_url(entry) is None
+
+
+def test_entry_primary_url_prefers_link_over_guid() -> None:
+    entry = SimpleNamespace(
+        link="https://example.com/article",
+        links=[],
+        id="https://example.com/via-guid",
+    )
+    assert entry_primary_url(entry) == "https://example.com/article"
+
+
+def test_dedupe_feed_urls_collapses_canonical_variants() -> None:
+    urls = [
+        "https://example.com/a",
+        "http://example.com/a",  # same identity after http→https
+        "https://example.com/a?utm_source=rss",
+        "https://example.com/b",
+        "https://example.com/b/",
+    ]
+    assert dedupe_feed_urls(urls) == [
+        "https://example.com/a",
+        "https://example.com/b",
+    ]
+
+
+RSS_GUID_ONLY = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example</title>
+    <item>
+      <title>Guid story</title>
+      <guid isPermaLink="true">https://example.com/guid-only/1</guid>
+    </item>
+    <item>
+      <title>Dup scheme</title>
+      <link>http://example.com/story/2</link>
+    </item>
+    <item>
+      <title>Dup https</title>
+      <link>https://example.com/story/2?utm_source=feed</link>
+    </item>
+  </channel>
+</rss>
+"""
+
+
+@pytest.mark.asyncio
+async def test_read_feed_guid_fallback_and_in_feed_dedupe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """guid permalinks are discovered; scheme/utm duplicates collapse once."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=RSS_GUID_ONLY)
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+
+    urls = await _read_feed("https://example.com/feed.xml", "TestBot/1.0")
+    assert "https://example.com/guid-only/1" in urls
+    # story/2 listed twice (http + https+utm) → one entry
+    story2 = [u for u in urls if "story/2" in u]
+    assert len(story2) == 1
+    assert len(urls) == 2
+
+
+SITEMAP_DUPES = b"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/page-a</loc></url>
+  <url><loc>http://example.com/page-a</loc></url>
+  <url><loc>https://example.com/page-b?utm_campaign=map</loc></url>
+  <url><loc>https://example.com/page-b</loc></url>
+</urlset>
+"""
+
+
+@pytest.mark.asyncio
+async def test_read_sitemap_dedupes_canonical_variants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=SITEMAP_DUPES)
+
+    _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
+    urls = await _read_sitemap("https://example.com/sitemap.xml", "TestBot/1.0")
+    assert len(urls) == 2
+    assert urls[0] == "https://example.com/page-a"
+    assert "page-b" in urls[1]
 
