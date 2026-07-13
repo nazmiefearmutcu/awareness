@@ -3,9 +3,9 @@
   "phase": "cli_filter_ci_align_feed_quality",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "commits_ahead": 108,
+  "commits_ahead": 110,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed CLI case-insensitive source+domain filters across browse/list/export (86c9e0e); feed guid/id HTTP permalink fallback + in-feed/sitemap canonical URL dedupe (feeds commit). Next: streaming WET (C3-T3) / Iceberg compaction / more scrape reliability."
+  "notes": "Landed CLI case-insensitive source+domain filters (86c9e0e); feed guid/id HTTP permalink fallback + in-feed/sitemap canonical URL dedupe (2b8afc3); browse pager surfaces source/domain filters (38e2f1c). Next: streaming WET (C3-T3) / Iceberg compaction / more scrape reliability."
 }
