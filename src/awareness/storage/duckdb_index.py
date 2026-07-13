@@ -3,8 +3,8 @@
 Two views over the same corpus:
 
 1. ``staging_captures`` — read JSONL chunks from
-   ``data/jsonl/captures/YYYY/MM/DD/*.jsonl*`` (plain or ``.gz``) directly. This is always
-   present and is the source-of-truth for the latest writes.
+   ``data/jsonl/captures/YYYY/MM/DD/*.jsonl`` / ``*.jsonl.gz`` (not writer temps)
+   directly. This is always present and is the source-of-truth for the latest writes.
 2. ``iceberg_captures`` — read the Iceberg table when present.
 
 A combined ``captures`` view UNIONs both with row-level dedup on
@@ -80,6 +80,24 @@ _CAPTURE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("robots_decision", "VARCHAR"), ("terms_note_if_relevant", "VARCHAR"),
 )
 _TS_COLUMNS = frozenset({"fetch_ts", "observed_ts", "published_ts", "last_modified"})
+
+
+
+def _is_staging_jsonl(path: Path) -> bool:
+    """True for finalized staging chunks (plain or gzip), not writer temps.
+
+    Writer temps are named ``*.jsonl.tmp`` / ``*.jsonl.gz.tmp``; a bare
+    suffix-star glob would pick those up mid-write. Only exact final
+    suffixes are accepted.
+    """
+    name = path.name
+    return name.endswith(".jsonl") or name.endswith(".jsonl.gz")
+
+
+def _iter_staging_jsonl(captures_root: Path):
+    """Yield finalized ``*.jsonl`` / ``*.jsonl.gz`` files under *captures_root*."""
+    for pattern in ("*.jsonl", "*.jsonl.gz"):
+        yield from captures_root.rglob(pattern)
 
 
 def _staging_projection(present: set[str]) -> str:
@@ -361,15 +379,27 @@ class DuckDbIndex:
                 self._conn = conn
                 return conn
 
-    def _staging_glob(self) -> str:
-        # JSONL chunks land here; use a recursive glob.
-        return str(self._jsonl_dir / "captures" / "**" / "*.jsonl*")
+    def _staging_globs(self) -> list[str]:
+        # Recursive fallback when partition scan finds nothing: only patterns
+        # that match at least one finalized chunk (DuckDB rejects empty globs).
+        captures_root = self._jsonl_dir / "captures"
+        globs: list[str] = []
+        try:
+            if any(p.is_file() for p in captures_root.rglob("*.jsonl") if _is_staging_jsonl(p)):
+                globs.append(str(captures_root / "**" / "*.jsonl"))
+            if any(p.is_file() for p in captures_root.rglob("*.jsonl.gz") if _is_staging_jsonl(p)):
+                globs.append(str(captures_root / "**" / "*.jsonl.gz"))
+        except OSError:
+            return []
+        return globs
 
     def _get_partition_globs(self) -> list[str]:
         """Scan captures directory to find leaf partition directories containing JSONL files.
 
-        Returns a list of glob patterns for each active partition (e.g. ['/path/to/captures/2026/06/01/*.jsonl*']).
-        If partition-aware scanning is empty, falls back to the default staging glob.
+        Returns dual glob patterns per active partition (``*.jsonl`` and
+        ``*.jsonl.gz``) so writer temps (``*.jsonl.tmp`` / ``*.jsonl.gz.tmp``)
+        are never read. Example:
+        ``['/path/to/captures/2026/06/01/*.jsonl', '.../01/*.jsonl.gz']``.
         """
         captures_root = self._jsonl_dir / "captures"
         if not captures_root.exists():
@@ -377,9 +407,9 @@ class DuckDbIndex:
 
         partition_dirs = set()
         try:
-            for p in captures_root.rglob("*.jsonl*"):
+            for p in _iter_staging_jsonl(captures_root):
                 try:
-                    if p.is_file():
+                    if p.is_file() and _is_staging_jsonl(p):
                         partition_dirs.add(p.parent)
                 except OSError:
                     continue
@@ -389,7 +419,15 @@ class DuckDbIndex:
         if not partition_dirs:
             return []
 
-        return [str(d / "*.jsonl*") for d in sorted(partition_dirs)]
+        # Only emit patterns that match at least one finalized file — DuckDB
+        # read_json_auto fails if any list entry matches nothing.
+        globs: list[str] = []
+        for d in sorted(partition_dirs):
+            if any(p.is_file() and _is_staging_jsonl(p) for p in d.glob("*.jsonl")):
+                globs.append(str(d / "*.jsonl"))
+            if any(p.is_file() and _is_staging_jsonl(p) for p in d.glob("*.jsonl.gz")):
+                globs.append(str(d / "*.jsonl.gz"))
+        return globs
 
     def _source_signature(self) -> tuple[Any, ...]:
         """Cheap fingerprint of the on-disk corpus (JSONL chunks + Iceberg metadata).
@@ -404,9 +442,9 @@ class DuckDbIndex:
             entries = []
             try:
                 partition_dirs = set()
-                for p in captures_root.rglob("*.jsonl*"):
+                for p in _iter_staging_jsonl(captures_root):
                     try:
-                        if p.is_file():
+                        if p.is_file() and _is_staging_jsonl(p):
                             partition_dirs.add(p.parent)
                     except OSError:
                         continue
@@ -444,16 +482,17 @@ class DuckDbIndex:
         has_files = False
         if captures_root.exists():
             try:
-                for p in captures_root.rglob("*.jsonl*"):
-                    has_files = True
-                    break
+                for p in _iter_staging_jsonl(captures_root):
+                    if p.is_file() and _is_staging_jsonl(p):
+                        has_files = True
+                        break
             except OSError:
                 pass
 
         if has_files:
             globs = self._get_partition_globs()
             if not globs:
-                globs = [self._staging_glob()]
+                globs = self._staging_globs()
 
             glob_list = ", ".join(f"'{g}'" for g in globs)
             conn.execute(  # nosemgrep
