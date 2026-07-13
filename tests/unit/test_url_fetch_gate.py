@@ -209,3 +209,42 @@ async def test_no_state_does_not_gate(tmp_path) -> None:
     await _collect(adapter, _partition(url), _context(None), get_mock=get_mock)
     await _collect(adapter, _partition(url), _context(None), get_mock=get_mock)
     assert get_mock.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_www_and_trailing_slash_variants_share_fetch_gate(tmp_path) -> None:
+    """www. host + trailing-slash variants must collapse to one fetch gate key.
+
+    After the first successful fetch, equivalent news-URL spellings must skip
+    HTTP rather than re-hitting the origin.
+    """
+    state = _state(tmp_path)
+    adapter = TailRecrawlAdapter()
+    # Same article under common alias spellings (www + trailing slash).
+    first = "https://www.news.example.com/story/42/"
+    variants = [
+        "https://news.example.com/story/42",
+        "https://WWW.news.example.com/story/42/",
+        "https://www.news.example.com/story/42",
+        "https://news.example.com/story/42/",
+    ]
+    expected_cu = canonical_url(first)
+    assert expected_cu is not None
+    for v in variants:
+        assert canonical_url(v) == expected_cu
+
+    get_mock = AsyncMock(side_effect=lambda client, u, **kw: _ok_response(u))
+
+    caps1 = await _collect(adapter, _partition(first), _context(state), get_mock=get_mock)
+    assert len(caps1) == 1
+    assert get_mock.await_count == 1
+    assert state.was_url_fetched(expected_cu)
+
+    before_skip = get_metrics().counter_sum("tail.fetch_skipped_seen")
+    for v in variants:
+        caps = await _collect(adapter, _partition(v), _context(state), get_mock=get_mock)
+        assert caps == [], f"expected skip for variant {v!r}"
+
+    assert get_mock.await_count == 1  # no extra HTTP GETs
+    assert get_metrics().counter_sum("tail.fetch_skipped_seen") == before_skip + len(variants)
+
