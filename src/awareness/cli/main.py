@@ -1019,9 +1019,17 @@ def status(
 
 @app.command(name="dedup-stats")
 def dedup_stats() -> None:
-    """Print dedup index statistics."""
+    """Print dedup index statistics (index rows + process skip counters).
+
+    Matches GET /dedup-stats: durable SQLite dedup index counts plus live
+    process metrics for URL fetch-gate skips and tight near-dup drops.
+    """
     state, _ = _bootstrap()
-    print(json.dumps(state.dedup_stats(), indent=2))
+    stats: dict[str, Any] = dict(state.dedup_stats())
+    m = get_metrics()
+    stats["fetch_skipped_seen"] = int(m.counter_sum("tail.fetch_skipped_seen"))
+    stats["tight_near_skipped"] = int(m.counter_sum("dedup.tight_near_skipped"))
+    print(json.dumps(stats, indent=2))
 
 
 @app.command(name="stats")

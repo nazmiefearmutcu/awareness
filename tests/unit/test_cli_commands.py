@@ -133,3 +133,28 @@ def test_backfill_submit_warns_on_zero_tasks(tmp_project: Path) -> None:
     assert "WARNING" in out and "0 tasks" in out
     assert "rss" in out.lower()
     assert '"warning": "zero_tasks"' in out or '"warning":"zero_tasks"' in out
+
+
+
+def test_dedup_stats_includes_skip_counters(tmp_project: Path) -> None:
+    """CLI dedup-stats mirrors API fields for fetch/tight-near skips."""
+    from awareness.obs.metrics import get_metrics
+
+    m = get_metrics()
+    m.inc("tail.fetch_skipped_seen", value=2.0, labels={"domain": "a.example"})
+    m.inc("dedup.tight_near_skipped", value=3.0, labels={"domain": "b.example"})
+
+    result = runner.invoke(app, ["dedup-stats"])
+    assert result.exit_code == 0, result.output
+    import json
+
+    # JSON may be preceded by bootstrap noise; find the object.
+    out = result.output.strip()
+    start = out.find("{")
+    assert start >= 0, out
+    payload = json.loads(out[start:])
+    assert "distinct_content_hashes" in payload
+    assert "total_captures_seen" in payload
+    assert "near_dup_index_rows" in payload
+    assert payload["fetch_skipped_seen"] >= 2
+    assert payload["tight_near_skipped"] >= 3
