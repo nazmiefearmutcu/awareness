@@ -1,11 +1,11 @@
 {
-  "iteration": 3,
-  "phase": "features",
+  "iteration": 4,
+  "phase": "systems",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "commits_ahead": 38,
-  "unit_suite": "356+ passed, 1 skipped (datasets), 0 failed",
-  "integration_suite": "2/2 passed",
+  "commits_ahead": 51,
+  "unit_suite": "green (not slow and not smoke); 1 skipped datasets",
+  "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Cycle 2 complete (C2-T1/T2/T3/T6 + bugfixes/search/UI/obs). C3 backlog: incremental FTS, union-find near-dups. Continuous loop active."
+  "notes": "C3-T1 persisted+append FTS landed; C3-T2 union-find already done. Next: streaming WET / pagination."
 }

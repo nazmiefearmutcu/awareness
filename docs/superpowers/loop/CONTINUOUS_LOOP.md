@@ -54,12 +54,19 @@
 | C2-T17 | api | Reset DuckDbIndex singleton after path-related settings | ✅ |
 | C2-T18 | search | Label quoted matches as `mode=phrase` | ✅ |
 
-## Next backlog (Cycle 3)
+## Completed (Cycle 3)
 
 | ID | Area | Task | Status |
 |----|------|------|--------|
-| C3-T1 | systems | Incremental FTS (no full rebuild) | pending |
-| C3-T2 | dedup | Union-find cluster resolve for near-dups | pending |
+| C3-T1 | systems | Persisted FTS restore + append-only captures_idx | ✅ |
+| C3-T2 | dedup | Union-find cluster resolve for near-dups | ✅ |
+
+## Next backlog (Cycle 3+)
+
+| ID | Area | Task | Status |
+|----|------|------|--------|
+| C3-T3 | systems | Streaming WET parse (bounded memory) | pending |
+| C3-T4 | search | Pagination correctness | pending |
 
 ## Rules
 

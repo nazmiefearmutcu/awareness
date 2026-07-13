@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import contextlib
+import hashlib
 import random
 import threading
 import time
@@ -35,6 +36,15 @@ except ImportError:
 from awareness.obs.logging import get_logger
 
 logger = get_logger("storage.duckdb")
+
+
+# Fingerprint of the on-disk corpus used to decide whether a persisted FTS
+# index is still valid (path/mtime/size tuples can be large; store a digest).
+def _signature_digest(sig: tuple[Any, ...] | None) -> str:
+    if sig is None:
+        return ""
+    return hashlib.sha256(repr(sig).encode("utf-8")).hexdigest()
+
 
 # ── search configuration surface ─────────────────────────────────────────────
 # Columns the caller may point a search at. Mapped 1:1 onto the ``captures``
@@ -375,6 +385,10 @@ class DuckDbIndex:
         # the corpus fingerprint is unchanged.
         self._bm25_avg_lengths: tuple[float, float] | None = None
         self._bm25_avg_lengths_signature: tuple[Any, ...] | None = None
+        # Observability / tests: how FTS was last satisfied on this instance.
+        self._fts_full_rebuilds: int = 0
+        self._fts_incremental_appends: int = 0
+        self._fts_restores: int = 0
         self._initialized = True
 
     @contextlib.contextmanager
@@ -703,20 +717,198 @@ class DuckDbIndex:
             return find_related_captures(conn, capture_id, limit=limit)
 
     # ── full-text search ────────────────────────────────────────────────
+    _CAPTURES_IDX_SELECT = """
+                SELECT
+                  capture_id, doc_id, parent_doc_or_dup_group,
+                  source_type, source_name, discovery_channel,
+                  url, canonical_url, domain,
+                  fetch_ts, observed_ts, published_ts,
+                  title, text, language, content_hash, near_dup_hash,
+                  robots_decision
+                FROM captures
+                """
+
+    _FTS_CREATE_PRAGMA = (
+        "PRAGMA create_fts_index('captures_idx', 'capture_id', 'title', 'text', "
+        "overwrite=1, stemmer='english', stopwords='english')"
+    )
+
+    @staticmethod
+    def _main_table_exists(conn: duckdb.DuckDBPyConnection, name: str) -> bool:
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = 'main' AND table_name = ? LIMIT 1",
+                [name],
+            ).fetchone()
+            return row is not None
+        except duckdb.Error:
+            return False
+
+    def _persist_fts_signature(self, conn: duckdb.DuckDBPyConnection) -> None:
+        """Store corpus fingerprint so a later process can reuse captures_idx+FTS."""
+        dig = _signature_digest(self._views_signature)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS awareness_index_meta (
+              key VARCHAR PRIMARY KEY,
+              value VARCHAR
+            )
+            """
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO awareness_index_meta VALUES (?, ?)",
+            ["fts_source_signature", dig],
+        )
+
+    def _load_persisted_fts_signature(self, conn: duckdb.DuckDBPyConnection) -> str | None:
+        try:
+            if not self._main_table_exists(conn, "awareness_index_meta"):
+                return None
+            row = conn.execute(
+                "SELECT value FROM awareness_index_meta WHERE key = ? LIMIT 1",
+                ["fts_source_signature"],
+            ).fetchone()
+            return str(row[0]) if row and row[0] is not None else None
+        except duckdb.Error:
+            return None
+
+    def _mark_fts_ready(self, count: int) -> None:
+        self._fts_built_for_count = count
+        self._fts_built_signature = self._views_signature
+        # captures_idx content changed → drop stale BM25F length cache.
+        self._bm25_avg_lengths = None
+        self._bm25_avg_lengths_signature = None
+
+    def _try_restore_persisted_fts(self, conn: duckdb.DuckDBPyConnection) -> bool:
+        """Reuse on-disk captures_idx + FTS when corpus fingerprint still matches.
+
+        Avoids a full rematerialize + create_fts_index after process restart when
+        JSONL/Iceberg sources are unchanged (C3-T1 persisted FTS).
+        """
+        if self._views_signature is None:
+            return False
+        if not self._main_table_exists(conn, "captures_idx"):
+            return False
+        stored = self._load_persisted_fts_signature(conn)
+        if stored is None or stored != _signature_digest(self._views_signature):
+            return False
+        try:
+            # Probe FTS schema still present and queryable.
+            conn.execute("SELECT COUNT(*) FROM fts_main_captures_idx.docs").fetchone()
+            row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
+            count = int(row[0]) if row else 0
+            if count == 0:
+                return False
+            self._fts_built_for_count = count
+            self._fts_built_signature = self._views_signature
+            self._fts_restores += 1
+            logger.info("duckdb_fts_index_restored", rows=count)
+            return True
+        except duckdb.Error:
+            return False
+
+    def _try_incremental_fts_append(self, conn: duckdb.DuckDBPyConnection, new_count: int) -> bool:
+        """If captures grew by insert-only ids, delta-INSERT then rebuild FTS.
+
+        DuckDB FTS has no public partial-update API, so the inverted index is
+        still rebuilt; we skip re-scanning the entire JSONL-backed view into a
+        brand-new captures_idx table when old rows are still valid.
+        """
+        if not self._main_table_exists(conn, "captures_idx"):
+            return False
+        try:
+            old_row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
+            old_count = int(old_row[0]) if old_row else 0
+        except duckdb.Error:
+            return False
+        if old_count <= 0 or new_count <= old_count:
+            return False
+        try:
+            missing = conn.execute(
+                """
+                SELECT COUNT(*) FROM captures_idx i
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM captures c WHERE c.capture_id = i.capture_id
+                )
+                """
+            ).fetchone()
+            if missing is None or int(missing[0]) > 0:
+                return False
+            conn.execute(
+                """
+                INSERT INTO captures_idx
+                SELECT
+                  c.capture_id, c.doc_id, c.parent_doc_or_dup_group,
+                  c.source_type, c.source_name, c.discovery_channel,
+                  c.url, c.canonical_url, c.domain,
+                  c.fetch_ts, c.observed_ts, c.published_ts,
+                  c.title, c.text, c.language, c.content_hash, c.near_dup_hash,
+                  c.robots_decision
+                FROM captures c
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM captures_idx i WHERE i.capture_id = c.capture_id
+                )
+                """
+            )
+            conn.execute(self._FTS_CREATE_PRAGMA)
+            self._mark_fts_ready(new_count)
+            self._persist_fts_signature(conn)
+            self._fts_incremental_appends += 1
+            logger.info(
+                "duckdb_fts_index_appended",
+                rows=new_count,
+                prev_rows=old_count,
+            )
+            return True
+        except duckdb.Error as exc:
+            logger.warning("duckdb_fts_incremental_failed", err=str(exc))
+            return False
+
+    def _full_rebuild_fts(self, conn: duckdb.DuckDBPyConnection, count: int) -> bool:
+        try:
+            conn.execute(
+                f"""
+                CREATE OR REPLACE TABLE captures_idx AS
+                {self._CAPTURES_IDX_SELECT}
+                """
+            )
+            conn.execute(self._FTS_CREATE_PRAGMA)
+            self._mark_fts_ready(count)
+            self._persist_fts_signature(conn)
+            self._fts_full_rebuilds += 1
+            logger.info("duckdb_fts_index_built", rows=count)
+            return True
+        except duckdb.Error as exc:
+            logger.warning("duckdb_fts_build_failed", err=str(exc))
+            self._fts_available = False
+            return False
+
     def _ensure_fts(self, conn: duckdb.DuckDBPyConnection) -> bool:
         """Build/refresh the FTS index on a materialized captures table.
 
         DuckDB's FTS extension requires a real table. We materialize the
         captures view into ``captures_idx`` and rebuild whenever the source
         signature changes (not merely row count), so content replacement at
-        the same cardinality still refreshes BM25. Returns True if FTS is
-        ready to use.
+        the same cardinality still refreshes BM25.
+
+        C3-T1 optimizations:
+        * **Persisted reuse** — if ``captures_idx`` + FTS + meta fingerprint
+          still match the corpus, skip rebuild after process restart.
+        * **Append-only** — when only new ``capture_id``s appear, INSERT the
+          delta into ``captures_idx`` then recreate the FTS index (no full
+          rematerialize from JSONL).
+
+        Returns True if FTS is ready to use.
         """
         if not self._fts_available:
             return False
         # Fast path: the source files are unchanged since we last built the
         # index, so skip the COUNT(*) probe (which scans the JSON-backed view).
         if self._fts_built_signature is not None and self._fts_built_signature == self._views_signature:
+            return True
+        # Process-restart / cold open: reuse on-disk FTS if fingerprint matches.
+        if self._try_restore_persisted_fts(conn):
             return True
         # Current corpus size.
         try:
@@ -728,35 +920,10 @@ class DuckDbIndex:
             return False
         if count == 0:
             return False
-        # Rebuild materialized table + FTS index on any signature change.
-        try:
-            conn.execute(
-                """
-                CREATE OR REPLACE TABLE captures_idx AS
-                SELECT
-                  capture_id, doc_id, parent_doc_or_dup_group,
-                  source_type, source_name, discovery_channel,
-                  url, canonical_url, domain,
-                  fetch_ts, observed_ts, published_ts,
-                  title, text, language, content_hash, near_dup_hash,
-                  robots_decision
-                FROM captures
-                """
-            )
-            conn.execute(
-                "PRAGMA create_fts_index('captures_idx', 'capture_id', 'title', 'text', overwrite=1, stemmer='english', stopwords='english')"
-            )
-            self._fts_built_for_count = count
-            self._fts_built_signature = self._views_signature
-            # captures_idx content changed → drop stale BM25F length cache.
-            self._bm25_avg_lengths = None
-            self._bm25_avg_lengths_signature = None
-            logger.info("duckdb_fts_index_built", rows=count)
+        # Pure growth: delta-INSERT then rebuild inverted index only.
+        if self._try_incremental_fts_append(conn, count):
             return True
-        except duckdb.Error as exc:
-            logger.warning("duckdb_fts_build_failed", err=str(exc))
-            self._fts_available = False
-            return False
+        return self._full_rebuild_fts(conn, count)
 
     def _bm25_field_avg_lengths(self, conn: duckdb.DuckDBPyConnection) -> tuple[float, float]:
         """Return (avg_title_len, avg_text_len) for BM25F, memoized by views_signature.
