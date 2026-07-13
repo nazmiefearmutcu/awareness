@@ -1,12 +1,12 @@
 {
-  "iteration": 21,
-  "phase": "mobile_jsonfeed_domain_facets_prometheus",
+  "iteration": 22,
+  "phase": "url_hit_rerank_amp_cdn_identity",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "76a8b68b0dd6596323d78a45e7df676f6eeaef77",
-  "commits_ahead": 133,
+  "head_sha": "a4014967e18d368112514cd79a798f2831ad83bf",
+  "commits_ahead": 135,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed mobile/lite/page=1 identity (0322af4), JSON Feed discovery (a14c7a9), domain facet case-normalize (39396ad), Prometheus /metrics (76a8b68). Next: Iceberg compaction / search ranking / more scrape reliability."
+  "notes": "Landed URL/path term re-rank boost (e87d9bc), AMP Cache unwrap for fetch-gate (a401496). Next: Iceberg compaction / scrape reliability / more ranking signals."
 }

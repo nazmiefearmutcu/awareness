@@ -70,11 +70,18 @@
 |----|------|------|--------|
 | C3-T3 | systems | Streaming WET parse (bounded memory) | pending |
 
+## Completed (Cycle 4 continuous)
+
+| ID | Area | Task | Status |
+|----|------|------|--------|
+| C4+ | search | URL/path term coverage boost in BM25 re-rank | ✅ |
+| C4+ | dedup | Unwrap Google AMP Cache hosts for fetch-gate identity | ✅ |
+
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~55 commits ahead of `main`)
-- **Unit suite:** 414 tests green (non-slow; datasets skip as configured)
-- **Cycle 3 landed:** FTS incremental (C3-T1), pagination (C3-T4), crawl-delay (C3-T5), sitemaps (C3-T6)
+- **Branch:** `loop/continuous-dev` (~135 commits ahead of `main`)
+- **Unit suite:** green (non-slow; datasets skip as configured)
+- **Latest:** URL hit re-rank (`e87d9bc`), AMP CDN identity (`a401496`)
 
 ## Rules
 
