@@ -1,12 +1,12 @@
 {
-  "iteration": 19,
-  "phase": "embed_comments_url_identity_media_enclosure_feed_urls",
+  "iteration": 20,
+  "phase": "mobile_lite_url_identity_json_feed_discovery",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "39526cfd935c84d22cb28645c9e5f910b44c5c73",
-  "commits_ahead": 126,
+  "head_sha": "a14c7a9580d39f602a906061a519482893738a30",
+  "commits_ahead": 129,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed embed/comments/share path identity (1b649a4) and media:content/enclosure feed URL fallback (39526cf). Next: Iceberg compaction / search ranking / more scrape reliability."
+  "notes": "Landed mobile/lite/app path + page=1 identity (0322af4) and JSON Feed URL discovery (a14c7a9). Next: Iceberg compaction / search ranking / more scrape reliability."
 }
