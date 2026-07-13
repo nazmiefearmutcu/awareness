@@ -2704,27 +2704,41 @@ def browse(
 
 
 def _print_search_domain_facets(facets: dict[str, Any] | None) -> None:
-    """Print a one-line domain facets summary when the search payload includes them."""
+    """Print domain and source facet summaries when the search payload includes them."""
     if not facets:
         return
-    domains = facets.get("domains") or []
-    if not isinstance(domains, list) or not domains:
-        return
-    parts: list[str] = []
-    for item in domains:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("domain") or "").strip()
-        if not name:
-            continue
-        n = item.get("n")
-        if n is not None:
-            parts.append(f"{name} ({int(n)})")
-        else:
-            parts.append(name)
-    if not parts:
-        return
-    rprint(f"[dim]Domains:[/dim] {', '.join(parts)}")
+
+    def _facet_parts(items: object, *, name_keys: tuple[str, ...]) -> list[str]:
+        if not isinstance(items, list) or not items:
+            return []
+        parts: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = ""
+            for key in name_keys:
+                name = str(item.get(key) or "").strip()
+                if name:
+                    break
+            if not name:
+                continue
+            n = item.get("n")
+            if n is not None:
+                parts.append(f"{name} ({int(n)})")
+            else:
+                parts.append(name)
+        return parts
+
+    domains = _facet_parts(facets.get("domains") or [], name_keys=("domain",))
+    if domains:
+        rprint(f"[dim]Domains:[/dim] {', '.join(domains)}")
+
+    sources = _facet_parts(
+        facets.get("sources") or [],
+        name_keys=("source_type", "source"),
+    )
+    if sources:
+        rprint(f"[dim]Sources:[/dim] {', '.join(sources)}")
 
 
 def _print_search_diagnostics(diagnostics: dict[str, Any] | None) -> None:

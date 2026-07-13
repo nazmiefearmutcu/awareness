@@ -29,6 +29,7 @@ def _write_doc(
     title: str,
     text: str,
     domain: str,
+    source_type: str = "rss",
 ) -> None:
     day = root / "data" / "jsonl" / "captures" / "2026" / "06" / "01"
     day.mkdir(parents=True, exist_ok=True)
@@ -36,7 +37,7 @@ def _write_doc(
     rec.update(
         doc_id=f"doc-{idx}",
         capture_id=f"cap-{idx}",
-        source_type="rss",
+        source_type=source_type,
         domain=domain,
         url=f"https://{domain}/{idx}",
         fetch_ts="2026-06-01T12:00:00+00:00",
@@ -68,3 +69,37 @@ def test_search_omits_domain_facets_when_empty(tmp_project: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "Domains:" not in result.output
+
+def test_search_prints_source_facets_summary(tmp_project: Path) -> None:
+    _write_doc(
+        tmp_project, 1, title="Alpha one", text="alpha news",
+        domain="a.example", source_type="rss",
+    )
+    _write_doc(
+        tmp_project, 2, title="Alpha two", text="alpha again",
+        domain="a.example", source_type="rss",
+    )
+    _write_doc(
+        tmp_project, 3, title="Alpha wet", text="alpha wet",
+        domain="b.example", source_type="common_crawl_wet",
+    )
+
+    result = runner.invoke(app, ["search", "alpha", "--no-interactive", "--mode", "substring"])
+    assert result.exit_code == 0, result.output
+    assert "Sources:" in result.output
+    assert "rss" in result.output
+    assert "common_crawl_wet" in result.output
+    # Count annotations for the dominant source.
+    assert "rss (2)" in result.output or "rss(2)" in result.output
+    # Domain facets still printed next to / above sources.
+    assert "Domains:" in result.output
+
+
+def test_search_omits_source_facets_when_empty(tmp_project: Path) -> None:
+    _write_doc(tmp_project, 1, title="Only sports", text="football only", domain="sports.example")
+    result = runner.invoke(
+        app, ["search", "zzzz-no-match-zzzz", "--no-interactive", "--mode", "substring"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Sources:" not in result.output
+
