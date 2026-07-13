@@ -1306,9 +1306,33 @@ code {
   gap: 16px;
   margin-bottom: 18px;
   flex-wrap: wrap;
+  /* Stick while scrolling long engine sections so Save stays reachable. */
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  padding: 10px 0 12px;
+  background: linear-gradient(to bottom, var(--bg, #0b0b0c) 70%, transparent);
+  backdrop-filter: blur(6px);
 }
 .set-hero .lede { margin: 4px 0 0; color: var(--fg-dim); }
-.set-hero-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.set-hero-actions { display: flex; gap: 8px; flex-shrink: 0; align-items: center; }
+.set-dirty-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-strong);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-2);
+  vertical-align: middle;
+}
+.set-hero.has-unsaved #set-save-all,
+#set-save-all.is-dirty {
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
 
 .set-banner {
   font-size: 12px;

@@ -1219,6 +1219,35 @@ for (const id of ["tail-stop-btn", "tail-big-stop"]) {
 // ── Settings ──────────────────────────────────────────────────
 let settingsReady = false;
 let engineSchemaCache = null;
+/** True when the settings form has local edits not yet saved. */
+let settingsDirty = false;
+
+function setSettingsDirty(on) {
+  settingsDirty = !!on;
+  const btn = $("#set-save-all");
+  if (btn && !btn.disabled) {
+    btn.textContent = settingsDirty ? "Save all · unsaved" : "Save all";
+    btn.classList.toggle("is-dirty", settingsDirty);
+  }
+  const hero = $(".view-settings .set-hero");
+  hero?.classList.toggle("has-unsaved", settingsDirty);
+  const badge = $("#set-dirty-badge");
+  if (badge) badge.hidden = !settingsDirty;
+}
+
+/** One-time delegated listeners so dynamically rendered engine fields mark dirty. */
+function initSettingsDirtyWatchers() {
+  const root = $(".view-settings");
+  if (!root || root.dataset.dirtyBound === "1") return;
+  root.dataset.dirtyBound = "1";
+  const mark = (e) => {
+    const t = e.target;
+    if (!t || !t.matches) return;
+    if (t.matches("input, textarea, select")) setSettingsDirty(true);
+  };
+  root.addEventListener("input", mark);
+  root.addEventListener("change", mark);
+}
 
 async function loadSettings() {
   const banner = $("#set-banner");
@@ -1242,6 +1271,8 @@ async function loadSettings() {
     renderRuntimeStatus(health, dedup);
     buildSettingsToc();
     settingsReady = true;
+    initSettingsDirtyWatchers();
+    setSettingsDirty(false);
   } catch (err) {
     console.error(err);
     toast("Settings load failed: " + (err.message || err), "err");
@@ -1560,6 +1591,8 @@ async function saveAllSettings() {
         banner.className = "set-banner is-err";
       }
       toast(msg, "err");
+      // Partial save — keep dirty so the user can fix and re-save.
+      setSettingsDirty(true);
     } else {
       if (banner) {
         banner.hidden = false;
@@ -1567,6 +1600,7 @@ async function saveAllSettings() {
         banner.className = "set-banner is-ok";
       }
       toast("Settings saved", "ok");
+      setSettingsDirty(false);
     }
   } catch (e) {
     toast(String(e.message || e), "err");
@@ -1576,7 +1610,11 @@ async function saveAllSettings() {
       banner.className = "set-banner is-err";
     }
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Save all"; }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = settingsDirty ? "Save all · unsaved" : "Save all";
+      btn.classList.toggle("is-dirty", settingsDirty);
+    }
   }
 }
 
@@ -1886,6 +1924,14 @@ cmdkOverlay?.addEventListener("click", (e) => { if (e.target === cmdkOverlay) cl
 document.addEventListener("keydown", (e) => {
   // Cmd/Ctrl+K → open palette
   if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) { e.preventDefault(); openCmdk(); return; }
+  // Cmd/Ctrl+S → save settings when on the Settings view (or any settings input focused).
+  if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
+    if (currentRoute === "settings" || document.activeElement?.closest?.(".view-settings")) {
+      e.preventDefault();
+      void saveAllSettings();
+      return;
+    }
+  }
   // "/" focus search (when on captures view)
   if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey) {
     const tag = (document.activeElement?.tagName || "").toLowerCase();
@@ -1969,6 +2015,12 @@ $("#work-q")?.addEventListener("keydown", (e) => {
 });
 $("#set-save-all")?.addEventListener("click", () => saveAllSettings());
 $("#set-reload")?.addEventListener("click", () => loadSettings());
+// Warn before closing the tab with unsaved settings edits.
+window.addEventListener("beforeunload", (e) => {
+  if (!settingsDirty) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
 
 // Mobile nav
 $("#mobile-nav-btn")?.addEventListener("click", () => {

@@ -445,11 +445,13 @@
       <header class="set-hero">
         <div>
           <h1 class="page-title" id="title-settings">Settings</h1>
-          <p class="lede">All preferences in one place. Saved to <code>awareness.yaml</code> + local profile.</p>
+          <p class="lede">All preferences in one place. Saved to <code>awareness.yaml</code> + local profile.
+            <span class="set-dirty-badge" id="set-dirty-badge" hidden>Unsaved changes</span>
+          </p>
         </div>
         <div class="set-hero-actions">
-          <button type="button" class="btn btn-ghost" id="set-reload">Reload</button>
-          <button type="button" class="btn btn-primary" id="set-save-all">Save all</button>
+          <button type="button" class="btn btn-ghost" id="set-reload" title="Discard form edits and reload from disk">Reload</button>
+          <button type="button" class="btn btn-primary" id="set-save-all" title="Save all (⌘S / Ctrl+S)">Save all</button>
         </div>
       </header>
 
