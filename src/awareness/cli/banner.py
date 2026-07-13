@@ -380,6 +380,10 @@ COMMAND_CATEGORIES: list[tuple[str, list[tuple[str, str]]]] = [
         ("dedup check", "Test a URL / text / file against the index"),
         ("dedup-stats", "Dump dedup index statistics"),
     ]),
+    ("Recovery", [
+        ("dlq list", "List dead-lettered tasks (newest first; --json)"),
+        ("dlq count", "Count dead-letter queue rows"),
+    ]),
     ("Config & cloud", [
         ("init", "Initialise storage layout & choose data dir"),
         ("configure", "Set WHERE tail writes (wizard) — before capturing"),

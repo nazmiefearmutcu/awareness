@@ -1174,6 +1174,65 @@ class StateDB:
             )
             s.commit()
 
+    def count_dlq(self, *, job_id: str | None = None) -> int:
+        """Return the number of dead-letter rows (optionally filtered by job)."""
+        with self.session() as s:
+            q = select(func.count(DLQRow.id))
+            if job_id:
+                q = q.where(DLQRow.job_id == job_id)
+            return int(s.scalar(q) or 0)
+
+    def list_dlq(
+        self,
+        *,
+        limit: int = 50,
+        job_id: str | None = None,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """List dead-letter queue entries newest-first.
+
+        Each item is a plain dict suitable for CLI/JSON export::
+
+            {
+              "id": int,
+              "job_id": str | None,
+              "task_id": str | None,
+              "error": str,
+              "payload": dict,   # parsed JSON ({} if corrupt)
+              "created_at": str | None,  # ISO-8601 UTC
+            }
+        """
+        limit = max(1, min(int(limit), 1000))
+        offset = max(0, int(offset))
+        with self.session() as s:
+            q = select(DLQRow).order_by(DLQRow.created_at.desc(), DLQRow.id.desc())
+            if job_id:
+                q = q.where(DLQRow.job_id == job_id)
+            q = q.offset(offset).limit(limit)
+            rows = list(s.scalars(q).all())
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row.payload_json or "{}")
+                if not isinstance(payload, dict):
+                    payload = {"_raw": payload}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                payload = {"_raw": row.payload_json}
+            created = row.created_at
+            if created is not None and created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            out.append(
+                {
+                    "id": int(row.id),
+                    "job_id": row.job_id,
+                    "task_id": row.task_id,
+                    "error": row.error or "",
+                    "payload": payload,
+                    "created_at": created.isoformat() if created is not None else None,
+                }
+            )
+        return out
+
     # ── tail state ───────────────────────────────────────────────────────
     @staticmethod
     def _pid_alive(pid: int | None) -> bool:

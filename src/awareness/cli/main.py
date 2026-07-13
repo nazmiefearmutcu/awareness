@@ -62,6 +62,7 @@ service_app = typer.Typer(no_args_is_help=True, help="Manage launchd daemon serv
 config_app = typer.Typer(no_args_is_help=True, help="Configure Awareness settings")
 cloud_app = typer.Typer(no_args_is_help=True, help="Configure cloud storage integrations (Google Drive, S3)")
 dedup_app = typer.Typer(no_args_is_help=True, help="Deduplication inspection & checks")
+dlq_app = typer.Typer(no_args_is_help=True, help="Dead-letter queue: inspect failed tasks")
 
 app.add_typer(backfill_app, name="backfill")
 app.add_typer(tail_app, name="tail")
@@ -69,6 +70,7 @@ app.add_typer(service_app, name="service")
 app.add_typer(config_app, name="config")
 app.add_typer(cloud_app, name="cloud")
 app.add_typer(dedup_app, name="dedup")
+app.add_typer(dlq_app, name="dlq")
 
 logger = get_logger("cli")
 console = Console(theme=banner.AWARENESS_THEME)
@@ -1847,6 +1849,97 @@ def tail_check_seeds(
             await robots.aclose()
             
     anyio.run(validate_all)
+
+
+# ── dead-letter queue ────────────────────────────────────────────────────
+@dlq_app.command("list")
+def dlq_list(
+    limit: int = typer.Option(50, "--limit", "-n", help="Max rows to show (1–1000)"),
+    job_id: str = typer.Option("", "--job-id", "-j", help="Filter by job id"),
+    offset: int = typer.Option(0, "--offset", help="Skip N newest rows (pagination)"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable JSON array"),
+) -> None:
+    """List dead-lettered tasks (newest first).
+
+    Empty queues exit 0 with a short note (or ``[]`` under ``--json``) so
+    scripts can poll without treating idle as failure.
+    """
+    state, _ = _bootstrap()
+    jid = job_id.strip() or None
+    total = state.count_dlq(job_id=jid)
+    rows = state.list_dlq(limit=limit, job_id=jid, offset=offset)
+    if as_json:
+        print(json.dumps({"total": total, "offset": offset, "items": rows}, indent=2, default=str))
+        return
+    if total == 0:
+        scope = f" for job {jid}" if jid else ""
+        rprint(f"[dim]Dead-letter queue is empty{scope}.[/dim]")
+        return
+    if not rows:
+        rprint(
+            f"[yellow]No DLQ rows in this window[/yellow] "
+            f"(total={total}, offset={offset}, limit={limit})."
+        )
+        return
+    table = Table(
+        title=f"Dead-letter queue ({len(rows)} shown / {total} total)",
+        show_lines=False,
+    )
+    table.add_column("id", style="cyan", justify="right")
+    table.add_column("created", style="dim")
+    table.add_column("job_id")
+    table.add_column("task_id")
+    table.add_column("error", overflow="fold")
+    table.add_column("payload", overflow="fold")
+    for row in rows:
+        payload = row.get("payload") or {}
+        # Compact payload preview: prefer partition/url keys when present.
+        preview_bits: list[str] = []
+        if isinstance(payload, dict):
+            for key in ("url", "partition_key", "source_type", "discovery_channel"):
+                if key in payload and payload[key] is not None:
+                    preview_bits.append(f"{key}={payload[key]}")
+            if not preview_bits:
+                raw = json.dumps(payload, default=str, ensure_ascii=False)
+                preview_bits.append(raw if len(raw) <= 80 else raw[:77] + "…")
+        else:
+            preview_bits.append(str(payload)[:80])
+        created = row.get("created_at") or "—"
+        if isinstance(created, str) and len(created) >= 19:
+            created = created[:19].replace("T", " ")
+        table.add_row(
+            str(row.get("id") or ""),
+            str(created),
+            str(row.get("job_id") or "—"),
+            str(row.get("task_id") or "—"),
+            (row.get("error") or "")[:200],
+            " ".join(preview_bits)[:120],
+        )
+    console.print(table)
+    if offset + len(rows) < total:
+        rprint(
+            f"[dim]… {total - offset - len(rows)} older not shown "
+            f"(use --offset {offset + len(rows)} or raise --limit).[/dim]"
+        )
+
+
+@dlq_app.command("count")
+def dlq_count(
+    job_id: str = typer.Option("", "--job-id", "-j", help="Filter by job id"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable JSON"),
+) -> None:
+    """Show how many tasks are in the dead-letter queue."""
+    state, _ = _bootstrap()
+    jid = job_id.strip() or None
+    n = state.count_dlq(job_id=jid)
+    if as_json:
+        print(json.dumps({"dlq_count": n, "job_id": jid}))
+        return
+    scope = f" (job {jid})" if jid else ""
+    if n == 0:
+        rprint(f"[dim]DLQ empty{scope}.[/dim]")
+    else:
+        rprint(f"[bold red]{n}[/bold red] dead-lettered task(s){scope}.")
 
 
 # ── inspect ──────────────────────────────────────────────────────────────
