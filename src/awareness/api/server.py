@@ -43,6 +43,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from awareness import __version__
 from awareness.config import get_settings
 from awareness.obs.logging import configure_logging, get_logger
 from awareness.obs.metrics import get_metrics
@@ -246,7 +247,7 @@ def create_app() -> FastAPI:
                 _State.index.close()
                 _State.index = None
 
-    app = FastAPI(title="Awareness", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Awareness", version=__version__, lifespan=lifespan)
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:

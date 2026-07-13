@@ -102,8 +102,8 @@ if PyIceberg fails. The compaction path can lift JSONL → Iceberg later.
 - `doc_id = xxhash3_128(canonical_url + content_hash)`
 - `capture_id = xxhash3_128(doc_id + observed_ts + source_locator)`
 - `content_hash = xxhash3_64(normalize(text))`
-- `near_dup_hash = simhash64(text)` — used with a 4×16-bit segment index
-  (Manku/Jain pigeonhole) for O(1)-per-segment lookup of near-duplicates.
+- `near_dup_hash = simhash128(text)` — used with a 32×4-bit band index
+  (Manku/Jain pigeonhole) for O(1)-per-band lookup of near-duplicates.
 
 Dedup labels captures `NEW`, `REVISION`, `EXACT_DUP`, `NEAR_DUP`. The worker
 skips durable storage for `EXACT_DUP` (same content already stored under

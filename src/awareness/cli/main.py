@@ -193,7 +193,9 @@ def _app_version() -> str:
 
         return version("awareness")
     except Exception:
-        return "0.1.0"
+        from awareness import __version__
+
+        return __version__
 
 
 def _version_callback(value: bool) -> None:
