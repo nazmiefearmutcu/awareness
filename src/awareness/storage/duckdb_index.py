@@ -34,6 +34,7 @@ except ImportError:
     HAS_FCNTL = False
 
 from awareness.obs.logging import get_logger
+from awareness.util.lang import append_language_filter
 
 logger = get_logger("storage.duckdb")
 
@@ -1177,7 +1178,8 @@ class DuckDbIndex:
         ``financial``. ``fields`` restricts substring/prefix matching to a
         whitelisted subset of :data:`ALLOWED_SEARCH_FIELDS`. ``max_results``
         is a hard ceiling on rows materialized in one call (overload guard).
-        ``language`` filters by BCP-47 language tag (case-insensitive).
+        ``language`` filters by BCP-47 tag (case-insensitive). Primary tags
+        (``en``) also match regional subtags (``en-US``, ``en-GB``).
         """
         query = (query or "").strip()
         mode = (mode or DEFAULT_SEARCH_MODE).strip().lower()
@@ -1251,10 +1253,8 @@ class DuckDbIndex:
                     # captures store lower-cased eTLD+1 from URL parsing.
                     w.append("lower(domain) = $dom")
                     p["dom"] = str(domain).strip().lower()
-                if language:
-                    # Case-insensitive BCP-47 tags (en / EN / en-US).
-                    w.append("lower(language) = $lang")
-                    p["lang"] = str(language).strip().lower()
+                # BCP-47: primary tags match regional subtags (en → en-US).
+                append_language_filter(w, p, language)
                 if start is not None:
                     w.append("fetch_ts >= $start")
                     p["start"] = start

@@ -51,6 +51,7 @@ from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
 from datetime import datetime
 
+from awareness.util.lang import append_language_filter
 from awareness.util.timeutil import coerce_relative_end, inclusive_end, to_utc
 from awareness.workers.engine import WorkerEngine
 
@@ -2627,9 +2628,8 @@ def browse(
             # Case-insensitive: RSS vs rss / Tail_Recrawl (API/search parity).
             where.append("lower(source_type) = $src")
             params["src"] = str(source).strip().lower()
-        if lang_filter:
-            where.append("lower(language) = $lang")
-            params["lang"] = lang_filter
+        # BCP-47: primary tags (en) match regional subtags (en-US).
+        append_language_filter(where, params, lang_filter)
         if query:
             terms = [t for t in re.findall(r"[A-Za-z0-9']+", query.lower()) if len(t) >= 2]
             if terms:

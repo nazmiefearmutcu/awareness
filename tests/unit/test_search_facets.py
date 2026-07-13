@@ -131,7 +131,9 @@ def test_search_language_filter(faceted_index: DuckDbIndex) -> None:
     assert en["total"] >= 2
     assert tr["total"] == 1
     for row in en["rows"]:
-        assert str(row.get("language") or "").lower() == "en"
+        # Primary-tag filter may return bare en or regional en-* subtags.
+        lang = str(row.get("language") or "").lower().replace("_", "-")
+        assert lang == "en" or lang.startswith("en-")
     for row in tr["rows"]:
         assert str(row.get("language") or "").lower() == "tr"
     # Facets on a language-filtered search still include languages.

@@ -288,11 +288,12 @@ def test_browse_domain_filter_case_insensitive(tmp_path: Path) -> None:
 
 
 def test_list_captures_endpoint_uses_case_insensitive_domain() -> None:
-    """Server list_captures SQL uses lower(domain)/lower(language) like search."""
+    """Server list_captures SQL uses lower(domain) + shared language filter helper."""
     import inspect
 
     import awareness.api.server as server
 
     src = inspect.getsource(server.create_app)
     assert "lower(domain) = $dom" in src
-    assert "lower(language) = $lang" in src
+    # Language filter via shared helper (primary subtag match + underscore normalize).
+    assert "append_language_filter" in src

@@ -53,6 +53,7 @@ from awareness.schemas.jobs import BackfillRequest
 from awareness.storage.duckdb_index import DuckDbIndex
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
+from awareness.util.lang import append_language_filter
 from awareness.util.timeutil import coerce_relative_end, inclusive_end, to_utc
 from awareness.workers.engine import WorkerEngine
 
@@ -550,9 +551,8 @@ def create_app() -> FastAPI:
             # Case-insensitive: RSS vs rss / Common_Crawl_Wet vs common_crawl_wet.
             where.append("lower(source_type) = $src")
             params["src"] = str(source).strip().lower()
-        if language:
-            where.append("lower(language) = $lang")
-            params["lang"] = str(language).strip().lower()
+        # BCP-47: primary tags (en) match regional subtags (en-US); case/underscore-insensitive.
+        append_language_filter(where, params, language)
         if search:
             where.append("(title ILIKE $q OR text ILIKE $q)")
             params["q"] = f"%{search}%"
