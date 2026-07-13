@@ -1,12 +1,12 @@
 {
-  "iteration": 18,
-  "phase": "source_facets_case_scrape_relative_spa_settings",
+  "iteration": 19,
+  "phase": "embed_comments_url_identity_media_enclosure_feed_urls",
   "branch": "loop/continuous-dev",
   "base_sha": "a0ba789e525bed0f4022725dc20526dbd3f21cf9",
-  "head_sha": "ef69c188f2c686c284e48b3d68f8aaef6e718d04",
-  "commits_ahead": 122,
+  "head_sha": "39526cfd935c84d22cb28645c9e5f910b44c5c73",
+  "commits_ahead": 126,
   "unit_suite": "green (1 skipped datasets; not slow)",
   "integration_suite": "2/2 passed (prior)",
   "stop": false,
-  "notes": "Landed source facet case-normalize (e66524d) for facets.sources + /counts by_source; relative feed/sitemap URL resolve + Accept + BOM (793aae8); SPA Settings dirty/sticky/Cmd-S (ef69c18). Next: Iceberg compaction / more scrape reliability / search ranking."
+  "notes": "Landed embed/comments/share path identity (1b649a4) and media:content/enclosure feed URL fallback (39526cf). Next: Iceberg compaction / search ranking / more scrape reliability."
 }
