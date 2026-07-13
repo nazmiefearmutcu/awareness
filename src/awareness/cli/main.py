@@ -1158,9 +1158,126 @@ def stats(
 
 
 @app.command()
-def metrics() -> None:
-    """Dump in-process metrics snapshot."""
-    print(json.dumps(get_metrics().snapshot(), indent=2))
+def metrics(
+    format: str | None = typer.Option(  # noqa: A002 — CLI flag name matches API /metrics
+        None,
+        "--format",
+        "-f",
+        help=(
+            "Output format: table, json, or prometheus/prom/text. "
+            "Default: table on a TTY, json when piped (script-safe)."
+        ),
+    ),
+    limit: int = typer.Option(
+        40,
+        "--limit",
+        "-n",
+        help="Max rows per section in table mode (counters/gauges/histograms).",
+    ),
+) -> None:
+    """Show in-process metrics (table, JSON snapshot, or Prometheus text).
+
+    Interactive terminals default to a compact Rich table. Piped/non-TTY
+    stdout defaults to JSON (backward-compatible for scripts). Force either
+    with ``--format``; use ``prometheus`` for the same exposition as
+    ``GET /metrics?format=prometheus``.
+    """
+    if format is None:
+        fmt = "table" if sys.stdout.isatty() else "json"
+    else:
+        fmt = format.strip().lower()
+    m = get_metrics()
+    if fmt in ("prometheus", "prom", "text", "exposition"):
+        # Trailing newline already included by render_prometheus.
+        sys.stdout.write(m.render_prometheus())
+        return
+    if fmt in ("json", "snapshot", "raw"):
+        print(json.dumps(m.snapshot(), indent=2))
+        return
+    if fmt not in ("table", "human", "pretty", "tui"):
+        raise typer.BadParameter(
+            f"Unknown --format {format!r}; use table, json, or prometheus"
+        )
+    _print_metrics_table(m.snapshot(), limit=max(1, int(limit)))
+
+
+def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
+    """Render a human-readable metrics summary (uptime + top series)."""
+    uptime = float(snap.get("uptime_seconds") or 0.0)
+    hours, rem = divmod(int(uptime), 3600)
+    minutes, seconds = divmod(rem, 60)
+    console.print(
+        f"[bold]Metrics[/bold]  uptime={hours:d}h {minutes:02d}m {seconds:02d}s  "
+        f"([dim]--format json|prometheus for machine output[/dim])"
+    )
+
+    counters = list(snap.get("counters") or [])
+    gauges = list(snap.get("gauges") or [])
+    histograms = list(snap.get("histograms") or [])
+
+    def _lbl(labels: Any) -> str:
+        if not labels:
+            return ""
+        if isinstance(labels, dict) and labels:
+            return " " + ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
+        return ""
+
+    ct = Table(title=f"Counters ({min(limit, len(counters))}/{len(counters)})", show_lines=False)
+    ct.add_column("name", style=banner.C_HI)
+    ct.add_column("labels", style=banner.C_DIM)
+    ct.add_column("value", justify="right")
+    # Highest values first — operators care about hot paths.
+    for row in sorted(counters, key=lambda r: float(r.get("value") or 0), reverse=True)[:limit]:
+        ct.add_row(
+            str(row.get("name") or ""),
+            _lbl(row.get("labels")).strip(),
+            f"{float(row.get('value') or 0):g}",
+        )
+    if counters:
+        console.print(ct)
+    else:
+        console.print("[dim]No counters yet (process idle or freshly started).[/dim]")
+
+    gt = Table(title=f"Gauges ({min(limit, len(gauges))}/{len(gauges)})", show_lines=False)
+    gt.add_column("name", style=banner.C_HI)
+    gt.add_column("labels", style=banner.C_DIM)
+    gt.add_column("value", justify="right")
+    for row in sorted(gauges, key=lambda r: str(r.get("name") or ""))[:limit]:
+        gt.add_row(
+            str(row.get("name") or ""),
+            _lbl(row.get("labels")).strip(),
+            f"{float(row.get('value') or 0):g}",
+        )
+    if gauges:
+        console.print(gt)
+
+    ht = Table(
+        title=f"Histograms ({min(limit, len(histograms))}/{len(histograms)})",
+        show_lines=False,
+    )
+    ht.add_column("name", style=banner.C_HI)
+    ht.add_column("labels", style=banner.C_DIM)
+    ht.add_column("count", justify="right")
+    ht.add_column("p50", justify="right")
+    ht.add_column("p95", justify="right")
+    ht.add_column("p99", justify="right")
+    ht.add_column("avg", justify="right")
+    for row in sorted(histograms, key=lambda r: int(r.get("count") or 0), reverse=True)[:limit]:
+        ht.add_row(
+            str(row.get("name") or ""),
+            _lbl(row.get("labels")).strip(),
+            str(int(row.get("count") or 0)),
+            f"{float(row.get('p50') or 0):.4g}",
+            f"{float(row.get('p95') or 0):.4g}",
+            f"{float(row.get('p99') or 0):.4g}",
+            f"{float(row.get('avg') or 0):.4g}",
+        )
+    if histograms:
+        console.print(ht)
+    else:
+        console.print(
+            "[dim]No histograms yet — HTTP fetch latency appears after the first GET.[/dim]"
+        )
 
 
 # ── backfill ────────────────────────────────────────────────────────────

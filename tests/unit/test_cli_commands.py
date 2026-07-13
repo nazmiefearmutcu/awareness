@@ -158,3 +158,49 @@ def test_dedup_stats_includes_skip_counters(tmp_project: Path) -> None:
     assert "near_dup_index_rows" in payload
     assert payload["fetch_skipped_seen"] >= 2
     assert payload["tight_near_skipped"] >= 3
+
+
+def test_metrics_format_json_and_prometheus() -> None:
+    """metrics --format json|prometheus returns machine-readable snapshots."""
+    import json
+
+    from awareness.obs.metrics import get_metrics
+
+    m = get_metrics()
+    m.inc("cli.test_metric", value=1.0, labels={"case": "json"})
+    m.observe("http.fetch_seconds", 0.012, labels={"outcome": "ok", "status_class": "2xx"})
+
+    js = runner.invoke(app, ["metrics", "--format", "json"])
+    assert js.exit_code == 0, js.output
+    payload = json.loads(js.output[js.output.find("{") :])
+    assert "uptime_seconds" in payload
+    assert "counters" in payload and "histograms" in payload
+    names = {c["name"] for c in payload["counters"]}
+    assert "cli.test_metric" in names
+
+    prom = runner.invoke(app, ["metrics", "--format", "prometheus"])
+    assert prom.exit_code == 0, prom.output
+    assert "awareness_uptime_seconds" in prom.output
+    assert "cli_test_metric_total" in prom.output
+    assert "http_fetch_seconds_count" in prom.output or "http_fetch_seconds" in prom.output
+
+
+def test_metrics_format_table_explicit() -> None:
+    """--format table prints a human summary (not raw JSON)."""
+    from awareness.obs.metrics import get_metrics
+
+    get_metrics().inc("cli.table_probe", value=5.0)
+    result = runner.invoke(app, ["metrics", "--format", "table"])
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "Metrics" in out
+    assert "uptime=" in out
+    # Table mode should not be a pure JSON document.
+    assert not out.lstrip().startswith("{")
+    assert "cli.table_probe" in out or "Counters" in out
+
+
+def test_metrics_format_rejects_unknown() -> None:
+    result = runner.invoke(app, ["metrics", "--format", "yaml"])
+    assert result.exit_code != 0
+    assert "Unknown --format" in result.output or "Invalid" in result.output or result.exit_code == 2
