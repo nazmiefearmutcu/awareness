@@ -99,11 +99,17 @@ class Settings(BaseSettings):
     tail_gdelt: bool = False  # also discover via GDELT (global news firehose)
     tail_gdelt_max_urls: int = 500  # cap URLs pulled per 15-min GDELT slot
     tail_show_captures: bool = True  # print each capture to the terminal as it lands
-    terminal_mute_duplicates: bool = False  # skip printing duplicate captures (EXACT_DUP, NEAR_DUP, REVISION) to the terminal
+    terminal_mute_duplicates: bool = False  # skip printing EXACT_DUP / NEAR_DUP / REVISION and tight near-dup skip-store lines
 
     # ── corpus filters ───────────────────────────────────────────────────
     text_min_chars: int = 200
+    # Lower floor for RSS/Atom/GDELT/sitemap-discovered pages (short news stubs).
+    text_min_chars_news: int = 80
     text_max_chars: int = 1_500_000
+
+    # ── Common Crawl WET ────────────────────────────────────────────────
+    cc_wet_max_shards_per_crawl: int = 4  # cap WET shards planned per crawl discovery
+    wet_quality_filter: bool = True  # drop Gopher/C4-low-quality WET records before storing
 
     # ── storage destinations (where captures are written) ────────────────
     # These three toggles are the TAIL/BODY write destinations. Set them with
@@ -124,6 +130,9 @@ class Settings(BaseSettings):
     search_default_limit: int = 10
     search_max_results: int = 200
     search_idf_threshold: float = 1.0
+    # Multiplicative recency weight Wr for FTS re-rank; 0 disables.
+    # When >0, prefer fresher published_ts (fallback fetch_ts).
+    search_recency_boost: float = 0.0
 
     # ── observability ────────────────────────────────────────────────────
     log_level: str = "INFO"

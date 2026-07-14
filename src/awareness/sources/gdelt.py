@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import time
 import zipfile
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
@@ -28,11 +29,36 @@ from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
 from awareness.schemas.doc import DocCapture, SourceKind
 from awareness.schemas.jobs import BackfillRequest
+from awareness.util.http import get_shared_async_client
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
 from awareness.util.timeutil import to_utc, utcnow
+from awareness.util.urls import canonical_url
 
 logger = get_logger("sources.gdelt")
 GDELT_BASE = "http://data.gdeltproject.org/gdeltv2"
+
+
+def _status_class(code: int) -> str:
+    """Map an HTTP status to a coarse class label (``2xx``, ``4xx``, …)."""
+    if code < 100:
+        return "unknown"
+    return f"{code // 100}xx"
+
+
+def _record_gdelt_fetch(
+    *,
+    outcome: str,
+    status_class: str,
+    elapsed: float,
+    slot: str,
+) -> None:
+    """Emit process-local GDELT slot-fetch counters + latency histogram."""
+    m = get_metrics()
+    labels = {"outcome": outcome, "status_class": status_class}
+    m.inc("gdelt.fetch_attempts", labels=labels)
+    m.observe("gdelt.fetch_seconds", max(0.0, elapsed), labels=labels)
+    # Slot label is high-cardinality; keep on a separate counter for debugging.
+    m.inc("gdelt.slots", labels={"outcome": outcome, "slot": slot})
 
 
 def _quarter_hours(start: datetime, end: datetime) -> list[str]:
@@ -85,29 +111,57 @@ class GdeltAdapter(Adapter):
     ) -> AsyncIterator[DocCapture]:
         slot = partition.payload["slot"]
         url = f"{GDELT_BASE}/{slot}.gkg.csv.zip"
+        t0 = time.perf_counter()
         try:
-            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                r = await client.get(url, headers={"User-Agent": context.user_agent})
+            client = await get_shared_async_client(timeout=60.0, follow_redirects=True)
+            r = await client.get(url, headers={"User-Agent": context.user_agent})
+            elapsed = time.perf_counter() - t0
+            sc = _status_class(r.status_code)
             if r.status_code != 200:
+                outcome = "missing" if r.status_code == 404 else "http_error"
+                _record_gdelt_fetch(
+                    outcome=outcome, status_class=sc, elapsed=elapsed, slot=slot
+                )
                 logger.info("gdelt_slot_missing", slot=slot, status=r.status_code)
                 return
             payload = r.content
+            _record_gdelt_fetch(
+                outcome="ok", status_class=sc, elapsed=elapsed, slot=slot
+            )
         except httpx.HTTPError as exc:
+            elapsed = time.perf_counter() - t0
+            _record_gdelt_fetch(
+                outcome="transport_error",
+                status_class="transport",
+                elapsed=elapsed,
+                slot=slot,
+            )
             logger.warning("gdelt_fetch_failed", err=str(exc))
             return
 
-        urls = await asyncio.get_event_loop().run_in_executor(None, _extract_gkg_urls, payload)
+        urls, extract_ok = await asyncio.get_event_loop().run_in_executor(
+            None, _extract_gkg_urls_with_status, payload
+        )
+        if not extract_ok:
+            get_metrics().inc("gdelt.extract_errors", labels={"slot": slot})
         max_urls = partition.payload.get("max_urls")
         # Cap only on a positive value; None/0/negative → no per-slot cap.
         if max_urls is not None and int(max_urls) > 0:
             urls = urls[: int(max_urls)]
-        get_metrics().inc("gdelt.urls_discovered", value=len(urls), labels={"slot": slot})
+        m = get_metrics()
+        m.inc("gdelt.urls_discovered", value=len(urls), labels={"slot": slot})
         enqueue = context.extras.setdefault("enqueue", [])
+        enqueued = 0
         for u in urls:
+            cu = canonical_url(u)
+            if not cu:
+                continue
             enqueue.append(
                 PartitionSpec(
                     source_type=SourceKind.TAIL_RECRAWL,
-                    partition_key=f"tail-gdelt:{u}",
+                    # Same key shape as feeds.py so UNIQUE(job_id, partition_key)
+                    # collapses cross-source duplicates (RSS vs GDELT).
+                    partition_key=f"tail:{cu}",
                     payload={
                         "url": u,
                         "discovery_channel": f"gdelt:{slot}",
@@ -115,12 +169,22 @@ class GdeltAdapter(Adapter):
                     },
                 )
             )
+            enqueued += 1
+        if enqueued:
+            m.inc("gdelt.urls_enqueued", value=float(enqueued), labels={"slot": slot})
         return
         if False:  # pragma: no cover
             yield
 
 
 def _extract_gkg_urls(zipped: bytes) -> list[str]:
+    """Extract GKG document URLs; empty list on corrupt zip (legacy helper)."""
+    urls, _ok = _extract_gkg_urls_with_status(zipped)
+    return urls
+
+
+def _extract_gkg_urls_with_status(zipped: bytes) -> tuple[list[str], bool]:
+    """Return ``(urls, extract_ok)`` where *extract_ok* is False on bad zip/IO."""
     out: set[str] = set()
     try:
         with zipfile.ZipFile(io.BytesIO(zipped)) as z:
@@ -137,5 +201,5 @@ def _extract_gkg_urls(zipped: bytes) -> list[str]:
                             if url.startswith(("http://", "https://")):
                                 out.add(url)
     except (zipfile.BadZipFile, OSError):
-        return []
-    return list(out)
+        return [], False
+    return list(out), True

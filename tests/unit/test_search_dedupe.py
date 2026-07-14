@@ -1,8 +1,10 @@
 """Search result collapse + worker EXACT_DUP storage skip.
 
 Regression for data-quality hard gates:
-  * top-K search must not show the same content_hash twice
+  * top-K search must not show the same parent_doc_or_dup_group twice
+  * top-K search must not show the same content_hash twice (when parent unset)
   * EXACT_DUP captures must not be re-persisted to JSONL
+  * tight NEAR_DUP (Hamming ≤12) must not be re-persisted; loose NEAR_DUP still is
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from awareness.dedup.engine import DedupDecision, DedupOutcome
+from awareness.obs.metrics import get_metrics
 from awareness.planner.planner import Planner
 from awareness.schemas.doc import DocCapture, RobotsDecision, SourceKind, SourceRef
 from awareness.storage.duckdb_index import (
@@ -45,6 +49,7 @@ def _write_doc(
     domain: str = "example.com",
     content_hash_val: str | None = None,
     url: str | None = None,
+    parent_doc_or_dup_group: str | None = None,
 ) -> None:
     day = root / "captures" / "2026" / "06" / "01"
     day.mkdir(parents=True, exist_ok=True)
@@ -52,6 +57,7 @@ def _write_doc(
     rec.update(
         doc_id=f"doc-{idx}",
         capture_id=f"cap-{idx}",
+        parent_doc_or_dup_group=parent_doc_or_dup_group,
         source_type="rss",
         domain=domain,
         url=url or f"https://{domain}/{idx}",
@@ -63,8 +69,33 @@ def _write_doc(
     (day / f"chunk-{idx}.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
 
 
-def test_collapse_key_prefers_content_hash() -> None:
+def test_collapse_key_prefers_parent_then_content_hash() -> None:
+    # parent_doc_or_dup_group wins even when content_hash differs
+    assert _collapse_key({
+        "parent_doc_or_dup_group": "doc-canonical",
+        "content_hash": "abc",
+        "title": "T",
+        "domain": "d.com",
+    }) == "p:doc-canonical"
+    assert _collapse_key({
+        "parent_doc_or_dup_group": "  grp  ",
+        "content_hash": "xyz",
+    }) == "p:grp"
+    # empty / missing parent falls through to content_hash
+    assert _collapse_key({
+        "parent_doc_or_dup_group": "",
+        "content_hash": "abc",
+        "title": "T",
+        "domain": "d.com",
+    }) == "h:abc"
+    assert _collapse_key({
+        "parent_doc_or_dup_group": None,
+        "content_hash": "abc",
+        "title": "T",
+        "domain": "d.com",
+    }) == "h:abc"
     assert _collapse_key({"content_hash": "abc", "title": "T", "domain": "d.com"}) == "h:abc"
+    # no parent + no hash → title|domain
     assert _collapse_key({"content_hash": "", "title": " Hello ", "domain": "D.COM"}) == "t:hello|d.com"
     assert _collapse_key({"content_hash": None, "title": "X", "domain": "y"}) == "t:x|y"
 
@@ -82,6 +113,61 @@ def test_collapse_search_rows_keeps_highest_score() -> None:
     assert by_hash["h1"]["url"] == "https://b/2"
     assert by_hash["h1"]["score"] == 3.5
     assert by_hash["h2"]["url"] == "https://c/3"
+
+
+def test_collapse_search_rows_by_parent_doc_or_dup_group() -> None:
+    """Same parent group collapses even when content_hash differs (near-dups)."""
+    rows = [
+        {
+            "parent_doc_or_dup_group": "doc-root",
+            "content_hash": "h-a",
+            "url": "https://a/1",
+            "score": 1.0,
+            "title": "A",
+        },
+        {
+            "parent_doc_or_dup_group": "doc-root",
+            "content_hash": "h-b",  # different hash, same near-dup group
+            "url": "https://b/2",
+            "score": 4.0,
+            "title": "A (edit)",
+        },
+        {
+            "parent_doc_or_dup_group": "doc-other",
+            "content_hash": "h-c",
+            "url": "https://c/3",
+            "score": 2.0,
+            "title": "B",
+        },
+        {
+            "parent_doc_or_dup_group": "doc-root",
+            "content_hash": "h-d",
+            "url": "https://d/4",
+            "score": 4.0,  # tie with h-b → keep first winner (b)
+            "title": "A (rev)",
+        },
+    ]
+    out = _collapse_search_rows(rows)
+    assert len(out) == 2
+    by_parent = {r["parent_doc_or_dup_group"]: r for r in out}
+    assert by_parent["doc-root"]["url"] == "https://b/2"
+    assert by_parent["doc-root"]["score"] == 4.0
+    assert by_parent["doc-other"]["url"] == "https://c/3"
+
+
+def test_collapse_search_rows_parent_takes_precedence_over_hash() -> None:
+    """Different content_hash but shared parent → one hit; hash alone is ignored."""
+    rows = [
+        {"parent_doc_or_dup_group": "g1", "content_hash": "h1", "url": "https://a/1", "score": 2.0},
+        {"parent_doc_or_dup_group": "g1", "content_hash": "h2", "url": "https://b/2", "score": 1.0},
+        # no parent: still collapses exact hash dups
+        {"parent_doc_or_dup_group": None, "content_hash": "h3", "url": "https://c/3", "score": 1.0},
+        {"parent_doc_or_dup_group": "", "content_hash": "h3", "url": "https://d/4", "score": 3.0},
+    ]
+    out = _collapse_search_rows(rows)
+    assert len(out) == 2
+    assert out[0]["url"] == "https://a/1"  # higher score within g1
+    assert out[1]["url"] == "https://d/4"  # higher score within h3
 
 
 def test_search_collapses_same_content_hash_different_urls(tmp_path: Path) -> None:
@@ -133,6 +219,72 @@ def test_search_collapses_same_content_hash_different_urls(tmp_path: Path) -> No
             assert res["total"] >= 1
             # Full match set for this corpus is small; total should not count both dups.
             assert res["total"] <= 2  # climate unique + maybe sports if it matched
+    finally:
+        idx.close()
+
+
+def test_search_collapses_same_parent_doc_or_dup_group(tmp_path: Path) -> None:
+    """Near-dups (different content_hash, shared parent) → one search hit."""
+    jsonl_dir = tmp_path / "jsonl"
+    db_path = tmp_path / "duckdb" / "metadata.duckdb"
+    body_a = (
+        "Near-duplicate content about climate markets and carbon credits "
+        "appearing under slightly edited syndication should collapse in search."
+    )
+    body_b = (
+        "Near-duplicate content about climate markets and carbon credits "
+        "appearing under lightly rewritten syndication should collapse in search."
+    )
+    shared_parent = "doc-climate-canonical"
+    _write_doc(
+        jsonl_dir, 1,
+        title="Climate markets update",
+        text=body_a,
+        domain="news.example",
+        content_hash_val="aaaa1111bbbb2222",
+        url="https://news.example/climate",
+        parent_doc_or_dup_group=shared_parent,
+    )
+    _write_doc(
+        jsonl_dir, 2,
+        title="Climate markets update (wire)",
+        text=body_b,
+        domain="wire.example",
+        content_hash_val="cccc3333dddd4444",
+        url="https://wire.example/climate",
+        parent_doc_or_dup_group=shared_parent,
+    )
+    _write_doc(
+        jsonl_dir, 3,
+        title="Sports scoreboard",
+        text="Football match results unrelated to climate markets entirely.",
+        domain="sports.example",
+        content_hash_val="1111222233334444",
+        url="https://sports.example/scores",
+        parent_doc_or_dup_group="doc-sports",
+    )
+
+    idx = DuckDbIndex(db_path, jsonl_dir, None)
+    try:
+        for mode in ("prefix", "substring", "auto", "fts"):
+            res = idx.search("climate markets", mode=mode)
+            parents = [r.get("parent_doc_or_dup_group") for r in res["rows"]]
+            assert parents.count(shared_parent) == 1, (
+                f"mode={mode}: expected 1 hit for parent group, got {parents}"
+            )
+            climate_rows = [
+                r for r in res["rows"]
+                if r.get("parent_doc_or_dup_group") == shared_parent
+            ]
+            assert len(climate_rows) == 1
+            # Must not surface both near-dup URLs.
+            urls = {r["url"] for r in res["rows"]}
+            assert not (
+                "https://news.example/climate" in urls
+                and "https://wire.example/climate" in urls
+            )
+            # total should count the parent group once, not both near-dups
+            assert res["total"] <= 2
     finally:
         idx.close()
 
@@ -250,3 +402,120 @@ async def test_worker_exact_dup_skips_batch_buffer(tmp_project: Path, monkeypatc
     # NEW + unique third doc emitted; EXACT_DUP counted as dropped not emitted.
     assert job.docs_emitted == 2
     assert job.docs_dedup_dropped >= 1
+
+
+@pytest.mark.asyncio
+async def test_worker_tight_near_dup_skips_batch_buffer(
+    tmp_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NEAR_DUP with Hamming ≤ TIGHT_NEAR_STORE_THRESHOLD must not be buffered."""
+    state = StateDB(f"sqlite:///{tmp_project / 'state.db'}")
+    state.init()
+    planner = Planner(state)
+    engine = WorkerEngine(state, planner, concurrency=1, silent_progress=True)
+
+    cap_new = _make_cap(
+        "https://a.test/base",
+        " ".join(["Canonical article body for near-dup storage policy."] * 20),
+    )
+    cap_tight = _make_cap(
+        "https://b.test/tight",
+        " ".join(["Tight near-duplicate body that should skip store."] * 20),
+        observed_str="2024-01-02T00:00:00+00:00",
+    )
+    cap_loose = _make_cap(
+        "https://c.test/loose",
+        " ".join(["Loose near-duplicate body that should still store."] * 20),
+        observed_str="2024-01-03T00:00:00+00:00",
+    )
+    cap_unique = _make_cap(
+        "https://d.test/unique",
+        " ".join(["Completely unrelated unique document content keep path."] * 20),
+        observed_str="2024-01-04T00:00:00+00:00",
+    )
+
+    # Controlled decisions: real simhash distances are flaky for unit policy tests.
+    outcomes = {
+        cap_new.doc_id: DedupOutcome(
+            decision=DedupDecision.NEW, dup_group=cap_new.doc_id, reason="new_content"
+        ),
+        cap_tight.doc_id: DedupOutcome(
+            decision=DedupDecision.NEAR_DUP,
+            dup_group=cap_new.doc_id,
+            reason="simhash128_hamming=5",
+            hamming=5,
+        ),
+        cap_loose.doc_id: DedupOutcome(
+            decision=DedupDecision.NEAR_DUP,
+            dup_group=cap_new.doc_id,
+            reason="simhash128_hamming=18",
+            hamming=18,
+        ),
+        cap_unique.doc_id: DedupOutcome(
+            decision=DedupDecision.NEW, dup_group=cap_unique.doc_id, reason="new_content"
+        ),
+    }
+
+    def fake_evaluate(cap: DocCapture) -> DedupOutcome:
+        out = outcomes[cap.doc_id]
+        cap.parent_doc_or_dup_group = out.dup_group
+        return out
+
+    engine._dedup.evaluate = fake_evaluate  # type: ignore[method-assign]
+
+    async def fake_run_partition(partition, context):
+        yield cap_new
+        yield cap_tight
+        yield cap_loose
+        yield cap_unique
+
+    adapter = MagicMock()
+    adapter.run_partition = fake_run_partition
+    engine._registry = MagicMock()
+    engine._registry.get.return_value = adapter
+    engine._topic_filter_for = lambda _job_id: None  # type: ignore[method-assign]
+    engine._is_tty = False
+
+    async def noop_flush(force: bool = False) -> None:
+        return None
+
+    engine._flush = noop_flush  # type: ignore[method-assign]
+
+    from awareness.schemas.jobs import JobKind, JobState, JobStatus, TaskState
+
+    state.create_job(
+        JobState(
+            job_id="j-near",
+            kind=JobKind.BACKFILL,
+            status=JobStatus.RUNNING,
+            request={"sources": ["local_fixture"]},
+        )
+    )
+    task = TaskState(
+        task_id="t-near",
+        job_id="j-near",
+        source_type=SourceKind.LOCAL_FIXTURE,
+        partition_key="pk",
+        payload={},
+    )
+    state.add_tasks([task])
+
+    before_tight = get_metrics().counter_sum("dedup.tight_near_skipped")
+    await engine._run_task(task)
+
+    buffered_urls = [c.url for c in engine._batch_buffer]
+    assert "https://a.test/base" in buffered_urls
+    assert "https://b.test/tight" not in buffered_urls, "tight NEAR_DUP must not be buffered"
+    assert get_metrics().counter_sum("dedup.tight_near_skipped") == before_tight + 1
+    assert "https://c.test/loose" in buffered_urls, "loose NEAR_DUP must still be buffered"
+    assert "https://d.test/unique" in buffered_urls
+
+    # parent linkage still applied for the tight skip path
+    assert cap_tight.parent_doc_or_dup_group == cap_new.doc_id
+    assert cap_loose.parent_doc_or_dup_group == cap_new.doc_id
+
+    job = state.get_job("j-near")
+    assert job is not None
+    # NEW + loose NEAR_DUP + unique NEW stored; tight NEAR_DUP dropped only.
+    assert job.docs_emitted == 3
+    assert job.docs_dedup_dropped >= 2  # tight (skip) + loose (store+count)

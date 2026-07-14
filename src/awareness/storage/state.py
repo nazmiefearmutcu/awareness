@@ -13,11 +13,12 @@ import json
 import os
 import threading
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
     DateTime,
+    Float,
     Integer,
     BigInteger,
     String,
@@ -46,6 +47,28 @@ logger = get_logger("storage.state")
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _verify_dedup_schema(inspector: Any) -> None:
+    """Raise if the dedup_near table exists but lacks the sig_hex column.
+
+    The migration in init() adds sig_hex to legacy tables; if that ALTER
+    silently failed (locked/partial/read-only DB), surface it loudly here
+    instead of deferring to a confusing 'no such column: sig_hex' on every
+    later dedup write.
+    """
+    try:
+        cols = [c["name"] for c in inspector.get_columns("dedup_near")]
+    except Exception:
+        cols = []
+    if cols and "sig_hex" not in cols:
+        raise RuntimeError(
+            "dedup_near.sig_hex is missing after migration — the DB may be "
+            "read-only, locked, or partially migrated; near-dup indexing "
+            "would fail. Fix or recreate the state DB."
+        )
+
+
 
 
 class Base(DeclarativeBase):
@@ -114,9 +137,9 @@ class DedupNearRow(Base):
     To search for near-dupes for a 128-bit simhash ``H`` we split H into
     :data:`NEAR_DUP_SEGMENTS` bands of :data:`NEAR_DUP_SEG_BITS` bits and store
     rows keyed by ``(segment_index, segment_value)``. Two near-dupes share at
-    least one band exactly when their Hamming distance is below the band count
-    (Manku/Jain pigeonhole), and probabilistically beyond it. Query is
-    ``WHERE seg = ? AND value = ?``.
+    least one band exactly when their Hamming distance is ≤ (bands − 1)
+    (Manku/Jain pigeonhole; 32 bands → Hamming ≤ 31), and probabilistically
+    beyond it. Query is ``WHERE seg = ? AND value = ?``.
 
     ``sig_hex`` holds the full 128-bit signature (32 hex chars); the legacy
     ``near_dup_hash`` int column is retained, nullable, for backward
@@ -133,17 +156,42 @@ class DedupNearRow(Base):
     __table_args__ = (UniqueConstraint("doc_id", "seg", name="uq_dedup_near"),)
 
 
-# 128 bits split into 16 bands of 8 bits. Finer banding than the bit budget
-# strictly needs (it guarantees a shared band only up to Hamming < 16) but it
-# lifts *probabilistic* candidate retrieval far past that — end-to-end near-dup
-# recall roughly doubles vs an 8-band split at the same threshold, at the cost
-# of 16 (not 8) tiny index rows per document. Bands are byte-aligned.
-NEAR_DUP_SEGMENTS = 16
-NEAR_DUP_SEG_BITS = 8
+class DupParentRow(Base):
+    """Union-find parent map for near-duplicate clusters.
+
+    Each ``doc_id`` points at a ``parent_id`` in the same table. Roots have
+    ``parent_id == doc_id``. Missing rows are treated as self-roots by
+    :meth:`StateDB.uf_find`. Path compression rewrites intermediate parents to
+    the root on find so A~B and B~C share one canonical parent.
+    """
+
+    __tablename__ = "dup_parent"
+    doc_id: Mapped[str] = mapped_column(String, primary_key=True)
+    parent_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+
+
+# 128 bits split into 32 bands of 4 bits. The Manku/Jain pigeonhole guarantee is
+# "a pair within Hamming ≤ (bands-1) shares ≥1 identical band", so 32 bands give
+# an EXACT-retrieval guarantee up to Hamming ≤31 — covering DEFAULT_NEAR_THRESHOLD
+# (24), which 16×8 banding (guarantee ≤15) did not. Cost: 32 tiny index rows/doc.
+# Reindex: existing near_dup rows written under 16×8 are wrong band width after
+# upgrade; rebuild the dedup_near index if upgrading mid-corpus.
+NEAR_DUP_SEGMENTS = 32
+NEAR_DUP_SEG_BITS = 4
 _NEAR_DUP_SEG_MASK = (1 << NEAR_DUP_SEG_BITS) - 1
 # Per-band candidate cap. Higher than the 64-bit era's 256 so moderate-scale
 # corpora don't silently truncate true near-dup candidates out of a hot band.
 NEAR_DUP_CANDIDATE_LIMIT = 1024
+
+# Exponential backoff for failed-task retries: base * 2**(attempts-1), capped.
+RETRY_BACKOFF_BASE_SECONDS = 30
+RETRY_BACKOFF_CAP_SECONDS = 3600
+
+
+def _retry_delay_seconds(attempts: int) -> float:
+    exp = max(0, attempts - 1)
+    return float(min(RETRY_BACKOFF_BASE_SECONDS * (2**exp), RETRY_BACKOFF_CAP_SECONDS))
+
 
 
 class ManifestRow(Base):
@@ -181,6 +229,18 @@ class TailRow(Base):
     # Owning OS process. Used by get_tail(reconcile=True) to detect orphans
     # after a crash/kill that never called set_tail(False).
     pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+
+class UrlFetchLogRow(Base):
+    """Successful HTTP fetches keyed by canonical URL (skip re-fetch gate)."""
+
+    __tablename__ = "url_fetch_log"
+    canonical_url: Mapped[str] = mapped_column(String, primary_key=True)
+    first_doc_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_content_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class RobotsCacheRow(Base):
@@ -283,6 +343,10 @@ class StateDB:
                             conn.execute(text("ALTER TABLE tail_state ADD COLUMN pid INTEGER"))
                 except Exception as e:
                     logger.warning("migration_failed", error=str(e))
+
+            from sqlalchemy import inspect as _sa_inspect
+
+            _verify_dedup_schema(_sa_inspect(self._engine))
 
             self._initialized = True
 
@@ -528,28 +592,22 @@ class StateDB:
 
     def _do_claim_pending_tasks(self, job_id: str, limit: int) -> list[TaskState]:
         with self.session() as s:
-            stmt = (
-                select(TaskRow)
-                .where(TaskRow.job_id == job_id, TaskRow.status == TaskStatus.PENDING.value)
+            now = _utcnow()
+            # Candidate selection. For non-SQLite, skip-locked keeps concurrent
+            # claimers from racing on the same pending rows.
+            id_stmt = (
+                select(TaskRow.task_id)
+                .where(
+                    TaskRow.job_id == job_id,
+                    TaskRow.status == TaskStatus.PENDING.value,
+                    (TaskRow.next_attempt_at.is_(None)) | (TaskRow.next_attempt_at <= now),
+                )
                 .order_by(TaskRow.created_at)
+                .limit(limit)
             )
             if self._engine.dialect.name != "sqlite":
-                stmt = stmt.with_for_update(skip_locked=True)
-            stmt = stmt.limit(limit)
-            rows = list(s.scalars(stmt))
-            now = _utcnow()
-            candidates = list(
-                s.scalars(
-                    select(TaskRow.task_id)
-                    .where(
-                        TaskRow.job_id == job_id,
-                        TaskRow.status == TaskStatus.PENDING.value,
-                        (TaskRow.next_attempt_at.is_(None)) | (TaskRow.next_attempt_at <= now),
-                    )
-                    .order_by(TaskRow.created_at)
-                    .limit(limit)
-                )
-            )
+                id_stmt = id_stmt.with_for_update(skip_locked=True)
+            candidates = list(s.scalars(id_stmt))
             if not candidates:
                 return []
             claimed_ids = list(
@@ -570,7 +628,13 @@ class StateDB:
             )
             s.commit()
             rows = (
-                list(s.scalars(select(TaskRow).where(TaskRow.task_id.in_(claimed_ids))))
+                list(
+                    s.scalars(
+                        select(TaskRow)
+                        .where(TaskRow.task_id.in_(claimed_ids))
+                        .execution_options(populate_existing=True)
+                    )
+                )
                 if claimed_ids
                 else []
             )
@@ -705,6 +769,49 @@ class StateDB:
                     "partition_key": r.partition_key,
                     "started_at": r.started_at.isoformat() if r.started_at else None,
                     "attempts": r.attempts,
+                }
+                for r in s.scalars(stmt)
+            ]
+
+    def count_retry_scheduled(self, job_id: str) -> int:
+        """Count PENDING tasks waiting on a future next_attempt_at backoff."""
+        with self.session() as s:
+            now = _utcnow()
+            n = s.scalar(
+                select(func.count())
+                .select_from(TaskRow)
+                .where(
+                    TaskRow.job_id == job_id,
+                    TaskRow.status == TaskStatus.PENDING.value,
+                    TaskRow.next_attempt_at.is_not(None),
+                    TaskRow.next_attempt_at > now,
+                )
+            )
+            return int(n or 0)
+
+    def list_retry_scheduled_tasks(self, job_id: str, limit: int = 12) -> list[dict[str, Any]]:
+        """PENDING tasks whose retry backoff has not elapsed yet (newest lease first)."""
+        with self.session() as s:
+            now = _utcnow()
+            stmt = (
+                select(TaskRow)
+                .where(
+                    TaskRow.job_id == job_id,
+                    TaskRow.status == TaskStatus.PENDING.value,
+                    TaskRow.next_attempt_at.is_not(None),
+                    TaskRow.next_attempt_at > now,
+                )
+                .order_by(TaskRow.next_attempt_at.asc())
+                .limit(limit)
+            )
+            return [
+                {
+                    "task_id": r.task_id,
+                    "source_type": r.source_type,
+                    "partition_key": r.partition_key,
+                    "attempts": r.attempts,
+                    "next_attempt_at": r.next_attempt_at.isoformat() if r.next_attempt_at else None,
+                    "last_error": r.last_error,
                 }
                 for r in s.scalars(stmt)
             ]
@@ -921,6 +1028,91 @@ class StateDB:
                         out[did] = legacy & 0xffffffffffffffff
         return list(out.items())
 
+    def uf_find(self, doc_id: str) -> str:
+        """Find the canonical root of ``doc_id``'s near-dup cluster.
+
+        Walks parent links in ``dup_parent`` and applies path compression so
+        subsequent finds are O(1) amortized. A missing row means the doc is its
+        own root (not yet linked into any cluster).
+        """
+        if not doc_id:
+            return doc_id
+        with self.session() as s:
+            seen: list[str] = []
+            cur = doc_id
+            # Cap walk length against accidental cycles in corrupted state.
+            for _ in range(256):
+                row = s.get(DupParentRow, cur)
+                if row is None or row.parent_id == cur:
+                    root = cur
+                    break
+                if cur in seen:
+                    # Cycle — treat current as root and break.
+                    root = cur
+                    break
+                seen.append(cur)
+                cur = row.parent_id
+            else:
+                root = cur
+
+            # Path compression: point every visited node straight at root.
+            for mid in seen:
+                mid_row = s.get(DupParentRow, mid)
+                if mid_row is None:
+                    s.add(DupParentRow(doc_id=mid, parent_id=root))
+                elif mid_row.parent_id != root:
+                    mid_row.parent_id = root
+
+            # Ensure root row exists so later unions have a stable anchor.
+            root_row = s.get(DupParentRow, root)
+            if root_row is None:
+                s.add(DupParentRow(doc_id=root, parent_id=root))
+            elif root_row.parent_id != root:
+                root_row.parent_id = root
+            s.commit()
+            return root
+
+    def uf_union(self, a: str, b: str) -> str:
+        """Link ``a`` under :meth:`uf_find` of ``b``; return the resulting root.
+
+        Self-union (``a == b``) registers ``a`` as its own root. When ``a``
+        already heads a cluster, that whole tree is folded under ``find(b)`` so
+        near-dup links remain transitive.
+        """
+        if not a:
+            return self.uf_find(b) if b else a
+        if not b or a == b:
+            with self.session() as s:
+                row = s.get(DupParentRow, a)
+                if row is None:
+                    s.add(DupParentRow(doc_id=a, parent_id=a))
+                    s.commit()
+            return self.uf_find(a)
+
+        root = self.uf_find(b)
+        # Fold a's existing group into root (union of two trees).
+        existing_root = self.uf_find(a)
+        if existing_root != root:
+            with self.session() as s:
+                old = s.get(DupParentRow, existing_root)
+                if old is None:
+                    s.add(DupParentRow(doc_id=existing_root, parent_id=root))
+                else:
+                    old.parent_id = root
+                # Also point a directly at root (path compression).
+                a_row = s.get(DupParentRow, a)
+                if a_row is None:
+                    s.add(DupParentRow(doc_id=a, parent_id=root))
+                else:
+                    a_row.parent_id = root
+                root_row = s.get(DupParentRow, root)
+                if root_row is None:
+                    s.add(DupParentRow(doc_id=root, parent_id=root))
+                elif root_row.parent_id != root:
+                    root_row.parent_id = root
+                s.commit()
+        return root
+
     def dedup_stats(self) -> dict[str, int]:
         with self.session() as s:
             distinct = int(s.scalar(select(func.count(DedupRow.content_hash))) or 0)
@@ -957,9 +1149,58 @@ class StateDB:
         with self.session() as s:
             stmt = select(ManifestRow).where(ManifestRow.compacted_at.is_(None)).order_by(ManifestRow.id)
             return [
-                {"id": r.id, "path": r.path, "records": r.records, "bytes": r.bytes}
+                {
+                    "id": r.id,
+                    "path": r.path,
+                    "records": r.records,
+                    "bytes": r.bytes,
+                    "committed_at": r.committed_at.isoformat() if r.committed_at else None,
+                }
                 for r in s.scalars(stmt)
             ]
+
+    def pending_manifest_summary(self) -> dict[str, Any]:
+        """Aggregate counts for staging manifests not yet compacted into Iceberg.
+
+        Used by ``awareness compact --status`` so operators can see backlog size
+        without starting a compaction pass. Includes oldest commit age so lagging
+        compaction is visible without scanning the manifests list client-side.
+        """
+        pending = self.list_pending_manifests()
+        total_records = sum(int(m.get("records") or 0) for m in pending)
+        total_bytes = sum(int(m.get("bytes") or 0) for m in pending)
+        oldest_committed_at: str | None = None
+        oldest_age_seconds: float | None = None
+        oldest_dt: datetime | None = None
+        for m in pending:
+            raw = m.get("committed_at")
+            if not raw:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            else:
+                dt = dt.astimezone(UTC)
+            if oldest_dt is None or dt < oldest_dt:
+                oldest_dt = dt
+                oldest_committed_at = dt.isoformat()
+        if oldest_dt is not None:
+            oldest_age_seconds = max(
+                0.0, (_utcnow() - oldest_dt).total_seconds()
+            )
+        return {
+            "pending_count": len(pending),
+            "total_records": total_records,
+            "total_bytes": total_bytes,
+            "oldest_committed_at": oldest_committed_at,
+            "oldest_age_seconds": (
+                round(oldest_age_seconds, 1) if oldest_age_seconds is not None else None
+            ),
+            "manifests": pending,
+        }
 
     def mark_manifest_compacted(self, manifest_id: int) -> None:
         with self.session() as s:
@@ -981,6 +1222,234 @@ class StateDB:
                 )
             )
             s.commit()
+
+    def count_dlq(self, *, job_id: str | None = None) -> int:
+        """Return the number of dead-letter rows (optionally filtered by job)."""
+        with self.session() as s:
+            q = select(func.count(DLQRow.id))
+            if job_id:
+                q = q.where(DLQRow.job_id == job_id)
+            return int(s.scalar(q) or 0)
+
+    def list_dlq(
+        self,
+        *,
+        limit: int = 50,
+        job_id: str | None = None,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """List dead-letter queue entries newest-first.
+
+        Each item is a plain dict suitable for CLI/JSON export::
+
+            {
+              "id": int,
+              "job_id": str | None,
+              "task_id": str | None,
+              "error": str,
+              "payload": dict,   # parsed JSON ({} if corrupt)
+              "created_at": str | None,  # ISO-8601 UTC
+            }
+        """
+        limit = max(1, min(int(limit), 1000))
+        offset = max(0, int(offset))
+        with self.session() as s:
+            q = select(DLQRow).order_by(DLQRow.created_at.desc(), DLQRow.id.desc())
+            if job_id:
+                q = q.where(DLQRow.job_id == job_id)
+            q = q.offset(offset).limit(limit)
+            rows = list(s.scalars(q).all())
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row.payload_json or "{}")
+                if not isinstance(payload, dict):
+                    payload = {"_raw": payload}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                payload = {"_raw": row.payload_json}
+            created = row.created_at
+            if created is not None and created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            out.append(
+                {
+                    "id": int(row.id),
+                    "job_id": row.job_id,
+                    "task_id": row.task_id,
+                    "error": row.error or "",
+                    "payload": payload,
+                    "created_at": created.isoformat() if created is not None else None,
+                }
+            )
+        return out
+
+    def get_dlq(self, dlq_id: int) -> dict[str, Any] | None:
+        """Return one DLQ row by id, or ``None`` if missing."""
+        with self.session() as s:
+            row = s.get(DLQRow, int(dlq_id))
+            if row is None:
+                return None
+            try:
+                payload = json.loads(row.payload_json or "{}")
+                if not isinstance(payload, dict):
+                    payload = {"_raw": payload}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                payload = {"_raw": row.payload_json}
+            created = row.created_at
+            if created is not None and created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            return {
+                "id": int(row.id),
+                "job_id": row.job_id,
+                "task_id": row.task_id,
+                "error": row.error or "",
+                "payload": payload,
+                "created_at": created.isoformat() if created is not None else None,
+            }
+
+    def replay_dlq(
+        self,
+        dlq_id: int,
+        *,
+        reset_attempts: bool = True,
+    ) -> dict[str, Any]:
+        """Re-arm a dead-lettered task and remove its DLQ row.
+
+        Looks up the DLQ entry by *dlq_id*, finds the associated task, resets it
+        to ``PENDING`` (optionally clearing ``attempts`` so max-retries can fire
+        again), decrements the job's dead-letter counter when the task was
+        ``DEAD_LETTERED``, and deletes the DLQ row.
+
+        Returns a result dict::
+
+            {"ok": True, "dlq_id": int, "task_id": str, "job_id": str,
+             "previous_status": str, "attempts": int}
+            {"ok": False, "reason": "dlq_missing"|"task_missing"|"no_task_id", ...}
+
+        Does not create new tasks when the task row is gone — operators must
+        re-plan or reseed for those cases.
+        """
+        dlq_id = int(dlq_id)
+        with self.session() as s:
+            dlq = s.get(DLQRow, dlq_id)
+            if dlq is None:
+                return {"ok": False, "reason": "dlq_missing", "dlq_id": dlq_id}
+            task_id = dlq.task_id
+            job_id = dlq.job_id
+            if not task_id:
+                return {
+                    "ok": False,
+                    "reason": "no_task_id",
+                    "dlq_id": dlq_id,
+                    "job_id": job_id,
+                }
+            task = s.get(TaskRow, task_id)
+            if task is None:
+                return {
+                    "ok": False,
+                    "reason": "task_missing",
+                    "dlq_id": dlq_id,
+                    "task_id": task_id,
+                    "job_id": job_id,
+                }
+            prev_status = task.status
+            task.status = TaskStatus.PENDING.value
+            task.started_at = None
+            task.completed_at = None
+            task.next_attempt_at = None
+            task.last_error = None
+            if reset_attempts:
+                task.attempts = 0
+            if prev_status == TaskStatus.DEAD_LETTERED.value and task.job_id:
+                # Keep job dead-letter counter consistent with re-arm (mirror
+                # add_tasks rearmed_from DEAD_LETTERED path).
+                job = s.get(JobRow, task.job_id)
+                if job is not None and (job.tasks_dead_lettered or 0) > 0:
+                    job.tasks_dead_lettered = int(job.tasks_dead_lettered) - 1
+            s.delete(dlq)
+            s.commit()
+            return {
+                "ok": True,
+                "dlq_id": dlq_id,
+                "task_id": task_id,
+                "job_id": task.job_id,
+                "previous_status": prev_status,
+                "attempts": int(task.attempts),
+                "reset_attempts": bool(reset_attempts),
+            }
+
+    def purge_dlq(self, dlq_id: int) -> dict[str, Any]:
+        """Drop a DLQ row without re-arming the task.
+
+        Use when an operator has already handled the failure (or decided to
+        abandon the task) and only wants to clear the dead-letter queue entry.
+        Task status and job ``tasks_dead_lettered`` counters are left untouched.
+
+        Returns::
+
+            {"ok": True, "dlq_id": int, "task_id": str|None, "job_id": str|None,
+             "error": str}
+            {"ok": False, "reason": "dlq_missing", "dlq_id": int}
+        """
+        dlq_id = int(dlq_id)
+        with self.session() as s:
+            dlq = s.get(DLQRow, dlq_id)
+            if dlq is None:
+                return {"ok": False, "reason": "dlq_missing", "dlq_id": dlq_id}
+            result = {
+                "ok": True,
+                "dlq_id": dlq_id,
+                "task_id": dlq.task_id,
+                "job_id": dlq.job_id,
+                "error": dlq.error or "",
+            }
+            s.delete(dlq)
+            s.commit()
+            return result
+
+    def purge_dlq_bulk(
+        self,
+        *,
+        job_id: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Drop many DLQ rows without re-arming tasks.
+
+        Optionally filter by *job_id*. *limit* caps how many rows are deleted
+        (newest-first by ``created_at`` / id) so operators can drain a large
+        queue in batches. Task status and job ``tasks_dead_lettered`` counters
+        are left untouched (same contract as :meth:`purge_dlq`).
+
+        Returns::
+
+            {"ok": True, "purged": int, "job_id": str|None, "limit": int|None,
+             "remaining": int}
+        """
+        jid = (job_id or "").strip() or None
+        cap = None if limit is None else max(0, int(limit))
+        with self.session() as s:
+            q = select(DLQRow).order_by(DLQRow.created_at.desc(), DLQRow.id.desc())
+            if jid:
+                q = q.where(DLQRow.job_id == jid)
+            if cap is not None:
+                q = q.limit(cap)
+            rows = list(s.scalars(q).all())
+            purged = 0
+            for row in rows:
+                s.delete(row)
+                purged += 1
+            if purged:
+                s.commit()
+            remaining_q = select(func.count(DLQRow.id))
+            if jid:
+                remaining_q = remaining_q.where(DLQRow.job_id == jid)
+            remaining = int(s.scalar(remaining_q) or 0)
+        return {
+            "ok": True,
+            "purged": purged,
+            "job_id": jid,
+            "limit": cap,
+            "remaining": remaining,
+        }
 
     # ── tail state ───────────────────────────────────────────────────────
     @staticmethod
@@ -1206,3 +1675,52 @@ class StateDB:
                 )
             )
             s.commit()
+
+    # ── url fetch log (tail_recrawl skip gate) ───────────────────────────
+    def record_url_fetch(
+        self,
+        canonical_url: str,
+        doc_id: str | None = None,
+        content_hash: str | None = None,
+        *,
+        http_status: int | None = None,
+    ) -> None:
+        """Record a successful fetch of ``canonical_url`` (upsert)."""
+        if not canonical_url:
+            return
+        with self.session() as s:
+            row = s.get(UrlFetchLogRow, canonical_url)
+            if row is None:
+                s.add(
+                    UrlFetchLogRow(
+                        canonical_url=canonical_url,
+                        first_doc_id=doc_id,
+                        last_content_hash=content_hash,
+                        fetched_at=_utcnow(),
+                        http_status=http_status,
+                    )
+                )
+            else:
+                if row.first_doc_id is None and doc_id:
+                    row.first_doc_id = doc_id
+                if content_hash is not None:
+                    row.last_content_hash = content_hash
+                row.fetched_at = _utcnow()
+                if http_status is not None:
+                    row.http_status = http_status
+            s.commit()
+
+    def was_url_fetched(self, canonical_url: str) -> bool:
+        """True if ``canonical_url`` was previously recorded as successfully fetched."""
+        if not canonical_url:
+            return False
+        with self.session() as s:
+            return s.get(UrlFetchLogRow, canonical_url) is not None
+
+    def get_url_fetch(self, canonical_url: str) -> UrlFetchLogRow | None:
+        """Return the fetch-log row for ``canonical_url``, or None."""
+        if not canonical_url:
+            return None
+        with self.session() as s:
+            return s.get(UrlFetchLogRow, canonical_url)
+

@@ -105,11 +105,10 @@ def detect_language_conf(
     if not text or len(text) < min_chars:
         return (None, 0.0)
     try:
-        from langdetect import DetectorFactory, detect  # noqa: PLC0415
+        from langdetect import DetectorFactory, detect_langs  # noqa: PLC0415
 
         DetectorFactory.seed = 0  # deterministic
-        res = detect(text[:5000])
-        return str(res) if res is not None else None
+        ranked = detect_langs(text[:5000])
     except (ImportError, Exception):  # langdetect raises LangDetectException
         return (None, 0.0)
     if not ranked:

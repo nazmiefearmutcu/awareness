@@ -105,7 +105,7 @@
         </div>
       </header>
 
-      <div class="kpi-grid">
+      <div class="kpi-grid" aria-label="Corpus KPIs">
         <article class="kpi" aria-labelledby="kpi-cap-label">
           <div class="kpi-label" id="kpi-cap-label">Captures</div>
           <div class="kpi-value" id="kpi-captures">—</div>
@@ -125,6 +125,208 @@
           <div class="kpi-label" id="kpi-job-label">Jobs</div>
           <div class="kpi-value" id="kpi-jobs">—</div>
           <div class="kpi-sub" id="kpi-jobs-sub">recent runs</div>
+        </article>
+      </div>
+      <div class="kpi-grid dedup-kpis" id="dash-skip-kpis" aria-label="Process skip counters and fetch latency">
+        <article class="kpi" aria-labelledby="kpi-dash-fetch-skip-label">
+          <div class="kpi-label" id="kpi-dash-fetch-skip-label">Fetch skipped (seen)</div>
+          <div class="kpi-value" id="kpi-dash-fetch-skipped">—</div>
+          <div class="kpi-sub" id="kpi-dash-fetch-skipped-sub">URLs already seen, not re-fetched</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-tight-near-label">
+          <div class="kpi-label" id="kpi-dash-tight-near-label">Tight near-dup skipped</div>
+          <div class="kpi-value" id="kpi-dash-tight-near">—</div>
+          <div class="kpi-sub" id="kpi-dash-tight-near-sub">near-dups below store threshold</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-http-p95-label">
+          <div class="kpi-label" id="kpi-dash-http-p95-label">HTTP fetch p95</div>
+          <div class="kpi-value" id="kpi-dash-http-p95">—</div>
+          <div class="kpi-sub" id="kpi-dash-http-p95-sub">shared GET latency (process)</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-http-attempts-label">
+          <div class="kpi-label" id="kpi-dash-http-attempts-label">HTTP attempts</div>
+          <div class="kpi-value" id="kpi-dash-http-attempts">—</div>
+          <div class="kpi-sub" id="kpi-dash-http-attempts-sub">retries included</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-robots-hit-label">
+          <div class="kpi-label" id="kpi-dash-robots-hit-label">Robots cache hit</div>
+          <div class="kpi-value" id="kpi-dash-robots-hit">—</div>
+          <div class="kpi-sub" id="kpi-dash-robots-hit-sub">memory + DB vs network</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-robots-p95-label">
+          <div class="kpi-label" id="kpi-dash-robots-p95-label">Robots fetch p95</div>
+          <div class="kpi-value" id="kpi-dash-robots-p95">—</div>
+          <div class="kpi-sub" id="kpi-dash-robots-p95-sub">network robots.txt latency</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-robots-attempts-label">
+          <div class="kpi-label" id="kpi-dash-robots-attempts-label">Robots fetch attempts</div>
+          <div class="kpi-value" id="kpi-dash-robots-attempts">—</div>
+          <div class="kpi-sub" id="kpi-dash-robots-attempts-sub">network probes this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-iceberg-rows-label">
+          <div class="kpi-label" id="kpi-dash-iceberg-rows-label">Iceberg rows</div>
+          <div class="kpi-value" id="kpi-dash-iceberg-rows">—</div>
+          <div class="kpi-sub" id="kpi-dash-iceberg-rows-sub">appended this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-compact-p95-label">
+          <div class="kpi-label" id="kpi-dash-compact-p95-label">Compact p95</div>
+          <div class="kpi-value" id="kpi-dash-compact-p95">—</div>
+          <div class="kpi-sub" id="kpi-dash-compact-p95-sub">staging → Iceberg fold latency</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-compact-rows-label">
+          <div class="kpi-label" id="kpi-dash-compact-rows-label">Compacted rows</div>
+          <div class="kpi-value" id="kpi-dash-compact-rows">—</div>
+          <div class="kpi-sub" id="kpi-dash-compact-rows-sub">rows folded this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-jsonl-records-label">
+          <div class="kpi-label" id="kpi-dash-jsonl-records-label">JSONL records</div>
+          <div class="kpi-value" id="kpi-dash-jsonl-records">—</div>
+          <div class="kpi-sub" id="kpi-dash-jsonl-records-sub">committed this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-discover-label">
+          <div class="kpi-label" id="kpi-dash-discover-label">URLs discovered</div>
+          <div class="kpi-value" id="kpi-dash-discover">—</div>
+          <div class="kpi-sub" id="kpi-dash-discover-sub">feeds + GDELT this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-tail-fetches-label">
+          <div class="kpi-label" id="kpi-dash-tail-fetches-label">Tail fetches</div>
+          <div class="kpi-value" id="kpi-dash-tail-fetches">—</div>
+          <div class="kpi-sub" id="kpi-dash-tail-fetches-sub">recrawl HTTP GETs</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-wet-quality-label">
+          <div class="kpi-label" id="kpi-dash-wet-quality-label">WET quality drops</div>
+          <div class="kpi-value" id="kpi-dash-wet-quality">—</div>
+          <div class="kpi-sub" id="kpi-dash-wet-quality-sub">Gopher/C4 filter this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-feed-errors-label">
+          <div class="kpi-label" id="kpi-dash-feed-errors-label">Feed fetch errors</div>
+          <div class="kpi-value" id="kpi-dash-feed-errors">—</div>
+          <div class="kpi-sub" id="kpi-dash-feed-errors-sub">non-200 + retries this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-feed-p95-label">
+          <div class="kpi-label" id="kpi-dash-feed-p95-label">Feed fetch p95</div>
+          <div class="kpi-value" id="kpi-dash-feed-p95">—</div>
+          <div class="kpi-sub" id="kpi-dash-feed-p95-sub">RSS/sitemap latency (process)</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-feed-attempts-label">
+          <div class="kpi-label" id="kpi-dash-feed-attempts-label">Feed fetch attempts</div>
+          <div class="kpi-value" id="kpi-dash-feed-attempts">—</div>
+          <div class="kpi-sub" id="kpi-dash-feed-attempts-sub">discovery GETs this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-staging-pending-label">
+          <div class="kpi-label" id="kpi-dash-staging-pending-label">Staging pending</div>
+          <div class="kpi-value" id="kpi-dash-staging-pending">—</div>
+          <div class="kpi-sub" id="kpi-dash-staging-pending-sub">JSONL manifests awaiting compact</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-staging-age-label">
+          <div class="kpi-label" id="kpi-dash-staging-age-label">Staging oldest</div>
+          <div class="kpi-value" id="kpi-dash-staging-age">—</div>
+          <div class="kpi-sub" id="kpi-dash-staging-age-sub">warehouse fold lag</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-gdelt-p95-label">
+          <div class="kpi-label" id="kpi-dash-gdelt-p95-label">GDELT fetch p95</div>
+          <div class="kpi-value" id="kpi-dash-gdelt-p95">—</div>
+          <div class="kpi-sub" id="kpi-dash-gdelt-p95-sub">GKG slot latency (process)</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-gdelt-attempts-label">
+          <div class="kpi-label" id="kpi-dash-gdelt-attempts-label">GDELT fetch attempts</div>
+          <div class="kpi-value" id="kpi-dash-gdelt-attempts">—</div>
+          <div class="kpi-sub" id="kpi-dash-gdelt-attempts-sub">slot GETs this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-fineweb-admitted-label">
+          <div class="kpi-label" id="kpi-dash-fineweb-admitted-label">FineWeb admitted</div>
+          <div class="kpi-value" id="kpi-dash-fineweb-admitted">—</div>
+          <div class="kpi-sub" id="kpi-dash-fineweb-admitted-sub">HF rows kept this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-fineweb-filtered-label">
+          <div class="kpi-label" id="kpi-dash-fineweb-filtered-label">FineWeb filtered</div>
+          <div class="kpi-value" id="kpi-dash-fineweb-filtered">—</div>
+          <div class="kpi-sub" id="kpi-dash-fineweb-filtered-sub">empty / lang / domain / short</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-fineweb-p95-label">
+          <div class="kpi-label" id="kpi-dash-fineweb-p95-label">FineWeb load p95</div>
+          <div class="kpi-value" id="kpi-dash-fineweb-p95">—</div>
+          <div class="kpi-sub" id="kpi-dash-fineweb-p95-sub">HF stream open latency</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-fineweb-attempts-label">
+          <div class="kpi-label" id="kpi-dash-fineweb-attempts-label">FineWeb load attempts</div>
+          <div class="kpi-value" id="kpi-dash-fineweb-attempts">—</div>
+          <div class="kpi-sub" id="kpi-dash-fineweb-attempts-sub">dataset loads this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-wet-parse-p95-label">
+          <div class="kpi-label" id="kpi-dash-wet-parse-p95-label">WET parse p95</div>
+          <div class="kpi-value" id="kpi-dash-wet-parse-p95">—</div>
+          <div class="kpi-sub" id="kpi-dash-wet-parse-p95-sub">shard parse latency (process)</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-wet-dl-attempts-label">
+          <div class="kpi-label" id="kpi-dash-wet-dl-attempts-label">WET download attempts</div>
+          <div class="kpi-value" id="kpi-dash-wet-dl-attempts">—</div>
+          <div class="kpi-sub" id="kpi-dash-wet-dl-attempts-sub">shard cache hits + downloads</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-wet-seen-label">
+          <div class="kpi-label" id="kpi-dash-wet-seen-label">WET records seen</div>
+          <div class="kpi-value" id="kpi-dash-wet-seen">—</div>
+          <div class="kpi-sub" id="kpi-dash-wet-seen-sub">WAR records scanned this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-jsonl-syncs-label">
+          <div class="kpi-label" id="kpi-dash-jsonl-syncs-label">JSONL mid-chunk syncs</div>
+          <div class="kpi-value" id="kpi-dash-jsonl-syncs">—</div>
+          <div class="kpi-sub" id="kpi-dash-jsonl-syncs-sub">crash-safe fsyncs this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-jsonl-sync-p95-label">
+          <div class="kpi-label" id="kpi-dash-jsonl-sync-p95-label">JSONL sync p95</div>
+          <div class="kpi-value" id="kpi-dash-jsonl-sync-p95">—</div>
+          <div class="kpi-sub" id="kpi-dash-jsonl-sync-p95-sub">mid-chunk fsync latency</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-jsonl-orphans-label">
+          <div class="kpi-label" id="kpi-dash-jsonl-orphans-label">JSONL orphans recovered</div>
+          <div class="kpi-value" id="kpi-dash-jsonl-orphans">—</div>
+          <div class="kpi-sub" id="kpi-dash-jsonl-orphans-sub">promoted leftover .tmp chunks</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-fts-builds-label">
+          <div class="kpi-label" id="kpi-dash-fts-builds-label">FTS builds</div>
+          <div class="kpi-value" id="kpi-dash-fts-builds">—</div>
+          <div class="kpi-sub" id="kpi-dash-fts-builds-sub">full · incremental · restore</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-fts-p95-label">
+          <div class="kpi-label" id="kpi-dash-fts-p95-label">FTS build p95</div>
+          <div class="kpi-value" id="kpi-dash-fts-p95">—</div>
+          <div class="kpi-sub" id="kpi-dash-fts-p95-sub">index materialize latency</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-fts-rows-label">
+          <div class="kpi-label" id="kpi-dash-fts-rows-label">FTS indexed rows</div>
+          <div class="kpi-value" id="kpi-dash-fts-rows">—</div>
+          <div class="kpi-sub" id="kpi-dash-fts-rows-sub">captures_idx after last build</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-warc-docs-label">
+          <div class="kpi-label" id="kpi-dash-warc-docs-label">WARC repair docs</div>
+          <div class="kpi-value" id="kpi-dash-warc-docs">—</div>
+          <div class="kpi-sub" id="kpi-dash-warc-docs-sub">range-repair captures this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-warc-fetch-p95-label">
+          <div class="kpi-label" id="kpi-dash-warc-fetch-p95-label">WARC repair fetch p95</div>
+          <div class="kpi-value" id="kpi-dash-warc-fetch-p95">—</div>
+          <div class="kpi-sub" id="kpi-dash-warc-fetch-p95-sub">byte-range fetch latency</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-warc-attempts-label">
+          <div class="kpi-label" id="kpi-dash-warc-attempts-label">WARC repair attempts</div>
+          <div class="kpi-value" id="kpi-dash-warc-attempts">—</div>
+          <div class="kpi-sub" id="kpi-dash-warc-attempts-sub">range-fetch attempts this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-tasks-completed-label">
+          <div class="kpi-label" id="kpi-dash-tasks-completed-label">Tasks completed</div>
+          <div class="kpi-value" id="kpi-dash-tasks-completed">—</div>
+          <div class="kpi-sub" id="kpi-dash-tasks-completed-sub">worker partitions this process</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-tasks-p95-label">
+          <div class="kpi-label" id="kpi-dash-tasks-p95-label">Task duration p95</div>
+          <div class="kpi-value" id="kpi-dash-tasks-p95">—</div>
+          <div class="kpi-sub" id="kpi-dash-tasks-p95-sub">wall-clock partition latency</div>
+        </article>
+        <article class="kpi" aria-labelledby="kpi-dash-tasks-failed-label">
+          <div class="kpi-label" id="kpi-dash-tasks-failed-label">Tasks failed</div>
+          <div class="kpi-value" id="kpi-dash-tasks-failed">—</div>
+          <div class="kpi-sub" id="kpi-dash-tasks-failed-sub">retry · dead-letter · no-adapter</div>
         </article>
       </div>
 
@@ -173,6 +375,7 @@
         <input id="caps-search" type="search" placeholder="Search title or text…" aria-label="Search captures" />
         <kbd class="kbd-inline">/</kbd>
       </div>
+      <div class="caps-facets" id="caps-facets" hidden aria-label="Matching domains, sources, and languages"></div>
 
       <div class="filters" aria-label="Filter captures">
         <label class="field">
@@ -195,6 +398,10 @@
           <input id="caps-domain" type="text" placeholder="example.com" />
         </label>
         <label class="field">
+          <span class="field-label">Language</span>
+          <input id="caps-language" type="text" placeholder="en" aria-label="Language filter" />
+        </label>
+        <label class="field">
           <span class="field-label">From</span>
           <input id="caps-start" type="date" />
         </label>
@@ -202,12 +409,26 @@
           <span class="field-label">To</span>
           <input id="caps-end" type="date" />
         </label>
+        <label class="field">
+          <span class="field-label">Mode</span>
+          <select id="caps-mode" aria-label="Search mode">
+            <option value="auto">Auto</option>
+            <option value="fts">FTS</option>
+            <option value="prefix">Prefix</option>
+            <option value="substring">Substring</option>
+          </select>
+        </label>
+        <label class="field field-check" title="Collapse near/exact duplicates (unique=group)">
+          <input id="caps-unique" type="checkbox" checked />
+          <span>Hide duplicates</span>
+        </label>
         <button class="btn btn-ghost" id="caps-apply">Apply</button>
         <button class="btn btn-link" id="caps-reset" aria-label="Reset filters">Reset</button>
       </div>
 
       <div class="caps-meta" id="caps-meta" aria-live="polite">—</div>
       <ol class="caps-list" id="caps-list" aria-label="Capture results" tabindex="0"></ol>
+      <div class="caps-diagnostics muted" id="caps-diagnostics" hidden aria-live="polite"></div>
 
       <nav class="pager" aria-label="Pagination">
         <button class="btn btn-ghost" id="caps-prev">← Previous</button>
@@ -378,6 +599,16 @@
         </section>
       </div>
 
+      <section class="band" aria-labelledby="tail-retry-title">
+        <header class="band-head">
+          <h2 id="tail-retry-title" class="band-title">Retrying</h2>
+          <div class="band-meta" id="tail-retry-meta">—</div>
+        </header>
+        <ol class="tail-now-list" id="tail-retry-list" aria-live="polite">
+          <li class="muted-li">No tasks waiting on retry backoff.</li>
+        </ol>
+      </section>
+
       <section class="band" aria-labelledby="tail-chunks-title">
         <header class="band-head">
           <h2 id="tail-chunks-title" class="band-title">Storage commits</h2>
@@ -404,11 +635,13 @@
       <header class="set-hero">
         <div>
           <h1 class="page-title" id="title-settings">Settings</h1>
-          <p class="lede">All preferences in one place. Saved to <code>awareness.yaml</code> + local profile.</p>
+          <p class="lede">All preferences in one place. Saved to <code>awareness.yaml</code> + local profile.
+            <span class="set-dirty-badge" id="set-dirty-badge" hidden>Unsaved changes</span>
+          </p>
         </div>
         <div class="set-hero-actions">
-          <button type="button" class="btn btn-ghost" id="set-reload">Reload</button>
-          <button type="button" class="btn btn-primary" id="set-save-all">Save all</button>
+          <button type="button" class="btn btn-ghost" id="set-reload" title="Discard form edits and reload from disk">Reload</button>
+          <button type="button" class="btn btn-primary" id="set-save-all" title="Save all (⌘S / Ctrl+S)">Save all</button>
         </div>
       </header>
 
@@ -486,6 +719,18 @@
           <p class="set-sec-desc">Live process health and dedup index (read-only).</p>
         </header>
         <div class="settings" id="settings-block"><p class="muted">Loading…</p></div>
+        <div class="kpi-grid dedup-kpis" id="dedup-kpis" aria-label="Process skip counters">
+          <article class="kpi" aria-labelledby="kpi-fetch-skip-label">
+            <div class="kpi-label" id="kpi-fetch-skip-label">Fetch skipped (seen)</div>
+            <div class="kpi-value" id="kpi-fetch-skipped">—</div>
+            <div class="kpi-sub">URLs already seen, not re-fetched</div>
+          </article>
+          <article class="kpi" aria-labelledby="kpi-tight-near-label">
+            <div class="kpi-label" id="kpi-tight-near-label">Tight near-dup skipped</div>
+            <div class="kpi-value" id="kpi-tight-near">—</div>
+            <div class="kpi-sub">near-dups below store threshold</div>
+          </article>
+        </div>
         <div class="dedup-block" id="dedup-block" style="margin-top:12px">—</div>
       </section>
     </section>

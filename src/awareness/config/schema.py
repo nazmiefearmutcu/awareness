@@ -130,7 +130,7 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
     ),
     ConfigField(
         "terminal_mute_duplicates", "Tail (live capture)", KIND_BOOL, False,
-        "Mute/skip printing duplicate captures (EXACT_DUP, NEAR_DUP, REVISION) to the terminal.",
+        "Mute/skip printing duplicate captures (EXACT_DUP, NEAR_DUP, REVISION) and tight near-dup skip-store lines to the terminal.",
     ),
     ConfigField(
         "tail_seed_file", "Tail (live capture)", KIND_PATH, None,
@@ -175,6 +175,13 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
     ConfigField(
         "text_min_chars", "Corpus filters", KIND_INT, 200,
         "Drop documents whose extracted text is shorter than this.",
+        minimum=0, maximum=100_000_000,
+    ),
+    ConfigField(
+        "text_min_chars_news", "Corpus filters", KIND_INT, 80,
+        "Lower minimum text length for RSS/Atom/GDELT/sitemap-discovered pages "
+        "(effective floor is max(40, min(text_min_chars, text_min_chars_news)); "
+        "docs kept only by this floor increment metric tail.news_floor_kept).",
         minimum=0, maximum=100_000_000,
     ),
     ConfigField(
@@ -237,7 +244,7 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
     # ── Identity ─────────────────────────────────────────────────────────────
     ConfigField(
         "user_agent", "Identity", KIND_STR,
-        "AwarenessBot/0.1 (+https://github.com/nazmiefearmutcu/claude; public-text-research)",
+        "AwarenessBot/0.1 (+https://github.com/nazmiefearmutcu/awareness; public-text-research)",
         "User-Agent header sent with every fetch.",
     ),
     ConfigField(
@@ -275,6 +282,12 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
         "search_idf_threshold", "Search", KIND_FLOAT, 1.0,
         "Minimum Inverse Document Frequency (IDF) threshold for query terms in BM25F ranking.",
         minimum=0.0, maximum=100.0,
+    ),
+    ConfigField(
+        "search_recency_boost", "Search", KIND_FLOAT, 0.0,
+        "Optional FTS re-rank recency weight (0=off). When >0, prefer fresher "
+        "published_ts (fallback fetch_ts); boost is bounded in [1, 1+weight].",
+        minimum=0.0, maximum=10.0,
     ),
     # ── Observability / terminal ─────────────────────────────────────────────
     ConfigField(

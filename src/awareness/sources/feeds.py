@@ -14,9 +14,13 @@ sub-partition that actually fetches the page (tail_recrawl).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import gzip as _gzip
+import json
+import time
+from collections.abc import AsyncIterator, Iterable, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 import feedparser
 import httpx
@@ -28,9 +32,491 @@ from awareness.obs.metrics import get_metrics
 from awareness.schemas.doc import DocCapture, SourceKind
 from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
-from awareness.util.urls import canonical_url
+from awareness.util.http import (
+    RetryableHTTPError,
+    decode_http_text,
+    get_shared_async_client,
+    get_with_retries,
+)
+from awareness.util.robots import extract_sitemap_urls
+from awareness.util.urls import canonical_url, is_homepage_url, is_public_http_url
 
 logger = get_logger("sources.feeds")
+
+# Checkpoint window for feed-level URL cursors. Ordered most-recently-seen;
+# oldest entries are dropped when the cap is exceeded.
+SEEN_URLS_CAP = 5000
+
+
+def _status_class(code: int) -> str:
+    """Map an HTTP status to a coarse class label (``2xx``, ``4xx``, …)."""
+    if code < 100:
+        return "unknown"
+    return f"{code // 100}xx"
+
+
+def _sitemap_probe_depth_label(depth: int) -> str:
+    """Map sitemap recursion depth to a low-cardinality probe label.
+
+    ``_read_sitemap`` starts at depth=1 (seed / robots-discovered index) and
+    decrements when following ``<sitemapindex>`` children. Root vs nested lets
+    operators separate index-list latency from leaf urlset probes without
+    exploding cardinality on URL or host.
+    """
+    return "root" if depth >= 1 else "nested"
+
+
+def _record_feed_fetch(
+    *,
+    kind: str,
+    outcome: str,
+    status_class: str,
+    elapsed: float,
+    depth: int | None = None,
+) -> None:
+    """Emit process-local feed/sitemap fetch counters + latency histogram.
+
+    Labels stay low-cardinality (kind + outcome + status class [+ depth for
+    sitemaps]) so dashboards and ``metrics --prefix feeds`` stay readable
+    under heavy discovery load.
+    """
+    m = get_metrics()
+    labels: dict[str, str] = {
+        "kind": kind,
+        "outcome": outcome,
+        "status_class": status_class,
+    }
+    # Sitemap probes only: root index vs nested child urlset/index.
+    if kind == "sitemap":
+        labels["depth"] = _sitemap_probe_depth_label(
+            1 if depth is None else int(depth)
+        )
+    m.inc("feeds.fetch_attempts", labels=labels)
+    m.observe("feeds.fetch_seconds", max(0.0, elapsed), labels=labels)
+
+# Content negotiation: many CDNs gate XML feeds without a sensible Accept.
+# Prefer RSS/Atom, then JSON Feed (https://www.jsonfeed.org/), then generic XML.
+FEED_ACCEPT = (
+    "application/rss+xml, application/atom+xml, application/feed+json;q=0.95, "
+    "application/json;q=0.9, application/xml;q=0.85, text/xml;q=0.8, */*;q=0.1"
+)
+SITEMAP_ACCEPT = "application/xml, text/xml, application/gzip, */*;q=0.1"
+
+
+def _maybe_decompress_body(body: bytes) -> bytes:
+    """Decompress gzip-wrapped feed/sitemap bodies (magic ``1f 8b``).
+
+    Many publishers serve ``.xml.gz`` sitemaps and some CDNs gzip RSS even
+    without ``Content-Encoding`` after httpx has already decoded the transfer
+    encoding. Corrupt gzip falls through to the raw bytes so parsers can fail
+    clearly. UTF-8 BOM is stripped so lxml/feedparser do not choke on it.
+    """
+    if not body:
+        return body
+    if body.startswith(b"\x1f\x8b"):
+        try:
+            body = _gzip.decompress(body)
+        except OSError as exc:
+            logger.warning("feed_body_gunzip_failed", err=str(exc))
+            # Fall through: still try BOM strip on the raw bytes.
+    if body.startswith(b"\xef\xbb\xbf"):
+        return body[3:]
+    return body
+
+
+def decode_feed_text(
+    body: bytes,
+    *,
+    content_type: str | None = None,
+) -> tuple[str, str]:
+    """Decode a feed/sitemap body to text with Content-Type charset awareness.
+
+    Feeds are XML/JSON, not HTML, so meta-charset sniffing is skipped. Order
+    matches :func:`decode_http_text` (header → clean UTF-8 → detector → replace).
+    Returns ``(text, encoding_label)``.
+    """
+    return decode_http_text(
+        body,
+        content_type=content_type,
+        peek_html_meta=False,
+        use_detector=True,
+    )
+
+
+def _body_for_xml_parser(
+    body: bytes,
+    *,
+    content_type: str | None = None,
+    kind: str = "rss",
+) -> bytes | str:
+    """Return bytes for UTF-8 / undeclared feeds, or unicode when charset is known.
+
+    ``feedparser`` and ``lxml`` accept either; non-UTF-8 bodies without an XML
+    encoding declaration parse more reliably as unicode after charset decode.
+    """
+    text, encoding = decode_feed_text(body, content_type=content_type)
+    get_metrics().inc(
+        "feeds.decode_charset",
+        labels={"kind": kind, "encoding": encoding or "unknown"},
+    )
+    # Keep raw bytes when the codec is UTF-8 family so XML declaration + binary
+    # paths stay stable for gzip-stripped payloads that are already clean.
+    if encoding in ("utf-8", "utf-8-replace", "ascii") and not content_type:
+        return body
+    if encoding in ("utf-8", "ascii"):
+        # Declared UTF-8 via Content-Type — bytes still fine and preserve exact
+        # wire form for feedparser's own encoding sniff.
+        return body
+    return text
+
+
+def _is_http_url(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith(("http://", "https://"))
+
+
+def _coerce_http_url(value: Any, base_url: str | None = None) -> str | None:
+    """Return an absolute http(s) URL, resolving relatives against *base_url*.
+
+    Skips non-http schemes (mailto:, tag:, urn:, javascript:). Relative paths
+    (``/story/1``, ``../a``, protocol-relative ``//cdn…``) resolve via
+    ``urljoin`` when *base_url* is a usable http(s) base (the feed/sitemap
+    URL). Without a base, only absolute http(s) values are accepted.
+    """
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    if _is_http_url(s):
+        return s
+    # Explicit non-http schemes must not be rewritten by urljoin.
+    scheme, _, rest = s.partition(":")
+    if rest and scheme and scheme.lower() not in ("http", "https") and not s.startswith("//"):
+        # scheme present and not http(s) or protocol-relative → reject.
+        if "/" not in scheme and scheme.isalpha():
+            return None
+    if base_url and _is_http_url(base_url):
+        resolved = urljoin(base_url, s)
+        if _is_http_url(resolved):
+            return resolved
+    return None
+
+
+def _entry_attr_http_url(
+    entry: Any, *attrs: str, base_url: str | None = None
+) -> str | None:
+    """First http(s) URL found among named entry attributes (or nested dicts)."""
+    for attr in attrs:
+        value = getattr(entry, attr, None)
+        if value is None and isinstance(entry, dict):
+            value = entry.get(attr)
+        if isinstance(value, dict):
+            value = value.get("value") or value.get("href") or value.get("url")
+        coerced = _coerce_http_url(value, base_url)
+        if coerced is not None:
+            return coerced
+    return None
+
+
+def _media_or_enclosure_urls(entry: Any, base_url: str | None = None) -> list[str]:
+    """Collect http(s) URLs from media:content / media:thumbnail / enclosures.
+
+    feedparser surfaces Media RSS as ``media_content`` / ``media_thumbnail``
+    (list of dicts with ``url``) and RSS ``<enclosure>`` as ``enclosures``
+    (list of dicts with ``href`` or ``url``). Order is preserved so callers
+    can prefer HTML pages over binary blobs when both appear.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _push(raw: Any) -> None:
+        coerced = _coerce_http_url(raw, base_url)
+        if coerced is None or coerced in seen:
+            return
+        seen.add(coerced)
+        out.append(coerced)
+
+    for attr in ("media_content", "media_thumbnail", "enclosures"):
+        items = getattr(entry, attr, None)
+        if items is None and isinstance(entry, dict):
+            items = entry.get(attr)
+        if not items:
+            continue
+        if not isinstance(items, (list, tuple)):
+            items = [items]
+        for item in items:
+            if isinstance(item, dict):
+                _push(item.get("url") or item.get("href"))
+            else:
+                _push(getattr(item, "url", None) or getattr(item, "href", None))
+    # Singular enclosure (some parsers).
+    enc = getattr(entry, "enclosure", None)
+    if enc is None and isinstance(entry, dict):
+        enc = entry.get("enclosure")
+    if isinstance(enc, dict):
+        _push(enc.get("url") or enc.get("href"))
+    elif enc is not None:
+        _push(getattr(enc, "url", None) or getattr(enc, "href", None))
+    return out
+
+
+def _prefer_html_media_url(urls: list[str]) -> str | None:
+    """Prefer a likely HTML page URL among media/enclosure candidates.
+
+    Many podcast/news feeds list the binary enclosure first and an HTML
+    landing page second (or vice versa). Prefer ``text/html``-looking paths
+    (no media extension, or ``.html``/``.htm``) so tail_recrawl fetches an
+    article rather than a naked MP3 when both are present.
+    """
+    if not urls:
+        return None
+    _media_ext = (
+        ".mp3",
+        ".mp4",
+        ".m4a",
+        ".wav",
+        ".ogg",
+        ".flac",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".webp",
+        ".pdf",
+        ".zip",
+        ".gz",
+        ".webm",
+        ".mov",
+    )
+
+    def _looks_html(u: str) -> bool:
+        path = urlsplit(u).path.lower() if u else ""
+        # Binary / asset extensions are not article pages.
+        return not any(path.endswith(ext) for ext in _media_ext)
+
+    for u in urls:
+        if _looks_html(u):
+            return u
+    return urls[0]
+
+
+def json_feed_item_url(item: Any, base_url: str | None = None) -> str | None:
+    """Best article URL from a JSON Feed 1.x item.
+
+    Preference order (JSON Feed 1.1):
+      1. ``url`` — primary permalink for the item
+      2. ``external_url`` — related/canonical page when the feed hosts a summary
+      3. ``id`` when that value is itself an http(s) URL
+
+    Returns ``None`` when no usable http(s) URL is present.
+    """
+    if not isinstance(item, dict):
+        return None
+    for key in ("url", "external_url", "id"):
+        coerced = _coerce_http_url(item.get(key), base_url)
+        if coerced is not None:
+            return coerced
+    return None
+
+
+def parse_json_feed_urls(
+    body: bytes | str,
+    base_url: str | None = None,
+    *,
+    content_type: str | None = None,
+) -> list[str] | None:
+    """Extract item URLs from a JSON Feed document, or ``None`` if not JSON Feed.
+
+    Detects JSON Feed by a top-level ``version`` containing ``jsonfeed.org``
+    and/or an ``items`` array of objects. Plain JSON arrays/objects without
+    that shape return ``None`` so callers can fall through to feedparser.
+    Relative item URLs resolve against *base_url* (the feed document URL).
+
+    Byte bodies use charset-aware decoding (``Content-Type`` charset first)
+    so Latin-1 / Windows-125x JSON feeds are not dropped as undecodable.
+    """
+    if not body:
+        return None
+    if isinstance(body, bytes):
+        # Skip obvious non-JSON (XML feeds start with ``<`` or whitespace+``<``).
+        sample = body.lstrip()[:1]
+        if sample and sample not in (b"{", b"["):
+            return None
+        text, encoding = decode_feed_text(body, content_type=content_type)
+        get_metrics().inc(
+            "feeds.decode_charset",
+            labels={"kind": "json", "encoding": encoding or "unknown"},
+        )
+    else:
+        text = body
+    stripped = text.lstrip()
+    if not stripped or stripped[0] not in "{[":
+        return None
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    version = data.get("version")
+    items = data.get("items")
+    looks_json_feed = False
+    if isinstance(version, str) and "jsonfeed" in version.lower():
+        looks_json_feed = True
+    elif isinstance(items, list) and items and isinstance(items[0], dict):
+        # Heuristic: items look like JSON Feed entries (url/id/title keys).
+        sample_keys = set(items[0].keys())
+        if sample_keys & {"url", "external_url", "content_html", "content_text", "id"}:
+            looks_json_feed = True
+    if not looks_json_feed:
+        return None
+    if not isinstance(items, list):
+        return []
+    out: list[str] = []
+    for item in items:
+        link = json_feed_item_url(item, base_url=base_url)
+        if link:
+            out.append(link)
+    return out
+
+
+def entry_primary_url(entry: Any, base_url: str | None = None) -> str | None:
+    """Best article URL from a feedparser entry (RSS link or Atom links[]).
+
+    Prefers publisher-original permalinks when present:
+
+    1. ``feedburner:origLink`` / ``phoenix:origLink`` / bare ``origlink``
+       (feedparser exposes these as ``feedburner_origlink`` etc.) — these
+       beat FeedBurner / syndication proxy ``link`` values so the fetch gate
+       keys the real article URL instead of a redirector.
+    2. ``entry.link`` when it is an http(s) URL (or relative resolved against
+       *base_url*, typically the feed URL).
+    3. ``entry.links`` for ``rel=alternate`` (Atom default) then any http(s)
+       href (also resolved when relative).
+    4. ``entry.id`` / ``entry.guid`` when that value is itself an http(s) URL
+       (common when publishers put the permalink only in ``guid`` / Atom
+       ``id``).
+    5. ``media:content`` / ``media:thumbnail`` / RSS ``enclosure`` http(s)
+       URLs (podcasts and media-heavy feeds that omit ``link``). Prefer an
+       HTML-looking candidate when several are listed.
+
+    Returns ``None`` when no usable URL is present.
+    """
+    # Syndication proxies (FeedBurner, etc.) put the real article URL in
+    # origLink while ``link`` points at feedproxy.google.com / similar.
+    orig = _entry_attr_http_url(
+        entry,
+        "feedburner_origlink",
+        "phoenix_origlink",
+        "origlink",
+        "feedburner:origLink",  # raw namespace form if present
+        base_url=base_url,
+    )
+    if orig is not None:
+        return orig
+
+    link = getattr(entry, "link", None)
+    coerced_link = _coerce_http_url(link, base_url)
+    if coerced_link is not None:
+        return coerced_link
+
+    links = getattr(entry, "links", None) or []
+    fallback: str | None = None
+    for ln in links:
+        if isinstance(ln, dict):
+            href = ln.get("href")
+            rel = ln.get("rel")
+        else:
+            href = getattr(ln, "href", None)
+            rel = getattr(ln, "rel", None)
+        href_s = _coerce_http_url(href, base_url)
+        if href_s is None:
+            continue
+        # Atom: alternate is the HTML article; self is often the entry id.
+        if rel in (None, "", "alternate"):
+            return href_s
+        if fallback is None:
+            fallback = href_s
+    if fallback is not None:
+        return fallback
+
+    # RSS guid / Atom id often hold the permanent article URL when <link> is
+    # absent or non-http (tag: URNs, bare guids). Only accept http(s).
+    for attr in ("id", "guid"):
+        value = getattr(entry, attr, None)
+        if isinstance(value, dict):
+            value = value.get("value") or value.get("href")
+        coerced = _coerce_http_url(value, base_url)
+        if coerced is not None:
+            return coerced
+
+    # Media RSS / enclosure: last resort so podcast and media-only entries
+    # still enqueue a fetchable URL for the tail (avoids silent drop).
+    media_urls = _media_or_enclosure_urls(entry, base_url=base_url)
+    preferred = _prefer_html_media_url(media_urls)
+    if preferred is not None:
+        return preferred
+    return None
+
+
+def dedupe_feed_urls(urls: Iterable[str]) -> list[str]:
+    """Preserve first-seen order while collapsing canonical URL identity.
+
+    Feeds and sitemaps often list the same article twice (http/https, trailing
+    slash, utm params). Collapsing here prevents double-enqueue of identical
+    tail recrawls within one discovery pass. Original strings are kept for
+    fetch; identity keys are applied again at enqueue.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in urls:
+        if not raw:
+            continue
+        raw_s = str(raw).strip()
+        if not raw_s:
+            continue
+        key = canonical_url(raw_s) or raw_s
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(raw_s)
+    return out
+
+
+def merge_seen_urls(
+    previous: Sequence[str] | None,
+    discovered: Iterable[str],
+    *,
+    cap: int = SEEN_URLS_CAP,
+) -> list[str]:
+    """Merge discovered URLs into an ordered most-recently-seen window.
+
+    Insertion order is oldest → newest. Re-seeing a URL moves it to the end
+    (most recent). When over ``cap``, the oldest entries are dropped so the
+    checkpoint retains the most recent ``cap`` URLs.
+
+    Unlike ``set``-based trimming, this is stable across runs and does not
+    randomly forget recently seen URLs when the window is full.
+    """
+    ordered: dict[str, None] = {}
+    for raw in previous or ():
+        if not raw:
+            continue
+        # Checkpoint already stores canonical forms; keep non-empty strings.
+        ordered[str(raw)] = None
+    for raw in discovered:
+        cu = canonical_url(raw) if raw else None
+        if not cu:
+            continue
+        # Move to end = most recently seen (LRU-ish ordered window).
+        ordered.pop(cu, None)
+        ordered[cu] = None
+    if cap <= 0:
+        return []
+    if len(ordered) > cap:
+        keys = list(ordered.keys())
+        ordered = {k: None for k in keys[-cap:]}
+    return list(ordered.keys())
 
 
 def _load_seeds(path: Path | None) -> dict[str, Any]:
@@ -67,12 +553,12 @@ class FeedsAdapter(Adapter):
 
         get_metrics().inc("feeds.urls_discovered", value=len(urls), labels={"channel": kind})
 
-        # Filter against cursor.
-        last_seen: set[str] = set(context.checkpoint.get("seen_urls", []))
+        # Filter against ordered cursor (membership is order-independent).
+        prev_seen = list(context.checkpoint.get("seen_urls") or [])
+        last_seen: set[str] = set(prev_seen)
         new_urls = [u for u in urls if canonical_url(u) and canonical_url(u) not in last_seen]
-        # Update cursor (bounded to last 5000 to keep memory in check).
-        merged = last_seen | {canonical_url(u) for u in urls if canonical_url(u)}
-        context.checkpoint["seen_urls"] = list(list(merged)[-5000:])
+        # Ordered most-recently-seen window; cap keeps newest SEEN_URLS_CAP.
+        context.checkpoint["seen_urls"] = merge_seen_urls(prev_seen, urls, cap=SEEN_URLS_CAP)
 
         enqueue = context.extras.setdefault("enqueue", [])
         for u in new_urls:
@@ -87,66 +573,277 @@ class FeedsAdapter(Adapter):
                     },
                 )
             )
+
+        # C3-T6 partial: bare-domain homepage seeds → robots Sitemap: discovery once.
+        if is_homepage_url(url) and not context.checkpoint.get("robots_sitemaps_discovered"):
+            discovered = await _enqueue_robots_sitemaps(url, context)
+            context.checkpoint["robots_sitemaps_discovered"] = True
+            if discovered:
+                get_metrics().inc(
+                    "feeds.robots_sitemaps_discovered",
+                    value=discovered,
+                    labels={"channel": kind},
+                )
+
         return
         if False:  # pragma: no cover
             yield
 
 
+async def _enqueue_robots_sitemaps(seed_url: str, context: AdapterContext) -> int:
+    """Discover Sitemap: URLs from robots.txt for a homepage seed; enqueue once.
+
+    Returns the number of public sitemap partitions enqueued. Missing robots
+    cache, empty body, or non-public sitemap URLs are no-ops.
+    """
+    robots = context.extras.get("robots") if context.extras else None
+    if robots is None or not hasattr(robots, "get_robots_txt"):
+        return 0
+    try:
+        body = await robots.get_robots_txt(seed_url, context.user_agent)
+    except Exception as exc:  # noqa: BLE001 — discovery must not fail the seed
+        logger.warning("robots_sitemap_discover_failed", seed=seed_url, err=str(exc))
+        return 0
+
+    enqueue = context.extras.setdefault("enqueue", [])
+    added = 0
+    for sm_url in extract_sitemap_urls(body):
+        if not is_public_http_url(sm_url):
+            continue
+        key = canonical_url(sm_url) or sm_url
+        enqueue.append(
+            PartitionSpec(
+                source_type=SourceKind.RSS,
+                partition_key=f"sitemap:{key}",
+                payload={"kind": "sitemap", "url": sm_url},
+            )
+        )
+        added += 1
+    if added:
+        logger.info("robots_sitemaps_discovered", seed=seed_url, count=added)
+    return added
+
+
 async def _read_feed(url: str, user_agent: str) -> list[str]:
     """RSS / Atom — fetch and parse."""
+    t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            r = await client.get(url, headers={"User-Agent": user_agent})
-            if r.status_code != 200 or not r.content:
-                return []
-            body = r.content
+        # Reuse process-wide pooled client (connection keep-alive across seeds).
+        client = await get_shared_async_client(timeout=30.0, follow_redirects=True)
+        # Transient 429/5xx retried inside get_with_retries (global slot held
+        # only during each GET). Exhausted retries raise RetryableHTTPError.
+        r = await get_with_retries(
+            client,
+            url,
+            headers={"User-Agent": user_agent, "Accept": FEED_ACCEPT},
+        )
+        elapsed = time.perf_counter() - t0
+        if r.status_code != 200:
+            logger.warning("feed_fetch_non_200", url=url, status=r.status_code)
+            get_metrics().inc(
+                "feeds.fetch_non_200",
+                labels={"kind": "rss", "status": str(r.status_code)},
+            )
+            _record_feed_fetch(
+                kind="rss",
+                outcome="http_error",
+                status_class=_status_class(r.status_code),
+                elapsed=elapsed,
+            )
+            return []
+        _record_feed_fetch(
+            kind="rss",
+            outcome="ok",
+            status_class=_status_class(r.status_code),
+            elapsed=elapsed,
+        )
+        if not r.content:
+            return []
+        body = _maybe_decompress_body(r.content)
+        ctype = r.headers.get("content-type") or r.headers.get("Content-Type")
+    except RetryableHTTPError:
+        _record_feed_fetch(
+            kind="rss",
+            outcome="retry_exhausted",
+            status_class="5xx",
+            elapsed=time.perf_counter() - t0,
+        )
+        get_metrics().inc(
+            "feeds.retryable_http_error",
+            labels={"kind": "rss"},
+        )
+        raise
     except httpx.HTTPError as exc:
+        _record_feed_fetch(
+            kind="rss",
+            outcome="transport_error",
+            status_class="unknown",
+            elapsed=time.perf_counter() - t0,
+        )
         logger.warning("feed_fetch_failed", url=url, err=str(exc))
         return []
-    parsed = feedparser.parse(body)
+    # JSON Feed (https://www.jsonfeed.org/) — try before feedparser so modern
+    # application/feed+json responses are not silently dropped as empty RSS.
+    json_urls = parse_json_feed_urls(body, base_url=url, content_type=ctype)
+    if json_urls is not None:
+        get_metrics().inc("feeds.json_feed_parsed", labels={"kind": "json"})
+        return dedupe_feed_urls(json_urls)
+
+    parse_input = _body_for_xml_parser(body, content_type=ctype, kind="rss")
+    parsed = feedparser.parse(parse_input)
     out: list[str] = []
     for entry in parsed.entries:
-        link = getattr(entry, "link", None)
-        if link and link.startswith(("http://", "https://")):
+        # Resolve relative entry links against the feed URL (common on
+        # self-hosted / legacy RSS where <link>/story</link> is path-only).
+        link = entry_primary_url(entry, base_url=url)
+        if link:
             out.append(link)
-    return out
+    # Collapse scheme/slash/utm variants so one article → one tail enqueue.
+    return dedupe_feed_urls(out)
 
 
 async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
     """Parse a sitemap or sitemap-index. Follows one level of nesting by default."""
+    t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            r = await client.get(url, headers={"User-Agent": user_agent})
-            if r.status_code != 200 or not r.content:
-                return []
-            body = r.content
+        # Longer timeout for large sitemap indexes; still pooled by timeout key.
+        client = await get_shared_async_client(timeout=60.0, follow_redirects=True)
+        # Same retry policy as feeds / CC discovery: transient → retry/raise.
+        r = await get_with_retries(
+            client,
+            url,
+            headers={"User-Agent": user_agent, "Accept": SITEMAP_ACCEPT},
+        )
+        elapsed = time.perf_counter() - t0
+        if r.status_code != 200:
+            logger.warning("sitemap_fetch_non_200", url=url, status=r.status_code)
+            get_metrics().inc(
+                "feeds.fetch_non_200",
+                labels={
+                    "kind": "sitemap",
+                    "status": str(r.status_code),
+                    "depth": _sitemap_probe_depth_label(depth),
+                },
+            )
+            _record_feed_fetch(
+                kind="sitemap",
+                outcome="http_error",
+                status_class=_status_class(r.status_code),
+                elapsed=elapsed,
+                depth=depth,
+            )
+            return []
+        _record_feed_fetch(
+            kind="sitemap",
+            outcome="ok",
+            status_class=_status_class(r.status_code),
+            elapsed=elapsed,
+            depth=depth,
+        )
+        if not r.content:
+            return []
+        body = _maybe_decompress_body(r.content)
+        ctype = r.headers.get("content-type") or r.headers.get("Content-Type")
+    except RetryableHTTPError:
+        _record_feed_fetch(
+            kind="sitemap",
+            outcome="retry_exhausted",
+            status_class="5xx",
+            elapsed=time.perf_counter() - t0,
+            depth=depth,
+        )
+        get_metrics().inc(
+            "feeds.retryable_http_error",
+            labels={"kind": "sitemap", "depth": _sitemap_probe_depth_label(depth)},
+        )
+        raise
     except httpx.HTTPError as exc:
+        _record_feed_fetch(
+            kind="sitemap",
+            outcome="transport_error",
+            status_class="unknown",
+            elapsed=time.perf_counter() - t0,
+            depth=depth,
+        )
         logger.warning("sitemap_fetch_failed", url=url, err=str(exc))
         return []
 
+    parse_input = _body_for_xml_parser(body, content_type=ctype, kind="sitemap")
     try:
-        if body.startswith(b"\x1f\x8b"):
-            import gzip as _gz
-
-            body = _gz.decompress(body)
-        root = etree.fromstring(body)
+        if isinstance(parse_input, str):
+            root = etree.fromstring(parse_input.encode("utf-8"))
+        else:
+            root = etree.fromstring(parse_input)
     except (etree.XMLSyntaxError, OSError, ValueError) as exc:
-        logger.warning("sitemap_parse_failed", url=url, err=str(exc))
-        return []
+        # Retry once with full charset decode → UTF-8 re-encode when the wire
+        # bytes were not UTF-8 and lacked an XML encoding declaration.
+        if isinstance(parse_input, (bytes, bytearray)):
+            try:
+                text, enc = decode_feed_text(body, content_type=ctype)
+                get_metrics().inc(
+                    "feeds.decode_charset",
+                    labels={"kind": "sitemap_retry", "encoding": enc or "unknown"},
+                )
+                root = etree.fromstring(text.encode("utf-8"))
+            except (etree.XMLSyntaxError, OSError, ValueError) as exc2:
+                logger.warning("sitemap_parse_failed", url=url, err=str(exc2))
+                return []
+        else:
+            logger.warning("sitemap_parse_failed", url=url, err=str(exc))
+            return []
 
-    ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
     out: list[str] = []
     tag = etree.QName(root.tag).localname
     if tag == "sitemapindex":
         if depth <= 0:
             return out
-        for child in root.findall(f"{ns}sitemap/{ns}loc"):
-            loc = (child.text or "").strip()
-            if loc:
-                out.extend(await _read_sitemap(loc, user_agent, depth=depth - 1))
+        for loc in _sitemap_loc_texts(root, parent_local="sitemap", base_url=url):
+            out.extend(await _read_sitemap(loc, user_agent, depth=depth - 1))
     else:
-        for child in root.findall(f"{ns}url/{ns}loc"):
+        out.extend(_sitemap_loc_texts(root, parent_local="url", base_url=url))
+    # Same article listed twice (http vs https, utm wrappers) → one identity.
+    return dedupe_feed_urls(out)
+
+
+def _sitemap_loc_texts(
+    root: Any, *, parent_local: str, base_url: str | None = None
+) -> list[str]:
+    """Collect ``<loc>`` text under ``parent_local`` elements, any namespace.
+
+    Standard sitemaps use ``{http://www.sitemaps.org/schemas/sitemap/0.9}``,
+    but many publishers emit un-namespaced or default-namespaced XML. Matching
+    on local-name keeps discovery working for both. Relative locs resolve
+    against *base_url* (the sitemap document URL).
+    """
+    ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+
+    def _abs(loc: str) -> str | None:
+        return _coerce_http_url(loc, base_url)
+
+    # Fast path: standard sitemap namespace.
+    found = [
+        abs_loc
+        for el in root.findall(f"{ns}{parent_local}/{ns}loc")
+        if (abs_loc := _abs((el.text or "").strip()))
+    ]
+    if found:
+        return found
+    # Namespace-agnostic fallback (no-ns, alternate default xmlns, etc.).
+    out: list[str] = []
+    for parent in root.iter():
+        try:
+            if etree.QName(parent.tag).localname != parent_local:
+                continue
+        except (ValueError, TypeError):
+            continue
+        for child in parent:
+            try:
+                if etree.QName(child.tag).localname != "loc":
+                    continue
+            except (ValueError, TypeError):
+                continue
             loc = (child.text or "").strip()
-            if loc:
-                out.append(loc)
+            abs_loc = _abs(loc) if loc else None
+            if abs_loc:
+                out.append(abs_loc)
     return out

@@ -2,6 +2,10 @@
 
 Async semaphores per (registered) domain, with a minimum inter-fetch delay
 derived from either robots.txt crawl-delay or a global default.
+
+Spacing is reserved under a lock via ``next_allowed_at`` so concurrent holders
+of the per-domain semaphore cannot race and fire back-to-back (which would
+ignore crawl-delay when concurrency > 1).
 """
 
 from __future__ import annotations
@@ -14,7 +18,8 @@ from dataclasses import dataclass
 @dataclass
 class _DomainSlot:
     sem: asyncio.Semaphore
-    last_release: float
+    # Monotonic time at which the *next* request for this domain may start.
+    next_allowed_at: float
 
 
 class PerDomainLimiter:
@@ -29,27 +34,43 @@ class PerDomainLimiter:
     def _slot(self, domain: str) -> _DomainSlot:
         slot = self._slots.get(domain)
         if slot is None:
-            slot = _DomainSlot(sem=asyncio.Semaphore(self._concurrency), last_release=0.0)
+            slot = _DomainSlot(sem=asyncio.Semaphore(self._concurrency), next_allowed_at=0.0)
             self._slots[domain] = slot
         return slot
 
+    def _effective_delay(self, override_delay: float | None) -> float:
+        """Resolve inter-request delay for one acquire.
+
+        Robots crawl-delay is a floor that may raise the configured minimum;
+        it never lowers politeness below ``min_delay_sec``.
+        """
+        if override_delay is None:
+            return self._min_delay
+        try:
+            crawl_delay = float(override_delay)
+        except (TypeError, ValueError):
+            return self._min_delay
+        crawl_delay = max(crawl_delay, 0.0)
+        return max(self._min_delay, crawl_delay)
+
     async def acquire(self, domain: str, override_delay: float | None = None) -> None:
+        delay = self._effective_delay(override_delay)
+        # Reserve a start time under the lock so concurrent acquirers cannot
+        # both read a stale clock and fire back-to-back.
         async with self._lock:
             slot = self._slot(domain)
+            now = time.monotonic()
+            start_at = max(now, slot.next_allowed_at)
+            slot.next_allowed_at = start_at + delay
+            wait = start_at - now
+        if wait > 0:
+            await asyncio.sleep(wait)
         await slot.sem.acquire()
-        # Inter-fetch spacing: spin-sleep without holding lock.
-        delay = self._min_delay if override_delay is None else max(0.0, override_delay)
-        if delay > 0:
-            now = time.time()
-            wait = (slot.last_release + delay) - now
-            if wait > 0:
-                await asyncio.sleep(wait)
 
     def release(self, domain: str) -> None:
         slot = self._slots.get(domain)
         if not slot:
             return
-        slot.last_release = time.time()
         slot.sem.release()
 
     class _DomainCtx:

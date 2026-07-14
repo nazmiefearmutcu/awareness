@@ -45,11 +45,14 @@ from awareness.planner.planner import Planner
 from awareness.schemas.doc import SourceKind
 from awareness.schemas.jobs import BackfillRequest
 from awareness.storage.duckdb_index import DuckDbIndex
+from awareness.cli.export_util import export_fold_key_sql, query_export_captures, write_export_jsonl
+from awareness.dedup.engine import DEFAULT_NEAR_THRESHOLD
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
 from datetime import datetime
 
-from awareness.util.timeutil import coerce_relative_end, to_utc
+from awareness.util.lang import PRIMARY_LANGUAGE_SQL, append_language_filter
+from awareness.util.timeutil import coerce_relative_end, inclusive_end, to_utc
 from awareness.workers.engine import WorkerEngine
 
 app = typer.Typer(no_args_is_help=False, help="Awareness — public text internet awareness engine")
@@ -59,6 +62,7 @@ service_app = typer.Typer(no_args_is_help=True, help="Manage launchd daemon serv
 config_app = typer.Typer(no_args_is_help=True, help="Configure Awareness settings")
 cloud_app = typer.Typer(no_args_is_help=True, help="Configure cloud storage integrations (Google Drive, S3)")
 dedup_app = typer.Typer(no_args_is_help=True, help="Deduplication inspection & checks")
+dlq_app = typer.Typer(no_args_is_help=True, help="Dead-letter queue: inspect failed tasks")
 
 app.add_typer(backfill_app, name="backfill")
 app.add_typer(tail_app, name="tail")
@@ -66,6 +70,7 @@ app.add_typer(service_app, name="service")
 app.add_typer(config_app, name="config")
 app.add_typer(cloud_app, name="cloud")
 app.add_typer(dedup_app, name="dedup")
+app.add_typer(dlq_app, name="dlq")
 
 logger = get_logger("cli")
 console = Console(theme=banner.AWARENESS_THEME)
@@ -193,7 +198,9 @@ def _app_version() -> str:
 
         return version("awareness")
     except Exception:
-        return "0.1.0"
+        from awareness import __version__
+
+        return __version__
 
 
 def _version_callback(value: bool) -> None:
@@ -853,6 +860,22 @@ def _format_size(size_bytes: int) -> str:
         return f"{size_bytes} B"
 
 
+def _format_duration(seconds: float) -> str:
+    """Human-readable duration for compact --status age columns."""
+    s = max(0.0, float(seconds))
+    if s < 60:
+        return f"{int(s)}s"
+    if s < 3600:
+        return f"{int(s // 60)}m"
+    if s < 86400:
+        hours = int(s // 3600)
+        mins = int((s % 3600) // 60)
+        return f"{hours}h{mins:02d}m" if mins else f"{hours}h"
+    days = int(s // 86400)
+    hours = int((s % 86400) // 3600)
+    return f"{days}d{hours}h" if hours else f"{days}d"
+
+
 def _query_db_metrics(state: StateDB) -> dict[str, Any]:
     from sqlalchemy import func, select
     from awareness.storage.state import JobRow, TaskRow, DedupRow, DedupNearRow, ManifestRow, DLQRow
@@ -987,6 +1010,25 @@ def status(
         dedup_ratio = (db_metrics['total_docs_dedup_dropped'] / total_docs) * 100
         rprint(f"  • Ingestion Deduplication Ratio: [cyan]{dedup_ratio:.2f}%[/cyan] ({db_metrics['total_docs_dedup_dropped']:,} docs dropped)")
 
+    # Staging backlog age (same summary as compact --status / GET /staging).
+    try:
+        staging = state.pending_manifest_summary()
+    except Exception:  # noqa: BLE001 — status must stay best-effort
+        staging = None
+    if staging is not None:
+        pending_n = int(staging.get("pending_count") or 0)
+        if pending_n:
+            age = staging.get("oldest_age_seconds")
+            age_s = _format_duration(float(age)) if age is not None else "—"
+            recs = int(staging.get("total_records") or 0)
+            b = int(staging.get("total_bytes") or 0)
+            rprint(
+                f"  • Staging pending compaction:   [yellow]{pending_n:,}[/yellow] "
+                f"manifests · {recs:,} rows · {_format_size(b)} · oldest {age_s}"
+            )
+        else:
+            rprint("  • Staging pending compaction:   [green]0[/green] (caught up)")
+
     if detailed:
         rprint("\n[bold]Detailed Component Sizes:[/bold]")
         det_table = Table("Component", "Files", "Size on Disk")
@@ -1015,9 +1057,17 @@ def status(
 
 @app.command(name="dedup-stats")
 def dedup_stats() -> None:
-    """Print dedup index statistics."""
+    """Print dedup index statistics (index rows + process skip counters).
+
+    Matches GET /dedup-stats: durable SQLite dedup index counts plus live
+    process metrics for URL fetch-gate skips and tight near-dup drops.
+    """
     state, _ = _bootstrap()
-    print(json.dumps(state.dedup_stats(), indent=2))
+    stats: dict[str, Any] = dict(state.dedup_stats())
+    m = get_metrics()
+    stats["fetch_skipped_seen"] = int(m.counter_sum("tail.fetch_skipped_seen"))
+    stats["tight_near_skipped"] = int(m.counter_sum("dedup.tight_near_skipped"))
+    print(json.dumps(stats, indent=2))
 
 
 @app.command(name="stats")
@@ -1145,9 +1195,788 @@ def stats(
 
 
 @app.command()
-def metrics() -> None:
-    """Dump in-process metrics snapshot."""
-    print(json.dumps(get_metrics().snapshot(), indent=2))
+def metrics(
+    format: str | None = typer.Option(  # noqa: A002 — CLI flag name matches API /metrics
+        None,
+        "--format",
+        "-f",
+        help=(
+            "Output format: table, json, or prometheus/prom/text. "
+            "Default: table on a TTY, json when piped (script-safe)."
+        ),
+    ),
+    limit: int = typer.Option(
+        40,
+        "--limit",
+        "-n",
+        help="Max rows per section in table mode (counters/gauges/histograms).",
+    ),
+    prefix: str = typer.Option(
+        "",
+        "--prefix",
+        "-p",
+        help=(
+            "Only include metrics whose name starts with this prefix "
+            "(e.g. 'http.', 'gdelt.', 'jsonl.'). Applies to all formats."
+        ),
+    ),
+) -> None:
+    """Show in-process metrics (table, JSON snapshot, or Prometheus text).
+
+    Interactive terminals default to a compact Rich table. Piped/non-TTY
+    stdout defaults to JSON (backward-compatible for scripts). Force either
+    with ``--format``; use ``prometheus`` for the same exposition as
+    ``GET /metrics?format=prometheus``. Pass ``--prefix`` to narrow output
+    (useful when scraping a single subsystem).
+    """
+    if format is None:
+        fmt = "table" if sys.stdout.isatty() else "json"
+    else:
+        fmt = format.strip().lower()
+    m = get_metrics()
+    pfx = prefix.strip() or None
+    if fmt in ("prometheus", "prom", "text", "exposition"):
+        # Trailing newline already included by render_prometheus.
+        sys.stdout.write(m.render_prometheus(prefix=pfx))
+        return
+    if fmt in ("json", "snapshot", "raw"):
+        print(json.dumps(m.snapshot(prefix=pfx), indent=2))
+        return
+    if fmt not in ("table", "human", "pretty", "tui"):
+        raise typer.BadParameter(
+            f"Unknown --format {format!r}; use table, json, or prometheus"
+        )
+    _print_metrics_table(m.snapshot(prefix=pfx), limit=max(1, int(limit)))
+
+
+def _format_metric_duration(sec: float) -> str:
+    """Format histogram latency seconds for table mode (ms when sub-second)."""
+    try:
+        v = float(sec)
+    except (TypeError, ValueError):
+        return "—"
+    if v != v or v < 0:  # NaN / negative
+        return "—"
+    if v < 0.001:
+        return f"{v * 1_000_000:.0f}µs"
+    if v < 1.0:
+        return f"{v * 1000:.0f}ms"
+    if v < 10.0:
+        return f"{v:.2f}s"
+    return f"{v:.1f}s"
+
+
+def _hist_is_seconds(name: str) -> bool:
+    n = (name or "").lower()
+    return n.endswith("_seconds") or n.endswith(".seconds") or "seconds" in n
+
+
+def summarize_fineweb_metrics_table(snap: dict[str, Any]) -> dict[str, Any] | None:
+    """Aggregate FineWeb process metrics for the CLI table summary strip.
+
+    Returns None when the snapshot has no ``fineweb.*`` series so callers can
+    skip the strip entirely.
+    """
+    counters = list(snap.get("counters") or [])
+    histograms = list(snap.get("histograms") or [])
+    admitted = 0.0
+    filtered = 0.0
+    seen = 0.0
+    load_attempts = 0.0
+    load_ok = 0.0
+    by_reason: dict[str, float] = {}
+    has_fineweb = False
+    for c in counters:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if not name.startswith("fineweb."):
+            continue
+        has_fineweb = True
+        val = float(c.get("value") or 0)
+        labels = c.get("labels") or {}
+        if name == "fineweb.rows_admitted":
+            admitted += val
+        elif name == "fineweb.rows_filtered":
+            filtered += val
+            reason = str(labels.get("reason") or "unknown")
+            by_reason[reason] = by_reason.get(reason, 0.0) + val
+        elif name == "fineweb.rows_seen":
+            seen += val
+        elif name == "fineweb.load_attempts":
+            load_attempts += val
+            if labels.get("outcome") == "ok":
+                load_ok += val
+    weighted_p95 = 0.0
+    hist_count = 0
+    for h in histograms:
+        if not isinstance(h, dict):
+            continue
+        name = str(h.get("name") or "")
+        if not name.startswith("fineweb."):
+            continue
+        has_fineweb = True
+        if name != "fineweb.load_seconds":
+            continue
+        n = int(h.get("count") or 0)
+        if n <= 0:
+            continue
+        p95 = float(h.get("p95") or 0.0)
+        hist_count += n
+        weighted_p95 += p95 * n
+    if not has_fineweb:
+        return None
+    top_reason = None
+    if by_reason:
+        top_reason = max(by_reason.items(), key=lambda kv: kv[1])[0]
+    return {
+        "admitted": int(admitted),
+        "filtered": int(filtered),
+        "seen": int(seen),
+        "load_attempts": int(load_attempts),
+        "load_ok": int(load_ok),
+        "load_p95": (weighted_p95 / hist_count) if hist_count else None,
+        "top_filter": top_reason,
+    }
+
+
+def format_fineweb_summary_line(summary: dict[str, Any]) -> str:
+    """Render a single operator-facing FineWeb summary line (no Rich markup)."""
+    bits = [
+        f"admitted={summary.get('admitted', 0)}",
+        f"filtered={summary.get('filtered', 0)}",
+        f"seen={summary.get('seen', 0)}",
+    ]
+    attempts = int(summary.get("load_attempts") or 0)
+    ok = int(summary.get("load_ok") or 0)
+    if attempts:
+        bits.append(f"load={ok}/{attempts} ok")
+    p95 = summary.get("load_p95")
+    if p95 is not None:
+        bits.append(f"load_p95={_format_metric_duration(float(p95))}")
+    top = summary.get("top_filter")
+    if top:
+        bits.append(f"top_filter={top}")
+    return "FineWeb  " + "  ".join(bits)
+
+
+def summarize_wet_parse_metrics_table(snap: dict[str, Any]) -> dict[str, Any] | None:
+    """Aggregate CC-WET download/parse process metrics for the CLI table strip.
+
+    Returns None when the snapshot has no relevant ``cc_wet.*`` series.
+    """
+    counters = list(snap.get("counters") or [])
+    histograms = list(snap.get("histograms") or [])
+    records_seen = 0.0
+    parse_emitted = 0.0
+    download_attempts = 0.0
+    download_ok = 0.0
+    download_cache_hits = 0.0
+    has_wet = False
+    for c in counters:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if name not in (
+            "cc_wet.records_seen",
+            "cc_wet.shard_parse_emitted",
+            "cc_wet.shard_download_attempts",
+        ):
+            continue
+        has_wet = True
+        val = float(c.get("value") or 0)
+        labels = c.get("labels") or {}
+        if name == "cc_wet.records_seen":
+            records_seen += val
+        elif name == "cc_wet.shard_parse_emitted":
+            parse_emitted += val
+        elif name == "cc_wet.shard_download_attempts":
+            download_attempts += val
+            outcome = labels.get("outcome")
+            if outcome == "cache_hit":
+                download_cache_hits += val
+                download_ok += val
+            elif outcome == "ok":
+                download_ok += val
+    parse_weighted = 0.0
+    parse_count = 0
+    dl_weighted = 0.0
+    dl_count = 0
+    for h in histograms:
+        if not isinstance(h, dict):
+            continue
+        name = str(h.get("name") or "")
+        if name not in (
+            "cc_wet.shard_parse_seconds",
+            "cc_wet.iter_parse_seconds",
+            "cc_wet.shard_download_seconds",
+        ):
+            continue
+        has_wet = True
+        n = int(h.get("count") or 0)
+        if n <= 0:
+            continue
+        p95 = float(h.get("p95") or 0.0)
+        if name in ("cc_wet.shard_parse_seconds", "cc_wet.iter_parse_seconds"):
+            parse_count += n
+            parse_weighted += p95 * n
+        else:
+            dl_count += n
+            dl_weighted += p95 * n
+    if not has_wet:
+        return None
+    return {
+        "records_seen": int(records_seen),
+        "parse_emitted": int(parse_emitted),
+        "download_attempts": int(download_attempts),
+        "download_ok": int(download_ok),
+        "download_cache_hits": int(download_cache_hits),
+        "parse_p95": (parse_weighted / parse_count) if parse_count else None,
+        "download_p95": (dl_weighted / dl_count) if dl_count else None,
+    }
+
+
+def format_wet_parse_summary_line(summary: dict[str, Any]) -> str:
+    """Render a single operator-facing WET parse summary line (no Rich markup)."""
+    bits = [
+        f"seen={summary.get('records_seen', 0)}",
+        f"emitted={summary.get('parse_emitted', 0)}",
+    ]
+    attempts = int(summary.get("download_attempts") or 0)
+    ok = int(summary.get("download_ok") or 0)
+    if attempts:
+        bits.append(f"download={ok}/{attempts} ok")
+        cache = int(summary.get("download_cache_hits") or 0)
+        if cache:
+            bits.append(f"cache={cache}")
+    parse_p95 = summary.get("parse_p95")
+    if parse_p95 is not None:
+        bits.append(f"parse_p95={_format_metric_duration(float(parse_p95))}")
+    dl_p95 = summary.get("download_p95")
+    if dl_p95 is not None:
+        bits.append(f"dl_p95={_format_metric_duration(float(dl_p95))}")
+    return "WET      " + "  ".join(bits)
+
+
+def summarize_jsonl_sync_metrics_table(snap: dict[str, Any]) -> dict[str, Any] | None:
+    """Aggregate JSONL crash-safe sync/orphan metrics for the CLI table strip.
+
+    Returns None when the snapshot has no ``jsonl.sync*`` / orphan series.
+    """
+    counters = list(snap.get("counters") or [])
+    histograms = list(snap.get("histograms") or [])
+    gauges = list(snap.get("gauges") or [])
+    syncs = 0.0
+    sync_ok = 0.0
+    orphans_recovered = 0.0
+    orphans_removed = 0.0
+    has_series = False
+    for c in counters:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if name not in (
+            "jsonl.syncs",
+            "jsonl.orphans_recovered",
+            "jsonl.orphans_removed",
+            "jsonl.orphans_recover_errors",
+        ):
+            continue
+        has_series = True
+        val = float(c.get("value") or 0)
+        labels = c.get("labels") or {}
+        if name == "jsonl.syncs":
+            syncs += val
+            if labels.get("outcome") == "ok":
+                sync_ok += val
+        elif name == "jsonl.orphans_recovered":
+            orphans_recovered += val
+        elif name == "jsonl.orphans_removed":
+            orphans_removed += val
+    sync_weighted = 0.0
+    sync_count = 0
+    for h in histograms:
+        if not isinstance(h, dict):
+            continue
+        name = str(h.get("name") or "")
+        if name != "jsonl.sync_seconds":
+            continue
+        has_series = True
+        n = int(h.get("count") or 0)
+        if n <= 0:
+            continue
+        p95 = float(h.get("p95") or 0.0)
+        sync_count += n
+        sync_weighted += p95 * n
+    open_records = 0.0
+    for g in gauges:
+        if not isinstance(g, dict):
+            continue
+        if str(g.get("name") or "") == "jsonl.open_records":
+            has_series = True
+            open_records = float(g.get("value") or 0)
+            break
+    if not has_series:
+        return None
+    return {
+        "syncs": int(syncs),
+        "sync_ok": int(sync_ok),
+        "sync_p95": (sync_weighted / sync_count) if sync_count else None,
+        "orphans_recovered": int(orphans_recovered),
+        "orphans_removed": int(orphans_removed),
+        "open_records": int(open_records),
+    }
+
+
+def format_jsonl_sync_summary_line(summary: dict[str, Any]) -> str:
+    """Render a single operator-facing JSONL sync summary line (no Rich markup)."""
+    bits: list[str] = []
+    syncs = int(summary.get("syncs") or 0)
+    ok = int(summary.get("sync_ok") or 0)
+    if syncs:
+        bits.append(f"sync={ok}/{syncs} ok")
+    p95 = summary.get("sync_p95")
+    if p95 is not None:
+        bits.append(f"sync_p95={_format_metric_duration(float(p95))}")
+    open_recs = int(summary.get("open_records") or 0)
+    if open_recs:
+        bits.append(f"open={open_recs}")
+    recovered = int(summary.get("orphans_recovered") or 0)
+    removed = int(summary.get("orphans_removed") or 0)
+    if recovered or removed:
+        bits.append(f"orphans={recovered} recovered/{removed} removed")
+    if not bits:
+        bits.append("idle")
+    return "JSONL    " + "  ".join(bits)
+
+
+def summarize_fts_metrics_table(snap: dict[str, Any]) -> dict[str, Any] | None:
+    """Aggregate FTS build-path metrics for the CLI table summary strip.
+
+    Returns None when the snapshot has no ``fts.*`` series.
+    """
+    counters = list(snap.get("counters") or [])
+    histograms = list(snap.get("histograms") or [])
+    gauges = list(snap.get("gauges") or [])
+    builds = 0.0
+    full = 0.0
+    incremental = 0.0
+    restore = 0.0
+    errors = 0.0
+    has_fts = False
+    for c in counters:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if name not in ("fts.builds", "fts.build_errors"):
+            continue
+        has_fts = True
+        val = float(c.get("value") or 0)
+        labels = c.get("labels") or {}
+        if name == "fts.builds":
+            builds += val
+            mode = labels.get("mode")
+            if mode == "full":
+                full += val
+            elif mode == "incremental":
+                incremental += val
+            elif mode == "restore":
+                restore += val
+        elif name == "fts.build_errors":
+            errors += val
+    weighted_p95 = 0.0
+    hist_count = 0
+    for h in histograms:
+        if not isinstance(h, dict):
+            continue
+        if str(h.get("name") or "") != "fts.build_seconds":
+            continue
+        has_fts = True
+        labels = h.get("labels") or {}
+        if labels.get("outcome") == "error":
+            continue
+        n = int(h.get("count") or 0)
+        if n <= 0:
+            continue
+        p95 = float(h.get("p95") or 0.0)
+        hist_count += n
+        weighted_p95 += p95 * n
+    indexed_rows = 0.0
+    for g in gauges:
+        if not isinstance(g, dict):
+            continue
+        if str(g.get("name") or "") == "fts.indexed_rows":
+            has_fts = True
+            indexed_rows = float(g.get("value") or 0)
+            break
+    if not has_fts:
+        return None
+    return {
+        "builds": int(builds),
+        "full": int(full),
+        "incremental": int(incremental),
+        "restore": int(restore),
+        "errors": int(errors),
+        "build_p95": (weighted_p95 / hist_count) if hist_count else None,
+        "indexed_rows": int(indexed_rows),
+    }
+
+
+def format_fts_summary_line(summary: dict[str, Any]) -> str:
+    """Render a single operator-facing FTS summary line (no Rich markup)."""
+    bits: list[str] = []
+    builds = int(summary.get("builds") or 0)
+    if builds:
+        bits.append(f"builds={builds}")
+        full = int(summary.get("full") or 0)
+        incr = int(summary.get("incremental") or 0)
+        restore = int(summary.get("restore") or 0)
+        mode_bits = []
+        if full:
+            mode_bits.append(f"full={full}")
+        if incr:
+            mode_bits.append(f"incr={incr}")
+        if restore:
+            mode_bits.append(f"restore={restore}")
+        if mode_bits:
+            bits.append(" ".join(mode_bits))
+    p95 = summary.get("build_p95")
+    if p95 is not None:
+        bits.append(f"p95={_format_metric_duration(float(p95))}")
+    rows = int(summary.get("indexed_rows") or 0)
+    if rows:
+        bits.append(f"rows={rows}")
+    errors = int(summary.get("errors") or 0)
+    if errors:
+        bits.append(f"errors={errors}")
+    if not bits:
+        bits.append("idle")
+    return "FTS      " + "  ".join(bits)
+
+
+def summarize_warc_repair_metrics_table(snap: dict[str, Any]) -> dict[str, Any] | None:
+    """Aggregate WARC range-repair metrics for the CLI table summary strip.
+
+    Returns None when the snapshot has no ``warc_repair.*`` series.
+    """
+    counters = list(snap.get("counters") or [])
+    histograms = list(snap.get("histograms") or [])
+    docs_emitted = 0.0
+    fetch_attempts = 0.0
+    fetch_ok = 0.0
+    fetch_http_error = 0.0
+    fetch_network_error = 0.0
+    parse_attempts = 0.0
+    parse_emitted = 0.0
+    parse_empty = 0.0
+    has_warc = False
+    for c in counters:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if name not in (
+            "warc_repair.docs_emitted",
+            "warc_repair.fetch_attempts",
+            "warc_repair.parse_attempts",
+        ):
+            continue
+        has_warc = True
+        val = float(c.get("value") or 0)
+        labels = c.get("labels") or {}
+        outcome = labels.get("outcome")
+        if name == "warc_repair.docs_emitted":
+            docs_emitted += val
+        elif name == "warc_repair.fetch_attempts":
+            fetch_attempts += val
+            if outcome == "ok":
+                fetch_ok += val
+            elif outcome == "http_error":
+                fetch_http_error += val
+            elif outcome == "network_error":
+                fetch_network_error += val
+        elif name == "warc_repair.parse_attempts":
+            parse_attempts += val
+            if outcome == "emitted":
+                parse_emitted += val
+            elif outcome == "empty":
+                parse_empty += val
+    fetch_weighted = 0.0
+    fetch_count = 0
+    parse_weighted = 0.0
+    parse_count = 0
+    for h in histograms:
+        if not isinstance(h, dict):
+            continue
+        name = str(h.get("name") or "")
+        if name not in ("warc_repair.fetch_seconds", "warc_repair.parse_seconds"):
+            continue
+        has_warc = True
+        n = int(h.get("count") or 0)
+        if n <= 0:
+            continue
+        p95 = float(h.get("p95") or 0.0)
+        if name == "warc_repair.fetch_seconds":
+            fetch_count += n
+            fetch_weighted += p95 * n
+        else:
+            parse_count += n
+            parse_weighted += p95 * n
+    if not has_warc:
+        return None
+    return {
+        "docs_emitted": int(docs_emitted),
+        "fetch_attempts": int(fetch_attempts),
+        "fetch_ok": int(fetch_ok),
+        "fetch_http_error": int(fetch_http_error),
+        "fetch_network_error": int(fetch_network_error),
+        "parse_attempts": int(parse_attempts),
+        "parse_emitted": int(parse_emitted),
+        "parse_empty": int(parse_empty),
+        "fetch_p95": (fetch_weighted / fetch_count) if fetch_count else None,
+        "parse_p95": (parse_weighted / parse_count) if parse_count else None,
+    }
+
+
+def format_warc_repair_summary_line(summary: dict[str, Any]) -> str:
+    """Render a single operator-facing WARC repair summary line (no Rich markup)."""
+    bits: list[str] = []
+    docs = int(summary.get("docs_emitted") or 0)
+    if docs:
+        bits.append(f"docs={docs}")
+    attempts = int(summary.get("fetch_attempts") or 0)
+    ok = int(summary.get("fetch_ok") or 0)
+    if attempts:
+        bits.append(f"fetch={ok}/{attempts} ok")
+        http_err = int(summary.get("fetch_http_error") or 0)
+        net_err = int(summary.get("fetch_network_error") or 0)
+        if http_err:
+            bits.append(f"http_err={http_err}")
+        if net_err:
+            bits.append(f"net_err={net_err}")
+    fetch_p95 = summary.get("fetch_p95")
+    if fetch_p95 is not None:
+        bits.append(f"fetch_p95={_format_metric_duration(float(fetch_p95))}")
+    parse_p95 = summary.get("parse_p95")
+    if parse_p95 is not None:
+        bits.append(f"parse_p95={_format_metric_duration(float(parse_p95))}")
+    empty = int(summary.get("parse_empty") or 0)
+    if empty:
+        bits.append(f"empty={empty}")
+    if not bits:
+        bits.append("idle")
+    return "WARC     " + "  ".join(bits)
+
+
+def summarize_task_metrics_table(snap: dict[str, Any]) -> dict[str, Any] | None:
+    """Aggregate worker task duration/failure metrics for the CLI table strip.
+
+    Returns None when the snapshot has no ``tasks.*`` series.
+    """
+    counters = list(snap.get("counters") or [])
+    histograms = list(snap.get("histograms") or [])
+    completed = 0.0
+    failed = 0.0
+    retry = 0.0
+    dead_letter = 0.0
+    no_adapter = 0.0
+    has_tasks = False
+    for c in counters:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        if name not in ("tasks.completed", "tasks.failed"):
+            continue
+        has_tasks = True
+        val = float(c.get("value") or 0)
+        labels = c.get("labels") or {}
+        outcome = labels.get("outcome")
+        if name == "tasks.completed":
+            completed += val
+        elif name == "tasks.failed":
+            failed += val
+            if outcome == "retry":
+                retry += val
+            elif outcome == "dead_letter":
+                dead_letter += val
+            elif outcome == "no_adapter":
+                no_adapter += val
+    weighted_p95 = 0.0
+    hist_count = 0
+    for h in histograms:
+        if not isinstance(h, dict):
+            continue
+        if str(h.get("name") or "") != "tasks.duration_seconds":
+            continue
+        has_tasks = True
+        n = int(h.get("count") or 0)
+        if n <= 0:
+            continue
+        p95 = float(h.get("p95") or 0.0)
+        hist_count += n
+        weighted_p95 += p95 * n
+    if not has_tasks:
+        return None
+    return {
+        "completed": int(completed),
+        "failed": int(failed),
+        "retry": int(retry),
+        "dead_letter": int(dead_letter),
+        "no_adapter": int(no_adapter),
+        "duration_p95": (weighted_p95 / hist_count) if hist_count else None,
+    }
+
+
+def format_task_summary_line(summary: dict[str, Any]) -> str:
+    """Render a single operator-facing task metrics summary line (no Rich markup)."""
+    bits: list[str] = []
+    completed = int(summary.get("completed") or 0)
+    if completed:
+        bits.append(f"done={completed}")
+    failed = int(summary.get("failed") or 0)
+    if failed:
+        bits.append(f"fail={failed}")
+        retry = int(summary.get("retry") or 0)
+        dead = int(summary.get("dead_letter") or 0)
+        no_adapter = int(summary.get("no_adapter") or 0)
+        detail: list[str] = []
+        if retry:
+            detail.append(f"retry={retry}")
+        if dead:
+            detail.append(f"dead={dead}")
+        if no_adapter:
+            detail.append(f"no_adapter={no_adapter}")
+        if detail:
+            bits.append(" ".join(detail))
+    p95 = summary.get("duration_p95")
+    if p95 is not None:
+        bits.append(f"p95={_format_metric_duration(float(p95))}")
+    if not bits:
+        bits.append("idle")
+    return "TASKS    " + "  ".join(bits)
+
+
+def _print_metrics_table(snap: dict[str, Any], *, limit: int = 40) -> None:
+    """Render a human-readable metrics summary (uptime + top series)."""
+    uptime = float(snap.get("uptime_seconds") or 0.0)
+    hours, rem = divmod(int(uptime), 3600)
+    minutes, seconds = divmod(rem, 60)
+    pfx = snap.get("prefix")
+    pfx_note = f"  prefix={pfx!r}" if pfx else ""
+    console.print(
+        f"[bold]Metrics[/bold]  uptime={hours:d}h {minutes:02d}m {seconds:02d}s"
+        f"{pfx_note}  "
+        f"([dim]--format json|prometheus · --prefix name.[/dim])"
+    )
+
+    fineweb_summary = summarize_fineweb_metrics_table(snap)
+    if fineweb_summary is not None:
+        console.print(
+            f"[bold cyan]{escape(format_fineweb_summary_line(fineweb_summary))}[/bold cyan]"
+        )
+    wet_summary = summarize_wet_parse_metrics_table(snap)
+    if wet_summary is not None:
+        console.print(
+            f"[bold cyan]{escape(format_wet_parse_summary_line(wet_summary))}[/bold cyan]"
+        )
+    jsonl_summary = summarize_jsonl_sync_metrics_table(snap)
+    if jsonl_summary is not None:
+        console.print(
+            f"[bold cyan]{escape(format_jsonl_sync_summary_line(jsonl_summary))}[/bold cyan]"
+        )
+    fts_summary = summarize_fts_metrics_table(snap)
+    if fts_summary is not None:
+        console.print(
+            f"[bold cyan]{escape(format_fts_summary_line(fts_summary))}[/bold cyan]"
+        )
+    warc_summary = summarize_warc_repair_metrics_table(snap)
+    if warc_summary is not None:
+        console.print(
+            f"[bold cyan]{escape(format_warc_repair_summary_line(warc_summary))}[/bold cyan]"
+        )
+    task_summary = summarize_task_metrics_table(snap)
+    if task_summary is not None:
+        console.print(
+            f"[bold cyan]{escape(format_task_summary_line(task_summary))}[/bold cyan]"
+        )
+
+    counters = list(snap.get("counters") or [])
+    gauges = list(snap.get("gauges") or [])
+    histograms = list(snap.get("histograms") or [])
+
+    def _lbl(labels: Any) -> str:
+        if not labels:
+            return ""
+        if isinstance(labels, dict) and labels:
+            return " " + ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
+        return ""
+
+    ct = Table(title=f"Counters ({min(limit, len(counters))}/{len(counters)})", show_lines=False)
+    ct.add_column("name", style=banner.C_HI)
+    ct.add_column("labels", style=banner.C_DIM)
+    ct.add_column("value", justify="right")
+    # Highest values first — operators care about hot paths.
+    for row in sorted(counters, key=lambda r: float(r.get("value") or 0), reverse=True)[:limit]:
+        ct.add_row(
+            str(row.get("name") or ""),
+            _lbl(row.get("labels")).strip(),
+            f"{float(row.get('value') or 0):g}",
+        )
+    if counters:
+        console.print(ct)
+    else:
+        console.print("[dim]No counters yet (process idle or freshly started).[/dim]")
+
+    gt = Table(title=f"Gauges ({min(limit, len(gauges))}/{len(gauges)})", show_lines=False)
+    gt.add_column("name", style=banner.C_HI)
+    gt.add_column("labels", style=banner.C_DIM)
+    gt.add_column("value", justify="right")
+    for row in sorted(gauges, key=lambda r: str(r.get("name") or ""))[:limit]:
+        gt.add_row(
+            str(row.get("name") or ""),
+            _lbl(row.get("labels")).strip(),
+            f"{float(row.get('value') or 0):g}",
+        )
+    if gauges:
+        console.print(gt)
+
+    ht = Table(
+        title=f"Histograms ({min(limit, len(histograms))}/{len(histograms)})",
+        show_lines=False,
+    )
+    ht.add_column("name", style=banner.C_HI)
+    ht.add_column("labels", style=banner.C_DIM)
+    ht.add_column("count", justify="right")
+    ht.add_column("p50", justify="right")
+    ht.add_column("p95", justify="right")
+    ht.add_column("p99", justify="right")
+    ht.add_column("avg", justify="right")
+    for row in sorted(histograms, key=lambda r: int(r.get("count") or 0), reverse=True)[:limit]:
+        name = str(row.get("name") or "")
+        if _hist_is_seconds(name):
+            p50_s = _format_metric_duration(float(row.get("p50") or 0))
+            p95_s = _format_metric_duration(float(row.get("p95") or 0))
+            p99_s = _format_metric_duration(float(row.get("p99") or 0))
+            avg_s = _format_metric_duration(float(row.get("avg") or 0))
+        else:
+            p50_s = f"{float(row.get('p50') or 0):.4g}"
+            p95_s = f"{float(row.get('p95') or 0):.4g}"
+            p99_s = f"{float(row.get('p99') or 0):.4g}"
+            avg_s = f"{float(row.get('avg') or 0):.4g}"
+        ht.add_row(
+            name,
+            _lbl(row.get("labels")).strip(),
+            str(int(row.get("count") or 0)),
+            p50_s,
+            p95_s,
+            p99_s,
+            avg_s,
+        )
+    if histograms:
+        console.print(ht)
+    else:
+        console.print(
+            "[dim]No histograms yet — HTTP fetch latency appears after the first GET.[/dim]"
+        )
 
 
 # ── backfill ────────────────────────────────────────────────────────────
@@ -1200,7 +2029,22 @@ def backfill_submit(
     if match:
         joiner = " AND " if match_all else " OR "
         rprint(f"[dim]Topic filter ({'regex' if match_regex else 'keyword'}, {match_field}): {escape(joiner.join(match))}[/dim]")
-    print(json.dumps(planner.status(job_id), indent=2, default=str))
+    st = planner.status(job_id)
+    if int(st.get("tasks_total") or 0) == 0 or st.get("warning") == "zero_tasks":
+        rprint(
+            "[bold yellow]WARNING: backfill planned 0 tasks — nothing will be scraped.[/bold yellow]"
+        )
+        for reason in st.get("zero_task_reasons") or []:
+            src = reason.get("source", "?")
+            detail = reason.get("detail") or reason.get("reason") or ""
+            rprint(f"[yellow]  • {escape(str(src))}: {escape(str(detail))}[/yellow]")
+        if st.get("notes") and not st.get("zero_task_reasons"):
+            rprint(f"[yellow]  {escape(str(st['notes']))}[/yellow]")
+        rprint(
+            "[dim]Hint: check --source kinds, date range, and domain filters; "
+            "RSS alone does not plan historical partitions.[/dim]"
+        )
+    print(json.dumps(st, indent=2, default=str))
 
 
 def _print_job_summary_table(job_id: str, status: dict[str, Any]) -> None:
@@ -1663,13 +2507,18 @@ def tail_check_seeds(
     rprint(f"[bold cyan]Validating {len(all_feeds)} configuration seeds...[/bold cyan]\n")
     
     async def validate_all():
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        ua = get_settings().user_agent
+        async with httpx.AsyncClient(
+            timeout=10.0,
+            follow_redirects=True,
+            headers={"User-Agent": ua},
+        ) as client:
             robots = RobotsCache()
             robots._client = client
             
             table = Table("Type", "Seed URL", "HTTP Status", "Robots.txt", "Parser Status")
             for url, kind in all_feeds:
-                allowed = await robots.is_allowed(url, "AwarenessBot/0.1")
+                allowed = await robots.is_allowed(url, ua)
                 robots_status = "[green]Allowed[/green]" if allowed else "[red]Disallowed[/red]"
                 
                 try:
@@ -1699,6 +2548,232 @@ def tail_check_seeds(
     anyio.run(validate_all)
 
 
+# ── dead-letter queue ────────────────────────────────────────────────────
+@dlq_app.command("list")
+def dlq_list(
+    limit: int = typer.Option(50, "--limit", "-n", help="Max rows to show (1–1000)"),
+    job_id: str = typer.Option("", "--job-id", "-j", help="Filter by job id"),
+    offset: int = typer.Option(0, "--offset", help="Skip N newest rows (pagination)"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable JSON array"),
+) -> None:
+    """List dead-lettered tasks (newest first).
+
+    Empty queues exit 0 with a short note (or ``[]`` under ``--json``) so
+    scripts can poll without treating idle as failure.
+    """
+    state, _ = _bootstrap()
+    jid = job_id.strip() or None
+    total = state.count_dlq(job_id=jid)
+    rows = state.list_dlq(limit=limit, job_id=jid, offset=offset)
+    if as_json:
+        print(json.dumps({"total": total, "offset": offset, "items": rows}, indent=2, default=str))
+        return
+    if total == 0:
+        scope = f" for job {jid}" if jid else ""
+        rprint(f"[dim]Dead-letter queue is empty{scope}.[/dim]")
+        return
+    if not rows:
+        rprint(
+            f"[yellow]No DLQ rows in this window[/yellow] "
+            f"(total={total}, offset={offset}, limit={limit})."
+        )
+        return
+    table = Table(
+        title=f"Dead-letter queue ({len(rows)} shown / {total} total)",
+        show_lines=False,
+    )
+    table.add_column("id", style="cyan", justify="right")
+    table.add_column("created", style="dim")
+    table.add_column("job_id")
+    table.add_column("task_id")
+    table.add_column("error", overflow="fold")
+    table.add_column("payload", overflow="fold")
+    for row in rows:
+        payload = row.get("payload") or {}
+        # Compact payload preview: prefer partition/url keys when present.
+        preview_bits: list[str] = []
+        if isinstance(payload, dict):
+            for key in ("url", "partition_key", "source_type", "discovery_channel"):
+                if key in payload and payload[key] is not None:
+                    preview_bits.append(f"{key}={payload[key]}")
+            if not preview_bits:
+                raw = json.dumps(payload, default=str, ensure_ascii=False)
+                preview_bits.append(raw if len(raw) <= 80 else raw[:77] + "…")
+        else:
+            preview_bits.append(str(payload)[:80])
+        created = row.get("created_at") or "—"
+        if isinstance(created, str) and len(created) >= 19:
+            created = created[:19].replace("T", " ")
+        table.add_row(
+            str(row.get("id") or ""),
+            str(created),
+            str(row.get("job_id") or "—"),
+            str(row.get("task_id") or "—"),
+            (row.get("error") or "")[:200],
+            " ".join(preview_bits)[:120],
+        )
+    console.print(table)
+    if offset + len(rows) < total:
+        rprint(
+            f"[dim]… {total - offset - len(rows)} older not shown "
+            f"(use --offset {offset + len(rows)} or raise --limit).[/dim]"
+        )
+
+
+@dlq_app.command("count")
+def dlq_count(
+    job_id: str = typer.Option("", "--job-id", "-j", help="Filter by job id"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable JSON"),
+) -> None:
+    """Show how many tasks are in the dead-letter queue."""
+    state, _ = _bootstrap()
+    jid = job_id.strip() or None
+    n = state.count_dlq(job_id=jid)
+    if as_json:
+        print(json.dumps({"dlq_count": n, "job_id": jid}))
+        return
+    scope = f" (job {jid})" if jid else ""
+    if n == 0:
+        rprint(f"[dim]DLQ empty{scope}.[/dim]")
+    else:
+        rprint(f"[bold red]{n}[/bold red] dead-lettered task(s){scope}.")
+
+
+@dlq_app.command("replay")
+def dlq_replay(
+    dlq_id: int = typer.Argument(..., help="DLQ row id (from `dlq list`)"),
+    keep_attempts: bool = typer.Option(
+        False,
+        "--keep-attempts",
+        help="Do not reset attempts (default: reset to 0 so max-retries restarts)",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable JSON"),
+) -> None:
+    """Re-arm a dead-lettered task and drop its DLQ entry.
+
+    Resets the task to PENDING so the worker pool can claim it again. By default
+    ``attempts`` is cleared; pass ``--keep-attempts`` to preserve the prior
+    counter (may immediately re-dead-letter if already at max retries).
+    """
+    state, _ = _bootstrap()
+    result = state.replay_dlq(dlq_id, reset_attempts=not keep_attempts)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        if not result.get("ok"):
+            raise typer.Exit(code=1)
+        return
+    if not result.get("ok"):
+        reason = result.get("reason") or "unknown"
+        rprint(f"[bold red]Replay failed[/bold red]: {reason} (dlq_id={dlq_id}).")
+        if reason == "dlq_missing":
+            rprint("[dim]Use `awareness dlq list` to see current ids.[/dim]")
+        elif reason == "task_missing":
+            rprint(
+                f"[dim]Task {result.get('task_id')!r} is gone; re-plan or reseed "
+                "instead of replaying this DLQ row.[/dim]"
+            )
+        raise typer.Exit(code=1)
+    rprint(
+        f"[bold green]Replayed[/bold green] dlq #{result.get('dlq_id')} → "
+        f"task [cyan]{result.get('task_id')}[/cyan] "
+        f"(job {result.get('job_id')}, was {result.get('previous_status')}, "
+        f"attempts={result.get('attempts')})."
+    )
+
+
+@dlq_app.command("purge")
+def dlq_purge(
+    dlq_id: int = typer.Argument(..., help="DLQ row id (from `dlq list`)"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable JSON"),
+) -> None:
+    """Remove a DLQ entry without re-arming the task.
+
+    Use after manually resolving a failure (or when abandoning the task). The
+    task row stays ``DEAD_LETTERED`` (or whatever status it has); only the
+    queue entry is deleted so operators can keep the DLQ clean.
+    """
+    state, _ = _bootstrap()
+    result = state.purge_dlq(dlq_id)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        if not result.get("ok"):
+            raise typer.Exit(code=1)
+        return
+    if not result.get("ok"):
+        reason = result.get("reason") or "unknown"
+        rprint(f"[bold red]Purge failed[/bold red]: {reason} (dlq_id={dlq_id}).")
+        if reason == "dlq_missing":
+            rprint("[dim]Use `awareness dlq list` to see current ids.[/dim]")
+        raise typer.Exit(code=1)
+    rprint(
+        f"[bold green]Purged[/bold green] dlq #{result.get('dlq_id')} "
+        f"(task [cyan]{result.get('task_id') or '—'}[/cyan], "
+        f"job {result.get('job_id') or '—'}) — task not re-armed."
+    )
+
+
+@dlq_app.command("purge-bulk")
+def dlq_purge_bulk(
+    job_id: str = typer.Option("", "--job-id", "-j", help="Only purge rows for this job"),
+    limit: int = typer.Option(
+        0,
+        "--limit",
+        "-n",
+        help="Max rows to drop (0 = all matching; newest first)",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip confirmation prompt (required for non-interactive use)",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable JSON"),
+) -> None:
+    """Drop many DLQ entries without re-arming tasks.
+
+    Filters by ``--job-id`` when set; otherwise purges the whole queue.
+    Use ``--limit`` to drain large queues in batches. Task rows stay
+    ``DEAD_LETTERED``; only queue entries are removed (same as ``dlq purge``).
+    """
+    state, _ = _bootstrap()
+    jid = job_id.strip() or None
+    cap = None if limit <= 0 else int(limit)
+    pending = state.count_dlq(job_id=jid)
+    if pending == 0:
+        empty = {
+            "ok": True,
+            "purged": 0,
+            "job_id": jid,
+            "limit": cap,
+            "remaining": 0,
+        }
+        if as_json:
+            print(json.dumps(empty, indent=2, default=str))
+            return
+        scope = f" for job {jid}" if jid else ""
+        rprint(f"[dim]Dead-letter queue is empty{scope}; nothing to purge.[/dim]")
+        return
+    will_purge = pending if cap is None else min(pending, cap)
+    if not yes:
+        scope = f" for job {jid}" if jid else ""
+        rprint(
+            f"[bold yellow]About to purge {will_purge} DLQ row(s){scope}[/bold yellow] "
+            f"(of {pending} matching; tasks not re-armed)."
+        )
+        if not typer.confirm("Continue?", default=False):
+            rprint("[dim]Aborted.[/dim]")
+            raise typer.Exit(code=1)
+    result = state.purge_dlq_bulk(job_id=jid, limit=cap)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    rprint(
+        f"[bold green]Purged[/bold green] {result.get('purged')} DLQ row(s)"
+        + (f" for job {jid}" if jid else "")
+        + f" — {result.get('remaining')} remaining; tasks not re-armed."
+    )
+
+
 # ── inspect ──────────────────────────────────────────────────────────────
 @app.command()
 def inspect(
@@ -1717,15 +2792,16 @@ def inspect(
         iceberg_warehouse=settings.iceberg_warehouse,
     )
     start_dt = to_utc(start)
-    end_dt = coerce_relative_end(end)
+    end_dt = inclusive_end(coerce_relative_end(end))
     where = ["fetch_ts >= $start", "fetch_ts <= $end"]
     params: dict[str, Any] = {"start": start_dt, "end": end_dt}
     if domain:
-        where.append("domain = $dom")
-        params["dom"] = domain
+        where.append("lower(domain) = $dom")
+        params["dom"] = str(domain).strip().lower()
     if source:
-        where.append("source_type = $src")
-        params["src"] = source
+        # Case-insensitive: align CLI list with API/search (RSS vs rss).
+        where.append("lower(source_type) = $src")
+        params["src"] = str(source).strip().lower()
     where_sql = " AND ".join(where)
     sql = f"""
         SELECT
@@ -1756,7 +2832,7 @@ def counts(
     start: str = typer.Option(..., "--start"),
     end: str = typer.Option("now", "--end"),
 ) -> None:
-    """Aggregate counts by source and domain in [start, end]."""
+    """Aggregate counts by source, domain, and language in [start, end]."""
     state, _ = _bootstrap()
     settings = get_settings()
     idx = DuckDbIndex(
@@ -1765,17 +2841,21 @@ def counts(
         iceberg_warehouse=settings.iceberg_warehouse,
     )
     start_dt = to_utc(start)
-    end_dt = coerce_relative_end(end)
+    end_dt = inclusive_end(coerce_relative_end(end))
     try:
+        params = {"start": start_dt, "end": end_dt}
+        # Case-normalize source buckets (RSS vs rss) so CLI counts match search chips.
         by_source = idx.execute(
             """
-            SELECT source_type, COUNT(*) AS n
+            SELECT lower(CAST(source_type AS VARCHAR)) AS source_type, COUNT(*) AS n
             FROM captures
             WHERE fetch_ts BETWEEN $start AND $end
-            GROUP BY source_type
+              AND source_type IS NOT NULL
+              AND CAST(source_type AS VARCHAR) != ''
+            GROUP BY 1
             ORDER BY n DESC
             """,
-            {"start": start_dt, "end": end_dt},
+            params,
         )
         by_domain = idx.execute(
             """
@@ -1785,13 +2865,38 @@ def counts(
             GROUP BY domain
             ORDER BY n DESC LIMIT 25
             """,
-            {"start": start_dt, "end": end_dt},
+            params,
+        )
+        # Primary BCP-47 tags: en / en-US / en_GB → one "en" bucket.
+        by_language = idx.execute(
+            f"""
+            SELECT {PRIMARY_LANGUAGE_SQL} AS language, COUNT(*) AS n
+            FROM captures
+            WHERE fetch_ts BETWEEN $start AND $end
+              AND language IS NOT NULL
+              AND CAST(language AS VARCHAR) != ''
+            GROUP BY 1
+            ORDER BY n DESC
+            LIMIT 50
+            """,
+            params,
         )
         total = idx.execute(
             "SELECT COUNT(*) AS n FROM captures WHERE fetch_ts BETWEEN $start AND $end",
-            {"start": start_dt, "end": end_dt},
+            params,
         )
-        print(json.dumps({"total": total, "by_source": by_source, "by_domain": by_domain}, indent=2, default=str))
+        print(
+            json.dumps(
+                {
+                    "total": total,
+                    "by_source": by_source,
+                    "by_domain": by_domain,
+                    "by_language": by_language,
+                },
+                indent=2,
+                default=str,
+            )
+        )
     except Exception as exc:
         rprint(f"[red]Query failed:[/red] {escape(str(exc))}")
 
@@ -2537,11 +3642,21 @@ def highlight_tokens(text: str, query: str) -> str:
 
 @app.command(name="browse")
 def browse(
-    start: str = typer.Option("", "--start", help="Start date range (empty = beginning of corpus)"),
+    start: str = typer.Option("", "--start", help="Start date range (empty = all time; e.g. '30 days ago', '2026-01-01')"),
     end: str = typer.Option("now", "--end", help="End date range"),
     domain: str = typer.Option("", "--domain", help="Filter by domain"),
     source: str = typer.Option("", "--source", help="Filter by source"),
+    language: str = typer.Option(
+        "",
+        "--lang",
+        help="Filter by BCP-47 language tag (e.g. en, tr); case-insensitive",
+    ),
     query: str = typer.Option("", "--query", "-q", help="Search query/terms to highlight"),
+    unique: str = typer.Option(
+        "none",
+        "--unique",
+        help="Collapse duplicates: none | content | group (newest fetch_ts per key)",
+    ),
 ) -> None:
     """Interactively browse and read captured text documents from the terminal."""
     state, _ = _bootstrap()
@@ -2551,10 +3666,19 @@ def browse(
         jsonl_dir=settings.staging_jsonl_dir(),
         iceberg_warehouse=settings.iceberg_warehouse,
     )
-    
+
+    unique_mode = (unique or "none").strip().lower() or "none"
+    try:
+        fold_key = export_fold_key_sql(unique_mode)
+    except ValueError as e:
+        rprint(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from e
+
+    lang_filter = (language or "").strip().lower() or None
+
     # Empty start means no lower bound so historical backfills remain visible.
     start_dt = to_utc(start) if (start or "").strip() else None
-    end_dt = coerce_relative_end(end)
+    end_dt = inclusive_end(coerce_relative_end(end))
     
     # Clear screen
     print("\033[H\033[2J\033[3J", end="")
@@ -2569,11 +3693,14 @@ def browse(
             where.append("fetch_ts >= $start")
             params["start"] = start_dt
         if domain:
-            where.append("domain = $dom")
-            params["dom"] = domain
+            where.append("lower(domain) = $dom")
+            params["dom"] = str(domain).strip().lower()
         if source:
-            where.append("source_type = $src")
-            params["src"] = source
+            # Case-insensitive: RSS vs rss / Tail_Recrawl (API/search parity).
+            where.append("lower(source_type) = $src")
+            params["src"] = str(source).strip().lower()
+        # BCP-47: primary tags (en) match regional subtags (en-US).
+        append_language_filter(where, params, lang_filter)
         if query:
             terms = [t for t in re.findall(r"[A-Za-z0-9']+", query.lower()) if len(t) >= 2]
             if terms:
@@ -2586,13 +3713,28 @@ def browse(
                 params["q_term"] = f"%{query}%"
             
         where_sql = " AND ".join(where)
-        sql = f"""
-            SELECT doc_id, domain, title, fetch_ts, source_type, text
-            FROM captures
-            WHERE {where_sql}
-            ORDER BY fetch_ts DESC
-            LIMIT {limit} OFFSET {offset}
-        """
+        browse_select = "doc_id, domain, title, fetch_ts, source_type, text, language"
+        if fold_key is None:
+            sql = f"""
+                SELECT {browse_select}
+                FROM captures
+                WHERE {where_sql}
+                ORDER BY fetch_ts DESC
+                LIMIT {limit} OFFSET {offset}
+            """
+        else:
+            sql = f"""
+                SELECT * EXCLUDE (_fold_key) FROM (
+                  SELECT DISTINCT ON ({fold_key})
+                    {browse_select},
+                    {fold_key} AS _fold_key
+                  FROM captures
+                  WHERE {where_sql}
+                  ORDER BY {fold_key}, fetch_ts DESC
+                ) _folded
+                ORDER BY fetch_ts DESC
+                LIMIT {limit} OFFSET {offset}
+            """
         
         try:
             rows = idx.execute(sql, params)
@@ -2603,10 +3745,25 @@ def browse(
         if not rows:
             if offset == 0:
                 range_hint = ""
-                if start_dt is not None or end_dt is not None:
+                if (
+                    start_dt is not None
+                    or end_dt is not None
+                    or lang_filter
+                    or domain
+                    or source
+                ):
+                    extras = []
+                    if lang_filter:
+                        extras.append(f"lang={lang_filter}")
+                    if domain:
+                        extras.append(f"domain={str(domain).strip().lower()}")
+                    if source:
+                        extras.append(f"source={str(source).strip().lower()}")
+                    extra_sql = (", " + ", ".join(extras)) if extras else ""
                     range_hint = (
-                        f" (filters: start={start_dt or '−∞'}, end={end_dt}; "
-                        "try widening --start/--end)"
+                        f" (filters: start={start_dt or '−∞'}, end={end_dt}"
+                        f"{extra_sql}; "
+                        "try widening --start/--end/--lang/--source/--domain)"
                     )
                 rprint(f"[yellow]No captures found in this range.{range_hint}[/yellow]")
                 break
@@ -2615,13 +3772,23 @@ def browse(
                 offset = max(0, offset - limit)
                 continue
                 
-        # Display table
-        table = Table(title=f"Awareness Documents - Page {offset // limit + 1} (Offset: {offset})")
+        # Display table (surface active unique fold + filters so operators see mode)
+        unique_label = f" unique={unique_mode}" if unique_mode != "none" else ""
+        lang_label = f" lang={lang_filter}" if lang_filter else ""
+        domain_label = f" domain={str(domain).strip().lower()}" if domain else ""
+        source_label = f" source={str(source).strip().lower()}" if source else ""
+        table = Table(
+            title=(
+                f"Awareness Documents - Page {offset // limit + 1} "
+                f"(Offset: {offset}{unique_label}{lang_label}{domain_label}{source_label})"
+            )
+        )
         table.add_column("#", justify="center", style="yellow")
         table.add_column("Domain", style="cyan")
         table.add_column("Title", style="white")
         table.add_column("Date Captured", style="dim green")
         table.add_column("Source", style="magenta")
+        table.add_column("Lang", style="dim cyan")
         
         for i, r in enumerate(rows, 1):
             title = r["title"] or "No Title"
@@ -2633,11 +3800,12 @@ def browse(
                 r["domain"] or "N/A",
                 highlighted_title,
                 str(r["fetch_ts"])[:16],
-                r["source_type"] or "N/A"
+                r["source_type"] or "N/A",
+                r["language"] or "—",
             )
             
         console.print(table)
-        
+
         rprint("\n[bold cyan]Navigation Commands:[/bold cyan]")
         rprint("  • [bold]n[/bold]     : Next page")
         rprint("  • [bold]p[/bold]     : Previous page")
@@ -2663,6 +3831,8 @@ def browse(
                 rprint(f"[bold cyan]Domain:[/bold cyan]      {doc['domain']}")
                 rprint(f"[bold cyan]Captured at:[/bold cyan] {doc['fetch_ts']}")
                 rprint(f"[bold cyan]Source:[/bold cyan]      {doc['source_type']}")
+                if doc["language"]:
+                    rprint(f"[bold cyan]Language:[/bold cyan]    {doc['language']}")
                 rprint(f"[bold cyan]Doc ID:[/bold cyan]      {doc['doc_id']}\n")
                 rprint("-" * 80)
                 
@@ -2676,13 +3846,112 @@ def browse(
                 rprint("[red]Invalid document index.[/red]")
 
 
+
+
+
+def _print_search_domain_facets(facets: dict[str, Any] | None) -> None:
+    """Print domain and source facet summaries when the search payload includes them."""
+    if not facets:
+        return
+
+    def _facet_parts(items: object, *, name_keys: tuple[str, ...]) -> list[str]:
+        if not isinstance(items, list) or not items:
+            return []
+        parts: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = ""
+            for key in name_keys:
+                name = str(item.get(key) or "").strip()
+                if name:
+                    break
+            if not name:
+                continue
+            n = item.get("n")
+            if n is not None:
+                parts.append(f"{name} ({int(n)})")
+            else:
+                parts.append(name)
+        return parts
+
+    domains = _facet_parts(facets.get("domains") or [], name_keys=("domain",))
+    if domains:
+        rprint(f"[dim]Domains:[/dim] {', '.join(domains)}")
+
+    sources = _facet_parts(
+        facets.get("sources") or [],
+        name_keys=("source_type", "source"),
+    )
+    if sources:
+        rprint(f"[dim]Sources:[/dim] {', '.join(sources)}")
+
+    languages = _facet_parts(facets.get("languages") or [], name_keys=("language", "lang"))
+    if languages:
+        rprint(f"[dim]Languages:[/dim] {', '.join(languages)}")
+
+
+def _print_search_diagnostics(diagnostics: dict[str, Any] | None) -> None:
+    """Render empty-result diagnostics as a short Rich panel.
+
+    Always prints something for zero-hit searches: if the index omitted
+    diagnostics or returned no hints, fall back to a generic suggestion so
+    the CLI never silently ends with only "Found 0 documents".
+    """
+    from rich.panel import Panel
+
+    diagnostics = diagnostics or {}
+    hints = list(diagnostics.get("hints") or [])
+    if not hints:
+        corpus = diagnostics.get("corpus_size")
+        if corpus is not None and int(corpus) <= 0:
+            hints = ["No documents in index yet — run a backfill or start tail."]
+        else:
+            hints = ["No matches. Try fewer terms, substring mode, or a wider date window."]
+
+    lines = "\n".join(f"• {escape(str(h))}" for h in hints)
+    meta: list[str] = []
+    if "corpus_size" in diagnostics:
+        meta.append(f"corpus={diagnostics['corpus_size']}")
+    if diagnostics.get("mode_used"):
+        meta.append(f"mode={diagnostics['mode_used']}")
+    filters = diagnostics.get("filters") or {}
+    if isinstance(filters, dict):
+        if filters.get("domain"):
+            meta.append(f"domain={filters['domain']}")
+        if filters.get("source"):
+            meta.append(f"source={filters['source']}")
+        if filters.get("language"):
+            meta.append(f"language={filters['language']}")
+    title = "No results — suggestions"
+    if meta:
+        title = f"{title} ({', '.join(meta)})"
+    rprint(Panel(lines, title=f"[yellow]{title}[/yellow]", border_style="yellow", expand=False))
+
+
+def _resolve_search_window(start: str, end: str) -> tuple[datetime | None, datetime | None]:
+    """Resolve the (start, end) search window.
+
+    Empty / "all" / "all time" start means NO lower bound (search the entire
+    corpus) instead of a silent recent-window default that hid most captures.
+    """
+    s = (start or "").strip().lower()
+    start_dt = None if s in ("", "all", "all time", "alltime", "any") else to_utc(start)
+    end_dt = inclusive_end(coerce_relative_end(end))
+    return start_dt, end_dt
+
+
 @app.command(name="search")
 def search(
-    query: str = typer.Argument(..., help="Search query (BM25 ranked when the term is present; stem-prefix fallback otherwise)"),
+    query: str = typer.Argument(
+        ...,
+        help='Search query (BM25 when present; stem-prefix fallback). Wrap the whole query in double quotes for exact phrase match, e.g. "machine learning".',
+    ),
     start: str = typer.Option("", "--start", help="Start date range (empty = beginning of corpus)"),
     end: str = typer.Option("now", "--end", help="End date range"),
     domain: str = typer.Option("", "--domain", help="Filter by domain"),
     source: str = typer.Option("", "--source", help="Filter by source"),
+    language: str = typer.Option("", "--lang", help="Filter by BCP-47 language tag (e.g. en, tr)"),
     mode: str = typer.Option("", "--mode", "-m", help="Match mode: auto | fts | prefix | substring (default from config)"),
     fields: str = typer.Option("", "--fields", "-f", help="Comma-list of columns to match: title,text,domain,url (default from config)"),
     limit: int = typer.Option(0, "--limit", "-l", help="Results per page (0 = config default)"),
@@ -2693,9 +3962,11 @@ def search(
 
     Matching is configurable. ``auto`` (the default) runs ranked full-text
     search and, only when it finds nothing, retries with stem-root prefix
-    matching — so ``finance`` still surfaces ``financial``. ``--fields``
-    narrows what gets matched; ``--max-results`` caps how much comes back.
-    Defaults come from ``config`` (search_default_mode / _fields / _limit /
+    matching — so ``finance`` still surfaces ``financial``. Wrap the whole
+    query in double quotes for an exact phrase match (e.g. ``"machine
+    learning"``); results report ``mode=phrase``. ``--fields`` narrows what
+    gets matched; ``--max-results`` caps how much comes back. Defaults come
+    from ``config`` (search_default_mode / _fields / _limit /
     search_max_results) and can be overridden per-call here.
     """
     state, _ = _bootstrap()
@@ -2713,9 +3984,8 @@ def search(
     limit = limit if limit > 0 else settings.search_default_limit
     max_results = max_results if max_results > 0 else settings.search_max_results
 
-    # Empty start means no lower bound so historical backfills remain searchable.
-    start_dt = to_utc(start) if (start or "").strip() else None
-    end_dt = coerce_relative_end(end)
+    # Empty/"all time" start means no lower bound so historical backfills remain searchable.
+    start_dt, end_dt = _resolve_search_window(start, end)
 
     if not interactive or not sys.stdin.isatty():
         res = idx.search(
@@ -2724,6 +3994,7 @@ def search(
             offset=0,
             source=source if source else None,
             domain=domain if domain else None,
+            language=language if language else None,
             start=start_dt,
             end=end_dt,
             mode=mode,
@@ -2736,11 +4007,14 @@ def search(
         used_mode = res.get("mode", mode)
         capped = " [dim](capped)[/dim]" if total > len(rows) and len(rows) >= max_results else ""
 
+        window = f"{start_dt.date() if start_dt else 'all time'} → {end_dt.date() if end_dt else 'now'}"
+        rprint(f"[dim]Window: {window}[/dim]")
         rprint(
             f"[bold cyan]Search Results for:[/bold cyan] '{query}' "
             f"(Found {total} documents, showing top {len(rows)}{capped}, "
             f"Mode: {used_mode}, Fields: {','.join(res.get('fields', field_list))}, Ranked: {ranked})"
         )
+        _print_search_domain_facets(res.get("facets"))
         rprint("-" * 80)
         for r in rows:
             title = r["title"] or "No Title"
@@ -2752,6 +4026,8 @@ def search(
                 highlighted_snippet = highlight_tokens(r["snippet"], query)
                 rprint(f"  [italic]\"{highlighted_snippet}\"[/italic]")
             rprint()
+        if total == 0:
+            _print_search_diagnostics(res.get("diagnostics"))
         return
 
     offset = 0
@@ -2764,6 +4040,7 @@ def search(
             offset=offset,
             source=source if source else None,
             domain=domain if domain else None,
+            language=language if language else None,
             start=start_dt,
             end=end_dt,
             mode=mode,
@@ -2782,6 +4059,7 @@ def search(
                 if start_dt is not None:
                     range_hint = f" (start={start_dt}; try --start '' or an earlier date)"
                 rprint(f"[yellow]No documents matched query '{query}'.{range_hint}[/yellow]")
+                _print_search_diagnostics(res.get("diagnostics"))
                 break
             else:
                 rprint("[yellow]No more pages. Going back...[/yellow]")
@@ -2817,7 +4095,8 @@ def search(
             )
             
         console.print(table)
-        
+        _print_search_domain_facets(res.get("facets"))
+
         rprint("\n[bold cyan]Navigation Commands:[/bold cyan]")
         rprint("  • [bold]n[/bold]     : Next page")
         rprint("  • [bold]p[/bold]     : Previous page")
@@ -2863,74 +4142,186 @@ def search(
 
 @app.command()
 def compact(
-    force: bool = typer.Option(False, "--force", help="Force compaction even if Iceberg is disabled in config")
+    force: bool = typer.Option(
+        False, "--force", help="Force compaction even if Iceberg is disabled in config"
+    ),
+    status: bool = typer.Option(
+        False,
+        "--status",
+        help="List pending staging manifests without compacting",
+    ),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Machine-readable pending status (implies --status)",
+    ),
 ) -> None:
-    """Compact local JSONL staging files into the durable Iceberg warehouse."""
+    """Compact local JSONL staging files into the durable Iceberg warehouse.
+
+    Pass ``--status`` (or ``--json``) to inspect the compaction backlog without
+    writing to Iceberg.
+    """
     state, _ = _bootstrap()
     settings = get_settings()
-    
+
+    if status or as_json:
+        summary = state.pending_manifest_summary()
+        if as_json:
+            print(json.dumps(summary, indent=2))
+            return
+        n = int(summary["pending_count"])
+        if n == 0:
+            rprint("[green]No staging files pending compaction.[/green]")
+            return
+        age_bits = ""
+        age_s = summary.get("oldest_age_seconds")
+        if age_s is not None:
+            age_bits = f", oldest {_format_duration(float(age_s))}"
+        rprint(
+            f"[bold cyan]{n} manifest file(s) pending compaction[/bold cyan]  "
+            f"({int(summary['total_records']):,} records, "
+            f"{_format_size(int(summary['total_bytes']))}{age_bits})"
+        )
+        table = Table(show_header=True, header_style=f"bold {banner.C_HI}")
+        table.add_column("id", justify="right")
+        table.add_column("path")
+        table.add_column("records", justify="right")
+        table.add_column("size", justify="right")
+        table.add_column("committed_at")
+        table.add_column("age", justify="right")
+        from datetime import UTC
+
+        now_utc = datetime.now(UTC)
+        for m in summary["manifests"]:
+            age_cell = "—"
+            raw_ca = m.get("committed_at")
+            if raw_ca:
+                try:
+                    ca = datetime.fromisoformat(str(raw_ca).replace("Z", "+00:00"))
+                    if ca.tzinfo is None:
+                        ca = ca.replace(tzinfo=UTC)
+                    age_cell = _format_duration(
+                        max(0.0, (now_utc - ca.astimezone(UTC)).total_seconds())
+                    )
+                except ValueError:
+                    age_cell = "—"
+            table.add_row(
+                str(m.get("id") or ""),
+                str(m.get("path") or ""),
+                f"{int(m.get('records') or 0):,}",
+                _format_size(int(m.get("bytes") or 0)),
+                str(m.get("committed_at") or "—"),
+                age_cell,
+            )
+        console.print(table)
+        return
+
     if not settings.enable_iceberg and not force:
         rprint("[yellow]Iceberg storage is disabled in configuration. Use --force to override.[/yellow]")
         return
-        
+
     pending = state.list_pending_manifests()
     if not pending:
         rprint("[green]No staging files pending compaction.[/green]")
         return
-        
+
     rprint(f"[bold cyan]Found {len(pending)} manifest files pending compaction.[/bold cyan]\n")
-    
+
+    import time
+
     from awareness.storage.iceberg import IcebergWriter
+
     assert settings.iceberg_catalog_db is not None
     assert settings.iceberg_warehouse is not None
-    
+
     writer = IcebergWriter(catalog_db=settings.iceberg_catalog_db, warehouse=settings.iceberg_warehouse)
     writer.ensure_table()
-    
+
     compacted_count = 0
     total_records = 0
     total_bytes = 0
-    
+    metrics = get_metrics()
+
     for item in pending:
         manifest_id = item["id"]
         path_str = item["path"]
         p = Path(path_str)
-        
+
         if not p.exists():
             # If path is relative, try checking under settings.data_dir
             if not p.is_absolute() and settings.data_dir:
                 p = settings.data_dir / p
-                
+
         if not p.exists():
             rprint(f"[yellow]Manifest file not found: {path_str}. Marking as compacted (skipped).[/yellow]")
             state.mark_manifest_compacted(manifest_id)
+            metrics.inc("iceberg.compact_manifests", labels={"outcome": "missing"})
             continue
-            
+
         rprint(f"Compacting [cyan]{p.name}[/cyan] ({_format_size(item['bytes'])}, {item['records']} records)...")
-        
+
         # Read JSONL
         rows = []
+        t0 = time.perf_counter()
         try:
             import gzip
+
             open_func = gzip.open if str(p).endswith(".gz") else open
             with open_func(p, "rt", encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
                         rows.append(json.loads(line))
         except Exception as e:
+            elapsed = max(0.0, time.perf_counter() - t0)
+            metrics.observe(
+                "iceberg.compact_seconds",
+                elapsed,
+                labels={"outcome": "read_error"},
+            )
+            metrics.inc("iceberg.compact_manifests", labels={"outcome": "read_error"})
+            metrics.inc("iceberg.compact_errors", labels={"stage": "read"})
             rprint(f"[red]Failed to read JSONL file {p}: {e}[/red]")
             continue
-            
+
         if rows:
             try:
                 writer.append(rows)
                 state.mark_manifest_compacted(manifest_id)
+                elapsed = max(0.0, time.perf_counter() - t0)
+                metrics.observe(
+                    "iceberg.compact_seconds",
+                    elapsed,
+                    labels={"outcome": "ok"},
+                )
+                metrics.inc("iceberg.compact_manifests", labels={"outcome": "ok"})
+                metrics.inc("iceberg.compacted_rows", value=float(len(rows)))
                 compacted_count += 1
                 total_records += len(rows)
                 total_bytes += item["bytes"]
             except Exception as e:
+                elapsed = max(0.0, time.perf_counter() - t0)
+                metrics.observe(
+                    "iceberg.compact_seconds",
+                    elapsed,
+                    labels={"outcome": "append_error"},
+                )
+                metrics.inc(
+                    "iceberg.compact_manifests", labels={"outcome": "append_error"}
+                )
+                metrics.inc("iceberg.compact_errors", labels={"stage": "append"})
                 rprint(f"[red]Failed to append manifest {manifest_id} to Iceberg: {e}[/red]")
-                
+        else:
+            # Empty file: still mark compacted so backlog drains.
+            state.mark_manifest_compacted(manifest_id)
+            elapsed = max(0.0, time.perf_counter() - t0)
+            metrics.observe(
+                "iceberg.compact_seconds",
+                elapsed,
+                labels={"outcome": "empty"},
+            )
+            metrics.inc("iceberg.compact_manifests", labels={"outcome": "empty"})
+            compacted_count += 1
+
     rprint(f"\n[green]✔ Compaction completed successfully![/green]")
     rprint(f"  • Files Compacted: {compacted_count}/{len(pending)}")
     rprint(f"  • Total Records:   {total_records:,} docs")
@@ -2939,10 +4330,26 @@ def compact(
 
 @app.command()
 def export(
-    output: Path = typer.Option(..., "--output", "-o", help="File path or folder to save exported documents"),
+    output: Path = typer.Option(
+        ...,
+        "--output",
+        "--out",
+        "-o",
+        help="File path (jsonl) or folder (txt) for exported documents",
+    ),
     domain: str = typer.Option("", "--domain", help="Filter documents by domain"),
     source: str = typer.Option("", "--source", help="Filter documents by source type"),
     format_type: str = typer.Option("jsonl", "--format", help="Export format: 'jsonl' or 'txt'"),
+    limit: int = typer.Option(
+        1000,
+        "--limit",
+        help="Max rows to export (0 = all matching)",
+    ),
+    unique: str = typer.Option(
+        "none",
+        "--unique",
+        help="Collapse duplicates: none | content | group",
+    ),
 ) -> None:
     """Export captured documents into a single JSONL file or raw text files folder."""
     state, _ = _bootstrap()
@@ -2952,44 +4359,36 @@ def export(
         jsonl_dir=settings.staging_jsonl_dir(),
         iceberg_warehouse=settings.iceberg_warehouse,
     )
-    
-    where = []
-    params = {}
-    if domain:
-        where.append("domain = $dom")
-        params["dom"] = domain
-    if source:
-        where.append("source_type = $src")
-        params["src"] = source
-        
-    where_sql = " WHERE " + " AND ".join(where) if where else ""
-    sql = f"""
-        SELECT doc_id, capture_id, source_type, source_name, canonical_url, fetch_ts, domain, title, text, language
-        FROM captures
-        {where_sql}
-        ORDER BY fetch_ts DESC
-    """
-    
+
     rprint("[yellow]Fetching documents to export...[/yellow]")
     try:
-        rows = idx.execute(sql, params)
+        rows = query_export_captures(
+            idx,
+            limit=limit,
+            unique=unique,
+            domain=domain,
+            source=source,
+        )
+    except ValueError as e:
+        rprint(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from e
     except Exception as e:
         rprint(f"[red]Failed to query captures: {e}[/red]")
         return
-        
+
     if not rows:
         rprint("[yellow]No captures matched your filters.[/yellow]")
         return
-        
+
     rprint(f"[bold cyan]Found {len(rows)} documents to export.[/bold cyan]")
-    
+
     if format_type.lower() == "jsonl":
         try:
-            output.parent.mkdir(parents=True, exist_ok=True)
-            with open(output, "w", encoding="utf-8") as f:
-                for r in rows:
-                    f.write(json.dumps(r, default=str, ensure_ascii=False) + "\n")
-            rprint(f"[green]✔ Successfully exported documents to JSONL file: [bold]{output}[/bold][/green]")
+            n = write_export_jsonl(output, rows)
+            rprint(
+                f"[green]✔ Successfully exported {n} documents to JSONL file: "
+                f"[bold]{output}[/bold][/green]"
+            )
         except Exception as e:
             rprint(f"[red]Export failed: {e}[/red]")
     elif format_type.lower() == "txt":
@@ -3000,10 +4399,12 @@ def export(
                 doc_id = r["doc_id"]
                 safe_title = re.sub(r"[^0-9a-zA-Z\-_]", "", r["title"] or "")[:40]
                 filename = f"{safe_title}_{doc_id[:8]}.txt" if safe_title else f"{doc_id}.txt"
-                p = output / filename
-                p.write_text(r["text"] or "", encoding="utf-8")
+                (output / filename).write_text(r["text"] or "", encoding="utf-8")
                 written += 1
-            rprint(f"[green]✔ Successfully exported {written} document text files to folder: [bold]{output}[/bold][/green]")
+            rprint(
+                f"[green]✔ Successfully exported {written} document text files to folder: "
+                f"[bold]{output}[/bold][/green]"
+            )
         except Exception as e:
             rprint(f"[red]Export failed: {e}[/red]")
     else:
@@ -3038,11 +4439,11 @@ def hf_push(
     where = []
     params = {}
     if domain:
-        where.append("domain = $dom")
-        params["dom"] = domain
+        where.append("lower(domain) = $dom")
+        params["dom"] = str(domain).strip().lower()
     if source:
-        where.append("source_type = $src")
-        params["src"] = source
+        where.append("lower(source_type) = $src")
+        params["src"] = str(source).strip().lower()
         
     where_sql = " WHERE " + " AND ".join(where) if where else ""
     sql = f"""
@@ -3090,13 +4491,19 @@ def dedup_check(
     url: str = typer.Option("", "--url", help="Canonical URL to check"),
     text: str = typer.Option("", "--text", help="Raw text snippet to check"),
     file_path: Path = typer.Option(None, "--file", help="Local file path to read text from"),
+    threshold: int = typer.Option(
+        DEFAULT_NEAR_THRESHOLD,
+        "--threshold",
+        min=0,
+        max=128,
+        help=f"Near-dup Hamming threshold (default: {DEFAULT_NEAR_THRESHOLD}, engine DEFAULT_NEAR_THRESHOLD)",
+    ),
 ) -> None:
     """Check if a URL or text has already been ingested (exact or near-duplicate check)."""
     state, _ = _bootstrap()
     from awareness.util.hashing import content_hash, simhash128, hamming128
     from awareness.storage.state import DedupRow
-    from sqlalchemy import select
-    
+
     if not url and not text and not file_path:
         rprint("[red]Error: You must provide either --url, --text, or --file to inspect.[/red]")
         return
@@ -3126,6 +4533,7 @@ def dedup_check(
                 
         sh = simhash128(text_content)
         rprint(f"Computed Simhash Value:     [bold cyan]{sh:032x}[/bold cyan]")
+        rprint(f"Near-dup Hamming threshold: [bold cyan]{threshold}[/bold cyan]")
 
         candidates = state.find_near_dup_candidates(sh)
         near_match = None
@@ -3133,7 +4541,7 @@ def dedup_check(
 
         for doc_id, other_sig in candidates:
             dist = hamming128(sh, other_sig)
-            if dist <= 6 and dist < min_dist:
+            if dist <= threshold and dist < min_dist:
                 min_dist = dist
                 near_match = doc_id
 

@@ -72,7 +72,7 @@ def test_completed_tail_recrawl_is_not_rearmed(tmp_project: Path) -> None:
     state.create_job(JobState(job_id="tail-x", kind=JobKind.TAIL, status=JobStatus.RUNNING, request={}))
 
     url_task = TaskState(task_id="t-1", job_id="tail-x", source_type=SourceKind.TAIL_RECRAWL,
-                         partition_key="tail-gdelt:https://e.x/a", payload={"url": "https://e.x/a"})
+                         partition_key="tail:https://e.x/a", payload={"url": "https://e.x/a"})
     rss_task = TaskState(task_id="t-2", job_id="tail-x", source_type=SourceKind.RSS,
                          partition_key="rss:https://e.x/feed", payload={"kind": "rss", "url": "https://e.x/feed"})
     assert state.add_tasks([url_task, rss_task]) == 2
@@ -83,7 +83,7 @@ def test_completed_tail_recrawl_is_not_rearmed(tmp_project: Path) -> None:
     # Re-add the same partition_keys (as a reseed / overlapping GDELT slot would).
     state.add_tasks([
         TaskState(task_id="t-3", job_id="tail-x", source_type=SourceKind.TAIL_RECRAWL,
-                  partition_key="tail-gdelt:https://e.x/a", payload={"url": "https://e.x/a"}),
+                  partition_key="tail:https://e.x/a", payload={"url": "https://e.x/a"}),
         TaskState(task_id="t-4", job_id="tail-x", source_type=SourceKind.RSS,
                   partition_key="rss:https://e.x/feed", payload={"kind": "rss", "url": "https://e.x/feed"}),
     ])

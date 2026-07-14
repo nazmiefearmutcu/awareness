@@ -3,8 +3,8 @@
 Two views over the same corpus:
 
 1. ``staging_captures`` — read JSONL chunks from
-   ``data/jsonl/captures/YYYY/MM/DD/*.jsonl`` directly. This is always
-   present and is the source-of-truth for the latest writes.
+   ``data/jsonl/captures/YYYY/MM/DD/*.jsonl`` / ``*.jsonl.gz`` (not writer temps)
+   directly. This is always present and is the source-of-truth for the latest writes.
 2. ``iceberg_captures`` — read the Iceberg table when present.
 
 A combined ``captures`` view UNIONs both with row-level dedup on
@@ -16,7 +16,9 @@ A combined ``captures`` view UNIONs both with row-level dedup on
 
 from __future__ import annotations
 
+from datetime import datetime
 import contextlib
+import hashlib
 import random
 import threading
 import time
@@ -32,8 +34,33 @@ except ImportError:
     HAS_FCNTL = False
 
 from awareness.obs.logging import get_logger
+from awareness.obs.metrics import get_metrics
+from awareness.util.lang import append_language_filter, primary_language_sql
 
 logger = get_logger("storage.duckdb")
+
+
+def _record_fts_build(mode: str, *, seconds: float, rows: int) -> None:
+    """Emit process-local FTS path counters / latency / row gauge.
+
+    *mode* is one of ``full``, ``incremental``, ``restore`` so operators can
+    see whether search is paying for a cold rebuild, an append-only delta, or
+    a free fingerprint hit after restart.
+    """
+    labels = {"mode": mode}
+    m = get_metrics()
+    m.inc("fts.builds", labels=labels)
+    m.observe("fts.build_seconds", max(0.0, float(seconds)), labels=labels)
+    m.set("fts.indexed_rows", float(max(0, int(rows))))
+
+
+# Fingerprint of the on-disk corpus used to decide whether a persisted FTS
+# index is still valid (path/mtime/size tuples can be large; store a digest).
+def _signature_digest(sig: tuple[Any, ...] | None) -> str:
+    if sig is None:
+        return ""
+    return hashlib.sha256(repr(sig).encode("utf-8")).hexdigest()
+
 
 # ── search configuration surface ─────────────────────────────────────────────
 # Columns the caller may point a search at. Mapped 1:1 onto the ``captures``
@@ -46,6 +73,7 @@ DEFAULT_SEARCH_FIELDS: tuple[str, ...] = ("title", "text")
 #   prefix    — stem-root substring per token (finance -> financ% -> financial).
 #   substring — raw ILIKE on the whole query string. No tokenization.
 #   auto      — FTS first; if it returns nothing, fall back to prefix. Default.
+# Quoted whole-query ("phrase") uses substring matching; response mode is "phrase".
 SEARCH_MODES: tuple[str, ...] = ("auto", "fts", "prefix", "substring")
 DEFAULT_SEARCH_MODE = "auto"
 # Hard ceiling on rows materialized in a single search call (overload guard).
@@ -56,6 +84,19 @@ DEFAULT_SEARCH_MAX_RESULTS = 200
 # the top-`max_results` BM25 candidates with independent, bounded multiplicative
 # factors; all-neutral collapses to identity (pure BM25 order preserved).
 _RERANK_TITLE_BOOST = 0.5        # Wt: full title-term coverage multiplies score by 1+Wt
+_RERANK_TITLE_PHRASE_BOOST = 0.35  # Wp: ordered multi-term title phrase multiplies by 1+Wp
+_RERANK_TITLE_EXACT_BOOST = 0.4  # We: title tokens == query terms multiplies by 1+We
+_RERANK_TITLE_PREFIX_BOOST = 0.25  # Wtp: title tokens start with query multiplies by 1+Wtp
+_RERANK_URL_BOOST = 0.25         # Wu: full url/domain term coverage multiplies by 1+Wu
+_RERANK_URL_PHRASE_BOOST = 0.2   # Wup: ordered multi-term URL-slug phrase multiplies by 1+Wup
+_RERANK_URL_EXACT_BOOST = 0.3    # Wue: last path-slug tokens == query terms multiplies by 1+Wue
+_RERANK_URL_PREFIX_BOOST = 0.2   # Wupr: leaf slug tokens start with query multiplies by 1+Wupr
+_RERANK_DOMAIN_NAV_BOOST = 0.3   # Wd: domain-label term coverage multiplies by 1+Wd
+_RERANK_LEAD_HIT_BOOST = 0.15    # Wh: bag-of-words lead term coverage multiplies by 1+Wh
+_RERANK_LEAD_PHRASE_BOOST = 0.2   # Wl: ordered multi-term phrase in lead text multiplies by 1+Wl
+_RERANK_LEAD_PREFIX_BOOST = 0.2  # Wlp: lead tokens start with query multiplies by 1+Wlp
+_RERANK_LEAD_EXACT_BOOST = 0.25  # Wle: lead tokens == query terms multiplies by 1+Wle
+_RERANK_LEAD_CHARS = 280         # news lede window (chars) for lead hit/phrase/prefix/exact credit
 _RERANK_LEN_PIVOT = 4000         # chars; docs up to here are not length-damped
 _RERANK_LEN_FLOOR = 0.75         # the most a very long doc can be damped to
 _RERANK_RECENCY_WEIGHT = 0.0     # Wr: 0 disables the recency prior (off by default)
@@ -80,6 +121,24 @@ _CAPTURE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("robots_decision", "VARCHAR"), ("terms_note_if_relevant", "VARCHAR"),
 )
 _TS_COLUMNS = frozenset({"fetch_ts", "observed_ts", "published_ts", "last_modified"})
+
+
+
+def _is_staging_jsonl(path: Path) -> bool:
+    """True for finalized staging chunks (plain or gzip), not writer temps.
+
+    Writer temps are named ``*.jsonl.tmp`` / ``*.jsonl.gz.tmp``; a bare
+    suffix-star glob would pick those up mid-write. Only exact final
+    suffixes are accepted.
+    """
+    name = path.name
+    return name.endswith(".jsonl") or name.endswith(".jsonl.gz")
+
+
+def _iter_staging_jsonl(captures_root: Path):
+    """Yield finalized ``*.jsonl`` / ``*.jsonl.gz`` files under *captures_root*."""
+    for pattern in ("*.jsonl", "*.jsonl.gz"):
+        yield from captures_root.rglob(pattern)
 
 
 def _staging_projection(present: set[str]) -> str:
@@ -185,12 +244,18 @@ def _clean_fields(fields: list[str] | tuple[str, ...] | None) -> list[str]:
 
 
 def _collapse_key(row: dict[str, Any]) -> str:
-    """Key used to fold exact-duplicate search hits into one result.
+    """Key used to fold near/exact-duplicate search hits into one result.
 
-    Prefer ``content_hash`` (true content identity). When it is missing/empty
-    fall back to lower(title)|domain so syndicated copies without a hash still
-    collapse together.
+    Priority:
+      1. ``parent_doc_or_dup_group`` — near-dup / exact-dup cluster id when set
+      2. ``content_hash`` — true content identity
+      3. lower(title)|domain — syndicated copies missing hash + parent
     """
+    parent = row.get("parent_doc_or_dup_group")
+    if parent is not None:
+        parent_s = str(parent).strip()
+        if parent_s:
+            return f"p:{parent_s}"
     ch = row.get("content_hash")
     if ch is not None:
         ch_s = str(ch).strip()
@@ -201,13 +266,20 @@ def _collapse_key(row: dict[str, Any]) -> str:
     return f"t:{title}|{domain}"
 
 
-def _collapse_search_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collapse rows to unique content, keeping the highest-scoring hit.
+def _collapse_search_rows(
+    rows: list[dict[str, Any]],
+    *,
+    prefer_higher_score: bool = True,
+) -> list[dict[str, Any]]:
+    """Collapse rows to unique content.
 
-    Input order is preserved for first-seen keys; when a later row shares the
-    same collapse key and has a strictly higher ``score``, it replaces the
-    earlier one (ties keep the first). Unscored rows (prefix/substring) keep
-    first-seen order (already sorted by fetch_ts DESC upstream).
+    Input order is preserved for first-seen keys. When ``prefer_higher_score``
+    is True (default) and a later row shares the same collapse key with a
+    strictly higher ``score``, it replaces the earlier one (ties keep the
+    first). When False, first-seen always wins — used after re-rank so the
+    best final-rank hit is not displaced by a later higher raw BM25 near-dup.
+    Unscored rows (prefix/substring) keep first-seen order (already sorted by
+    fetch_ts DESC upstream).
     """
     if not rows:
         return []
@@ -220,6 +292,8 @@ def _collapse_search_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             best[key] = r
             order.append(key)
             continue
+        if not prefer_higher_score:
+            continue
         prev_score = prev.get("score")
         cur_score = r.get("score")
         if cur_score is None:
@@ -227,6 +301,105 @@ def _collapse_search_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if prev_score is None or float(cur_score) > float(prev_score):
             best[key] = r
     return [best[k] for k in order]
+
+
+
+def _serialize_window_bound(value: Any) -> Any:
+    """JSON-friendly form of a search window bound (datetime → ISO-8601)."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def build_search_diagnostics(
+    *,
+    mode_used: str,
+    fts_available: bool,
+    query_terms: list[str],
+    corpus_size: int | None = None,
+    start: Any = None,
+    end: Any = None,
+    source: str | None = None,
+    domain: str | None = None,
+    language: str | None = None,
+    requested_mode: str | None = None,
+) -> dict[str, Any]:
+    """Build an empty-result diagnostic payload with actionable hints.
+
+    Heavier fields such as ``corpus_size`` are expected to be precomputed by
+    the caller only when ``total == 0`` so successful queries stay cheap.
+    """
+    hints: list[str] = []
+    if corpus_size is not None and corpus_size <= 0:
+        hints.append("No documents in index yet — run a backfill or start tail.")
+    else:
+        # Non-empty corpus (or unknown size) but zero hits.
+        if not fts_available and (requested_mode or mode_used) in ("auto", "fts", "prefix", "substring"):
+            if mode_used in ("prefix", "substring") or not fts_available:
+                hints.append("FTS unavailable; used prefix/substring mode.")
+        if start is not None:
+            hints.append("Date window may exclude older captures.")
+        if source or domain or language:
+            parts: list[str] = []
+            if domain:
+                parts.append("domain")
+            if source:
+                parts.append("source")
+            if language:
+                parts.append("language")
+            hints.append(
+                f"{'/'.join(parts).capitalize()} filter may exclude matching captures."
+            )
+        if corpus_size is None or corpus_size > 0:
+            # Always offer a recall tip when the corpus is non-empty / unknown.
+            if mode_used == "phrase":
+                # Quoted exact-phrase path — do not suggest substring (already used).
+                hints.append(
+                    "No exact phrase matches; try without quotes or fewer words."
+                )
+            elif mode_used != "substring" or len(query_terms) > 1:
+                hints.append("Try fewer terms or substring mode.")
+            else:
+                # substring + single term still missed — keep hints non-empty.
+                hints.append(
+                    "No substring matches; try different terms or drop domain/source/language filters."
+                )
+
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    unique_hints: list[str] = []
+    for h in hints:
+        if h not in seen:
+            seen.add(h)
+            unique_hints.append(h)
+
+    diag: dict[str, Any] = {
+        "mode_used": mode_used,
+        "fts_available": bool(fts_available),
+        "query_terms": list(query_terms),
+        "hints": unique_hints,
+    }
+    if corpus_size is not None:
+        diag["corpus_size"] = int(corpus_size)
+    if start is not None or end is not None:
+        diag["window"] = {
+            "start": _serialize_window_bound(start),
+            "end": _serialize_window_bound(end),
+        }
+    # Surface active filters so CLI/SPA empty-state UX can show what was applied
+    # (hints alone don't make the active domain/source/language filter obvious).
+    filters: dict[str, str] = {}
+    if domain:
+        filters["domain"] = str(domain)
+    if source:
+        filters["source"] = str(source)
+    if language:
+        filters["language"] = str(language)
+    if filters:
+        diag["filters"] = filters
+    return diag
 
 
 class DuckDbIndex:
@@ -259,45 +432,31 @@ class DuckDbIndex:
         # this, every query paid a full view-refresh (~150ms over a few JSONL
         # chunks); steady-state queries are now bound by the query itself.
         self._views_signature: tuple[Any, ...] | None = None
+        # BM25F avg field lengths (title, text) keyed by views_signature so
+        # repeated searches skip the full-table AVG(length(...)) scan while
+        # the corpus fingerprint is unchanged.
+        self._bm25_avg_lengths: tuple[float, float] | None = None
+        self._bm25_avg_lengths_signature: tuple[Any, ...] | None = None
+        # Observability / tests: how FTS was last satisfied on this instance.
+        self._fts_full_rebuilds: int = 0
+        self._fts_incremental_appends: int = 0
+        self._fts_restores: int = 0
         self._initialized = True
 
     @contextlib.contextmanager
     def _connection_context(self):
-        """Acquire process-level file lock and return a DuckDB connection."""
-        lock_path = self._db_path.with_suffix(".lock")
-        with _file_lock(lock_path):
-            conn = None
-            max_retries = 10
-            base_delay = 0.05
-            max_delay = 1.0
-            
-            for attempt in range(max_retries):
-                try:
-                    conn = duckdb.connect(str(self._db_path))
-                    break
-                except duckdb.Error as exc:
-                    exc_str = str(exc).lower()
-                    is_lock_error = any(
-                        msg in exc_str
-                        for msg in ("lock", "resource temporarily unavailable", "permission", "locked", "io error")
-                    )
-                    if is_lock_error and attempt < max_retries - 1:
-                        time.sleep(min(max_delay, base_delay * (2 ** attempt)) * (0.5 + random.random()))
-                    else:
-                        raise
-            
-            try:
-                self._configure_connection(conn)
-                # Check and refresh views if stale
-                self._refresh_views_if_stale(conn)
-                
-                yield conn
-            finally:
-                if conn is not None:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
+        """Yield the long-lived DuckDB connection for a locked critical section.
+
+        Callers (``search``/``execute``/``refresh``) hold ``self._lock`` for the
+        full critical section. We reuse ``connect()``'s memoized ``self._conn``
+        instead of open/close per call so hot search paths skip connection setup
+        and extension reload. View freshness is preserved via
+        ``_refresh_views_if_stale`` on every entry (same as ``related()``).
+        """
+        # connect() re-enters self._lock (RLock) and opens at most once.
+        conn = self.connect()
+        self._refresh_views_if_stale(conn)
+        yield conn
 
     def _configure_connection(self, conn: duckdb.DuckDBPyConnection) -> None:
         """Apply session defaults and load optional extensions on a new connection."""
@@ -361,15 +520,27 @@ class DuckDbIndex:
                 self._conn = conn
                 return conn
 
-    def _staging_glob(self) -> str:
-        # JSONL chunks land here; use a recursive glob.
-        return str(self._jsonl_dir / "captures" / "**" / "*.jsonl")
+    def _staging_globs(self) -> list[str]:
+        # Recursive fallback when partition scan finds nothing: only patterns
+        # that match at least one finalized chunk (DuckDB rejects empty globs).
+        captures_root = self._jsonl_dir / "captures"
+        globs: list[str] = []
+        try:
+            if any(p.is_file() for p in captures_root.rglob("*.jsonl") if _is_staging_jsonl(p)):
+                globs.append(str(captures_root / "**" / "*.jsonl"))
+            if any(p.is_file() for p in captures_root.rglob("*.jsonl.gz") if _is_staging_jsonl(p)):
+                globs.append(str(captures_root / "**" / "*.jsonl.gz"))
+        except OSError:
+            return []
+        return globs
 
     def _get_partition_globs(self) -> list[str]:
         """Scan captures directory to find leaf partition directories containing JSONL files.
 
-        Returns a list of glob patterns for each active partition (e.g. ['/path/to/captures/2026/06/01/*.jsonl']).
-        If partition-aware scanning is empty, falls back to the default staging glob.
+        Returns dual glob patterns per active partition (``*.jsonl`` and
+        ``*.jsonl.gz``) so writer temps (``*.jsonl.tmp`` / ``*.jsonl.gz.tmp``)
+        are never read. Example:
+        ``['/path/to/captures/2026/06/01/*.jsonl', '.../01/*.jsonl.gz']``.
         """
         captures_root = self._jsonl_dir / "captures"
         if not captures_root.exists():
@@ -377,9 +548,9 @@ class DuckDbIndex:
 
         partition_dirs = set()
         try:
-            for p in captures_root.rglob("*.jsonl"):
+            for p in _iter_staging_jsonl(captures_root):
                 try:
-                    if p.is_file():
+                    if p.is_file() and _is_staging_jsonl(p):
                         partition_dirs.add(p.parent)
                 except OSError:
                     continue
@@ -389,36 +560,38 @@ class DuckDbIndex:
         if not partition_dirs:
             return []
 
-        return [str(d / "*.jsonl") for d in sorted(partition_dirs)]
+        # Only emit patterns that match at least one finalized file — DuckDB
+        # read_json_auto fails if any list entry matches nothing.
+        globs: list[str] = []
+        for d in sorted(partition_dirs):
+            if any(p.is_file() and _is_staging_jsonl(p) for p in d.glob("*.jsonl")):
+                globs.append(str(d / "*.jsonl"))
+            if any(p.is_file() and _is_staging_jsonl(p) for p in d.glob("*.jsonl.gz")):
+                globs.append(str(d / "*.jsonl.gz"))
+        return globs
 
     def _source_signature(self) -> tuple[Any, ...]:
         """Cheap fingerprint of the on-disk corpus (JSONL chunks + Iceberg metadata).
 
-        Changes whenever a staging chunk is added/rotated or the Iceberg table
-        gains a snapshot, so :meth:`_refresh_views_if_stale` can skip the
-        expensive view rebuild while still picking up new data.
+        Per-file path + mtime_ns + size so content replacement at the same
+        path (or same row count) still invalidates views and FTS. Iceberg
+        metadata mtimes cover snapshot advances.
         """
         captures_root = self._jsonl_dir / "captures"
         jsonl: tuple[Any, ...] = ()
         if captures_root.exists():
             entries = []
             try:
-                partition_dirs = set()
-                for p in captures_root.rglob("*.jsonl"):
+                for p in _iter_staging_jsonl(captures_root):
                     try:
-                        if p.is_file():
-                            partition_dirs.add(p.parent)
-                    except OSError:
-                        continue
-                for d in sorted(partition_dirs):
-                    try:
-                        st = d.stat()
-                        entries.append((str(d), st.st_mtime_ns))
+                        if p.is_file() and _is_staging_jsonl(p):
+                            st = p.stat()
+                            entries.append((str(p), st.st_mtime_ns, st.st_size))
                     except OSError:
                         continue
             except OSError:
                 pass
-            jsonl = tuple(entries)
+            jsonl = tuple(sorted(entries))
         iceberg: tuple[Any, ...] = ()
         wh = self._iceberg_warehouse
         if wh and not str(wh).startswith(("s3://", "s3a://", "gs://", "gcs://")):
@@ -444,16 +617,17 @@ class DuckDbIndex:
         has_files = False
         if captures_root.exists():
             try:
-                for p in captures_root.rglob("*.jsonl"):
-                    has_files = True
-                    break
+                for p in _iter_staging_jsonl(captures_root):
+                    if p.is_file() and _is_staging_jsonl(p):
+                        has_files = True
+                        break
             except OSError:
                 pass
 
         if has_files:
             globs = self._get_partition_globs()
             if not globs:
-                globs = [self._staging_glob()]
+                globs = self._staging_globs()
 
             glob_list = ", ".join(f"'{g}'" for g in globs)
             conn.execute(  # nosemgrep
@@ -493,6 +667,10 @@ class DuckDbIndex:
         # Build a unified ``captures`` view that casts timestamps to TIMESTAMPTZ
         # so BETWEEN/range queries against datetime parameters work.
         # We try to load and union the Iceberg warehouse captures when available.
+        present = {
+            str(r[0]) for r in conn.execute("DESCRIBE staging_captures_raw").fetchall()
+        }
+        staging_proj = _staging_projection(present)
         iceberg_ok = False
         if self._iceberg_warehouse:
             try:
@@ -520,22 +698,11 @@ class DuckDbIndex:
 
         try:
             if iceberg_ok:
-                conn.execute(
-                    """
+                conn.execute(  # nosemgrep
+                    f"""
                     CREATE OR REPLACE VIEW captures_raw_union AS
                     SELECT
-                      doc_id, capture_id, parent_doc_or_dup_group,
-                      source_type, source_name, source_locator,
-                      source_shard, source_offset_or_record_id,
-                      discovery_channel, job_id, batch_id, ingest_version,
-                      url, canonical_url, domain,
-                      TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
-                      TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
-                      TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
-                      TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
-                      content_type, http_status, etag, title, text, language,
-                      content_hash, TRY_CAST(near_dup_hash AS BIGINT) AS near_dup_hash, robots_decision,
-                      terms_note_if_relevant
+                      {staging_proj}
                     FROM staging_captures_raw
                     UNION ALL
                     SELECT
@@ -565,22 +732,11 @@ class DuckDbIndex:
                     """
                 )
             else:
-                conn.execute(
-                    """
+                conn.execute(  # nosemgrep
+                    f"""
                     CREATE OR REPLACE VIEW captures AS
                     SELECT
-                      doc_id, capture_id, parent_doc_or_dup_group,
-                      source_type, source_name, source_locator,
-                      source_shard, source_offset_or_record_id,
-                      discovery_channel, job_id, batch_id, ingest_version,
-                      url, canonical_url, domain,
-                      TRY_CAST(fetch_ts AS TIMESTAMPTZ) AS fetch_ts,
-                      TRY_CAST(observed_ts AS TIMESTAMPTZ) AS observed_ts,
-                      TRY_CAST(published_ts AS TIMESTAMPTZ) AS published_ts,
-                      TRY_CAST(last_modified AS TIMESTAMPTZ) AS last_modified,
-                      content_type, http_status, etag, title, text, language,
-                      content_hash, TRY_CAST(near_dup_hash AS BIGINT) AS near_dup_hash, robots_decision,
-                      terms_note_if_relevant
+                      {staging_proj}
                     FROM staging_captures_raw;
                     """
                 )
@@ -612,19 +768,276 @@ class DuckDbIndex:
             self._refresh_views_if_stale(conn)
             return find_related_captures(conn, capture_id, limit=limit)
 
+    def related_count(self, capture_id: str) -> int:
+        """Total sibling captures in the same dup-group (excludes *capture_id*)."""
+        with self._lock:
+            conn = self.connect()
+            self._refresh_views_if_stale(conn)
+            return count_related_captures(conn, capture_id)
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Cheap readiness probe for /healthz (views, row count, FTS flags).
+
+        Does not force an FTS rebuild — only reports whether the extension
+        loaded and whether an FTS index has already been built for the
+        current corpus signature.
+        """
+        try:
+            with self._lock:
+                conn = self.connect()
+                self._refresh_views_if_stale(conn)
+                try:
+                    row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+                    captures = int(row[0]) if row else 0
+                except duckdb.Error as exc:
+                    return {
+                        "ready": False,
+                        "error": f"captures_view: {exc}",
+                        "fts_extension": bool(self._fts_available),
+                        "fts_built": False,
+                        "captures": 0,
+                    }
+                fts_built = (
+                    self._fts_built_signature is not None
+                    and self._fts_built_signature == self._views_signature
+                    and self._fts_built_for_count >= 0
+                )
+                return {
+                    "ready": True,
+                    "captures": captures,
+                    "fts_extension": bool(self._fts_available),
+                    "fts_built": bool(fts_built),
+                    "fts_built_for_count": int(self._fts_built_for_count),
+                    "views_signature_present": self._views_signature is not None,
+                    "db_path": str(self._db_path),
+                    "jsonl_dir": str(self._jsonl_dir),
+                }
+        except Exception as exc:  # noqa: BLE001 — health must never raise
+            return {
+                "ready": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "fts_extension": bool(self._fts_available) if self._fts_available is not None else False,
+                "fts_built": False,
+                "captures": 0,
+            }
+
     # ── full-text search ────────────────────────────────────────────────
+    _CAPTURES_IDX_SELECT = """
+                SELECT
+                  capture_id, doc_id, parent_doc_or_dup_group,
+                  source_type, source_name, discovery_channel,
+                  url, canonical_url, domain,
+                  fetch_ts, observed_ts, published_ts,
+                  title, text, language, content_hash, near_dup_hash,
+                  robots_decision
+                FROM captures
+                """
+
+    _FTS_CREATE_PRAGMA = (
+        "PRAGMA create_fts_index('captures_idx', 'capture_id', 'title', 'text', "
+        "overwrite=1, stemmer='english', stopwords='english')"
+    )
+
+    @staticmethod
+    def _main_table_exists(conn: duckdb.DuckDBPyConnection, name: str) -> bool:
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = 'main' AND table_name = ? LIMIT 1",
+                [name],
+            ).fetchone()
+            return row is not None
+        except duckdb.Error:
+            return False
+
+    def _persist_fts_signature(self, conn: duckdb.DuckDBPyConnection) -> None:
+        """Store corpus fingerprint so a later process can reuse captures_idx+FTS."""
+        dig = _signature_digest(self._views_signature)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS awareness_index_meta (
+              key VARCHAR PRIMARY KEY,
+              value VARCHAR
+            )
+            """
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO awareness_index_meta VALUES (?, ?)",
+            ["fts_source_signature", dig],
+        )
+
+    def _load_persisted_fts_signature(self, conn: duckdb.DuckDBPyConnection) -> str | None:
+        try:
+            if not self._main_table_exists(conn, "awareness_index_meta"):
+                return None
+            row = conn.execute(
+                "SELECT value FROM awareness_index_meta WHERE key = ? LIMIT 1",
+                ["fts_source_signature"],
+            ).fetchone()
+            return str(row[0]) if row and row[0] is not None else None
+        except duckdb.Error:
+            return None
+
+    def _mark_fts_ready(self, count: int) -> None:
+        self._fts_built_for_count = count
+        self._fts_built_signature = self._views_signature
+        # captures_idx content changed → drop stale BM25F length cache.
+        self._bm25_avg_lengths = None
+        self._bm25_avg_lengths_signature = None
+
+    def _try_restore_persisted_fts(self, conn: duckdb.DuckDBPyConnection) -> bool:
+        """Reuse on-disk captures_idx + FTS when corpus fingerprint still matches.
+
+        Avoids a full rematerialize + create_fts_index after process restart when
+        JSONL/Iceberg sources are unchanged (C3-T1 persisted FTS).
+        """
+        if self._views_signature is None:
+            return False
+        if not self._main_table_exists(conn, "captures_idx"):
+            return False
+        stored = self._load_persisted_fts_signature(conn)
+        if stored is None or stored != _signature_digest(self._views_signature):
+            return False
+        t0 = time.perf_counter()
+        try:
+            # Probe FTS schema still present and queryable.
+            conn.execute("SELECT COUNT(*) FROM fts_main_captures_idx.docs").fetchone()
+            row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
+            count = int(row[0]) if row else 0
+            if count == 0:
+                return False
+            self._fts_built_for_count = count
+            self._fts_built_signature = self._views_signature
+            self._fts_restores += 1
+            elapsed = max(0.0, time.perf_counter() - t0)
+            _record_fts_build("restore", seconds=elapsed, rows=count)
+            logger.info("duckdb_fts_index_restored", rows=count, seconds=round(elapsed, 4))
+            return True
+        except duckdb.Error:
+            return False
+
+    def _try_incremental_fts_append(self, conn: duckdb.DuckDBPyConnection, new_count: int) -> bool:
+        """If captures grew by insert-only ids, delta-INSERT then rebuild FTS.
+
+        DuckDB FTS has no public partial-update API, so the inverted index is
+        still rebuilt; we skip re-scanning the entire JSONL-backed view into a
+        brand-new captures_idx table when old rows are still valid.
+        """
+        if not self._main_table_exists(conn, "captures_idx"):
+            return False
+        try:
+            old_row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
+            old_count = int(old_row[0]) if old_row else 0
+        except duckdb.Error:
+            return False
+        if old_count <= 0 or new_count <= old_count:
+            return False
+        t0 = time.perf_counter()
+        try:
+            missing = conn.execute(
+                """
+                SELECT COUNT(*) FROM captures_idx i
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM captures c WHERE c.capture_id = i.capture_id
+                )
+                """
+            ).fetchone()
+            if missing is None or int(missing[0]) > 0:
+                return False
+            conn.execute(
+                """
+                INSERT INTO captures_idx
+                SELECT
+                  c.capture_id, c.doc_id, c.parent_doc_or_dup_group,
+                  c.source_type, c.source_name, c.discovery_channel,
+                  c.url, c.canonical_url, c.domain,
+                  c.fetch_ts, c.observed_ts, c.published_ts,
+                  c.title, c.text, c.language, c.content_hash, c.near_dup_hash,
+                  c.robots_decision
+                FROM captures c
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM captures_idx i WHERE i.capture_id = c.capture_id
+                )
+                """
+            )
+            conn.execute(self._FTS_CREATE_PRAGMA)
+            self._mark_fts_ready(new_count)
+            self._persist_fts_signature(conn)
+            self._fts_incremental_appends += 1
+            elapsed = max(0.0, time.perf_counter() - t0)
+            _record_fts_build("incremental", seconds=elapsed, rows=new_count)
+            logger.info(
+                "duckdb_fts_index_appended",
+                rows=new_count,
+                prev_rows=old_count,
+                seconds=round(elapsed, 4),
+            )
+            return True
+        except duckdb.Error as exc:
+            elapsed = max(0.0, time.perf_counter() - t0)
+            get_metrics().inc("fts.build_errors", labels={"mode": "incremental"})
+            get_metrics().observe(
+                "fts.build_seconds",
+                elapsed,
+                labels={"mode": "incremental", "outcome": "error"},
+            )
+            logger.warning("duckdb_fts_incremental_failed", err=str(exc))
+            return False
+
+    def _full_rebuild_fts(self, conn: duckdb.DuckDBPyConnection, count: int) -> bool:
+        t0 = time.perf_counter()
+        try:
+            conn.execute(
+                f"""
+                CREATE OR REPLACE TABLE captures_idx AS
+                {self._CAPTURES_IDX_SELECT}
+                """
+            )
+            conn.execute(self._FTS_CREATE_PRAGMA)
+            self._mark_fts_ready(count)
+            self._persist_fts_signature(conn)
+            self._fts_full_rebuilds += 1
+            elapsed = max(0.0, time.perf_counter() - t0)
+            _record_fts_build("full", seconds=elapsed, rows=count)
+            logger.info("duckdb_fts_index_built", rows=count, seconds=round(elapsed, 4))
+            return True
+        except duckdb.Error as exc:
+            elapsed = max(0.0, time.perf_counter() - t0)
+            get_metrics().inc("fts.build_errors", labels={"mode": "full"})
+            get_metrics().observe(
+                "fts.build_seconds",
+                elapsed,
+                labels={"mode": "full", "outcome": "error"},
+            )
+            logger.warning("duckdb_fts_build_failed", err=str(exc))
+            self._fts_available = False
+            return False
+
     def _ensure_fts(self, conn: duckdb.DuckDBPyConnection) -> bool:
         """Build/refresh the FTS index on a materialized captures table.
 
         DuckDB's FTS extension requires a real table. We materialize the
-        captures view into ``captures_idx`` and rebuild the index whenever
-        the row count changes. Returns True if FTS is ready to use.
+        captures view into ``captures_idx`` and rebuild whenever the source
+        signature changes (not merely row count), so content replacement at
+        the same cardinality still refreshes BM25.
+
+        C3-T1 optimizations:
+        * **Persisted reuse** — if ``captures_idx`` + FTS + meta fingerprint
+          still match the corpus, skip rebuild after process restart.
+        * **Append-only** — when only new ``capture_id``s appear, INSERT the
+          delta into ``captures_idx`` then recreate the FTS index (no full
+          rematerialize from JSONL).
+
+        Returns True if FTS is ready to use.
         """
         if not self._fts_available:
             return False
         # Fast path: the source files are unchanged since we last built the
         # index, so skip the COUNT(*) probe (which scans the JSON-backed view).
         if self._fts_built_signature is not None and self._fts_built_signature == self._views_signature:
+            return True
+        # Process-restart / cold open: reuse on-disk FTS if fingerprint matches.
+        if self._try_restore_persisted_fts(conn):
             return True
         # Current corpus size.
         try:
@@ -636,35 +1049,62 @@ class DuckDbIndex:
             return False
         if count == 0:
             return False
-        if count == self._fts_built_for_count:
-            self._fts_built_signature = self._views_signature
+        # Pure growth: delta-INSERT then rebuild inverted index only.
+        if self._try_incremental_fts_append(conn, count):
             return True
-        # Rebuild materialized table + FTS index.
+        return self._full_rebuild_fts(conn, count)
+
+    def _bm25_field_avg_lengths(self, conn: duckdb.DuckDBPyConnection) -> tuple[float, float]:
+        """Return (avg_title_len, avg_text_len) for BM25F, memoized by views_signature.
+
+        Avg field lengths are corpus-global constants for a given index
+        fingerprint. Recomputing ``AVG(length(...))`` over ``captures_idx`` on
+        every search is pure overhead on steady-state queries; cache until the
+        source signature (and thus FTS rebuild) changes.
+        """
+        sig = self._views_signature
+        if (
+            self._bm25_avg_lengths is not None
+            and self._bm25_avg_lengths_signature is not None
+            and self._bm25_avg_lengths_signature == sig
+        ):
+            return self._bm25_avg_lengths
+        avg_row = conn.execute(
+            "SELECT CAST(avg(length(coalesce(title, ''))) AS DOUBLE) as avg_title, "
+            "CAST(avg(length(coalesce(text, ''))) AS DOUBLE) as avg_text FROM captures_idx"
+        ).fetchone()
+        avg_title = float(avg_row[0] or 1.0) if avg_row else 1.0
+        avg_text = float(avg_row[1] or 1.0) if avg_row else 1.0
+        if avg_title <= 0.0:
+            avg_title = 1.0
+        if avg_text <= 0.0:
+            avg_text = 1.0
+        lengths = (avg_title, avg_text)
+        self._bm25_avg_lengths = lengths
+        self._bm25_avg_lengths_signature = sig
+        return lengths
+
+    def _bm25_term_dfs(self, conn: duckdb.DuckDBPyConnection, terms: list[str]) -> dict[str, int]:
+        """Batch-fetch document frequencies for stemmed terms (one dict query).
+
+        Missing terms map to df=0. Dedupes *terms* so multi-hit queries pay
+        one round-trip regardless of repeated stems.
+        """
+        if not terms:
+            return {}
+        unique = list(dict.fromkeys(terms))
+        placeholders = ", ".join(f"$df_term_{i}" for i in range(len(unique)))
+        params = {f"df_term_{i}": t for i, t in enumerate(unique)}
         try:
-            conn.execute(
-                """
-                CREATE OR REPLACE TABLE captures_idx AS
-                SELECT
-                  capture_id, doc_id, parent_doc_or_dup_group,
-                  source_type, source_name, discovery_channel,
-                  url, canonical_url, domain,
-                  fetch_ts, observed_ts, published_ts,
-                  title, text, language, content_hash, near_dup_hash,
-                  robots_decision
-                FROM captures
-                """
-            )
-            conn.execute(
-                "PRAGMA create_fts_index('captures_idx', 'capture_id', 'title', 'text', overwrite=1, stemmer='english', stopwords='english')"
-            )
-            self._fts_built_for_count = count
-            self._fts_built_signature = self._views_signature
-            logger.info("duckdb_fts_index_built", rows=count)
-            return True
-        except duckdb.Error as exc:
-            logger.warning("duckdb_fts_build_failed", err=str(exc))
-            self._fts_available = False
-            return False
+            rows = conn.execute(
+                f"SELECT term, CAST(df AS INTEGER) FROM fts_main_captures_idx.dict "
+                f"WHERE term IN ({placeholders})",
+                params,
+            ).fetchall()
+        except duckdb.Error:
+            return {t: 0 for t in unique}
+        found = {str(term): int(df) for term, df in rows}
+        return {t: found.get(t, 0) for t in unique}
 
     def _stem_roots(self, conn: duckdb.DuckDBPyConnection, terms: list[str]) -> list[str]:
         """Reduce each query token to its Snowball stem (its prefix root).
@@ -687,6 +1127,101 @@ class DuckDbIndex:
                 roots.append(root)
         return roots
 
+
+    def _match_facets(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        kind: str,
+        params: dict[str, Any],
+        base: str | None = None,
+        where_sql: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Top domains/sources for the current match set (cheap SQL GROUP BY).
+
+        ``kind`` is ``"fts"`` (BM25 join via *base*) or ``"where"`` (ILIKE path
+        with *where_sql*). Only called when the match total is > 0 so the extra
+        aggregates stay cheap relative to the search itself.
+        """
+        lim = max(1, min(int(limit), 50))
+        if kind == "fts" and base:
+            # Placeholders live only inside *base* (terms + range/source filters).
+            p = {
+                k: v
+                for k, v in params.items()
+                if f"${k}" in base or k.startswith("term_")
+            }
+            # Case-normalize domains so Example.com / example.com roll into one
+            # SPA chip (matches lower(domain) filter semantics).
+            dom_sql = (
+                f"SELECT lower(CAST(c.domain AS VARCHAR)) AS domain, "
+                f"COUNT(DISTINCT c.capture_id)::BIGINT AS n "
+                f"{base} "
+                f"WHERE c.domain IS NOT NULL AND CAST(c.domain AS VARCHAR) != '' "
+                f"GROUP BY 1 ORDER BY n DESC LIMIT {lim}"
+            )
+            # Case-normalize so RSS / rss / Rss roll into one SPA chip (matches
+            # lower(source_type) filter semantics used by source= query params).
+            src_sql = (
+                f"SELECT lower(CAST(c.source_type AS VARCHAR)) AS source_type, "
+                f"COUNT(DISTINCT c.capture_id)::BIGINT AS n "
+                f"{base} "
+                f"WHERE c.source_type IS NOT NULL AND CAST(c.source_type AS VARCHAR) != '' "
+                f"GROUP BY 1 ORDER BY n DESC LIMIT {lim}"
+            )
+            # Primary BCP-47 tags so en / en-US / en_GB roll into one "en" chip.
+            lang_prim = primary_language_sql("c.language")
+            lang_sql = (
+                f"SELECT {lang_prim} AS language, "
+                f"COUNT(DISTINCT c.capture_id)::BIGINT AS n "
+                f"{base} "
+                f"WHERE c.language IS NOT NULL AND CAST(c.language AS VARCHAR) != '' "
+                f"AND {lang_prim} != '' "
+                f"GROUP BY 1 ORDER BY n DESC LIMIT {lim}"
+            )
+        else:
+            w = where_sql or "1=1"
+            p = {k: v for k, v in params.items() if f"${k}" in w}
+            # Case-normalize domains so mixed-case corpus values share one chip.
+            dom_sql = (
+                f"SELECT lower(CAST(domain AS VARCHAR)) AS domain, "
+                f"COUNT(*)::BIGINT AS n FROM captures "
+                f"WHERE ({w}) AND domain IS NOT NULL AND CAST(domain AS VARCHAR) != '' "
+                f"GROUP BY 1 ORDER BY n DESC LIMIT {lim}"
+            )
+            # Case-normalize so RSS / rss roll into one chip (filter is lower()).
+            src_sql = (
+                f"SELECT lower(CAST(source_type AS VARCHAR)) AS source_type, "
+                f"COUNT(*)::BIGINT AS n FROM captures "
+                f"WHERE ({w}) AND source_type IS NOT NULL "
+                f"AND CAST(source_type AS VARCHAR) != '' "
+                f"GROUP BY 1 ORDER BY n DESC LIMIT {lim}"
+            )
+            # Primary BCP-47 tags so SPA chips match filter semantics (language=en).
+            lang_prim = primary_language_sql("language")
+            lang_sql = (
+                f"SELECT {lang_prim} AS language, COUNT(*)::BIGINT AS n FROM captures "
+                f"WHERE ({w}) AND language IS NOT NULL "
+                f"AND CAST(language AS VARCHAR) != '' "
+                f"AND {lang_prim} != '' "
+                f"GROUP BY 1 ORDER BY n DESC LIMIT {lim}"
+            )
+        try:
+            domains = self._rows(conn, dom_sql, p)
+            sources = self._rows(conn, src_sql, p)
+            languages = self._rows(conn, lang_sql, p)
+        except duckdb.Error as exc:
+            logger.warning("search_facets_failed", kind=kind, err=str(exc))
+            return {"domains": [], "sources": [], "languages": []}
+        for row in domains:
+            row["n"] = int(row["n"])
+        for row in sources:
+            row["n"] = int(row["n"])
+        for row in languages:
+            row["n"] = int(row["n"])
+        return {"domains": domains, "sources": sources, "languages": languages}
+
     def search(
         self,
         query: str,
@@ -695,6 +1230,7 @@ class DuckDbIndex:
         offset: int = 0,
         source: str | None = None,
         domain: str | None = None,
+        language: str | None = None,
         start: Any = None,
         end: Any = None,
         mode: str = DEFAULT_SEARCH_MODE,
@@ -709,20 +1245,35 @@ class DuckDbIndex:
         ``financial``. ``fields`` restricts substring/prefix matching to a
         whitelisted subset of :data:`ALLOWED_SEARCH_FIELDS`. ``max_results``
         is a hard ceiling on rows materialized in one call (overload guard).
+        ``language`` filters by BCP-47 tag (case-insensitive). Primary tags
+        (``en``) also match regional subtags (``en-US``, ``en-GB``).
         """
         query = (query or "").strip()
         mode = (mode or DEFAULT_SEARCH_MODE).strip().lower()
         if mode not in SEARCH_MODES:
             mode = DEFAULT_SEARCH_MODE
+        # Quoted whole-query → exact phrase (ILIKE %phrase%), skip FTS/tokenization.
+        # Detect leading+trailing double quotes on the stripped query.
+        # Matching uses the substring path; response mode is labeled "phrase".
+        phrase_query = _phrase_query(query)
+        is_phrase = phrase_query is not None
+        if is_phrase:
+            query = phrase_query
+            mode = "substring"
         cols = _clean_fields(fields)
 
-        # Clamp the page so a single call never materializes more than the cap.
+        # Page bounds. Do NOT rewrite offset past max_results — that corrupts
+        # client page state (SPA/CLI keep their own offset and see the last
+        # window forever). Over-range pages return empty rows instead.
         limit = max(1, int(limit))
         offset = max(0, int(offset))
+        page_beyond_cap = False
         if max_results is not None and max_results > 0:
             if offset >= max_results:
-                offset = max(0, max_results - limit)
-            limit = max(1, min(limit, max_results - offset))
+                page_beyond_cap = True
+            else:
+                # A single page never extends past the overload ceiling.
+                limit = max(1, min(limit, max_results - offset))
         # Candidate window for collapse-then-page: fetch up to the overload
         # ceiling (no SQL offset) so exact dups don't under-fill the page.
         candidate_cap = (
@@ -730,27 +1281,47 @@ class DuckDbIndex:
             if max_results is not None and max_results > 0
             else DEFAULT_SEARCH_MAX_RESULTS
         )
-        candidate_cap = max(candidate_cap, offset + limit)
+        # Still honor an explicit offset+limit inside the cap for the window.
+        if not page_beyond_cap:
+            candidate_cap = max(candidate_cap, offset + limit)
 
+        mode_label = "phrase" if is_phrase else mode
         empty = {
             "total": 0, "limit": limit, "offset": offset, "rows": [],
-            "ranked": False, "mode": mode, "fields": cols, "query": query,
+            "ranked": False, "mode": mode_label, "fields": cols, "query": query,
         }
         if not query:
+            empty["diagnostics"] = build_search_diagnostics(
+                mode_used=mode_label,
+                fts_available=bool(self._fts_available),
+                query_terms=[],
+                corpus_size=None,
+                start=start,
+                end=end,
+                source=source,
+                domain=domain,
+                language=language,
+                requested_mode=mode,
+            )
             return empty
 
         with self._lock, self._connection_context() as conn:
 
-            # Shared range/source/domain filters.
+            # Shared range/source/domain/language filters.
             def base_filters() -> tuple[list[str], dict[str, Any]]:
                 w: list[str] = []
                 p: dict[str, Any] = {}
                 if source:
-                    w.append("source_type = $src")
-                    p["src"] = source
+                    # Case-insensitive: SPA/CLI may pass RSS vs rss / Tail_Recrawl.
+                    w.append("lower(source_type) = $src")
+                    p["src"] = str(source).strip().lower()
                 if domain:
-                    w.append("domain = $dom")
-                    p["dom"] = domain
+                    # Case-insensitive: users/SPA may pass Example.COM while
+                    # captures store lower-cased eTLD+1 from URL parsing.
+                    w.append("lower(domain) = $dom")
+                    p["dom"] = str(domain).strip().lower()
+                # BCP-47: primary tags match regional subtags (en → en-US).
+                append_language_filter(w, p, language)
                 if start is not None:
                     w.append("fetch_ts >= $start")
                     p["start"] = start
@@ -762,12 +1333,15 @@ class DuckDbIndex:
             total = 0
             rows: list[dict[str, Any]] = []
             used_mode = mode
+            requested_mode = mode
+            # (kind, base|None, where_sql|None, params) for cheap facet GROUP BY.
+            facet_ctx: tuple[str, str | None, str | None, dict[str, Any]] | None = None
 
             # FTS indexes title+text as one blob, so it cannot honor a
             # narrowed ``fields`` request. Explicit ``fts`` still runs (escape
             # hatch); ``auto`` only takes the ranked path when fields are the
             # default, otherwise it routes to field-aware prefix matching.
-            fts_eligible = list(cols) == list(DEFAULT_SEARCH_FIELDS)
+            fts_eligible = set(cols) == set(DEFAULT_SEARCH_FIELDS)
 
             # ── 1) FTS (ranked) path: used for fts/auto when available ──────
             if mode == "fts" or (mode == "auto" and fts_eligible):
@@ -793,23 +1367,14 @@ class DuckDbIndex:
                             count_row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
                             N = count_row[0] if count_row else 1
 
-                        # Get average lengths of title and text
-                        avg_row = conn.execute(
-                            "SELECT CAST(avg(length(coalesce(title, ''))) AS DOUBLE) as avg_title, "
-                            "CAST(avg(length(coalesce(text, ''))) AS DOUBLE) as avg_text FROM captures_idx"
-                        ).fetchone()
-                        avg_title = (avg_row[0] or 1.0) if avg_row else 1.0
-                        avg_text = (avg_row[1] or 1.0) if avg_row else 1.0
+                        # Avg field lengths: memoized per views_signature.
+                        avg_title, avg_text = self._bm25_field_avg_lengths(conn)
 
-                        # Get DFs from dictionary
+                        # Batch DF lookups (one dict query) then BM25 IDF.
+                        term_dfs = self._bm25_term_dfs(conn, stemmed_terms)
                         term_idfs = {}
                         for st in stemmed_terms:
-                            df_row = conn.execute(
-                                "SELECT CAST(df AS INTEGER) FROM fts_main_captures_idx.dict WHERE term = ? LIMIT 1",
-                                [st]
-                            ).fetchone()
-                            df = df_row[0] if df_row else 0
-                            # BM25 IDF
+                            df = term_dfs.get(st, 0)
                             idf = math.log(1.0 + (N - df + 0.5) / (df + 0.5))
                             term_idfs[st] = max(0.0, idf)
 
@@ -820,6 +1385,7 @@ class DuckDbIndex:
                         # early ingestion.
                         settings = get_settings()
                         threshold = float(getattr(settings, "search_idf_threshold", 1.0) or 0.0)
+                        recency_weight = float(getattr(settings, "search_recency_boost", 0.0) or 0.0)
                         _MIN_DOCS_FOR_IDF_PRUNE = 20
                         if N < _MIN_DOCS_FOR_IDF_PRUNE or threshold <= 0.0:
                             valid_terms = list(stemmed_terms)
@@ -896,11 +1462,21 @@ class DuckDbIndex:
                                   c.url, c.canonical_url, c.domain,
                                   c.fetch_ts, c.observed_ts, c.published_ts,
                                   c.title, c.text, c.language, c.content_hash
-                                ORDER BY score DESC
+                                ORDER BY score DESC, c.capture_id ASC
                                 LIMIT {int(candidate_cap)}
                             """
-                            rows = self._rows(conn, sql, params)
+                            candidates = self._rows(conn, sql, params)
+                            # Title/length (and optional recency) re-rank before
+                            # collapse+page so field boost is not lost to LIMIT.
+                            # recency_weight from settings.search_recency_boost
+                            # (0=off); uses published_ts, else fetch_ts.
+                            rows = _rerank(
+                                candidates,
+                                terms,
+                                recency_weight=recency_weight,
+                            )
                             used_mode = "fts"
+                            facet_ctx = ("fts", base, None, params)
                 elif mode == "fts":
                     # FTS explicitly requested but unavailable → degrade to prefix.
                     mode = "prefix"
@@ -916,25 +1492,32 @@ class DuckDbIndex:
                     params["like"] = f"%{query}%"
                     used_mode = "substring"
                 else:
-                    # Match every token's stem-root anywhere in the chosen fields.
+                    # Match ANY token's stem-root in ANY chosen field (OR-by-default,
+                    # matching the FTS path so multi-word recall is consistent).
                     roots = self._stem_roots(conn, terms)
                     snippet_terms = roots or terms
+                    or_clauses: list[str] = []
                     for i, root in enumerate(roots):
                         key = f"r{i}"
                         params[key] = f"%{root}%"
-                        where.insert(i, "(" + " OR ".join(f"{c} ILIKE ${key}" for c in cols) + ")")
+                        or_clauses.extend(f"{c} ILIKE ${key}" for c in cols)
+                    if or_clauses:
+                        where.insert(0, "(" + " OR ".join(or_clauses) + ")")
                     used_mode = "prefix"
 
                 # where_sql interpolates ONLY whitelisted column names (via
                 # _clean_fields) and $-bound placeholders; all user values are
                 # bound params. No untrusted string reaches the SQL text.
                 where_sql = " AND ".join(where) if where else "1=1"
-                # Unique-content total (content_hash, else title|domain).
+                # Unique-content total: parent group, else content_hash, else title|domain.
                 collapse_expr = (
                     "CASE "
+                    "WHEN parent_doc_or_dup_group IS NOT NULL "
+                    " AND CAST(parent_doc_or_dup_group AS VARCHAR) != '' "
+                    "THEN 'p:' || CAST(parent_doc_or_dup_group AS VARCHAR) "
                     "WHEN content_hash IS NOT NULL AND CAST(content_hash AS VARCHAR) != '' "
-                    "THEN CAST(content_hash AS VARCHAR) "
-                    "ELSE lower(trim(coalesce(title, ''))) || '|' || lower(coalesce(domain, '')) "
+                    "THEN 'h:' || CAST(content_hash AS VARCHAR) "
+                    "ELSE 't:' || lower(trim(coalesce(title, ''))) || '|' || lower(coalesce(domain, '')) "
                     "END"
                 )
                 total_row = conn.execute(  # nosemgrep
@@ -955,22 +1538,34 @@ class DuckDbIndex:
                     "  NULL::DOUBLE AS score "
                     "FROM captures "
                     f"WHERE {where_sql} "
-                    "ORDER BY fetch_ts DESC "
+                    "ORDER BY fetch_ts DESC, capture_id ASC "
                     f"LIMIT {int(candidate_cap)}"
                 )
                 rows = self._rows(conn, sql, params)
+                if total > 0:
+                    facet_ctx = ("where", None, where_sql, params)
+
+            # Quoted whole-query: keep substring matching, surface mode=phrase.
+            if is_phrase:
+                used_mode = "phrase"
 
             ranked = used_mode == "fts"
 
-            # Collapse exact content duplicates (same hash / same title|domain)
+            # Collapse near/exact dups (parent group / hash / title|domain)
             # before pagination so top-K never shows syndicated copies twice.
+            # Ranked (post-rerank) lists keep first-seen: re-rank order is the
+            # authority, not raw BM25. Unranked lists may still promote a later
+            # higher-scored hit when scores exist.
             pre_collapse_n = len(rows)
-            rows = _collapse_search_rows(rows)
+            rows = _collapse_search_rows(rows, prefer_higher_score=not ranked)
             unique_n = len(rows)
             if used_mode == "fts":
                 # FTS COUNT is per capture_id; fold to unique content. When the
                 # candidate window held every match, unique_n is exact.
                 if total <= candidate_cap and pre_collapse_n >= total:
+                    total = unique_n
+                elif pre_collapse_n < candidate_cap:
+                    # Window not full ⇒ every match was fetched; unique is exact.
                     total = unique_n
                 else:
                     # Lower-bound unique total using dups observed in-window.
@@ -983,8 +1578,16 @@ class DuckDbIndex:
                 else:
                     total = max(unique_n, total)
 
-            # Page after collapse.
-            rows = rows[offset : offset + limit]
+            # Pageable ceiling: clients (SPA Next, CLI) treat total as the last
+            # reachable index+1. Never report more than max_results when set.
+            if max_results is not None and max_results > 0:
+                total = min(total, int(max_results))
+
+            # Page after collapse (+ re-rank for FTS). Beyond-cap offsets yield [].
+            if page_beyond_cap:
+                rows = []
+            else:
+                rows = rows[offset : offset + limit]
 
             # Augment each row with a snippet + matched terms; strip the heavy
             # full text from the response payload.
@@ -998,7 +1601,7 @@ class DuckDbIndex:
                 r["text_len"] = len(text)
                 r["terms"] = snippet_terms
                 results.append(r)
-            return {
+            payload: dict[str, Any] = {
                 "total": total,
                 "limit": limit,
                 "offset": offset,
@@ -1008,6 +1611,48 @@ class DuckDbIndex:
                 "fields": cols,
                 "query": query,
             }
+            # Surface active recency re-rank weight when configured (>0).
+            # SPA/CLI can show "recency=…" without re-reading settings.
+            try:
+                from awareness.config import get_settings as _get_settings
+                _rw = float(getattr(_get_settings(), "search_recency_boost", 0.0) or 0.0)
+            except Exception:
+                _rw = 0.0
+            if _rw > 0:
+                payload["recency_boost"] = _rw
+            # Facets over the matching set (not just this page) when total > 0.
+            if total > 0 and facet_ctx is not None:
+                f_kind, f_base, f_where, f_params = facet_ctx
+                payload["facets"] = self._match_facets(
+                    conn,
+                    kind=f_kind,
+                    base=f_base,
+                    where_sql=f_where,
+                    params=f_params,
+                    limit=10,
+                )
+            # Empty-result diagnostics (corpus_size only when total==0).
+            if total == 0:
+                corpus_size: int | None = None
+                try:
+                    crow = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+                    corpus_size = int(crow[0]) if crow else 0
+                except duckdb.Error:
+                    corpus_size = None
+                payload["diagnostics"] = build_search_diagnostics(
+                    mode_used=used_mode,
+                    fts_available=bool(self._fts_available),
+                    # Original tokens (not stem roots) so diagnostics mirror the user query.
+                    query_terms=_tokenize_query(query),
+                    corpus_size=corpus_size,
+                    start=start,
+                    end=end,
+                    source=source,
+                    domain=domain,
+                    language=language,
+                    requested_mode=requested_mode,
+                )
+            return payload
 
     @staticmethod
     def _rows(conn: duckdb.DuckDBPyConnection, sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1026,6 +1671,19 @@ class DuckDbIndex:
 
 
 # ── snippet helpers ────────────────────────────────────────────────────
+def _phrase_query(q: str) -> str | None:
+    """If *q* is a double-quoted whole-query phrase, return the inner text.
+
+    ``"machine learning"`` → ``machine learning``. Leading/trailing whitespace
+    on the outer query is already stripped by the caller; the inner phrase is
+    also stripped. Unbalanced quotes, mid-query quotes, or bare text → ``None``
+    (caller keeps normal tokenized/FTS behavior). Empty ``""`` → ``""``.
+    """
+    if len(q) >= 2 and q[0] == '"' and q[-1] == '"':
+        return q[1:-1].strip()
+    return None
+
+
 def _tokenize_query(q: str) -> list[str]:
     import re
 
@@ -1039,6 +1697,403 @@ def _title_hit_frac(title: str, terms: list[str]) -> float:
     low = (title or "").lower()
     hits = sum(1 for t in terms if t and t in low)
     return hits / len(terms)
+
+
+def _title_phrase_frac(title: str, terms: list[str]) -> float:
+    """Ordered multi-term title phrase quality in ``[0, 1]``.
+
+    Bag-of-words title coverage (``_title_hit_frac``) does not distinguish
+    ``Bitcoin price surges`` from ``Price of bitcoin jumps`` for the query
+    ``bitcoin price``. Phrase credit:
+
+    * ``1.0`` — all terms appear as a contiguous space-joined substring
+    * ``0.5`` — all terms appear in query order with gaps allowed
+    * ``0.0`` — fewer than two terms, missing terms, or out-of-order only
+
+    Single-term queries return ``0.0`` so the phrase factor does not double
+    the ordinary title-hit boost.
+    """
+    cleaned = [t for t in terms if t]
+    if len(cleaned) < 2:
+        return 0.0
+    low = (title or "").lower()
+    if not low.strip():
+        return 0.0
+    # Contiguous phrase: "bitcoin price" as a substring (case-insensitive).
+    phrase = " ".join(cleaned)
+    if phrase in low:
+        return 1.0
+    # Ordered span with gaps: each term found advancing a cursor.
+    pos = 0
+    for t in cleaned:
+        idx = low.find(t, pos)
+        if idx < 0:
+            return 0.0
+        pos = idx + len(t)
+    return 0.5
+
+
+def _title_tokens(title: str) -> list[str]:
+    """Alphanumeric title tokens (len≥2), lowercased — same shape as query terms."""
+    import re
+
+    return [t for t in re.findall(r"[A-Za-z0-9']+", (title or "").lower()) if len(t) >= 2]
+
+
+def _title_exact_frac(title: str, terms: list[str]) -> float:
+    """1.0 when title tokens equal the query terms exactly (order + set).
+
+    Phrase credit still fires when the query is a *substring* of a longer
+    title (``Bitcoin price surges`` for ``bitcoin price``). Exact equality is
+    a stronger navigational signal: the capture title *is* the query.
+
+    * ``1.0`` — tokenized title == cleaned terms (same order, no extras)
+    * ``0.0`` — empty terms, empty title, or any mismatch
+
+    Works for single-term queries (``Bitcoin`` title vs ``bitcoin`` query)
+    unlike phrase frac, which short-circuits below two terms.
+    """
+    cleaned = [t for t in terms if t]
+    if not cleaned:
+        return 0.0
+    tokens = _title_tokens(title)
+    if not tokens:
+        return 0.0
+    return 1.0 if tokens == cleaned else 0.0
+
+
+def _title_prefix_frac(title: str, terms: list[str]) -> float:
+    """1.0 when title tokens start with the query terms (ordered prefix).
+
+    Exact equality covers titles that *are* the query. Prefix captures the
+    common headline pattern where the title leads with the query and continues
+    (``Bitcoin price surges overnight`` for ``bitcoin price``). Mid-title
+    phrase matches still get phrase credit without this boost.
+
+    * ``1.0`` — ``title_tokens[:len(terms)] == cleaned terms``
+    * ``0.0`` — empty terms/title, title shorter than query, or prefix mismatch
+
+    Works for single-term queries (``Bitcoin surges`` vs ``bitcoin``) unlike
+    phrase frac, which short-circuits below two terms.
+    """
+    cleaned = [t for t in terms if t]
+    if not cleaned:
+        return 0.0
+    tokens = _title_tokens(title)
+    if len(tokens) < len(cleaned):
+        return 0.0
+    return 1.0 if tokens[: len(cleaned)] == cleaned else 0.0
+
+
+def _url_hit_frac(url: str, domain: str, terms: list[str]) -> float:
+    """Fraction of distinct query terms that occur in domain or URL (case-insensitive).
+
+    News URLs often embed topic tokens in the path (``/world/bitcoin-rally``) or
+    the publisher domain. A lighter boost than title still promotes the article
+    whose slug matches the query over a long body-only BM25 match.
+    """
+    if not terms:
+        return 0.0
+    # Domain + full URL (path/query) so both ``bbc`` and ``bitcoin`` path tokens hit.
+    low = f"{domain or ''} {url or ''}".lower()
+    if not low.strip():
+        return 0.0
+    hits = sum(1 for t in terms if t and t in low)
+    return hits / len(terms)
+
+
+def _url_token_blob(url: str, domain: str) -> str:
+    """Lowercased domain+URL with path separators collapsed to spaces.
+
+    Hyphenated news slugs (``/bitcoin-price-rally``) become space-joined tokens
+    so ordered multi-term phrase checks mirror title phrase matching.
+    """
+    import re
+
+    raw = f"{domain or ''} {url or ''}".lower()
+    if not raw.strip():
+        return ""
+    # Treat path/query punctuation as token boundaries (not word characters).
+    spaced = re.sub(r"[^a-z0-9']+", " ", raw)
+    return " ".join(spaced.split())
+
+
+def _url_phrase_frac(url: str, domain: str, terms: list[str]) -> float:
+    """Ordered multi-term URL-slug phrase quality in ``[0, 1]``.
+
+    Bag-of-words URL coverage (``_url_hit_frac``) does not distinguish
+    ``/bitcoin-price-surge`` from ``/price-of-bitcoin-jumps`` for the query
+    ``bitcoin price``. Phrase credit on the separator-normalized URL blob:
+
+    * ``1.0`` — all terms appear as a contiguous space-joined substring
+    * ``0.5`` — all terms appear in query order with gaps allowed
+    * ``0.0`` — fewer than two terms, missing terms, or out-of-order only
+
+    Single-term queries return ``0.0`` so the phrase factor does not double
+    the ordinary URL-hit boost.
+    """
+    cleaned = [t for t in terms if t]
+    if len(cleaned) < 2:
+        return 0.0
+    low = _url_token_blob(url, domain)
+    if not low:
+        return 0.0
+    phrase = " ".join(cleaned)
+    if phrase in low:
+        return 1.0
+    pos = 0
+    for t in cleaned:
+        idx = low.find(t, pos)
+        if idx < 0:
+            return 0.0
+        pos = idx + len(t)
+    return 0.5
+
+
+def _url_slug_tokens(url: str) -> list[str]:
+    """Alphanumeric tokens (len≥2) from the last non-empty path segment.
+
+    News article slugs live in the final path segment
+    (``/world/markets/bitcoin-price`` → ``bitcoin-price``). Matching the
+    whole path would require the query to include section crumbs (``world``,
+    ``markets``); the leaf slug is the navigational signal analogous to an
+    exact title.
+    """
+    import re
+    from urllib.parse import urlsplit
+
+    try:
+        path = urlsplit(url or "").path or ""
+    except (ValueError, AttributeError):
+        return []
+    segs = [s for s in path.split("/") if s]
+    if not segs:
+        return []
+    last = segs[-1].lower()
+    for ext in (".html", ".htm", ".php", ".aspx"):
+        if last.endswith(ext) and len(last) > len(ext):
+            last = last[: -len(ext)]
+            break
+    return [t for t in re.findall(r"[A-Za-z0-9']+", last) if len(t) >= 2]
+
+
+def _url_exact_frac(url: str, _domain: str, terms: list[str]) -> float:
+    """1.0 when the leaf URL-slug tokens equal the query terms exactly.
+
+    Phrase credit still fires when the query is a *substring* of a longer
+    slug (``bitcoin-price-surges`` for ``bitcoin price``). Exact equality is
+    a stronger navigational signal: the article slug *is* the query.
+
+    * ``1.0`` — slug tokens == cleaned terms (same order, no extras)
+    * ``0.0`` — empty terms, empty slug, or any mismatch
+
+    Works for single-term queries (``/bitcoin`` vs ``bitcoin``) unlike
+    phrase frac, which short-circuits below two terms. ``_domain`` is accepted
+    for signature parity with other URL scorers and is unused (slug only).
+    """
+    cleaned = [t for t in terms if t]
+    if not cleaned:
+        return 0.0
+    tokens = _url_slug_tokens(url)
+    if not tokens:
+        return 0.0
+    return 1.0 if tokens == cleaned else 0.0
+
+
+def _url_prefix_frac(url: str, _domain: str, terms: list[str]) -> float:
+    """1.0 when leaf URL-slug tokens start with the query terms (ordered prefix).
+
+    Exact equality covers slugs that *are* the query. Prefix captures the
+    common news pattern where the leaf slug leads with the query and continues
+    (``/world/bitcoin-price-surges-overnight`` for ``bitcoin price``). Mid-slug
+    phrase matches still get phrase credit without this boost.
+
+    * ``1.0`` — ``slug_tokens[:len(terms)] == cleaned terms``
+    * ``0.0`` — empty terms/slug, slug shorter than query, or prefix mismatch
+
+    Works for single-term queries (``/bitcoin-rally`` vs ``bitcoin``) unlike
+    phrase frac, which short-circuits below two terms. ``_domain`` is accepted
+    for signature parity with other URL scorers and is unused (slug only).
+    """
+    cleaned = [t for t in terms if t]
+    if not cleaned:
+        return 0.0
+    tokens = _url_slug_tokens(url)
+    if len(tokens) < len(cleaned):
+        return 0.0
+    return 1.0 if tokens[: len(cleaned)] == cleaned else 0.0
+
+
+def _domain_labels(domain: str) -> set[str]:
+    """Alphanumeric host labels (len≥2) from a domain string.
+
+    ``news.bbc.co.uk`` → ``{news, bbc, co, uk}``. Hyphenated brands split so
+    ``the-verge.com`` → ``{the, verge, com}``. Used for navigational matching
+    where the query is a publisher name rather than an article topic.
+    """
+    import re
+
+    return {t for t in re.findall(r"[A-Za-z0-9]+", (domain or "").lower()) if len(t) >= 2}
+
+
+def _domain_nav_frac(domain: str, terms: list[str]) -> float:
+    """Fraction of query terms that equal a domain host label ``[0, 1]``.
+
+    Navigational queries (``reuters``, ``bbc news``) should promote captures
+    whose publisher domain carries those labels over body-only BM25 matches
+    on unrelated sites. Label match is *token equality* (not substring), so
+    ``bit`` does not credit ``bitcoinmagazine.com``.
+
+    * ``1.0`` — every query term is a domain label
+    * ``0.5`` — half the terms match (etc.)
+    * ``0.0`` — empty terms/domain, or zero label hits
+    """
+    cleaned = [t.lower() for t in terms if t]
+    if not cleaned:
+        return 0.0
+    labels = _domain_labels(domain)
+    if not labels:
+        return 0.0
+    hits = sum(1 for t in cleaned if t in labels)
+    return hits / len(cleaned)
+
+
+def _lead_hit_frac(
+    text: str,
+    terms: list[str],
+    *,
+    lead_chars: int = _RERANK_LEAD_CHARS,
+) -> float:
+    """Fraction of distinct query terms that occur in the document lead ``[0, 1]``.
+
+    Complements ordered lead-phrase credit: bag-of-words coverage in the lede
+    promotes single-term and unordered multi-term matches that appear early
+    (the news answer) over the same terms buried deep in a long body. Credit
+    is computed on the first ``lead_chars`` characters only.
+
+    * ``1.0`` — every query term appears in the lead window
+    * ``0.5`` — half the terms appear (etc.)
+    * ``0.0`` — no terms, empty lead, or zero window
+    """
+    if not terms:
+        return 0.0
+    if lead_chars <= 0:
+        return 0.0
+    lead = (text or "")[:lead_chars].lower()
+    if not lead.strip():
+        return 0.0
+    hits = sum(1 for t in terms if t and t in lead)
+    return hits / len(terms)
+
+
+def _lead_phrase_frac(
+    text: str,
+    terms: list[str],
+    *,
+    lead_chars: int = _RERANK_LEAD_CHARS,
+) -> float:
+    """Ordered multi-term phrase quality in the document lead (lede) ``[0, 1]``.
+
+    News articles put the answer in the first sentence/paragraph. A long body
+    that only mentions the query deep in the text is a weaker navigational
+    match than one whose lede forms the ordered phrase. Credit is computed on
+    the first ``lead_chars`` characters only so buried matches do not count.
+
+    * ``1.0`` — all terms appear as a contiguous space-joined substring in lead
+    * ``0.5`` — all terms appear in query order with gaps allowed in lead
+    * ``0.0`` — fewer than two terms, empty lead, missing terms, or out-of-order
+
+    Single-term queries return ``0.0`` so this does not double ordinary BM25.
+    """
+    cleaned = [t for t in terms if t]
+    if len(cleaned) < 2:
+        return 0.0
+    if lead_chars <= 0:
+        return 0.0
+    lead = (text or "")[:lead_chars].lower()
+    if not lead.strip():
+        return 0.0
+    phrase = " ".join(cleaned)
+    if phrase in lead:
+        return 1.0
+    pos = 0
+    for t in cleaned:
+        idx = lead.find(t, pos)
+        if idx < 0:
+            return 0.0
+        pos = idx + len(t)
+    return 0.5
+
+
+def _lead_tokens(text: str, *, lead_chars: int = _RERANK_LEAD_CHARS) -> list[str]:
+    """Alphanumeric tokens (len≥2) from the document lead window.
+
+    Mirrors ``_title_tokens`` so lead-prefix navigational checks share the same
+    token shape as title-prefix / exact equality.
+    """
+    import re
+
+    if lead_chars <= 0:
+        return []
+    lead = (text or "")[:lead_chars]
+    return [t for t in re.findall(r"[A-Za-z0-9']+", lead.lower()) if len(t) >= 2]
+
+
+def _lead_prefix_frac(
+    text: str,
+    terms: list[str],
+    *,
+    lead_chars: int = _RERANK_LEAD_CHARS,
+) -> float:
+    """1.0 when lead tokens start with the query terms (ordered prefix).
+
+    Phrase credit fires when the query appears *somewhere* in the lede
+    (possibly after a dateline or kicker). Prefix captures the stronger
+    navigational case where the article opens with the query
+    (``Bitcoin price surges overnight…`` for ``bitcoin price``). Mid-lead
+    phrase matches still get phrase credit without this boost.
+
+    * ``1.0`` — ``lead_tokens[:len(terms)] == cleaned terms``
+    * ``0.0`` — empty terms/lead, lead shorter than query, or prefix mismatch
+
+    Works for single-term queries (``Bitcoin rose…`` vs ``bitcoin``) unlike
+    phrase frac, which short-circuits below two terms.
+    """
+    cleaned = [t for t in terms if t]
+    if not cleaned:
+        return 0.0
+    tokens = _lead_tokens(text, lead_chars=lead_chars)
+    if len(tokens) < len(cleaned):
+        return 0.0
+    return 1.0 if tokens[: len(cleaned)] == cleaned else 0.0
+
+
+def _lead_exact_frac(
+    text: str,
+    terms: list[str],
+    *,
+    lead_chars: int = _RERANK_LEAD_CHARS,
+) -> float:
+    """1.0 when lead tokens equal the query terms exactly (order + set).
+
+    Prefix credit fires when the lede *starts* with the query and continues
+    (``Bitcoin price surges…`` for ``bitcoin price``). Exact equality is a
+    stronger navigational signal: the document lead *is* the query (common
+    for short tickers, flash headlines, or title-mirrored ledes).
+
+    * ``1.0`` — tokenized lead == cleaned terms (same order, no extras)
+    * ``0.0`` — empty terms/lead, or any mismatch
+
+    Works for single-term queries (``Bitcoin.`` lead vs ``bitcoin``) unlike
+    phrase frac, which short-circuits below two terms.
+    """
+    cleaned = [t for t in terms if t]
+    if not cleaned:
+        return 0.0
+    tokens = _lead_tokens(text, lead_chars=lead_chars)
+    if not tokens:
+        return 0.0
+    return 1.0 if tokens == cleaned else 0.0
 
 
 def _length_factor(text_len: int, *, pivot: int = _RERANK_LEN_PIVOT, floor: float = _RERANK_LEN_FLOOR) -> float:
@@ -1093,6 +2148,19 @@ def _rerank(
     terms: list[str],
     *,
     title_boost: float = _RERANK_TITLE_BOOST,
+    title_phrase_boost: float = _RERANK_TITLE_PHRASE_BOOST,
+    title_exact_boost: float = _RERANK_TITLE_EXACT_BOOST,
+    title_prefix_boost: float = _RERANK_TITLE_PREFIX_BOOST,
+    url_boost: float = _RERANK_URL_BOOST,
+    url_phrase_boost: float = _RERANK_URL_PHRASE_BOOST,
+    url_exact_boost: float = _RERANK_URL_EXACT_BOOST,
+    url_prefix_boost: float = _RERANK_URL_PREFIX_BOOST,
+    domain_nav_boost: float = _RERANK_DOMAIN_NAV_BOOST,
+    lead_hit_boost: float = _RERANK_LEAD_HIT_BOOST,
+    lead_phrase_boost: float = _RERANK_LEAD_PHRASE_BOOST,
+    lead_prefix_boost: float = _RERANK_LEAD_PREFIX_BOOST,
+    lead_exact_boost: float = _RERANK_LEAD_EXACT_BOOST,
+    lead_chars: int = _RERANK_LEAD_CHARS,
     len_pivot: int = _RERANK_LEN_PIVOT,
     len_floor: float = _RERANK_LEN_FLOOR,
     recency_weight: float = _RERANK_RECENCY_WEIGHT,
@@ -1100,12 +2168,15 @@ def _rerank(
     ref_epoch: float | None = None,
 ) -> list[dict[str, Any]]:
     """Re-rank BM25 candidates (already in raw-score DESC order) by multiplying
-    the min-max-normalized BM25 score with independent title / length / recency
-    factors. Returns a NEW ordered list; input row dicts are not mutated. Stable:
-    equal final scores keep the incoming BM25 order.
+    the min-max-normalized BM25 score with independent title / title-phrase /
+    title-exact / title-prefix / url / url-phrase / url-exact / url-prefix /
+    domain-nav / lead-hit / lead-phrase / lead-prefix / lead-exact / length /
+    recency factors. Returns a NEW ordered list; input row dicts are not
+    mutated. Stable: equal final scores keep the incoming BM25 order.
 
-    Each candidate dict carries ``score`` (raw BM25), ``title``, ``text`` and a
-    timestamp (``published_ts`` or ``fetch_ts``).
+    Each candidate dict carries ``score`` (raw BM25), ``title``, ``text``,
+    optional ``url`` / ``canonical_url`` / ``domain``, and a timestamp
+    (``published_ts`` or ``fetch_ts``).
     """
     if len(candidates) <= 1:
         return list(candidates)
@@ -1128,8 +2199,38 @@ def _rerank(
 
     def final_score(c: dict[str, Any], raw: float) -> float:
         norm = (raw / max_score) if max_score > 0 else 0.0
-        title_f = 1.0 + title_boost * _title_hit_frac(c.get("title") or "", terms)
-        len_f = _length_factor(len(c.get("text") or ""), pivot=len_pivot, floor=len_floor)
+        title = c.get("title") or ""
+        text = c.get("text") or ""
+        title_f = 1.0 + title_boost * _title_hit_frac(title, terms)
+        phrase_f = 1.0 + title_phrase_boost * _title_phrase_frac(title, terms)
+        exact_f = 1.0 + title_exact_boost * _title_exact_frac(title, terms)
+        prefix_f = 1.0 + title_prefix_boost * _title_prefix_frac(title, terms)
+        url_blob = c.get("url") or c.get("canonical_url") or ""
+        domain_blob = c.get("domain") or ""
+        url_f = 1.0 + url_boost * _url_hit_frac(str(url_blob), str(domain_blob), terms)
+        url_phrase_f = 1.0 + url_phrase_boost * _url_phrase_frac(
+            str(url_blob), str(domain_blob), terms
+        )
+        url_exact_f = 1.0 + url_exact_boost * _url_exact_frac(
+            str(url_blob), str(domain_blob), terms
+        )
+        url_prefix_f = 1.0 + url_prefix_boost * _url_prefix_frac(
+            str(url_blob), str(domain_blob), terms
+        )
+        domain_nav_f = 1.0 + domain_nav_boost * _domain_nav_frac(str(domain_blob), terms)
+        lead_hit_f = 1.0 + lead_hit_boost * _lead_hit_frac(
+            str(text), terms, lead_chars=lead_chars
+        )
+        lead_f = 1.0 + lead_phrase_boost * _lead_phrase_frac(
+            str(text), terms, lead_chars=lead_chars
+        )
+        lead_prefix_f = 1.0 + lead_prefix_boost * _lead_prefix_frac(
+            str(text), terms, lead_chars=lead_chars
+        )
+        lead_exact_f = 1.0 + lead_exact_boost * _lead_exact_frac(
+            str(text), terms, lead_chars=lead_chars
+        )
+        len_f = _length_factor(len(text), pivot=len_pivot, floor=len_floor)
         doc_epoch = _to_epoch(c.get("published_ts") or c.get("fetch_ts")) if recency_on else None
         rec_f = _recency_factor(
             doc_epoch,
@@ -1137,12 +2238,36 @@ def _rerank(
             halflife_days=recency_halflife_days,
             weight=recency_weight,
         )
-        return norm * title_f * len_f * rec_f
+        return (
+            norm
+            * title_f
+            * phrase_f
+            * exact_f
+            * prefix_f
+            * url_f
+            * url_phrase_f
+            * url_exact_f
+            * url_prefix_f
+            * domain_nav_f
+            * lead_hit_f
+            * lead_f
+            * lead_prefix_f
+            * lead_exact_f
+            * len_f
+            * rec_f
+        )
 
     finals = [final_score(c, raw) for c, raw in zip(candidates, scores, strict=True)]
-    # Sort by descending final score; `(-final, i)` keeps the original BM25 order
-    # for ties (lower original index = higher BM25 = ranked first).
-    order = sorted(range(len(candidates)), key=lambda i: (-finals[i], i))
+    # Sort by descending final score; ties keep original BM25 order (lower index
+    # first), then capture_id for full determinism across equal-BM25 dups.
+    order = sorted(
+        range(len(candidates)),
+        key=lambda i: (
+            -finals[i],
+            i,
+            str(candidates[i].get("capture_id") or ""),
+        ),
+    )
     return [candidates[i] for i in order]
 
 
@@ -1190,6 +2315,28 @@ def _snippet_for(text: str, title: str, terms: list[str]) -> tuple[str, list[tup
     for mm in pattern.finditer(snippet):
         hits.append((mm.start(), mm.end()))
     return snippet, hits
+
+
+def count_related_captures(conn: duckdb.DuckDBPyConnection, capture_id: str) -> int:
+    """Count sibling captures in the same dup_group (excludes *capture_id*)."""
+    row = conn.execute(
+        "SELECT doc_id, parent_doc_or_dup_group FROM captures WHERE capture_id = ? LIMIT 1",
+        [capture_id],
+    ).fetchone()
+    if not row:
+        return 0
+    doc_id, dup_group = row
+    group = dup_group or doc_id
+    cnt = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM captures
+        WHERE (parent_doc_or_dup_group = ? OR doc_id = ?)
+          AND capture_id <> ?
+        """,
+        [group, group, capture_id],
+    ).fetchone()
+    return int(cnt[0]) if cnt else 0
 
 
 def find_related_captures(

@@ -93,6 +93,48 @@ def test_bm25f_ranking_title_vs_body(tmp_path: Path, monkeypatch: pytest.MonkeyP
         idx.close()
 
 
+
+
+def test_bm25_avg_lengths_memoized_per_signature(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Avg field lengths are computed once per views_signature, not per search."""
+    monkeypatch.setattr(get_settings(), "search_idf_threshold", 0.0)
+
+    jsonl_dir = tmp_path / "jsonl"
+    db_path = tmp_path / "duckdb" / "metadata.duckdb"
+    _write_doc(jsonl_dir, 1, title="Fresh apples are delicious", text="Eating fruit is healthy.")
+    _write_doc(jsonl_dir, 2, title="Healthy fruit eating", text="Apples are delicious fresh fruit.")
+
+    idx = DuckDbIndex(db_path, jsonl_dir, None)
+    try:
+        assert idx._bm25_avg_lengths is None
+        res1 = idx.search("apples", mode="fts")
+        assert res1["total"] == 2
+        assert res1["rows"][0]["doc_id"] == "doc-1"
+        assert res1["rows"][0]["score"] > res1["rows"][1]["score"]
+        cached = idx._bm25_avg_lengths
+        sig = idx._bm25_avg_lengths_signature
+        assert cached is not None
+        assert sig is not None
+        assert sig == idx._views_signature
+        assert cached[0] >= 1.0 and cached[1] >= 1.0
+
+        # Second search with unchanged corpus must reuse the cache object.
+        res2 = idx.search("apples", mode="fts")
+        assert res2["rows"][0]["doc_id"] == "doc-1"
+        assert idx._bm25_avg_lengths is cached
+        assert idx._bm25_avg_lengths_signature is sig
+
+        # Corpus change invalidates FTS + avg-length memoization.
+        _write_doc(jsonl_dir, 3, title="Bananas forever", text="Yellow fruit only.")
+        res3 = idx.search("apples", mode="fts")
+        assert res3["total"] == 2
+        assert res3["rows"][0]["doc_id"] == "doc-1"
+        assert idx._bm25_avg_lengths is not None
+        assert idx._bm25_avg_lengths_signature == idx._views_signature
+        assert idx._bm25_avg_lengths_signature != sig
+    finally:
+        idx.close()
+
 def test_idf_threshold_filtering(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Verify terms with low IDF are filtered, and logged."""
     jsonl_dir = tmp_path / "jsonl"
@@ -124,6 +166,7 @@ def test_idf_threshold_filtering(tmp_path: Path, caplog: pytest.LogCaptureFixtur
 
 def test_fineweb_crawl_id_fallback() -> None:
     """Verify that FineWeb planning validates configs and falls back gracefully."""
+    pytest.importorskip("datasets")
     adapter = FineWebAdapter()
     
     # 2024 June range translates to CC-MAIN-2024-26 (from crawl_ids_for_range)

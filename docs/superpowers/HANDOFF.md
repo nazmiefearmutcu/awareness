@@ -1,37 +1,141 @@
-# Awareness — Session Handoff (2026-06-08)
+# Awareness — Session Handoff (2026-07-13)
 
-Paste this into a fresh session to continue the "awareness" remediation seamlessly.
+Paste this into a fresh session to continue continuous-loop development seamlessly.
+
+Also read:
+
+- `docs/superpowers/loop/CONTINUOUS_LOOP.md` — rotation + task table
+- `docs/superpowers/loop/STATE.json` — machine-readable loop cursor (may lag latest commits)
 
 ---
 
-## TL;DR for the next session
+## CURRENT STATE (continuous loop — read this first)
+
+| | |
+|---|---|
+| **Branch** | `loop/continuous-dev` |
+| **Base** | synced from `origin/main` **`a0ba789`** (Merge PR #22 feat/benchmarks) |
+| **HEAD tip** | ~`5dafef7` (check `git rev-parse --short HEAD`) |
+| **Ahead of main** | **~70 commits** (`origin/main..HEAD` was **71** at last handoff refresh) |
+| **Pushed?** | **No** — local only; do not push unless user asks |
+| **Unit suite** | **~480+ collected** (`tests/unit` collects **481**; gate: `not slow and not smoke`) |
+| **Stop** | User says stop / `touch .ralph/STOP` / explicit cancel |
+
+### What this branch fixed / shipped (verify: `git log origin/main..HEAD`)
+
+**API / index**
+
+- **DuckDbIndex process-wide singleton restored** (`_get_index` + lock; reset after path-related settings changes)
+- Staging: **index `.jsonl.gz`** + **exclude `.tmp`** chunks from DuckDB globs
+- Captures list: **`unique=content|group`** collapse param
+- CLI: export captures to JSONL with optional unique fold
+- **Persisted FTS restore + append-only `captures_idx`** (C3-T1) — no full rebuild every open
+- BM25 field avg-length **memoized per index signature**
+
+**Dedup / re-fetch prevention**
+
+- **RSS/GDELT unified tail partition keys** (no double-fetch across feed sources)
+- **URL fetch gate** before `tail_recrawl` HTTP when canonical URL already fetched
+- **Stronger news URL canonicalization** — strip `www.`, normalize trailing path slashes, expand tracking-param strip (`utm_*` + common ad/click IDs) so fetch-gate / tail keys collapse article variants
+- **32×4 SimHash banding live** (pigeonhole guarantee for Hamming ≤24 / `DEFAULT_NEAR_THRESHOLD`)
+- **Tight near-dup skip-store** at Hamming ≤12 (optional drop before persist + metrics)
+- **Union-find parent resolution** for near-dup clusters (transitive fold; related captures share parent)
+
+**Search**
+
+- Collapse results by `parent_doc_or_dup_group`
+- **Phrase quotes** (`"exact phrase"` → `mode=phrase`)
+- Empty-result **diagnostics** + SPA hints (mode/corpus/window surfaced)
+- **OR multi-term prefix** fallback for consistent auto mode
+- **FTS rebuild on content signature** (not row-count alone) — detects same-count content swap
+- Order-insensitive FTS field eligibility + BM25F re-rank path wired
+- **Optional `published_ts` recency boost** in ranking (settings-gated; deterministic when on)
+- **Domain facets** on search results (`facets.sources`) — CLI summary + SPA source chips
+- **Pagination correctness** after collapse + re-rank
+- **Inclusive end-of-day** date windows
+- **Long-lived DuckDB connection reuse** under lock (search path)
+- NULL-fill missing staging columns so sparse JSONL cannot kill the `captures` view
+
+**Scrape / feeds / news (recent wave)**
+
+- **News/RSS extract floor** — honor `text_min_chars` / max on tail + warc_repair; lower floor via `text_min_chars_news` (default **80**) so short news stubs are kept
+- **Transient HTTP retries** in tail_recrawl and feeds (shared retry path)
+- Non-200 feed/sitemap fetches **logged** (no silent empty)
+- **Loud zero-task backfill warning** with per-source reasons
+- Consistent **`user_agent` from settings** across fetch paths
+- **Process-wide global fetch concurrency cap**
+- Robots **crawl-delay** honored under per-domain concurrency
+- **Sitemap discovery** from robots `Sitemap:` directives
+- Stable ordered `seen_urls` window for feed checkpoints
+
+**Common Crawl WET**
+
+- **Streaming WET parse** with bounded memory (C3-T3)
+- **Mid-shard resume** via checkpoint `last_record_id`
+- `cc_wet_max_shards_per_crawl` so WET adapter registers; eTLD+1 domain filter
+
+**Also landed on this branch (bugfixes / UX / ops)**
+
+- LID `detect_langs` + confidence gate restored; gdrive binary multipart; idf hook on `simhash128`; CLI search-window defaults; version **0.2.0** + banding docs; SPA mode controls, term highlight, settings/dashboard KPIs for fetch-skip / tight-near-dup; default hide-duplicates on Captures browse; Redis lock tests skip when unavailable; clearer near-dup worker logs with Hamming distance; etc.
+
+### Remaining (good next picks)
+
+Loop Cycle 3+ and older backlog (not exhaustive):
+
+1. **Plan 4b UX** — quickstart, empty-state “why”, broader text_min/max knobs where still missing
+2. **Search leftovers** — optional fuzzy; more facet dimensions; tune recency defaults with corpus measure
+3. **Systems remainder** — pooled httpx polish, Iceberg compaction, crash-safe flush, `/metrics` export
+4. **Math follow-ups** — threshold toward calibrated 36 only with banding + benchmark re-measure; corpus-IDF store for `simhash128` idf hook
+5. **Cycle 3 product** — SPA Settings editable; fetch_ts/observed_ts/published_ts disentangle; JSONL+Iceberg double-count reconcile
+6. **Ship decision** — branch is ~70 ahead of main and **unpushed**; merge/push only with user consent
+
+> Note: `loop/CONTINUOUS_LOOP.md` / `STATE.json` may lag HEAD (still mention ~55 commits / pending streaming WET). Prefer this HANDOFF + `git log origin/main..HEAD` for truth. Streaming WET + WET resume, news floor, URL canon, retries, facets, and recency are **done** on tip.
+
+### Environment & first commands
+
+```bash
+cd /Users/nazmi/Desktop/awareness
+git status && git branch --show-current   # expect loop/continuous-dev, not pushed
+git log --oneline origin/main..HEAD | head -25
+PYTHONPATH=src .venv/bin/python -m pytest -q -m "not slow and not smoke"   # ~480+ unit; can take minutes offline (DuckDB INSTALL)
+# unit-only:
+PYTHONPATH=src .venv/bin/python -m pytest -q tests/unit
+```
+
+- Repo: `/Users/nazmi/Desktop/awareness`. Python 3.13 in `.venv` (uv-managed).
+- **Always run tests with `PYTHONPATH=src`** (editable install `.pth` is unreliable here).
+- If import fails: `uv pip install -e '.[dev]'` then still use `PYTHONPATH=src`.
+- Lint: `.venv/bin/python -m ruff check <file>`. Project does **not** require repo-wide ruff-clean; add no new errors.
+- Method: continuous loop rotation — bug hunt → search → dedup → features; subagent-driven TDD; **commit per task; do not push unless asked**.
+- Loop docs: `docs/superpowers/loop/`. Plans/specs/audit: `docs/superpowers/{plans,specs,audit}/`.
+
+### Gotchas (still true)
+
+- JSONL fixtures: full canonical columns remain the norm (`tests/unit/test_search_matching.py`); missing cols are NULL-filled but don’t rely on that in tests.
+- `benchmarks.bench_simhash` is offline and uses the real `DedupEngine` — re-measure after banding/threshold changes.
+- **Don’t raise merge threshold** without raising banding (`bands-1 ≥ threshold`) and re-benchmarking.
+- Cross-cutting seams: `util/http.py` for fetchers; `_resolve_search_window` for CLI search defaults; `util/urls.py` for news URL identity / fetch gate.
+- News extracts use **`text_min_chars_news`** (default 80), not the long-form `text_min_chars` floor — short RSS stubs are intentional.
+
+---
+
+## Historical handoff (2026-06-08)
+
+The sections below describe the earlier `feat/cycle1-make-it-work` remediation wave.
+Treat **numbers, branch names, and “remaining” lists as historical** unless re-verified;
+the continuous-loop table above is authoritative for current branch state.
+
+### Product context
 
 You are continuing a large, multi-cycle remediation of the **`awareness`** engine
-(`~/Desktop/awareness`) — a single-process tool that ingests the public text web
+(`/Users/nazmi/Desktop/awareness`) — a single-process tool that ingests the public text web
 (Common Crawl / FineWeb / RSS / GDELT) → extracts → SimHash-dedups → stores to
 Iceberg/DuckDB/JSONL → serves a Typer CLI + FastAPI SPA. A 73-agent audit found
 **39 verified bugs + 70 improvements**. Two user symptoms — *"search bitcoin → 2
-results"* and *"no idea how to scrape the internet"* — are **both fixed and verified**.
+results"* and *"no idea how to scrape the internet"* — were fixed in Cycle 1 and further
+hardened on `loop/continuous-dev`.
 
-All work is on branch **`feat/cycle1-make-it-work`** (off `main` at `69614e9`),
-**not yet merged** (needs user consent — outward-facing). **283 tests green.**
-
-Also read the persistent memory: `~/.claude/projects/-Users-nazmi/memory/awareness-cycle1-progress.md`.
-
-## Environment & commands
-
-- Repo: `/Users/nazmi/Desktop/awareness`. Python 3.13 in `.venv` (uv-managed).
-- **Run tests with `PYTHONPATH=src`** — the uv editable `.pth` is unreliable in this
-  env; `PYTHONPATH=src` is deterministic:
-  - Gate: `PYTHONPATH=src .venv/bin/python -m pytest -q -m "not slow and not smoke"` → **240 passing** (baseline was 193; +47 new tests).
-  - If `awareness` won't import: `uv pip install -e '.[dev]'` (then still use `PYTHONPATH=src`).
-- Lint: `.venv/bin/python -m ruff check <file>`. **The project does NOT enforce
-  ruff-clean** — the codebase carries many pre-existing `PLC0415` (intentional inline
-  imports) and `S608` (code-derived SQL f-strings). Rule: add no NEW errors; match the
-  file's own convention for `# noqa` (some inline imports are noqa'd, some S608 are not).
-- Commit trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
-
-## Method (how this work has been executed)
+### Method (how this work has been executed)
 
 `superpowers:subagent-driven-development`: a fresh implementer subagent per task,
 **strict TDD** (write the failing test first → confirm it fails for the stated reason →
@@ -41,7 +145,7 @@ substantive tasks. Plans are pre-written, fully-specified TDD task lists under
 `docs/superpowers/plans/`. Specs under `docs/superpowers/specs/`. Audit under
 `docs/superpowers/audit/` (the JSON has every bug's file:line + suggested fix).
 
-## What's DONE (committed, green)
+### What's DONE (committed historically + re-landed/extended on loop branch)
 
 **Cycle 1 — "make it work" (Phases 1-3 of the roadmap):**
 - **P1 Reliability** (`storage/state.py`, `workers/engine.py`, `tail/engine.py`): SQLite
@@ -77,101 +181,41 @@ substantive tasks. Plans are pre-written, fully-specified TDD task lists under
   `simhash128` (backward-compatible).
 - **P5a Metrics** (`obs/metrics.py`): Vitter Algorithm-R reservoir sampling (was biased
   first-256) + p50/p95/p99.
-- **Benchmark re-measured + README updated** (commit `ef591bd`): ran `benchmarks.bench_simhash`
+- **Benchmark re-measured + README updated**: ran `benchmarks.bench_simhash`
   offline against the real 32×4 engine — precision still **1.00**, default F1 0.848/recall
   0.736, tuned (Hamming≤32) F1 0.973/recall 0.947. README near-dup numbers are CURRENT.
-- **P3 BM25F re-ranking** (`storage/duckdb_index.py`, commits `6796330`/`0b360af`/`9951f1a`):
-  DuckDB FTS scores title+text as one blob, so a pure `_rerank` re-orders the top-`max_results`
-  BM25 candidates by **independent multiplicative factors** — title field-boost
-  (`1+Wt·title_hit_frac`), length damping ∈`[floor,1]`, optional recency (OFF by default;
-  injected/derived ref-time ⇒ deterministic, never the wall clock). The FTS path now fetches a
-  candidate window by raw BM25, re-ranks, then slices `[offset:offset+limit]`;
-  `total`/`mode`/`ranked`/row-schema/`max_results`-cap are all unchanged, and it degrades to
-  pure BM25 order when factors are neutral. Plan `plans/2026-06-08-awareness-cycle2-bm25f-ranking.md`;
-  19 new tests (16 pure + 3 integration); 3-lens adversarial review + final review APPROVED.
+- **P3 BM25F re-ranking** (`storage/duckdb_index.py`): DuckDB FTS scores title+text as one
+  blob, so a pure `_rerank` re-orders the top-`max_results` BM25 candidates by
+  **independent multiplicative factors** — title field-boost, length damping, optional
+  recency (OFF by default). Plan `plans/2026-06-08-awareness-cycle2-bm25f-ranking.md`.
 
 **Cycle 1 — P3b search availability (process-wide index singleton):**
-- **Index singleton** (`api/server.py`, `storage/duckdb_index.py`, commits `7305194`/`8e860a6`):
-  the API was building a NEW `DuckDbIndex` per request, so the FTS index rebuilt every `/search`
-  and concurrent searches collided on DuckDB's single-writer lock during the rebuild. Now one
-  shared instance via `_get_index()` (double-checked locking on `_State.index` + `_index_lock`,
-  closed on lifespan shutdown) serves all six endpoints; FTS builds once (it already memoizes
-  `_fts_built_signature` + serializes behind its `RLock`). Added lock-guarded
-  `DuckDbIndex.related()` so `/related` no longer runs a query on the raw conn outside the lock.
-  Plan `plans/2026-06-09-awareness-cycle1-fts-singleton.md`; 6 new tests; review APPROVED.
-  (Note: the full non-slow suite can take minutes when offline — `connect()` does network
-  `INSTALL iceberg/fts` per fresh index; unrelated to this change.)
+- **Index singleton** (`api/server.py`, `storage/duckdb_index.py`): shared `_get_index()`
+  (double-checked locking); FTS builds once behind memoization + `RLock`. Restored again
+  on the continuous-loop branch after main drift.
 
 **Cycle 2 — P4 language detection & WET quality:**
 - **Confidence-aware LID + Gopher/C4 WET filter** (`normalize/text.py`, `normalize/quality.py`,
-  `config/settings.py`, `sources/commoncrawl_wet.py`, commits `33cab11`/`574def9`/`f53ff55`/`6d333da`/`b5832b1`):
-  `detect_language` now uses langdetect's `detect_langs()` and suppresses sub-`0.50`-confidence
-  guesses to `None` (ambiguous text no longer gets a confidently-wrong label); `detect_language_conf`
-  returns `(lang, conf)`. New pure `gopher_quality()` (Gopher/C4 heuristics) drops
-  boilerplate/symbol-spam WET records, gated by `settings.wet_quality_filter` (default on) with a
-  `cc_wet.quality_filtered{crawl_id}` metric. **Adversarial review caught a real plan bug:** the
-  English-leaning filter originally ran BEFORE LID and would have dropped non-English text — fixed
-  to run downstream of LID and only judge `lang=="en"` (German-canary test pins it). **No new
-  dependency** (langdetect already present; backend stays swappable). 25 new tests; final review APPROVED.
+  `sources/commoncrawl_wet.py`): sub-0.50 confidence → `None`; `gopher_quality()` only on
+  `lang=="en"` (post-LID). No new dependency.
 
-## What REMAINS (specced, prioritized — pick up here)
+### What REMAINS (historical list — re-check against CURRENT section)
 
 The recommended immediate move is one of: **(a) finish/merge the branch**
-(`superpowers:finishing-a-development-branch` — Cycle 1 + Cycle 2 math core is a
-shippable independent block, needs user consent), or **(b) continue** with:
+(needs user consent — outward-facing), or **(b) continue** the continuous loop with
+items under **Remaining** above. Historical detail:
 
-1. ~~**Cycle 2 P3 — BM25F ranking.**~~ **✅ DONE** (commits `6796330`/`0b360af`/`9951f1a`).
-   Also this session: item 5's **GDELT slot-math** was verified — **✅ clean, no 2nd fabricated-ID
-   bug** (details under item 5). Recommended next pick: item 2 (FTS singleton — API-side availability).
-2. **Cycle 1 P3b remainder (search availability/correctness):** ~~FTS index process-wide
-   singleton + serialized rebuild~~ **✅ DONE** (commits `7305194`/`8e860a6`). **STILL REMAINING
-   in P3b:** inclusive end-of-day across `/captures`,`/search`,`/inspect`,`/counts`; pagination
-   corruption; phrase/prefix/fuzzy.
-3. ~~**Cycle 2 P4** — confidence-aware language detection + Gopher/C4-style WET quality filter.~~
-   **✅ DONE** (commits `33cab11`/`574def9`/`f53ff55`/`6d333da`/`b5832b1`). Future: stronger LID
-   backend (fastText/CLD3) behind the same `detect_language*` surface; quality filter for non-WET sources.
-4. **Cycle 2 P6 (systems)** — persisted/incremental FTS; streaming WET parse (bounded
-   memory); pooled httpx client + global fetch concurrency; Iceberg re-partition
-   `month(fetch_ts)+source_type` + compaction; crash-safe flush + idempotent appends;
-   `/metrics` export + per-fetch tracing.
-5. **Cycle 1 Plan 2b (scraping hardening, before any breadth increase):** per-domain
-   rate-limiter delay race; robots crawl-delay + UA consistency; seed discovery
-   (sitemaps/robots); **GDELT slot/time-math** ✅ VERIFIED CLEAN (2026-06-08): the flooring
-   `minute−(minute%15)` lands exactly on real GDELT slots {00,15,30,45} (e.g. `…003000.gkg.csv.zip`),
-   missing slots 404→logged not fatal, and `latest_gkg_slot` is unit-tested — so this is NOT a
-   2nd fabricated-ID bug. Only remaining nit: `_quarter_hours` (backfill range-walker) shares the
-   identical flooring but lacks a direct test (cheap regression-lock). Job-wide fan-out budget.
+1. ~~**Cycle 2 P3 — BM25F ranking.**~~ **✅ DONE**
+2. **Cycle 1 P3b remainder:** ~~singleton / FTS signature / end-of-day / phrase / collapse~~
+   largely **✅ on loop branch**. Still open: pagination corruption; optional fuzzy.
+3. ~~**Cycle 2 P4** — LID + WET quality.~~ **✅ DONE**
+4. **Cycle 2 P6 (systems)** — persisted/incremental FTS; streaming WET parse; pooled httpx;
+   Iceberg compaction; crash-safe flush; `/metrics` export.
+5. **Cycle 1 Plan 2b (scraping hardening):** limiter race; robots crawl-delay + UA; seed
+   discovery; GDELT slot math ✅ verified clean; job-wide fan-out budget.
 6. **Cycle 1 Plan 4b:** tail_recrawl/warc_repair honor text_min/max_chars + charset;
-   one-command `quickstart`; zero-task backfill warning; search empty-state "why".
-7. **Math follow-ups:** raise `DEFAULT_NEAR_THRESHOLD` toward the calibrated 36 — BUT this
-   needs the banding raised to keep `bands-1 ≥ threshold` (would need ~37 bands) AND a
-   benchmark re-measure; **deliberately held** per the audit's risk note (don't change
-   dedup grouping before the benchmark harness validates it). Also: corpus-IDF
-   document-frequency store to feed the new `simhash128` idf hook; union-find canonical
-   cluster resolution (transitive near-dup folding; needs a doc_id→canonical store).
+   one-command `quickstart`; zero-task backfill warning; search empty-state (partially improved).
+7. **Math follow-ups:** raise `DEFAULT_NEAR_THRESHOLD` toward calibrated 36 only with banding
+   + benchmark; corpus-IDF store; ~~union-find~~ **✅ DONE on loop branch**.
 8. **Cycle 3:** SPA Settings editable; fetch_ts/observed_ts/published_ts disentangle; URL
    canonicalization tightening; JSONL+Iceberg double-count reconcile.
-
-## Gotchas / conventions
-
-- **Tests that write JSONL fixtures** historically needed all 29 canonical columns (the
-  captures view bound them) — P3b now NULL-fills missing ones, but full-row fixtures
-  remain the norm (copy the key set from `tests/unit/test_search_matching.py`).
-- **`benchmarks.bench_simhash` is fully offline** (synthetic corpus, fixed seeds) and runs
-  the REAL `DedupEngine` — use it to re-measure near-dup numbers after any
-  banding/threshold change. Other `benchmarks/bench_*.py` need network/extras (`'.[bench]'`).
-- **Don't raise the dedup merge threshold** without raising banding to preserve the
-  pigeonhole invariant AND re-measuring the benchmark (the invariant test will fail otherwise).
-- The two cross-cutting seams introduced: `util/http.py` (all fetchers should route
-  through it) and the search-default resolver (`_resolve_search_window` in `cli/main.py`).
-
-## First commands for the new session
-
-```bash
-cd /Users/nazmi/Desktop/awareness
-git status && git log --oneline -8
-PYTHONPATH=src .venv/bin/python -m pytest -q -m "not slow and not smoke"   # expect 283 passed (can take minutes offline: connect() does network INSTALL iceberg/fts)
-ls docs/superpowers/plans/   # the executable TDD plans
-```
-Then either invoke `superpowers:finishing-a-development-branch` (to merge) or write/execute
-the next plan via `superpowers:subagent-driven-development`.

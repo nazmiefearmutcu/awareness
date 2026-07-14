@@ -2,9 +2,10 @@
 
 Endpoints:
     GET  /                       — web dashboard (static SPA)
-    GET  /healthz                — liveness
+    GET  /healthz                — liveness + search index readiness
     GET  /status                 — overall status
-    GET  /metrics                — counters/histograms snapshot
+    GET  /metrics                — counters/histograms snapshot (JSON; ?format=prometheus)
+    GET  /staging                — JSONL staging backlog (pending manifests + oldest age)
     POST /backfill               — submit
     POST /backfill/{id}/run      — run pending tasks (non-blocking task)
     GET  /backfill/{id}          — status
@@ -13,12 +14,12 @@ Endpoints:
     POST /tail/stop              — stop tail
     GET  /tail                   — tail state
     GET  /inspect                — date/domain/source range query
-    GET  /captures               — paginated capture listing for UI
+    GET  /captures               — paginated capture listing for UI (unique=none|content|group)
     GET  /captures/{capture_id}  — full capture (incl. text) for UI detail view
     GET  /captures/{id}/related  — sibling captures in the same dup_group
     GET  /search                 — BM25-ranked full-text search w/ snippets
-    GET  /counts                 — counts grouped by source & domain
-    GET  /dedup-stats            — dedup index stats
+    GET  /counts                 — counts grouped by source, domain & language
+    GET  /dedup-stats            — dedup index stats + process skip counters
     GET  /jobsearch/sources      — public job boards catalog
     GET  /jobsearch/profile      — personalization profile
     PUT  /jobsearch/profile      — save profile
@@ -30,18 +31,20 @@ Run with ``awareness-api`` script or ``uvicorn awareness.api.server:create_app``
 from __future__ import annotations
 
 import asyncio
+import threading
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from awareness import __version__
 from awareness.config import get_settings
 from awareness.obs.logging import configure_logging, get_logger
 from awareness.obs.metrics import get_metrics
@@ -51,7 +54,8 @@ from awareness.schemas.jobs import BackfillRequest
 from awareness.storage.duckdb_index import DuckDbIndex
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
-from awareness.util.timeutil import coerce_relative_end, to_utc
+from awareness.util.lang import PRIMARY_LANGUAGE_SQL, append_language_filter
+from awareness.util.timeutil import coerce_relative_end, inclusive_end, to_utc
 from awareness.workers.engine import WorkerEngine
 
 logger = get_logger("api")
@@ -85,7 +89,135 @@ class _State:
     state: StateDB | None = None
     planner: Planner | None = None
     tail: TailEngine | None = None
+    index: DuckDbIndex | None = None
     background_tasks: set[asyncio.Task[Any]] = set()
+
+
+_index_lock = threading.Lock()
+
+
+def _get_index() -> DuckDbIndex:
+    """Return the process-wide DuckDbIndex (create once, double-checked locking)."""
+    idx = _State.index
+    if idx is not None:
+        return idx
+    with _index_lock:
+        if _State.index is None:
+            s = get_settings()
+            _State.index = DuckDbIndex(
+                db_path=s.duckdb_path(),
+                jsonl_dir=s.staging_jsonl_dir(),
+                iceberg_warehouse=s.iceberg_warehouse,
+            )
+        return _State.index
+
+
+def _close_index() -> None:
+    """Close and clear the process-wide DuckDbIndex under the index lock.
+
+    Call after settings that can change data_dir / duckdb / staging paths, and
+    on lifespan shutdown, so the next _get_index() rebuilds against current paths.
+    """
+    with _index_lock:
+        if _State.index is not None:
+            _State.index.close()
+            _State.index = None
+
+
+
+# Fold key expressions for GET /captures?unique=…
+# Keep newest fetch_ts per key via DISTINCT ON; empty/null hash falls back to capture_id.
+_UNIQUE_FOLD_KEY_SQL: dict[str, str] = {
+    "content": (
+        "COALESCE(NULLIF(TRIM(CAST(content_hash AS VARCHAR)), ''), capture_id)"
+    ),
+    "group": (
+        "COALESCE("
+        "NULLIF(TRIM(CAST(parent_doc_or_dup_group AS VARCHAR)), ''), "
+        "NULLIF(TRIM(CAST(content_hash AS VARCHAR)), ''), "
+        "capture_id)"
+    ),
+}
+
+_CAPTURE_LIST_SELECT = """
+              doc_id, capture_id, source_type, source_name,
+              fetch_ts, observed_ts, domain, url, canonical_url,
+              title, language, length(text) AS text_len,
+              content_hash, parent_doc_or_dup_group
+"""
+
+
+def unique_fold_key_sql(unique: str) -> str | None:
+    """Return SQL fold-key expression for unique mode, or None for no fold."""
+    if unique in (None, "", "none"):
+        return None
+    expr = _UNIQUE_FOLD_KEY_SQL.get(unique)
+    if expr is None:
+        raise ValueError(f"invalid unique mode: {unique!r}")
+    return expr
+
+
+def query_captures_list(
+    idx: DuckDbIndex,
+    *,
+    limit: int,
+    offset: int,
+    where: list[str] | None = None,
+    params: dict[str, Any] | None = None,
+    unique: str = "none",
+) -> dict[str, Any]:
+    """Paginated captures listing with optional unique folding (DuckDB).
+
+    ``unique``:
+      * ``none``    — all rows (default)
+      * ``content`` — one row per content_hash (newest fetch_ts)
+      * ``group``   — one row per parent_doc_or_dup_group / content_hash / capture_id
+    """
+    where = where or []
+    params = dict(params or {})
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    fold_key = unique_fold_key_sql(unique)
+
+    if fold_key is None:
+        total_rows = idx.execute(f"SELECT COUNT(*) AS n FROM captures{where_sql}", params)
+        rows = idx.execute(
+            f"""
+            SELECT{_CAPTURE_LIST_SELECT}
+            FROM captures{where_sql}
+            ORDER BY fetch_ts DESC
+            LIMIT {int(limit)} OFFSET {int(offset)}
+            """,
+            params,
+        )
+    else:
+        total_rows = idx.execute(
+            f"SELECT COUNT(*) AS n FROM ("
+            f"SELECT DISTINCT {fold_key} AS _fold_key FROM captures{where_sql}"
+            f") _u",
+            params,
+        )
+        rows = idx.execute(
+            f"""
+            SELECT * EXCLUDE (_fold_key) FROM (
+              SELECT DISTINCT ON ({fold_key})
+                {_CAPTURE_LIST_SELECT.strip()},
+                {fold_key} AS _fold_key
+              FROM captures{where_sql}
+              ORDER BY {fold_key}, fetch_ts DESC
+            ) _folded
+            ORDER BY fetch_ts DESC
+            LIMIT {int(limit)} OFFSET {int(offset)}
+            """,
+            params,
+        )
+
+    return {
+        "total": int(total_rows[0]["n"]) if total_rows else 0,
+        "limit": limit,
+        "offset": offset,
+        "unique": unique if unique else "none",
+        "rows": rows,
+    }
 
 
 def create_app() -> FastAPI:
@@ -125,20 +257,48 @@ def create_app() -> FastAPI:
                 await _State.tail.stop(drain_seconds=10.0)
             for t in list(_State.background_tasks):
                 t.cancel()
-            if _State.index is not None:
-                _State.index.close()
-                _State.index = None
+            _close_index()
+            # Drain process-wide pooled httpx clients so sockets/TLS sessions
+            # do not leak across uvicorn reloads / process exit.
+            try:
+                from awareness.util.http import aclose_shared_async_clients
 
-    app = FastAPI(title="Awareness", version="0.1.0", lifespan=lifespan)
+                await aclose_shared_async_clients()
+            except Exception as exc:  # noqa: BLE001 — best-effort shutdown
+                logger.warning("shared_http_clients_shutdown_failed", error=str(exc))
+
+    app = FastAPI(title="Awareness", version=__version__, lifespan=lifespan)
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
+        """Liveness probe plus search-index readiness.
+
+        ``ok`` stays True while the process can answer (liveness). ``index_ready``
+        reports whether DuckDB views are queryable; clients that need search
+        should wait for ``index_ready`` (and optionally ``index.fts_built``).
+        """
         s = get_settings()
-        return {
+        out: dict[str, Any] = {
             "ok": True,
+            "version": __version__,
             "state_db": _State.state.url if _State.state else None,
             "data_dir": str(s.data_dir),
+            "index_ready": False,
+            "index": None,
         }
+        try:
+            idx = _get_index()
+            snap = idx.health_snapshot()
+            out["index"] = snap
+            out["index_ready"] = bool(snap.get("ready"))
+        except Exception as exc:  # noqa: BLE001 — healthz must never 500
+            logger.warning("healthz_index_probe_failed", error=str(exc))
+            out["index"] = {
+                "ready": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            out["index_ready"] = False
+        return out
 
     @app.get("/status")
     def status() -> dict[str, Any]:
@@ -149,14 +309,71 @@ def create_app() -> FastAPI:
         return {"tail": st.get_tail(), "jobs": jobs}
 
     @app.get("/metrics")
-    def metrics() -> dict[str, Any]:
+    def metrics(
+        request: Request,
+        format: str | None = Query(  # noqa: A002 — Prometheus-style query name
+            default=None,
+            description="Response format: omit/json (default) or prometheus/prom/text",
+        ),
+    ) -> Any:
+        """Process metrics as JSON snapshot or Prometheus text exposition.
+
+        Default remains JSON for the SPA/dashboard. Pass ``?format=prometheus``
+        (aliases: ``prom``, ``text``) or ``Accept: text/plain`` to scrape with
+        Prometheus / VictoriaMetrics / Grafana Alloy.
+        """
+        fmt = (format or "").strip().lower()
+        accept = (request.headers.get("accept") or "").lower()
+        want_prom = fmt in ("prometheus", "prom", "text", "exposition") or (
+            "text/plain" in accept and "application/json" not in accept
+        )
+        if want_prom:
+            body = get_metrics().render_prometheus()
+            return PlainTextResponse(
+                content=body,
+                media_type="text/plain; version=0.0.4; charset=utf-8",
+            )
         return get_metrics().snapshot()
 
     @app.get("/dedup-stats")
     def dedup_stats() -> dict[str, Any]:
         if _State.state is None:
             raise HTTPException(500, "not initialized")
-        return _State.state.dedup_stats()
+        stats: dict[str, Any] = dict(_State.state.dedup_stats())
+        # Process-local skip counters (also on GET /metrics). Cheap sums over labels.
+        m = get_metrics()
+        stats["fetch_skipped_seen"] = int(m.counter_sum("tail.fetch_skipped_seen"))
+        stats["tight_near_skipped"] = int(m.counter_sum("dedup.tight_near_skipped"))
+        return stats
+
+    @app.get("/staging")
+    def staging(
+        include_manifests: bool = Query(
+            default=True,
+            description="Include per-manifest rows (path/records/bytes/age). "
+            "Set false for a lightweight backlog summary only.",
+        ),
+    ) -> dict[str, Any]:
+        """JSONL staging backlog pending Iceberg compaction.
+
+        Mirrors ``awareness compact --status/--json``: pending chunk count,
+        total records/bytes, oldest committed_at + age_seconds so operators
+        and the SPA can see warehouse fold lag without shell access.
+        """
+        st = _State.state
+        if st is None:
+            raise HTTPException(500, "not initialized")
+        summary = st.pending_manifest_summary()
+        if not include_manifests:
+            # Drop the potentially large per-file list for cheap polling.
+            return {
+                "pending_count": summary.get("pending_count", 0),
+                "total_records": summary.get("total_records", 0),
+                "total_bytes": summary.get("total_bytes", 0),
+                "oldest_committed_at": summary.get("oldest_committed_at"),
+                "oldest_age_seconds": summary.get("oldest_age_seconds"),
+            }
+        return summary
 
     @app.post("/backfill")
     def submit_backfill(body: BackfillBody) -> dict[str, Any]:
@@ -279,6 +496,8 @@ def create_app() -> FastAPI:
                 "task_status_counts": {},
                 "running_tasks": [],
                 "recent_completed": [],
+                "retry_scheduled_count": 0,
+                "retry_scheduled": [],
                 "per_seed": {"feeds": [], "fetch": {}},
                 "recent_chunks": [],
             }
@@ -303,6 +522,8 @@ def create_app() -> FastAPI:
             "task_status_counts": counts,
             "running_tasks": state.list_running_tasks(job_id, limit=12) if live else [],
             "recent_completed": state.list_recent_completed_tasks(job_id, limit=10),
+            "retry_scheduled_count": state.count_retry_scheduled(job_id) if live else 0,
+            "retry_scheduled": state.list_retry_scheduled_tasks(job_id, limit=10) if live else [],
             "per_seed": state.per_seed_progress(job_id) if live else {"feeds": [], "fetch": {}},
             "recent_chunks": state.list_recent_manifests(limit=8),
         }
@@ -316,15 +537,15 @@ def create_app() -> FastAPI:
         source: str | None = Query(None),
     ) -> list[dict[str, Any]]:
         idx = _get_index()
-        end_dt = to_utc(end) if end else coerce_relative_end("now")
+        end_dt = inclusive_end(to_utc(end)) if end else coerce_relative_end("now")
         where = ["fetch_ts >= $start", "fetch_ts <= $end"]
         params: dict[str, Any] = {"start": to_utc(start), "end": end_dt}
         if domain:
-            where.append("domain = $dom")
-            params["dom"] = domain
+            where.append("lower(domain) = $dom")
+            params["dom"] = str(domain).strip().lower()
         if source:
-            where.append("source_type = $src")
-            params["src"] = source
+            where.append("lower(source_type) = $src")
+            params["src"] = str(source).strip().lower()
         sql = f"""
             SELECT doc_id, capture_id, source_type, source_name, fetch_ts,
                    domain, title, length(text) AS text_len, language
@@ -337,24 +558,47 @@ def create_app() -> FastAPI:
 
     @app.get("/counts")
     def counts(start: datetime, end: datetime | None = None) -> dict[str, Any]:
-        s = get_settings()
-        idx = DuckDbIndex(
-            db_path=s.duckdb_path(),
-            jsonl_dir=s.staging_jsonl_dir(),
-            iceberg_warehouse=s.iceberg_warehouse,
-        )
-        end_dt = to_utc(end) if end else coerce_relative_end("now")
+        idx = _get_index()
+        end_dt = inclusive_end(to_utc(end)) if end else coerce_relative_end("now")
         p = {"start": to_utc(start), "end": end_dt}
         total = idx.execute("SELECT COUNT(*) AS n FROM captures WHERE fetch_ts BETWEEN $start AND $end", p)
+        # Case-normalize source buckets (RSS vs rss) so dashboard chips match filters.
         by_source = idx.execute(
-            "SELECT source_type, COUNT(*) AS n FROM captures WHERE fetch_ts BETWEEN $start AND $end GROUP BY source_type",
+            """
+            SELECT lower(CAST(source_type AS VARCHAR)) AS source_type, COUNT(*) AS n
+            FROM captures
+            WHERE fetch_ts BETWEEN $start AND $end
+              AND source_type IS NOT NULL
+              AND CAST(source_type AS VARCHAR) != ''
+            GROUP BY 1
+            ORDER BY n DESC
+            """,
             p,
         )
         by_domain = idx.execute(
             "SELECT domain, COUNT(*) AS n FROM captures WHERE fetch_ts BETWEEN $start AND $end AND domain IS NOT NULL GROUP BY domain ORDER BY n DESC LIMIT 25",
             p,
         )
-        return {"total": total, "by_source": by_source, "by_domain": by_domain}
+        # Primary BCP-47 tags so en / en-US / en_GB roll into one "en" bucket.
+        by_language = idx.execute(
+            f"""
+            SELECT {PRIMARY_LANGUAGE_SQL} AS language, COUNT(*) AS n
+            FROM captures
+            WHERE fetch_ts BETWEEN $start AND $end
+              AND language IS NOT NULL
+              AND CAST(language AS VARCHAR) != ''
+            GROUP BY 1
+            ORDER BY n DESC
+            LIMIT 50
+            """,
+            p,
+        )
+        return {
+            "total": total,
+            "by_source": by_source,
+            "by_domain": by_domain,
+            "by_language": by_language,
+        }
 
     @app.get("/captures")
     def list_captures(
@@ -364,7 +608,12 @@ def create_app() -> FastAPI:
         end: datetime | None = Query(None),
         domain: str | None = Query(None),
         source: str | None = Query(None),
+        language: str | None = Query(None, description="BCP-47 language tag filter"),
         search: str | None = Query(None),
+        unique: Literal["none", "content", "group"] = Query(
+            "none",
+            description="Collapse duplicates: none | content (content_hash) | group (dup group)",
+        ),
     ) -> dict[str, Any]:
         idx = _get_index()
         where: list[str] = []
@@ -374,38 +623,28 @@ def create_app() -> FastAPI:
             params["start"] = to_utc(start)
         if end is not None:
             where.append("fetch_ts <= $end")
-            params["end"] = to_utc(end)
+            params["end"] = inclusive_end(to_utc(end))
         if domain:
-            where.append("domain = $dom")
-            params["dom"] = domain
+            # Case-insensitive: SPA may send Example.COM; captures store lower eTLD+1.
+            where.append("lower(domain) = $dom")
+            params["dom"] = str(domain).strip().lower()
         if source:
-            where.append("source_type = $src")
-            params["src"] = source
+            # Case-insensitive: RSS vs rss / Common_Crawl_Wet vs common_crawl_wet.
+            where.append("lower(source_type) = $src")
+            params["src"] = str(source).strip().lower()
+        # BCP-47: primary tags (en) match regional subtags (en-US); case/underscore-insensitive.
+        append_language_filter(where, params, language)
         if search:
             where.append("(title ILIKE $q OR text ILIKE $q)")
             params["q"] = f"%{search}%"
-        where_sql = (" WHERE " + " AND ".join(where)) if where else ""
-
-        total = idx.execute(f"SELECT COUNT(*) AS n FROM captures{where_sql}", params)
-        rows = idx.execute(
-            f"""
-            SELECT
-              doc_id, capture_id, source_type, source_name,
-              fetch_ts, observed_ts, domain, url, canonical_url,
-              title, language, length(text) AS text_len,
-              content_hash, parent_doc_or_dup_group
-            FROM captures{where_sql}
-            ORDER BY fetch_ts DESC
-            LIMIT {int(limit)} OFFSET {int(offset)}
-            """,
-            params,
+        return query_captures_list(
+            idx,
+            limit=limit,
+            offset=offset,
+            where=where,
+            params=params,
+            unique=unique,
         )
-        return {
-            "total": int(total[0]["n"]) if total else 0,
-            "limit": limit,
-            "offset": offset,
-            "rows": rows,
-        }
 
     @app.get("/captures/{capture_id}")
     def capture_detail(capture_id: str) -> dict[str, Any]:
@@ -418,13 +657,22 @@ def create_app() -> FastAPI:
         )
         if not rows:
             raise HTTPException(404, "capture not found")
-        return rows[0]
+        row = dict(rows[0])
+        # Total siblings in the same dup-group (for reader title badge).
+        row["related_count"] = idx.related_count(capture_id)
+        return row
 
     @app.get("/captures/{capture_id}/related")
     def capture_related(capture_id: str, limit: int = Query(12, ge=1, le=50)) -> dict[str, Any]:
         idx = _get_index()
         siblings = idx.related(capture_id, limit=limit)
-        return {"capture_id": capture_id, "siblings": siblings}
+        # Full sibling total (may exceed *limit*); UI uses this for counts.
+        related_count = idx.related_count(capture_id)
+        return {
+            "capture_id": capture_id,
+            "siblings": siblings,
+            "related_count": related_count,
+        }
 
     @app.get("/search")
     def search(
@@ -433,17 +681,14 @@ def create_app() -> FastAPI:
         offset: int = Query(0, ge=0),
         source: str | None = Query(None),
         domain: str | None = Query(None),
+        language: str | None = Query(None, description="BCP-47 language tag filter"),
         start: datetime | None = Query(None),
         end: datetime | None = Query(None),
         mode: str | None = Query(None, description="auto | fts | prefix | substring"),
         fields: str | None = Query(None, description="comma-list: title,text,domain,url"),
     ) -> dict[str, Any]:
         s = get_settings()
-        idx = DuckDbIndex(
-            db_path=s.duckdb_path(),
-            jsonl_dir=s.staging_jsonl_dir(),
-            iceberg_warehouse=s.iceberg_warehouse,
-        )
+        idx = _get_index()
         field_list = [
             f.strip().lower()
             for f in (fields or s.search_default_fields).split(",")
@@ -455,8 +700,9 @@ def create_app() -> FastAPI:
             offset=offset,
             source=source,
             domain=domain,
+            language=language,
             start=to_utc(start) if start else None,
-            end=to_utc(end) if end else None,
+            end=inclusive_end(to_utc(end)) if end else None,
             mode=(mode or s.search_default_mode),
             fields=field_list,
             max_results=s.search_max_results,
@@ -479,7 +725,13 @@ def create_app() -> FastAPI:
             raise HTTPException(400, "expected object of key → value")
         # Strip meta keys if flat
         values = {k: v for k, v in values.items() if k not in ("values", "note")}
-        return apply_updates(values)
+        result = apply_updates(values)
+        # data_dir (and derived duckdb/staging paths) may have changed; always
+        # drop the singleton so the next request rebuilds against new paths.
+        # Slightly cold after any config apply; safer than path-key heuristics.
+        if result.get("applied"):
+            _close_index()
+        return result
 
     @app.get("/settings/tail-seeds")
     def settings_get_tail_seeds() -> dict[str, Any]:

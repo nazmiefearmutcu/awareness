@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import json
-import multiprocessing
+import threading
 from pathlib import Path
-import time
-
-import pytest
-import duckdb
 
 from awareness.storage.duckdb_index import DuckDbIndex
 
@@ -19,6 +15,7 @@ _FULL_KEYS = (
     "http_status", "etag", "title", "text", "language", "content_hash",
     "near_dup_hash", "robots_decision", "terms_note_if_relevant",
 )
+
 
 def _write_doc(root: Path, idx: int, *, title: str, text: str, domain: str = "example.com") -> None:
     day = root / "captures" / "2026" / "06" / "01"
@@ -37,52 +34,65 @@ def _write_doc(root: Path, idx: int, *, title: str, text: str, domain: str = "ex
     (day / f"chunk-{idx}.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
 
 
-def _run_worker(db_path: Path, jsonl_dir: Path, worker_id: int, num_ops: int, error_count: multiprocessing.Value):
-    """Run a worker process that repeatedly performs search/execute operations on DuckDbIndex."""
-    idx = DuckDbIndex(db_path=db_path, jsonl_dir=jsonl_dir, iceberg_warehouse=None)
-    for i in range(num_ops):
-        try:
-            # Alternate between query and search
-            if i % 2 == 0:
-                idx.execute("SELECT COUNT(*) AS count FROM captures")
-            else:
-                idx.search("financial")
-        except Exception as e:
-            # If any exception is raised, print it and increment the shared error counter
-            print(f"Worker {worker_id} failed on op {i}: {e}", flush=True)
-            with error_count.get_lock():
-                error_count.value += 1
-        time.sleep(0.01)
+def test_duckdb_multi_thread_concurrency(tmp_path: Path) -> None:
+    """Shared singleton + long-lived conn must stay safe under threadpool load.
 
-
-def test_duckdb_multi_process_concurrency(tmp_path: Path) -> None:
+    Matches the API model: one DuckDbIndex, many threads calling search/execute
+    under the instance RLock. Multi-process concurrent writers against one
+    DuckDB file are not supported once connections are long-lived (DuckDB
+    exclusive file lock) — that is intentional for the process-wide singleton.
+    """
     jsonl_dir = tmp_path / "jsonl"
     db_path = tmp_path / "duckdb" / "metadata.duckdb"
-    
-    # Write a doc so there is some data
+
     _write_doc(jsonl_dir, 1, title="Global financial markets rally", text="The financial sector surged today.")
-    
-    # Initialize the database and views first
+
     idx = DuckDbIndex(db_path=db_path, jsonl_dir=jsonl_dir, iceberg_warehouse=None)
+    # Warm the long-lived connection + views/FTS once (as lifespan would).
     idx.execute("SELECT COUNT(*) FROM captures")
-    
-    # Run multiple processes concurrently
-    num_processes = 5
-    ops_per_process = 20
-    
-    # Shared error count
-    error_count = multiprocessing.Value("i", 0)
-    
-    processes = []
-    for i in range(num_processes):
-        p = multiprocessing.Process(
-            target=_run_worker,
-            args=(db_path, jsonl_dir, i, ops_per_process, error_count)
-        )
-        processes.append(p)
-        p.start()
-        
-    for p in processes:
-        p.join()
-        
-    assert error_count.value == 0, f"Detected {error_count.value} concurrency exceptions during test."
+    idx.search("financial")
+
+    num_threads = 8
+    ops_per_thread = 20
+    errors: list[str] = []
+    err_lock = threading.Lock()
+
+    def worker(worker_id: int) -> None:
+        for i in range(ops_per_thread):
+            try:
+                if i % 2 == 0:
+                    rows = idx.execute("SELECT COUNT(*) AS count FROM captures")
+                    assert rows and int(rows[0]["count"]) >= 1
+                else:
+                    res = idx.search("financial")
+                    assert res["total"] >= 1
+            except Exception as e:  # noqa: BLE001 — collect for assertion
+                with err_lock:
+                    errors.append(f"worker {worker_id} op {i}: {e}")
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    idx.close()
+    assert not errors, f"Detected {len(errors)} concurrency exceptions: {errors[:5]}"
+
+
+def test_search_reuses_same_connection(tmp_path: Path) -> None:
+    """Hot search path must not open a new DuckDB connection per call."""
+    jsonl_dir = tmp_path / "jsonl"
+    _write_doc(jsonl_dir, 1, title="Bitcoin rally", text="Markets moved on bitcoin news.")
+    idx = DuckDbIndex(
+        db_path=tmp_path / "duckdb" / "metadata.duckdb",
+        jsonl_dir=jsonl_dir,
+        iceberg_warehouse=None,
+    )
+    idx.search("bitcoin")
+    conn1 = idx._conn
+    assert conn1 is not None
+    idx.search("bitcoin")
+    idx.execute("SELECT 1 AS n")
+    assert idx._conn is conn1
+    idx.close()

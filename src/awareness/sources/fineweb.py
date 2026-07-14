@@ -17,11 +17,13 @@ Resume: checkpoint stores the last consumed row index per partition.
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 
 from awareness.config import get_settings
 from awareness.normalize.text import detect_language, normalize_text, safe_title
 from awareness.obs.logging import get_logger
+from awareness.obs.metrics import get_metrics
 from awareness.schemas.doc import DocCapture, RobotsDecision, SourceKind, SourceRef
 from awareness.schemas.jobs import BackfillRequest
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
@@ -38,6 +40,33 @@ from awareness.util.timeutil import to_utc, utcnow
 from awareness.util.urls import canonical_url, domain_of
 
 logger = get_logger("sources.fineweb")
+
+
+def _fineweb_dataset_label(ds_name: str) -> str:
+    """Map HF dataset id to a low-cardinality metric label."""
+    n = (ds_name or "").lower()
+    if "fineweb-2" in n or "fineweb_2" in n:
+        return "fineweb_2"
+    return "fineweb"
+
+
+def _normalize_filter_reason(reason: str | None) -> str:
+    """Collapse normalize_text discard reasons to stable filter labels."""
+    if not reason:
+        return "normalize"
+    if reason == "empty":
+        return "empty"
+    if reason.startswith("too_short"):
+        return "too_short"
+    return "normalize"
+
+
+def _record_fineweb_load(*, outcome: str, elapsed: float, dataset: str) -> None:
+    """Emit process-local FineWeb load counters + latency histogram."""
+    m = get_metrics()
+    labels = {"outcome": outcome, "dataset": dataset}
+    m.inc("fineweb.load_attempts", labels=labels)
+    m.observe("fineweb.load_seconds", max(0.0, elapsed), labels=labels)
 
 
 class FineWebDependencyMissing(RuntimeError):
@@ -126,13 +155,15 @@ class FineWebAdapter(Adapter):
         partition: PartitionSpec,
         context: AdapterContext,
     ) -> AsyncIterator[DocCapture]:
+        ds_name = partition.payload.get("dataset") or self._default
+        ds_label = _fineweb_dataset_label(str(ds_name))
         try:
             from datasets import load_dataset  # noqa: PLC0415
         except ImportError:
             logger.info("fineweb_run_skipped_missing_datasets_lib")
+            _record_fineweb_load(outcome="missing_dep", elapsed=0.0, dataset=ds_label)
             return
 
-        ds_name = partition.payload["dataset"]
         dump = partition.payload.get("dump")
         rows_per = int(partition.payload.get("rows_per_partition", self._rows))
         languages = set(partition.payload.get("languages") or [])
@@ -140,15 +171,28 @@ class FineWebAdapter(Adapter):
         start_offset = int(context.checkpoint.get("row_index", 0))
 
         settings = get_settings()
+        m = get_metrics()
 
         # Stream mode is required to avoid downloading TB-scale dumps.
+        t_load = time.perf_counter()
         try:
             ds = load_dataset(ds_name, name=dump, split="train", streaming=True)
         except Exception as exc:
+            _record_fineweb_load(
+                outcome="error",
+                elapsed=time.perf_counter() - t_load,
+                dataset=ds_label,
+            )
             logger.warning("fineweb_load_failed", ds=ds_name, dump=dump, err=str(exc))
             return
+        _record_fineweb_load(
+            outcome="ok",
+            elapsed=time.perf_counter() - t_load,
+            dataset=ds_label,
+        )
 
         emitted = 0
+        t_part = time.perf_counter()
         for i, row in enumerate(ds):
             if context.is_stopping():
                 break
@@ -156,17 +200,30 @@ class FineWebAdapter(Adapter):
                 continue
             if emitted >= rows_per:
                 break
+            m.inc("fineweb.rows_seen", labels={"dataset": ds_label})
             text_raw = row.get("text") or row.get("content")
             if not text_raw:
+                m.inc(
+                    "fineweb.rows_filtered",
+                    labels={"reason": "empty", "dataset": ds_label},
+                )
                 continue
             url = row.get("url") or row.get("source")
             row_date = row.get("date") or row.get("date_download") or row.get("published_date")
             lang = (row.get("language") or "").lower() or None
             if languages and lang and lang not in languages:
+                m.inc(
+                    "fineweb.rows_filtered",
+                    labels={"reason": "language", "dataset": ds_label},
+                )
                 continue
             cu = canonical_url(url) if url else None
             dom = domain_of(cu) if cu else None
             if domains_filter and dom not in domains_filter:
+                m.inc(
+                    "fineweb.rows_filtered",
+                    labels={"reason": "domain", "dataset": ds_label},
+                )
                 continue
             norm = normalize_text(
                 text_raw,
@@ -174,6 +231,13 @@ class FineWebAdapter(Adapter):
                 max_chars=settings.text_max_chars,
             )
             if norm.discarded_reason:
+                m.inc(
+                    "fineweb.rows_filtered",
+                    labels={
+                        "reason": _normalize_filter_reason(norm.discarded_reason),
+                        "dataset": ds_label,
+                    },
+                )
                 continue
             ch = compute_content_hash(norm.text)
             sim = simhash64(norm.text)
@@ -209,6 +273,12 @@ class FineWebAdapter(Adapter):
                 robots_decision=RobotsDecision.NOT_APPLICABLE,
             )
             emitted += 1
+            m.inc("fineweb.rows_admitted", labels={"dataset": ds_label})
             # Update checkpoint cooperatively.
             context.checkpoint["row_index"] = i + 1
+        m.observe(
+            "fineweb.partition_seconds",
+            max(0.0, time.perf_counter() - t_part),
+            labels={"dataset": ds_label},
+        )
         logger.info("fineweb_partition_done", ds=ds_name, dump=dump, emitted=emitted)

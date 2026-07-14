@@ -33,6 +33,38 @@ from awareness.util.timeutil import utcnow
 logger = get_logger("planner")
 
 
+def _parse_zero_task_reasons(notes: str | None) -> list[dict[str, str]]:
+    """Extract per-source reason dicts from a ZERO_TASKS job note."""
+    if not notes or "ZERO_TASKS" not in notes:
+        return []
+    # Format: "ZERO_TASKS: planned 0 tasks — src: detail; src2: detail2 [| user notes]"
+    body = notes.split("ZERO_TASKS:", 1)[-1]
+    if "—" in body:
+        body = body.split("—", 1)[1]
+    if " | " in body:
+        body = body.split(" | ", 1)[0]
+    body = body.strip()
+    if not body:
+        return []
+    reasons: list[dict[str, str]] = []
+    for part in body.split("; "):
+        part = part.strip()
+        if not part:
+            continue
+        if ": " in part:
+            source, detail = part.split(": ", 1)
+            reasons.append(
+                {
+                    "source": source.strip(),
+                    "reason": "no_partitions",
+                    "detail": detail.strip(),
+                }
+            )
+        else:
+            reasons.append({"source": "*", "reason": "unknown", "detail": part})
+    return reasons
+
+
 class Planner:
     def __init__(self, state: StateDB) -> None:
         self._state = state
@@ -66,27 +98,88 @@ class Planner:
             wanted.add(SourceKind.COMMON_CRAWL_INDEX)
 
         total = 0
+        # Per-source skip reasons for zero-task diagnostics (only sources in scope).
+        source_reasons: list[dict[str, str]] = []
         for adapter in self._registry.all():
             if adapter.source_type not in wanted:
                 continue
+            source_name = adapter.source_type.value
             partitions = adapter.plan(request)
+            if not partitions:
+                source_reasons.append(
+                    {
+                        "source": source_name,
+                        "reason": "no_partitions",
+                        "detail": "adapter plan() returned no partitions for this range/filters",
+                    }
+                )
+                continue
             tasks = list(self._partitions_to_tasks(job_id, partitions))
             if not tasks:
+                source_reasons.append(
+                    {
+                        "source": source_name,
+                        "reason": "no_partitions",
+                        "detail": "adapter plan() returned no partitions for this range/filters",
+                    }
+                )
                 continue
             if request.max_tasks:
                 remaining = max(0, request.max_tasks - total)
+                if remaining == 0:
+                    source_reasons.append(
+                        {
+                            "source": source_name,
+                            "reason": "max_tasks_cap",
+                            "detail": f"max_tasks={request.max_tasks} already reached; skipped",
+                        }
+                    )
+                    break
                 tasks = tasks[:remaining]
                 if not tasks:
+                    source_reasons.append(
+                        {
+                            "source": source_name,
+                            "reason": "max_tasks_cap",
+                            "detail": f"max_tasks={request.max_tasks} already reached; skipped",
+                        }
+                    )
                     break
             self._state.add_tasks(tasks)
             total += len(tasks)
             logger.info(
                 "planner_emitted_tasks",
                 job_id=job_id,
-                source_type=adapter.source_type.value,
+                source_type=source_name,
                 count=len(tasks),
             )
 
+        if total == 0:
+            if not source_reasons:
+                wanted_names = sorted(s.value for s in wanted)
+                source_reasons.append(
+                    {
+                        "source": "*",
+                        "reason": "no_eligible_sources",
+                        "detail": f"no adapters produced work for sources={wanted_names}",
+                    }
+                )
+            # Persist only the empty-plan reasons (sources that never emitted).
+            empty_reasons = [r for r in source_reasons if r["reason"] != "max_tasks_cap"]
+            if not empty_reasons:
+                empty_reasons = list(source_reasons)
+            reason_text = "; ".join(f"{r['source']}: {r['detail']}" for r in empty_reasons)
+            warn_note = f"ZERO_TASKS: planned 0 tasks — {reason_text}"
+            if request.notes:
+                warn_note = f"{warn_note} | {request.notes}"
+            self._state.set_job_status(job_id, JobStatus.PENDING, note=warn_note)
+            logger.warning(
+                "planner_backfill_zero_tasks",
+                job_id=job_id,
+                total_tasks=0,
+                reasons=empty_reasons,
+                sources=sorted(s.value for s in wanted),
+            )
         logger.info("planner_backfill_submitted", job_id=job_id, total_tasks=total)
         return job_id
 
@@ -161,7 +254,7 @@ class Planner:
         if job is None:
             return {"error": "unknown_job", "job_id": job_id}
         counts = self._state.task_status_counts(job_id)
-        return {
+        out: dict[str, Any] = {
             "job_id": job_id,
             "kind": job.kind.value,
             "status": job.status.value,
@@ -178,3 +271,8 @@ class Planner:
             "task_status_counts": counts,
             "notes": job.notes,
         }
+        # Loud signal when a BODY plan produced nothing to run.
+        if job.kind == JobKind.BACKFILL and int(job.tasks_total or 0) == 0:
+            out["warning"] = "zero_tasks"
+            out["zero_task_reasons"] = _parse_zero_task_reasons(job.notes)
+        return out

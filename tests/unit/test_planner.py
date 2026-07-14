@@ -90,3 +90,43 @@ def test_delete_job(tmp_path: Path) -> None:
     with db.session() as s:
         tasks = list(s.scalars(select(TaskRow).where(TaskRow.job_id == job_id)))
         assert len(tasks) == 0
+
+
+def test_planner_zero_tasks_warns_for_rss_only_source(tmp_path: Path) -> None:
+    """RSS has no historical plan partitions — submit must flag zero_tasks."""
+    db = StateDB(f"sqlite:///{tmp_path / 'state.db'}")
+    db.init()
+    p = Planner(db)
+    req = BackfillRequest(
+        start=datetime(2024, 6, 1, tzinfo=UTC),
+        end=datetime(2024, 6, 14, tzinfo=UTC),
+        sources=[SourceKind.RSS],
+        notes="smoke-rss",
+    )
+    job_id = p.submit_backfill(req)
+    status = p.status(job_id)
+    assert status["tasks_total"] == 0
+    assert status["warning"] == "zero_tasks"
+    assert status["notes"] and "ZERO_TASKS" in status["notes"]
+    assert "rss" in status["notes"].lower()
+    reasons = status["zero_task_reasons"]
+    assert isinstance(reasons, list) and reasons
+    assert any(r.get("source") == "rss" for r in reasons)
+    # User note is preserved after the warning payload.
+    assert "smoke-rss" in status["notes"]
+
+
+def test_parse_zero_task_reasons_helper() -> None:
+    from awareness.planner.planner import _parse_zero_task_reasons
+
+    assert _parse_zero_task_reasons(None) == []
+    assert _parse_zero_task_reasons("all good") == []
+    parsed = _parse_zero_task_reasons(
+        "ZERO_TASKS: planned 0 tasks — rss: adapter plan() returned no partitions "
+        "for this range/filters; fineweb: adapter plan() returned no partitions "
+        "for this range/filters | user-note"
+    )
+    assert len(parsed) == 2
+    assert parsed[0]["source"] == "rss"
+    assert "no partitions" in parsed[0]["detail"]
+    assert parsed[1]["source"] == "fineweb"

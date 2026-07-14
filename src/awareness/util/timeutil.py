@@ -64,6 +64,23 @@ def floor_to_day(dt: datetime) -> datetime:
     return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def inclusive_end(dt: datetime | str | None) -> datetime | None:
+    """Expand date-only / midnight UTC ends to inclusive end-of-day.
+
+    API/CLI users often pass bare ``YYYY-MM-DD`` (or midnight from
+    ``<input type=date>`` / Pydantic). With ``fetch_ts <= end``, midnight
+    excludes every same-day capture after 00:00. When the bound is exactly
+    00:00:00.000000 UTC, expand to 23:59:59.999999 UTC so the full calendar
+    day is included. Non-midnight timestamps (and ``None``) are unchanged.
+    """
+    utc = to_utc(dt)
+    if utc is None:
+        return None
+    if (utc.hour, utc.minute, utc.second, utc.microsecond) == (0, 0, 0, 0):
+        return utc.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return utc
+
+
 def coerce_relative_end(end: Any) -> datetime:
     """Allow ``now``/``today`` literal end markers in CLI/API payloads."""
     if isinstance(end, datetime):

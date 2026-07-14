@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import Counter
+from collections.abc import Callable
 
 import mmh3
 import numpy as np
@@ -94,13 +95,17 @@ def simhash64(text: str, k: int = 3) -> int:
     return val
 
 
-def simhash128(text: str, k: int = 3, *, weighted: bool = True) -> int:
+def simhash128(
+    text: str, k: int = 3, *, weighted: bool = True, idf: Callable[[str], float] | None = None
+) -> int:
     """Compute a 128-bit frequency-weighted Charikar simhash (unsigned int).
 
     The detection-grade fingerprint. mmh3's 128-bit hash supplies both 64-bit
     halves per shingle; when ``weighted`` each distinct shingle is scaled by
     ``1 + ln(1 + count)`` so a handful of boilerplate shingles cannot dominate
-    the signature. Returns 0 for empty input.
+    the signature. When ``idf`` is given, each shingle's weight is additionally
+    scaled by ``idf(shingle)`` so corpus-common boilerplate can be down-weighted.
+    Returns 0 for empty input.
     """
     grams = _grams_for(text, k)
     if not grams:
@@ -109,7 +114,12 @@ def simhash128(text: str, k: int = 3, *, weighted: bool = True) -> int:
         counts = Counter(grams)
         uniq = list(counts.keys())
         weights = np.fromiter(
-            (1.0 + np.log1p(counts[g]) for g in uniq), dtype=np.float64, count=len(uniq)
+            (
+                (1.0 + np.log1p(counts[g])) * (idf(g) if idf is not None else 1.0)
+                for g in uniq
+            ),
+            dtype=np.float64,
+            count=len(uniq),
         )
     else:
         uniq = grams

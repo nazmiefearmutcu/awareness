@@ -22,7 +22,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from awareness.config import get_settings
-from awareness.dedup.engine import DedupDecision, DedupEngine
+from awareness.dedup.engine import DedupDecision, DedupEngine, TIGHT_NEAR_STORE_THRESHOLD
 from awareness.filters import TopicFilter
 from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
@@ -92,8 +92,23 @@ class WorkerEngine:
         settings = get_settings()
         self._concurrency = concurrency or settings.worker_concurrency
         self._robots = RobotsCache(state_db=state, ttl=settings.robots_cache_ttl_sec)
+        staging_root = settings.staging_jsonl_dir()
+        # Promote leftover writer temps from a prior crash so compact/index see them.
+        if jsonl_writer is None:
+            try:
+                from awareness.storage.jsonl import recover_orphan_temps  # noqa: PLC0415
+
+                recovered = recover_orphan_temps(staging_root)
+                if recovered:
+                    logger.info(
+                        "jsonl_orphans_recovered_on_start",
+                        count=len(recovered),
+                        root=str(staging_root),
+                    )
+            except Exception as exc:  # noqa: BLE001 — never block worker start
+                logger.warning("jsonl_orphan_recover_on_start_failed", err=str(exc))
         self._jsonl = jsonl_writer or JsonlStagingWriter(
-            root=settings.staging_jsonl_dir(),
+            root=staging_root,
             flush_seconds=settings.storage_flush_seconds,
             max_records_per_file=settings.storage_flush_records,
             compress=settings.jsonl_compress,
@@ -338,10 +353,28 @@ class WorkerEngine:
 
     # ── single task ──────────────────────────────────────────────────────
     async def _run_task(self, task: TaskState) -> None:
+        t0 = time.perf_counter()
+        source_label = task.source_type.value
+        metrics = get_metrics()
+
+        def _record_duration(outcome: str) -> None:
+            """Wall-clock task duration for operator p95/SLA dashboards."""
+            elapsed = max(0.0, time.perf_counter() - t0)
+            metrics.observe(
+                "tasks.duration_seconds",
+                elapsed,
+                labels={"outcome": outcome, "source": source_label},
+            )
+
         adapter = self._registry.get(task.source_type)
         if adapter is None:
             self._state.fail_task(task.task_id, error=f"no_adapter:{task.source_type.value}", dead_letter=True)
             self._state.add_dlq(task.job_id, task.task_id, task.payload, error="no_adapter")
+            metrics.inc(
+                "tasks.failed",
+                labels={"source": source_label, "outcome": "no_adapter"},
+            )
+            _record_duration("no_adapter")
             return
 
         settings = get_settings()
@@ -358,7 +391,7 @@ class WorkerEngine:
             ingest_version=settings.ingest_version,
             checkpoint=init_checkpoint,
             is_stopping=self.is_stopping,
-            extras={"robots": self._robots},
+            extras={"robots": self._robots, "state": self._state},
         )
         partition = PartitionSpec(
             source_type=task.source_type,
@@ -376,17 +409,29 @@ class WorkerEngine:
                 # they never cost disk. Inactive filter (no terms) passes all.
                 if topic is not None and topic.active and not topic.matches(cap.title or "", cap.text or ""):
                     self._total_docs_filtered += 1
-                    get_metrics().inc("docs.filtered", labels={"source": task.source_type.value})
+                    metrics.inc("docs.filtered", labels={"source": source_label})
                     continue
                 outcome = self._dedup.evaluate(cap)
-                get_metrics().inc(
+                metrics.inc(
                     "dedup.decisions",
-                    labels={"decision": outcome.decision.value, "source": task.source_type.value},
+                    labels={"decision": outcome.decision.value, "source": source_label},
                 )
                 # EXACT_DUP / REVISION: skip durable storage — same bytes already
-                # on disk (different URL or same URL re-fetch). NEAR_DUP still
-                # persists for provenance of near-matches. Stats track the fold.
-                if outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.REVISION):
+                # on disk (different URL or same URL re-fetch). Tight NEAR_DUP
+                # (Hamming ≤ TIGHT_NEAR_STORE_THRESHOLD) likewise skips full-text
+                # re-store; looser NEAR_DUP still persists for provenance.
+                # parent_doc_or_dup_group is always set by the dedup engine.
+                tight_near = (
+                    outcome.decision == DedupDecision.NEAR_DUP
+                    and outcome.hamming is not None
+                    and outcome.hamming <= TIGHT_NEAR_STORE_THRESHOLD
+                )
+                if outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.REVISION) or tight_near:
+                    if tight_near:
+                        metrics.inc(
+                            "dedup.tight_near_skipped",
+                            labels={"source": source_label},
+                        )
                     dedup_dropped += 1
                     self._total_docs_processed += 1
                     bytes_processed += len(cap.text)
@@ -400,6 +445,8 @@ class WorkerEngine:
                     self._total_docs_processed += 1
                     if outcome.decision == DedupDecision.NEAR_DUP:
                         dedup_dropped += 1
+                # Terminal lines: mute_duplicates hides EXACT_DUP / REVISION /
+                # NEAR_DUP and tight near-dup skip-store messages consistently.
                 is_unique = outcome.decision == DedupDecision.NEW
                 show_dup = not self._mute_duplicates
                 if self._is_tty and not self._silent_progress and (is_unique or show_dup):
@@ -411,8 +458,13 @@ class WorkerEngine:
                         domain = domain[:27] + "..."
                     chars = len(cap.text)
                     lang = cap.language or "unknown"
-                    decision_str = outcome.decision.value.upper()
-                    
+                    # Tight near-dups are skip-store; surface as NEAR_SKIP so the
+                    # line is distinguishable from a looser NEAR_DUP that persists.
+                    if tight_near:
+                        decision_str = "NEAR_SKIP"
+                    else:
+                        decision_str = outcome.decision.value.upper()
+
                     if outcome.decision == DedupDecision.NEW:
                         style = "bold green"
                     elif outcome.decision in (DedupDecision.EXACT_DUP, DedupDecision.NEAR_DUP):
@@ -421,11 +473,20 @@ class WorkerEngine:
                         style = "bold blue"
                     else:
                         style = "bold white"
-                    
+
+                    # Include dedup reason (hamming distance for NEAR_DUP) in the
+                    # worker log line so operators can see how close the match was.
+                    reason_bit = ""
+                    if outcome.decision == DedupDecision.NEAR_DUP:
+                        if outcome.reason:
+                            reason_bit = f", {escape(outcome.reason)}"
+                        elif outcome.hamming is not None:
+                            reason_bit = f", hamming={outcome.hamming}"
+
                     self._console.print(
                         f"[cyan]📥[/cyan] [[{style}]{decision_str:^9}[/{style}]] "
                         f"[bold white]{escape(title)}[/bold white] | [dim]{escape(domain)}[/dim] "
-                        f"({chars} chars, {escape(lang)} | Total: [green]{_format_size(self._total_bytes_processed)}[/green], {self._total_docs_processed} docs)"
+                        f"({chars} chars, {escape(lang)}{reason_bit} | Total: [green]{_format_size(self._total_bytes_processed)}[/green], {self._total_docs_processed} docs)"
                     )
                 if len(self._batch_buffer) >= settings.storage_flush_records:
                     await self._flush(force=False)
@@ -433,9 +494,15 @@ class WorkerEngine:
             logger.exception("task_failed", task_id=task.task_id, err=str(exc))
             dead = task.attempts >= max(1, settings.max_retries)
             self._state.fail_task(task.task_id, error=str(exc), dead_letter=dead)
+            fail_outcome = "dead_letter" if dead else "retry"
             if dead:
                 self._state.add_dlq(task.job_id, task.task_id, task.payload, error=str(exc))
                 self._state.increment_job_counters(task.job_id, dead_lettered=1)
+            metrics.inc(
+                "tasks.failed",
+                labels={"source": source_label, "outcome": fail_outcome},
+            )
+            _record_duration(fail_outcome)
             return
 
         # Pick up sub-partitions emitted by adapter (e.g. CC discovery).
@@ -459,8 +526,9 @@ class WorkerEngine:
             bytes_=bytes_processed,
             completed=1,
         )
-        get_metrics().inc("tasks.completed", labels={"source": task.source_type.value})
-        get_metrics().inc("docs.emitted", value=docs_emitted, labels={"source": task.source_type.value})
+        metrics.inc("tasks.completed", labels={"source": source_label})
+        metrics.inc("docs.emitted", value=docs_emitted, labels={"source": source_label})
+        _record_duration("completed")
 
     # ── flushing ─────────────────────────────────────────────────────────
     async def _flush(self, *, force: bool) -> None:

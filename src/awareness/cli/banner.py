@@ -360,7 +360,7 @@ COMMAND_CATEGORIES: list[tuple[str, list[tuple[str, str]]]] = [
         ("backfill submit", "Queue a historical date-range crawl"),
         ("backfill run", "Run a queued backfill job to completion"),
         ("backfill status", "Inspect a backfill job"),
-        ("compact", "Fold JSONL staging into the Iceberg warehouse"),
+        ("compact", "Fold JSONL staging into Iceberg (--status for backlog)"),
     ]),
     ("Ingest — TAIL (live)", [
         ("tail start", "Capture newly-published text until stopped"),
@@ -370,15 +370,22 @@ COMMAND_CATEGORIES: list[tuple[str, list[tuple[str, str]]]] = [
     ]),
     ("Explore your corpus", [
         ("search", "Search captures (ranked; --mode/--fields/--max-results)"),
-        ("browse", "Page through captures & read full text"),
+        ("browse", "Page through captures & read full text (--unique)"),
         ("inspect", "Tabular query by date / domain / source"),
-        ("counts", "Aggregate counts by source & domain"),
-        ("export", "Export to a JSONL file or a folder of .txt"),
+        ("counts", "Aggregate counts by source, domain & language"),
+        ("export", "Export captures to JSONL/txt (--limit, --unique)"),
         ("hf-push", "Publish captures to a Hugging Face dataset"),
     ]),
     ("Deduplication", [
         ("dedup check", "Test a URL / text / file against the index"),
         ("dedup-stats", "Dump dedup index statistics"),
+    ]),
+    ("Recovery", [
+        ("dlq list", "List dead-lettered tasks (newest first; --json)"),
+        ("dlq count", "Count dead-letter queue rows"),
+        ("dlq replay", "Re-arm a dead-lettered task by DLQ id"),
+        ("dlq purge", "Drop a DLQ entry without re-arming the task"),
+        ("dlq purge-bulk", "Drop many DLQ entries (optional --job-id / --limit)"),
     ]),
     ("Config & cloud", [
         ("init", "Initialise storage layout & choose data dir"),

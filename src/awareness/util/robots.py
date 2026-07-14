@@ -16,12 +16,74 @@ from urllib.robotparser import RobotFileParser
 import httpx
 
 from awareness.obs.logging import get_logger
+from awareness.obs.metrics import get_metrics
 from awareness.util.urls import is_public_http_url
 
 if TYPE_CHECKING:
     from awareness.storage.state import StateDB
 
 logger = get_logger("util.robots")
+
+
+def _robots_cache_metric(layer: str) -> None:
+    """Count robots cache resolution by layer: memory | db | network.
+
+    Layer counters feed ``robots.cache.hit_ratio`` gauges on metrics snapshot
+    (hit = memory + db; miss = network).
+    """
+    get_metrics().inc("robots.cache", labels={"layer": layer})
+
+
+def _status_class(code: int) -> str:
+    """Map HTTP status to a low-cardinality class label (``2xx`` … ``5xx``)."""
+    if code < 100 or code >= 600:
+        return "unknown"
+    return f"{code // 100}xx"
+
+
+def _record_robots_fetch(
+    *,
+    outcome: str,
+    status_class: str,
+    elapsed: float,
+) -> None:
+    """Emit process-local robots.txt network fetch counters + latency histogram.
+
+    Labels stay low-cardinality (outcome + status class) so dashboards and
+    ``metrics --prefix robots`` stay readable under multi-domain crawl load.
+    Only network loads record here — memory/DB cache hits use ``robots.cache``.
+    """
+    m = get_metrics()
+    labels = {"outcome": outcome, "status_class": status_class}
+    m.inc("robots.fetch_attempts", labels=labels)
+    m.observe("robots.fetch_seconds", max(0.0, elapsed), labels=labels)
+
+
+def extract_sitemap_urls(robots_body: str | None) -> list[str]:
+    """Parse absolute Sitemap: directive URLs from a robots.txt body.
+
+    Per RFC 9309, Sitemap values are absolute URLs. Directives are matched
+    case-insensitively; inline comments after ``#`` are stripped. Order is
+    preserved and duplicates are dropped.
+    """
+    if not robots_body:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw_line in robots_body.splitlines():
+        # Strip inline comments before parsing the directive.
+        line = raw_line.split("#", 1)[0].strip()
+        if not line or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        if key.strip().lower() != "sitemap":
+            continue
+        url = value.strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+    return out
 
 
 async def _get_public_robots_url(
@@ -97,13 +159,24 @@ class RobotsCache:
         rp.set_url(url)
         crawl_delay: float | None = None
         robots_txt: str | None = None
+        t0 = time.perf_counter()
         try:
             client = await self._client_lazy()
             resp = await _get_public_robots_url(client, url, user_agent)
+            elapsed = time.perf_counter() - t0
             if resp is None:
+                # Redirect left public space or URL not fetchable.
+                _record_robots_fetch(
+                    outcome="blocked", status_class="none", elapsed=elapsed
+                )
                 rp.parse([])
                 robots_txt = ""
             elif resp.status_code == 200 and resp.text:
+                _record_robots_fetch(
+                    outcome="ok",
+                    status_class=_status_class(resp.status_code),
+                    elapsed=elapsed,
+                )
                 robots_txt = resp.text
                 rp.parse(robots_txt.splitlines())
                 # crawl-delay isn't first-class in RobotFileParser; emulate.
@@ -115,12 +188,28 @@ class RobotsCache:
                         crawl_delay = None
             elif resp.status_code in (401, 403):
                 # Treat as DISALLOWED for everything.
+                _record_robots_fetch(
+                    outcome="forbidden",
+                    status_class=_status_class(resp.status_code),
+                    elapsed=elapsed,
+                )
                 robots_txt = "User-agent: *\nDisallow: /"
                 rp.parse(robots_txt.splitlines())
             elif resp.status_code == 404:
+                # Missing robots.txt → implicit allow-all (RFC 9309).
+                _record_robots_fetch(
+                    outcome="missing",
+                    status_class=_status_class(resp.status_code),
+                    elapsed=elapsed,
+                )
                 robots_txt = ""
-                rp.parse([])  # implicit allow-all
+                rp.parse([])
             else:
+                _record_robots_fetch(
+                    outcome="http_error",
+                    status_class=_status_class(resp.status_code),
+                    elapsed=elapsed,
+                )
                 robots_txt = ""
                 rp.parse([])  # be permissive on transient errors
             return RobotsEntry(
@@ -130,6 +219,10 @@ class RobotsCache:
                 robots_txt=robots_txt,
             )
         except (httpx.HTTPError, ValueError, OSError) as e:
+            elapsed = time.perf_counter() - t0
+            _record_robots_fetch(
+                outcome="error", status_class="transport", elapsed=elapsed
+            )
             logger.warning("robots_fetch_failed", site=site, err=str(e))
             # Be cautious on failure: cache empty/permissive entry briefly.
             rp.parse([])
@@ -148,6 +241,7 @@ class RobotsCache:
         # 1. Check local memory cache
         entry = self._entries.get(site)
         if entry is not None and entry.expires_at >= time.time():
+            _robots_cache_metric("memory")
             if entry.parser is None:
                 return False
             try:
@@ -160,6 +254,7 @@ class RobotsCache:
             try:
                 row = await asyncio.to_thread(self._state_db.get_robots_cache, site)
                 if row is not None and row.expires_at >= time.time():
+                    _robots_cache_metric("db")
                     rp = RobotFileParser()
                     rp.set_url(f"{site}/robots.txt")
                     if row.robots_txt is not None:
@@ -183,6 +278,7 @@ class RobotsCache:
                 logger.warning("robots_db_load_failed", site=site, err=str(e))
 
         # 3. Not in memory/DB or expired -> load and save
+        _robots_cache_metric("network")
         entry = await self._load(site, user_agent)
         self._entries[site] = entry
 
@@ -228,3 +324,20 @@ class RobotsCache:
             except Exception as exc:
                 logger.warning("robots_db_crawl_delay_failed", site=site, err=str(exc))
         return e.crawl_delay if e else None
+
+    async def get_robots_txt(self, url: str, user_agent: str) -> str | None:
+        """Return the robots.txt body for the site of ``url`` (cached).
+
+        Reuses the same memory/DB/network path as ``is_allowed``. Returns
+        ``None`` when the URL has no usable site key; otherwise the body
+        string (possibly empty when robots is missing or fetch failed).
+        """
+        site = self._site_key(url)
+        if not site:
+            return None
+        # Populate / refresh cache via the existing allow-check path.
+        await self.is_allowed(f"{site}/", user_agent)
+        entry = self._entries.get(site)
+        if entry is None:
+            return None
+        return entry.robots_txt if entry.robots_txt is not None else ""

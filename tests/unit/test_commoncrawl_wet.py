@@ -17,12 +17,9 @@ DUMMY_WET_RECORD = (
     "WARC-Target-URI: https://example.com/test-wet\r\n"
     "WARC-Date: 2026-06-19T20:00:00Z\r\n"
     "WARC-Record-ID: <urn:uuid:test-record-id>\r\n"
-    "Content-Length: 250\r\n"
+    "Content-Length: 444\r\n"
     "\r\n"
-    "This is a dummy WET record used for unit testing the Common Crawl WET parser. "
-    "It must contain at least 200 characters to pass the quality checks. "
-    "So we add more words to make it long and meet the requirement. "
-    "Hello world from the test suite!\r\n\r\n"
+    "This is a dummy WET record used for unit testing the Common Crawl WET parser. It must contain at least two hundred characters and more than fifty words so that the quality checks and the language detector both admit the capture. We include the common English stopwords the of and to with that have be so the Gopher gate sees running prose rather than a spam list. Hello world from the test suite with enough extra filler words here now yes.\r\n\r\n"
 )
 
 
@@ -68,7 +65,7 @@ async def test_run_partition_wet_shard_process_pool(tmp_project: Path) -> None:
         is_stopping=lambda: False,
     )
 
-    # 4. Execute the parser (which now runs in the ProcessPoolExecutor)
+    # 4. Execute the parser (streams via bounded asyncio.Queue on a worker thread)
     captures = []
     async for cap in adapter.run_partition(partition, context):
         captures.append(cap)
