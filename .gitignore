@@ -34,3 +34,6 @@ configs/tail_seeds.local.yaml
 .worktrees/
 dist/
 macos/Awareness/.build/
+
+# Multi-agent audit/bug-hunt workspace scaffolding (local only)
+.agents/
