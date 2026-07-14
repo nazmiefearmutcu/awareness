@@ -141,12 +141,15 @@
 | C4+ | workers/obs | Task wall-clock duration hist + failed outcome counters | ✅ |
 | C4+ | spa | Dashboard WARC repair docs / fetch p95 / attempts KPIs | ✅ |
 | C4+ | cli/obs | metrics table WARC repair summary strip | ✅ |
+| C4+ | spa | Dashboard task completed / duration p95 / failed KPIs | ✅ |
+| C4+ | cli/obs | metrics table TASKS duration/failure summary strip | ✅ |
+| C4+ | scrape/obs | Tail recrawl fetch latency hist + attempt outcome counters | ✅ |
 
 ## Progress snapshot
 
-- **Branch:** `loop/continuous-dev` (~225 commits ahead of `main`)
-- **Unit suite:** green (non-slow; datasets skip as configured) — **886 passed, 1 skipped**
-- **Latest:** Diverse wave — task duration metrics (`74639bd`), SPA WARC repair KPIs (`5db8d4a`), CLI WARC repair strip (`56aceed`)
+- **Branch:** `loop/continuous-dev` (~229 commits ahead of `main`)
+- **Unit suite:** green (non-slow; datasets skip as configured) — **897 passed, 1 skipped**
+- **Latest:** Diverse wave — SPA task KPIs (`55094bf`), CLI TASKS strip (`2cbcdd8`), tail fetch latency metrics (`1479de5`)
 
 ## Rules
 
