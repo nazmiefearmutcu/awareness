@@ -2297,3 +2297,94 @@ code {
 .tn-retry-ic { color: var(--amber, #e0a050); width: 1.2em; text-align: center; }
 .ctr-retry .ctr-num { color: var(--amber, #e0a050); }
 .job-retry-fail, .job-retry-dead { color: var(--rose, #f08080); }
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   OBSERVATORY RE-SKIN — self-hosted fonts + dual-theme "signal" palette.
+   Appended so these :root token values win the cascade over the base above.
+   Re-skins the whole token-driven UI without touching markup / JS / IDs.
+   ══════════════════════════════════════════════════════════════════════════ */
+@font-face{font-family:"Plex Mono";src:url("/static/fonts/plexmono-400.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Plex Mono";src:url("/static/fonts/plexmono-600.woff2") format("woff2");font-weight:600;font-style:normal;font-display:swap}
+@font-face{font-family:"Plex Sans";src:url("/static/fonts/plexsans-400.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Plex Sans";src:url("/static/fonts/plexsans-600.woff2") format("woff2");font-weight:600;font-style:normal;font-display:swap}
+@font-face{font-family:"Fraunces";src:url("/static/fonts/fraunces-var.woff2") format("woff2");font-weight:300 900;font-style:normal;font-display:swap}
+
+:root{
+  --bg:#0a0e14; --bg-1:#0e131c; --bg-2:#131a24; --bg-3:#1b2430; --bg-rail:#0e131c;
+  --surface:#0f1620; --surface-hi:#141d29;
+  --border:#1f2a38; --border-soft:#18212d; --border-strong:#2b3a4d;
+  --fg:#dbe4ef; --fg-strong:#f3f7fc; --fg-mid:#8a97ab; --fg-dim:#66748a; --fg-subtle:#7a8699;
+  --accent:#35e0d0; --accent-soft:#5fe8db; --accent-deep:#23b8aa; --accent-glow:rgba(53,224,208,.16);
+  --blue:#5ab0ff; --amber:#f5a623; --rose:#ff6178;
+  --signal:#35e0d0; --emerald:#3ad29b; --red:#ff6178; --violet:#9b8cff;
+  --ok:#3ad29b; --warn:#f5a623; --err:#ff6178; --info:#35e0d0;
+  --sans:"Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --serif:"Fraunces",Georgia,"Times New Roman",serif;
+  --display:"Fraunces",Georgia,serif;
+  --shadow-sm:0 2px 8px -2px rgba(0,0,0,.5); --shadow:0 14px 44px -14px rgba(0,0,0,.7);
+  --grid:rgba(255,255,255,.022);
+}
+:root[data-theme="light"]{
+  --bg:#f4f2ec; --bg-1:#efece4; --bg-2:#e7e3d9; --bg-3:#ddd7c9; --bg-rail:#efece4;
+  --surface:#fffdf8; --surface-hi:#f7f4ec;
+  --border:#ddd7c9; --border-soft:#e6e1d5; --border-strong:#c8c1af;
+  --fg:#20262e; --fg-strong:#0d1219; --fg-mid:#56616f; --fg-dim:#7c8797; --fg-subtle:#8b93a0;
+  --accent:#0e9b8d; --accent-soft:#12b3a3; --accent-deep:#0b7d72; --accent-glow:rgba(14,155,141,.14);
+  --blue:#2f7fd6; --amber:#b5730a; --rose:#d1394f;
+  --signal:#0e9b8d; --emerald:#0f9d6b; --red:#d1394f; --violet:#6d5bd0;
+  --ok:#0f9d6b; --warn:#b5730a; --err:#d1394f; --info:#0e9b8d;
+  --shadow:0 16px 44px -18px rgba(60,50,30,.3); --grid:rgba(0,0,0,.02);
+}
+@media (prefers-color-scheme:light){
+  :root:not([data-theme="dark"]){
+    --bg:#f4f2ec; --bg-1:#efece4; --bg-2:#e7e3d9; --bg-3:#ddd7c9; --bg-rail:#efece4;
+    --surface:#fffdf8; --surface-hi:#f7f4ec;
+    --border:#ddd7c9; --border-soft:#e6e1d5; --border-strong:#c8c1af;
+    --fg:#20262e; --fg-strong:#0d1219; --fg-mid:#56616f; --fg-dim:#7c8797; --fg-subtle:#8b93a0;
+    --accent:#0e9b8d; --accent-soft:#12b3a3; --accent-deep:#0b7d72; --accent-glow:rgba(14,155,141,.14);
+    --blue:#2f7fd6; --amber:#b5730a; --rose:#d1394f;
+    --signal:#0e9b8d; --emerald:#0f9d6b; --red:#d1394f; --violet:#6d5bd0;
+    --ok:#0f9d6b; --warn:#b5730a; --err:#d1394f; --info:#0e9b8d;
+    --shadow:0 16px 44px -18px rgba(60,50,30,.3); --grid:rgba(0,0,0,.02);
+  }
+}
+
+/* ── observatory atmosphere ───────────────────────────────────────────────── */
+body{
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+  background-size:44px 44px; background-attachment:fixed;
+}
+/* display serif for the big headings + brand */
+.page-title,.brand-name,.reader-title,.set-hero .page-title,.work-hero .page-title{
+  font-family:var(--display); font-weight:600; letter-spacing:-.01em;
+}
+/* KPI tiles: corner registration tick + signal-tinted value */
+.kpi{position:relative;overflow:hidden}
+.kpi::after{content:"";position:absolute;top:9px;right:9px;width:7px;height:7px;border-top:1.5px solid var(--accent);border-right:1.5px solid var(--accent);opacity:.5}
+.kpi-value{font-variant-numeric:tabular-nums}
+/* primary buttons now read as "signal" — ensure legible text on the accent */
+.btn-primary,.btn.btn-primary{color:#04120f}
+:root[data-theme="light"] .btn-primary,:root:not([data-theme="dark"]) .btn-primary{color:#fff}
+/* semantic status colour (origin's badges/LEDs were monochrome grey) */
+[data-state="running"],.is-running,.state-running,.badge-running,.tail-led[data-state="on"]{color:var(--emerald)}
+[data-state="completed"],.state-completed,.badge-completed{color:var(--blue)}
+[data-state="failed"],.state-failed,.badge-failed{color:var(--red)}
+[data-state="pending"],.state-pending,.badge-pending{color:var(--amber)}
+[data-state="paused"],.state-paused,.badge-paused{color:var(--violet)}
+/* live tail pulse rings pick up the signal hue when running */
+.tail-big[data-state="on"] .ring,.tail-pulse[data-state="on"] .ring,.ring{border-color:var(--accent)}
+.tail-led[data-state="on"],.tail-card [data-state="on"]{box-shadow:0 0 0 4px var(--accent-glow)}
+/* subtle accent on active nav + focus */
+.nav-item[aria-current="page"]{border-color:var(--accent);box-shadow:inset 2px 0 0 var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* theme toggle button (added to the rail footer) */
+.theme-toggle{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--fg-mid);cursor:pointer;transition:background .13s,color .13s,border-color .13s}
+.theme-toggle:hover{background:var(--bg-2);color:var(--fg);border-color:var(--border-strong)}
+.theme-toggle svg{width:17px;height:17px}
+.theme-toggle .ico-light{display:none}
+:root[data-theme="light"] .theme-toggle .ico-dark{display:none}
+:root[data-theme="light"] .theme-toggle .ico-light{display:block}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .theme-toggle .ico-dark{display:none}:root:not([data-theme="dark"]) .theme-toggle .ico-light{display:block}}
+@media (prefers-reduced-motion:reduce){body{background-attachment:scroll}}

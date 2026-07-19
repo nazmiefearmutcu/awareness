@@ -5,11 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Awareness</title>
   <meta name="description" content="Public text capture &amp; search" />
-  <meta name="color-scheme" content="dark" />
+  <meta name="color-scheme" content="dark light" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='16' fill='%23000000'/><circle cx='32' cy='32' r='18' fill='none' stroke='%23ffffff' stroke-width='3.5'/><circle cx='32' cy='32' r='10' fill='none' stroke='%23ffffff' stroke-width='2.5' opacity='.7'/><circle cx='32' cy='32' r='3.5' fill='%23ffffff'/></svg>" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" />
+  <!-- fonts self-hosted via @font-face in style.css (offline-safe) -->
   <link rel="stylesheet" href="/static/style.css" />
   <!-- version stamped by API at request time for cache bust -->
 </head>
@@ -88,6 +86,10 @@
         <div class="tail-card-status" id="sidebar-tail-status">stopped</div>
         <div class="tail-card-meta" id="sidebar-tail-meta">—</div>
       </div>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle light / dark theme" title="Toggle theme">
+        <svg class="ico-dark" viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 11.5A6 6 0 0 1 8.5 4.5a6 6 0 1 0 7 7Z" fill="currentColor"/></svg>
+        <svg class="ico-light" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.4" fill="currentColor"/><path d="M10 2.6v2M10 15.4v2M17.4 10h-2M4.6 10h-2M15.2 4.8l-1.4 1.4M6.2 13.8l-1.4 1.4M15.2 15.2l-1.4-1.4M6.2 6.2 4.8 4.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
       <button class="cmdk-hint" aria-label="Open command palette" data-action="open-cmdk">
         <kbd>⌘</kbd><kbd>K</kbd> <span>Command</span>
       </button>

@@ -3234,3 +3234,24 @@ void refreshDashboard();
 void refreshFeed();
 setInterval(refreshDashboard, 5000);
 setInterval(refreshFeed, 5000);
+
+
+// ── theme toggle (observatory re-skin): honour system on first load, then
+//    persist the user's explicit choice. Appended; touches nothing else. ──
+(function initObservatoryTheme() {
+  try {
+    const root = document.documentElement;
+    const saved = localStorage.getItem("aw-theme");
+    if (saved === "light" || saved === "dark") {
+      root.setAttribute("data-theme", saved);
+    } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
+      root.setAttribute("data-theme", "light");
+    }
+    const btn = document.getElementById("theme-toggle");
+    if (btn) btn.addEventListener("click", () => {
+      const next = root.getAttribute("data-theme") === "light" ? "dark" : "light";
+      root.setAttribute("data-theme", next);
+      localStorage.setItem("aw-theme", next);
+    });
+  } catch (_e) { /* non-fatal */ }
+})();
