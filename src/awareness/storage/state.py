@@ -329,6 +329,19 @@ class StateDB:
                     if tail_cols and "pid" not in tail_cols:
                         with self._engine.begin() as conn:
                             conn.execute(text("ALTER TABLE tail_state ADD COLUMN pid INTEGER"))
+                    try:
+                        task_cols = [c["name"] for c in inspector.get_columns("tasks")]
+                    except Exception:
+                        task_cols = []
+                    if task_cols and "next_attempt_at" not in task_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE tasks ADD COLUMN next_attempt_at DATETIME"))
+                            conn.execute(
+                                text(
+                                    "CREATE INDEX IF NOT EXISTS ix_tasks_next_attempt_at "
+                                    "ON tasks (next_attempt_at)"
+                                )
+                            )
                 except Exception as e:
                     logger.warning("migration_failed", error=str(e))
             else:
@@ -341,6 +354,10 @@ class StateDB:
                     if tail_cols and "pid" not in tail_cols:
                         with self._engine.begin() as conn:
                             conn.execute(text("ALTER TABLE tail_state ADD COLUMN pid INTEGER"))
+                    task_cols = [c["name"] for c in inspector.get_columns("tasks")]
+                    if task_cols and "next_attempt_at" not in task_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE tasks ADD COLUMN next_attempt_at TIMESTAMP"))
                 except Exception as e:
                     logger.warning("migration_failed", error=str(e))
 

@@ -16,9 +16,9 @@ clearly bounded.
 
 ## Code contributions
 
-1. Fork the repo and create a branch from `master`.
-2. `pip install -e .[dev]` to install dev dependencies.
-3. Run `pytest tests/` before opening the PR (all tests must stay green).
+1. Fork the repo and create a branch from `main`.
+2. `uv pip install -e '.[dev]'` to install dev dependencies.
+3. Run `pytest` before opening the PR (all tests must stay green).
 4. Add a test for any behavior change in `tests/`. Adapter PRs need a
    fixture-based test that proves the new source emits canonical
    `DocCapture` records.
