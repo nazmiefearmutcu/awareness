@@ -9,7 +9,7 @@ readme = "README.md"
 
 dependencies = [
   # config / models
-  "pydantic>=2.7",
+  "pydantic>=2.13.4",
   "pydantic-settings>=2.3",
   "PyYAML>=6.0.1",
   # async / http
