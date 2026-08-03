@@ -1,9 +1,7 @@
 bounded_queue_size: 1024
-contact_email: research@example.invalid
 enable_gdrive: false
 enable_iceberg: true
 enable_jsonl_staging: true
-extract_concurrency: 2
 global_fetch_concurrency: 32
 ingest_version: 0.1.0
 log_json: true

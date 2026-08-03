@@ -159,3 +159,25 @@ The compose file `ops/compose/docker-compose.yml` runs:
 - **ClickHouse** → analytics over the same Parquet files
 
 Code paths are identical; only env vars differ.
+
+## Feature subsystems
+
+Read-side subsystems layered on the capture corpus, served by the same
+single-process FastAPI app (no extra services):
+
+- **Analytics** (`/analytics/*`): term frequency, spikes, top terms, domain /
+  language breakdowns, co-occurrence — pure reads over the DuckDB index,
+  available whenever the index is ready (503 otherwise).
+- **Alerts** (`/alerts/*`): SQLite rule store (`<data_dir>/alerts.db`), a
+  rolling 7-window spike baseline, webhook delivery with retry. The
+  **AlertRunner** loop evaluates rules periodically inside the API process
+  when `AW_ALERTS_AUTOSTART=1` (default off); it is idempotent (start/stop
+  safe), isolates per-tick errors, and shares one process-wide `AlertStore`
+  connection closed on shutdown. `awareness alerts check` evaluates on
+  demand without the runner.
+- **Entities / source-intel / consume**: heuristic NER aggregation, domain
+  quality + replication scoring, and LLM-export / weekly-digest generation.
+  The digest is available as an API endpoint (`/consume/digest[/markdown]`)
+  and as the `awareness digest` CLI (`--days --markdown --json --out`); both
+  share `awareness.consume.digest`.
+

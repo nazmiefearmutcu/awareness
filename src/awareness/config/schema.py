@@ -320,15 +320,6 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
         minimum=0,
         maximum=2_592_000,
     ),
-    ConfigField(
-        "backoff_base_sec",
-        "Politeness / fetch",
-        KIND_FLOAT,
-        1.5,
-        "Base of the exponential backoff between retries, in seconds.",
-        minimum=0.0,
-        maximum=3600.0,
-    ),
     # ── Runtime / scheduler ──────────────────────────────────────────────────
     ConfigField(
         "worker_concurrency",
@@ -336,15 +327,6 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
         KIND_INT,
         8,
         "Number of worker tasks draining the queue.",
-        minimum=1,
-        maximum=4096,
-    ),
-    ConfigField(
-        "extract_concurrency",
-        "Runtime / scheduler",
-        KIND_INT,
-        4,
-        "Number of concurrent text-extraction workers.",
         minimum=1,
         maximum=4096,
     ),
@@ -363,13 +345,6 @@ CONFIG_SCHEMA: tuple[ConfigField, ...] = (
         KIND_STR,
         "AwarenessBot/0.1 (+https://github.com/nazmiefearmutcu/awareness; public-text-research)",
         "User-Agent header sent with every fetch.",
-    ),
-    ConfigField(
-        "contact_email",
-        "Identity",
-        KIND_STR,
-        "research@example.invalid",
-        "Contact email advertised to site operators.",
     ),
     ConfigField(
         "ingest_version",

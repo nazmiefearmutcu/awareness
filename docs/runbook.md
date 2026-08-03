@@ -114,6 +114,43 @@ curl -s -XPOST localhost:8085/tail/start | jq
 curl -s -XPOST localhost:8085/tail/stop | jq
 ```
 
+### Alerts, analytics & digest endpoints
+
+All feature endpoints live on the same API process (auth via `AW_API_KEY`
+when set):
+
+```bash
+# Analytics: term frequency / spikes / top terms / domains / languages / co-occurring
+curl -s "localhost:8085/analytics/term-frequency?term=bitcoin&bucket=day" | jq
+curl -s "localhost:8085/analytics/spikes?days=14" | jq
+
+# Alerts: rule CRUD + evaluation
+curl -s localhost:8085/alerts/rules | jq
+curl -s -XPOST localhost:8085/alerts/rules -H 'content-type: application/json' \
+  -d '{"name":"btc","kind":"term_count","term":"bitcoin","threshold":50}' | jq
+curl -s localhost:8085/alerts/firings | jq
+
+# Source intelligence + entities + consumption
+curl -s localhost:8085/source-intel/domains | jq
+curl -s "localhost:8085/entities/top?days=7" | jq
+curl -s "localhost:8085/consume/digest?days=7" | jq
+```
+
+The same alert engine and digest generator are CLI-accessible:
+
+```bash
+awareness alerts list
+awareness alerts create --name btc --kind term_count --term bitcoin --threshold 50
+awareness alerts check
+awareness digest --days 7 --markdown --out digest.md
+```
+
+**Periodic alert evaluation:** set `AW_ALERTS_AUTOSTART=1` before starting
+`awareness-api` to run the alert loop inside the API process (default
+interval 300s, floor 30s). A tick that raises is logged and the loop
+continues. Without the env var, `awareness alerts check` (or
+`awareness alerts run-once`) evaluates on demand.
+
 ## Resume after crash
 
 The worker pool is restart-safe:

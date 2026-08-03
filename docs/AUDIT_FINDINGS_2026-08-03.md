@@ -104,3 +104,111 @@ Repo: /tmp/awareness-fresh (fresh clone of nazmiefearmutcu/awareness@c8ee587)
 - /search SQL injection boundary (whitelisted fields, bound params)
 - Canonical_url wrapper unwraps: refuse_hosts loop protection
 - TopicFilter wired before dedup (integration test proves)
+
+---
+
+## Resolution status
+
+Verified against the working tree at commit `846a2bc` (all three remediation
+commits: `3f4d980` audit round 1, `20e6d20` feature subsystems,
+`846a2bc` second-pass). Each row was confirmed by inspecting the current
+code, not the commit messages.
+
+### CRITICAL
+
+| ID | Status | Evidence |
+|----|--------|----------|
+| C-01 | RESOLVED | `workers/engine.py:359-366` — `run_tail` treats COMPLETED like CANCELLED/FAILED and exits the reseed loop |
+| C-02 | RESOLVED | `commoncrawl_wet.py:94-110` — `crawl_ids_for_range` delegates to `cc_crawls.resolve_crawl_ids()` (live CC index); tests updated to the real resolver |
+| C-03 | RESOLVED | `api/server.py:105-136` bearer-key auth (`require_api_key`); `:1023-1027` refuses non-loopback bind without `AW_API_KEY` |
+| C-04 | RESOLVED | `config/persist.py:_validate_setting_value` — path confinement (no `..`, inside project root, anchored), env-lock, schema validation |
+| C-05 | RESOLVED | `util/urls.py:1543` `is_public_http_url` gates seeds (`persist.py:47`), robots fetches (`robots.py:99`), redirect hops (`tail_recrawl.py:140`) |
+| C-06 | RESOLVED | `config/settings.py:225-232` — YAML keys shadowed by `AW_*` env are filtered before pydantic init |
+| C-07 | RESOLVED | `storage/state.py:386-391` — Postgres migration now ALTERs `dedup_near` to add `sig_hex`; `_verify_dedup_schema` stays enforced |
+| C-08 | RESOLVED | `workers/engine.py:567-574` — buffer cleared only after successful JSONL write; one retry then critical log + drop, never silent |
+| C-09 | RESOLVED | `api/server.py:930-934` — jobsearch `limit` coerced, clamped to [1, 100], 400 on non-int |
+
+### HIGH
+
+| ID | Status | Evidence |
+|----|--------|----------|
+| H-01 | RESOLVED | `workers/engine.py:259-273` — drain guard counts PENDING-but-unclaimable (backoff) and RUNNING-orphan separately |
+| H-02 | RESOLVED | `workers/engine.py:186-192` — `requeue_orphaned_running` on job start; `state.py:776` dead-letters at max_retries |
+| H-03 | RESOLVED | `workers/engine.py:307` — `run_tail` also requeues orphans on resume |
+| H-04 | RESOLVED | `tail/engine.py:256-258` — drain-timeout path cancels + awaits the worker task |
+| H-05 | RESOLVED | `storage/state.py:652` — re-armed task must not inherit a stale backoff lease |
+| H-06 | RESOLVED | `workers/engine.py:450-465` — `dedup_dropped` counts only EXACT_DUP/REVISION/tight-NEAR_DUP; loose NEAR_DUP persists → emitted |
+| H-07 | RESOLVED | `workers/engine.py:532-534` — terminal failures `increment_job_counters(failed=1)`; `:401` no_adapter DLQ path adds counters |
+| H-08 | RESOLVED | `storage/state.py:800-809` — orphaned-running past max_retries is dead-lettered to the DLQ |
+| H-09 | RESOLVED | `tail/daemon.py:44-50` — DatabaseReaper started in the tail daemon; backfill run reaps too |
+| H-10 | RESOLVED | `storage/duckdb_index.py:1063-1069` — incremental FTS append detects overlapping capture_ids with changed content_hash |
+| H-11 | RESOLVED | `storage/jsonl.py:143-171` — `recover_orphan_temps` promotes `.tmp` survivors; empty orphans deleted only after read |
+| H-12 | RESOLVED | `storage/duckdb_index.py:789-794` — captures view dedups by capture_id (ROW_NUMBER) with Iceberg disabled too |
+| H-13 | RESOLVED | `commoncrawl_wet.py:390-400` — shard download failures raise so the task retries; tmp cleaned |
+| H-14 | RESOLVED | `commoncrawl_wet.py:383-388` — CancelledError propagates (task re-queued), tmp unlinked |
+| H-15 | RESOLVED | `fineweb.py:211-221` — load failure raises `RetryableHTTPError` |
+| H-16 | RESOLVED | `cc_index.py:61-64, 90-99` — CDX query carries `from`/`to` from the backfill window ∩ crawl window |
+| H-17 | RESOLVED | `cc_index.py:104-138` — pagination loop (pageSize 100, cap 5000) + `get_with_retries` |
+| H-18 | RESOLVED | `fineweb.py:66-75` `_normalize_languages_filter` (BCP-47 primary subtags, case-insensitive); `util/lang.py` `normalize_language_tag` |
+| H-19 | RESOLVED | `api/server.py:66-80, 378-395` — mutating requests must be `application/json`; text/plain → 415 |
+| H-20 | RESOLVED | `api/server.py:511-518` — /backfill ValueError → 400 with message |
+| H-21 | RESOLVED | `config/persist.py` `_redact_url_userinfo` + schema payload masking; `tests/unit/test_settings_redaction.py` |
+| H-22 | RESOLVED | `api/server.py:340-349` — background jobs cancelled AND awaited (`asyncio.gather`) in shutdown |
+| H-23 | RESOLVED | `dedup/engine.py:104-108` — EXACT_DUP/REVISION fold to `uf_find` root, not the direct canonical doc |
+| H-24 | RESOLVED | `storage/state.py:171-199` — 8-bit bands (1/256 selectivity) raise the 1024-cap truncation ceiling ~16×; legacy 32×4 layouts detected at startup with loud warning |
+| H-25 | RESOLVED | `warc_repair.py:88-89` — non-206 to a byte-range request is rejected, never parsed as a record |
+| H-26 | RESOLVED | `util/ratelimit.py:110-121` — release only when actually acquired; cancellation cannot over-release |
+| H-27 | RESOLVED | `util/http.py:299-308` `aclose_shared_async_clients`; `tests/unit/test_http_retry_closes.py` |
+| H-28 | RESOLVED | `util/http.py:495-511` — strict UTF-8 first; mislabeled bodies fall through to the detector |
+| H-29 | RESOLVED | `util/lock.py:64-73` — RedisLock sets socket + connect timeouts |
+| H-30 | RESOLVED | `obs/logging.py:20-23` — reconfig is a no-op only when args are identical; settings-driven config applies |
+| H-31 | RESOLVED | `settings.py:188-201` `_validate_data_dir` (rejects /dev/null-style targets); `persist.py` path confinement + `is_public_http_url` on seeds |
+| H-32 | RESOLVED | `extract_concurrency`, `backoff_base_sec`, `contact_email` were never read at runtime — all three removed from `settings.py`, `schema.py`, and `configs/awareness.yaml` (2026-08-03 cleanup) |
+
+### MEDIUM
+
+| ID | Status | Evidence |
+|----|--------|----------|
+| M-01 | RESOLVED | `cli/main.py:297-318` — `--source` aliases → canonical SourceKind with clean errors |
+| M-02 | RESOLVED | `cli/main.py` counts — `total_n = int(total[0]["n"]) if total else 0`; `api/server.py:286` |
+| M-03 | RESOLVED | `cli/main.py:334-338` `_coerce_end_checked` — friendly error, no traceback; `tests/unit/test_cli_end_dates.py` |
+| M-04 | RESOLVED | `cli/main.py:343-374` — daemon-thread stdin reader with `select` poll; no block-at-exit; test-covered |
+| M-05 | RESOLVED | `cli/main.py:4829-4836` — txt export names include `capture_id`; `tests/unit/test_cli_export_txt_unique.py` |
+| M-06 | RESOLVED | `jobsearch/rank.py:62-70` — word-boundary token match (`ai` no longer matches "email") |
+| M-07 | RESOLVED | `jobsearch/sources.py:374-380` — dedup by canonical title/key, not bare `company::title` |
+| M-08 | RESOLVED | `api/server.py:585-586` — gdelt_max_urls clamped to 1..100_000 |
+| M-09 | RESOLVED | `feeds.py:110-121` — seed/child URL validation via `is_public_http_url`; bounded sitemap recursion depth |
+| M-10 | RESOLVED | `util/robots.py` — async-first API; DB access via `asyncio.to_thread` (287, 319, 353) |
+| M-11 | RESOLVED | `robots.py:129, 166-179` MAX_ENTRIES + eviction; `ratelimit.py` bounded slot table |
+| M-12 | RESOLVED | `robots.py:231-235` — 200-empty-body labelled `empty`, not `http_error` |
+| M-13 | RESOLVED | `feeds.py:152-163` — `_retry_exhausted_status_class` parses the real status from `RetryableHTTPError` |
+| M-14 | RESOLVED | `gdelt.py:96-103` — backfill slots only capped by `max_tasks` |
+| M-15 | RESOLVED | `tail_recrawl.py:140` — `follow_redirects=False`; every hop re-checked against robots + public gate |
+| M-16 | RESOLVED | `xscraper/store.py:208-213` — all tweet session_ids validated before any insert |
+| M-17 | RESOLVED | `xscraper/store.py:187-197` — `started_at` NULL while queued, stamped on first backfilling/streaming |
+| M-18 | RESOLVED | `xscraper/store.py:192` — `error` now a plain assignment (clearable); COALESCE kept only for `ended_at` |
+| M-19 | RESOLVED | `dedup/engine.py:78-81` — near_threshold clamped to [0, segments-1] |
+| M-20 | RESOLVED | `storage/state.py:1074-1077` — IntegrityError insert retried (bounded), never reports `was_new=True` for an unpersisted row |
+| M-21 | RESOLVED | `storage/state.py:1116-1117` — all bands upserted in ONE transaction |
+| M-22 | RESOLVED | `storage/state.py:1218-1223` — `uf_find` never writes/commits; `tests/unit/test_uf_find_readonly.py` |
+| M-23 | RESOLVED | `storage/state.py:141-199` — legacy NULL sig_hex / 32×4 layouts detected at init with rebuild guidance; full 128-bit sig_hex enforced |
+| M-24 | RESOLVED | `filters.py:84-92` — empty-string-matching regex dropped under `match_all` |
+| M-25 | RESOLVED | `filters.py:74-81` — bad regex logged and falls back to literal, never silently |
+| M-26 | RESOLVED | `schemas/doc.py:127-129` — naive strings routed through `to_utc` |
+| M-27 | RESOLVED | `urls.py:458-487` — alias strip requires a real multi-label remainder (`www.com`/`m.me` preserved) |
+| M-28 | RESOLVED | `duckdb_index.py:442-444, 683-719` — corrupt chunk surfaced in health snapshot; per-union error isolation |
+| M-29 | RESOLVED | `duckdb_index.py:637-643` — failed refresh leaves the old signature → next call retries |
+| M-30 | RESOLVED | `duckdb_index.py:249-255` — remote warehouses get a coarse time-bucket signature |
+| M-31 | RESOLVED | `gdrive.py:204-207` — retries 429/5xx/transport with backoff, one 401 token refresh, streaming upload |
+| M-32 | RESOLVED | `timeutil.py:24-26` — singular "1 day ago" handled; `tests/unit/test_timeutil_singular.py` |
+| M-33 | RESOLVED | `api/server.py:571` — GET /jobs `limit` bounded `ge=1, le=500` |
+| M-34 | RESOLVED | `cli/main.py:5211-5243` — `config set` validates against `Settings.model_fields` + schema coercion; `persist.py:apply_updates` enforces env-lock; effective source shown by `schema.value_source` |
+| M-35 | RESOLVED | `util/http.py:94-100` — Retry-After honored up to 600s cap with jitter |
+| M-36 | RESOLVED | `iceberg.py:38-41` — nanosecond ISO timestamps parsed tolerantly |
+| M-37 | RESOLVED | `jobsearch/linkedin.py:417-419` — `enriched` set only when a real detail body merges |
+
+**Verdict:** 9/9 critical, 32/32 high, 37/37 medium addressed — 78/78
+RESOLVED, 0 OPEN. H-24's silent-truncation ceiling was raised (~16×) rather
+than removed (a hard cap remains by design); M-34's CLI path validates +
+coerces writes and the env-lock is enforced at load and in the API write
+path. Both are considered addressed per their findings' intent.

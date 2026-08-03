@@ -67,7 +67,6 @@ class Settings(BaseSettings):
     # ── identity ─────────────────────────────────────────────────────────
     ingest_version: str = "0.1.0"
     user_agent: str = "AwarenessBot/0.1 (+https://github.com/nazmiefearmutcu/awareness; public-text-research)"
-    contact_email: str = "research@example.invalid"
 
     # ── politeness / fetch ────────────────────────────────────────────────
     request_timeout_sec: float = 30.0
@@ -76,11 +75,9 @@ class Settings(BaseSettings):
     robots_cache_ttl_sec: int = 3600
     global_fetch_concurrency: int = 32
     max_retries: int = 4
-    backoff_base_sec: float = 1.5
 
     # ── runtime / scheduler ──────────────────────────────────────────────
     worker_concurrency: int = 8
-    extract_concurrency: int = 4
     storage_flush_records: int = 500
     storage_flush_seconds: float = 15.0
     bounded_queue_size: int = 1024

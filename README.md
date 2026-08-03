@@ -97,6 +97,68 @@ status underneath.
 
 ---
 
+## Feature surface
+
+Beyond the six workbench views, the API exposes the corpus through feature
+subsystems — small, dependency-free modules under `src/awareness/`, all served
+by the same single process:
+
+**Analytics** (`/analytics/*`) — term frequency over time (day/week/month
+buckets, zero-filled), rolling z-score spike detection, top terms
+(stopword-filtered), domain and language breakdowns, and co-occurring term
+counts: `/term-frequency`, `/top-terms`, `/spikes`, `/domains`, `/languages`,
+`/co-occurring`.
+
+**Alerts** (`/alerts/*`) — a SQLite rule store for keyword and term-spike
+rules (threshold, window, cooldown), with CRUD at `/alerts/rules`, one-shot
+evaluation at `/alerts/check`, and `/alerts/status` + `/alerts/firings` for
+the audit trail. Firings deliver to webhooks with retry; webhook URLs are
+validated against the public-host gate before they are stored **or** called.
+The same engine is drivable from the terminal:
+
+```bash
+awareness alerts list|create|delete|check
+```
+
+**Entities** (`/entities/*`) — dependency-free heuristic NER
+(ORG/PERSON/PLACE/TICKER) aggregated over the corpus: `/top`, `/co-occurring`,
+`/trend`, and `/correlation` (Pearson with lead-lag).
+
+**Source intelligence** (`/source-intel/*`) — domain quality scoring (volume,
+length, replication, velocity), a replication map ("who copies whom", from the
+dedup groups), top replicators, and a freshness report: `/domains`,
+`/domain/{d}`, `/replication`, `/replicators`, `/freshness`.
+
+**Consumption** (`/consume/*`, `/x/*`) — LLM-ready dataset export (jsonl or
+parquet, deduped, streamed, atomic) at `/consume/export`, a weekly digest as
+JSON or markdown at `/consume/digest[/markdown]`, and the X-scraper bridge
+(`/x/sessions`, `/x/sessions/{id}/tweets`). The digest generator also ships as
+a CLI command:
+
+```bash
+awareness digest --days 7 --markdown --out digest.md    # or --json to stdout
+```
+
+Two opt-in knobs enable the newer runtime behavior: `AW_API_KEY` gates the
+HTTP control plane behind a bearer token, and `AW_ALERTS_AUTOSTART=1` runs
+periodic alert evaluation inside the API process (see Configuration below).
+
+### Security posture
+
+- **API key auth** — setting `AW_API_KEY` requires `Authorization: Bearer` on
+  the control plane; binding to a non-loopback interface refuses to start
+  without one.
+- **CSRF JSON enforcement** — mutating requests with a body must be
+  `application/json`; the CORS-safelisted `text/plain` route is rejected.
+- **SSRF gates** — untrusted URLs (seeds, webhooks, redirect hops) pass
+  through `is_public_http_url`: no loopback/private/link-local/metadata hosts,
+  no userinfo, and DNS resolutions must be globally routable.
+- **Path confinement** — config writes (`data_dir`, `tail_seed_file`, …) must
+  resolve inside the project root with no `..` segments, and `data_dir` may
+  not point at an existing non-directory.
+
+---
+
 ## How it works
 
 ```mermaid
@@ -248,6 +310,8 @@ also read from the environment:
 | `AW_PER_DOMAIN_CONCURRENCY` | live-fetch concurrency cap per domain |
 | `AW_TAIL_POLL_SECONDS` | feed re-poll interval |
 | `AW_ENABLE_ICEBERG` | toggle the durable Iceberg copy (JSONL is always on) |
+| `AW_API_KEY` | bearer token required by the HTTP control plane (empty = localhost trust) |
+| `AW_ALERTS_AUTOSTART` | `1` runs periodic alert evaluation inside the API process |
 
 ```text
 data/
