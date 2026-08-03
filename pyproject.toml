@@ -60,7 +60,7 @@ bench = [
   "matplotlib>=3.8",      # chart rendering
   "readability-lxml>=0.8",  # extraction peer
   "inscriptis>=2.2",        # extraction peer
-  "html2text>=2020.1.16",   # extraction peer
+  "html2text>=2025.4.15",   # extraction peer
 ]
 
 [project.scripts]
