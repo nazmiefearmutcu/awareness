@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -459,6 +460,10 @@ def _strip_alias_host(netloc: str) -> str:
 
     News publishers re-host the same article under mobile and AMP subdomains;
     the fetch gate and doc identity must collapse those to the apex host.
+
+    Only the first label is stripped when the *remainder* is still a real
+    multi-label host (≥2 labels — a dot in non-TLD position), so real domains
+    like ``www.com`` / ``m.me`` are never collapsed to ``com`` / ``me`` (M-27).
     """
     if "@" in netloc:
         userinfo, _, hostport = netloc.rpartition("@")
@@ -473,8 +478,13 @@ def _strip_alias_host(netloc: str) -> str:
         changed = False
         for prefix in _ALIAS_HOST_PREFIXES:
             if host.startswith(prefix) and len(host) > len(prefix):
-                host = host[len(prefix) :]
-                changed = True
+                rest = host[len(prefix) :]
+                # Require ≥2 labels in the remainder (a dot in non-TLD
+                # position) so real domains like ``www.com`` / ``m.me`` are
+                # never collapsed to ``com`` / ``me`` (M-27).
+                if "." in rest and len(rest) > 1 and "." in rest.rstrip("."):
+                    host = rest
+                    changed = True
                 break
     return f"{host}{sep}{port}" if sep else host
 
@@ -587,9 +597,7 @@ def _strip_www_label(host: str) -> str:
     return host
 
 
-def _unwrap_wayback(
-    netloc: str, path: str, outer_query: str = ""
-) -> tuple[str, str, str] | None:
+def _unwrap_wayback(netloc: str, path: str, outer_query: str = "") -> tuple[str, str, str] | None:
     """Rewrite Wayback Machine URLs to origin (netloc, path, query).
 
     Forms (https://archive.org/help/wayback_api.php):
@@ -651,9 +659,7 @@ def _unwrap_wayback(
     return origin_netloc, (op.path or "/"), (op.query or "")
 
 
-def _validate_embedded_origin_url(
-    origin: str, *, refuse_hosts: frozenset[str]
-) -> str | None:
+def _validate_embedded_origin_url(origin: str, *, refuse_hosts: frozenset[str]) -> str | None:
     """Normalize and validate an embedded origin URL string.
 
     Accepts absolute http(s) or scheme-relative (``//host/…``) origins.
@@ -759,8 +765,7 @@ def _unwrap_google_url_redirect(netloc: str, path: str, query: str) -> str | Non
     if not origin:
         candidate = _query_param(query, "q")
         if candidate and (
-            candidate.lower().startswith(("http://", "https://"))
-            or candidate.startswith("//")
+            candidate.lower().startswith(("http://", "https://")) or candidate.startswith("//")
         ):
             origin = candidate
     if not origin:
@@ -937,9 +942,7 @@ def _unwrap_youtube_redirect(netloc: str, path: str, query: str) -> str | None:
         return None
     # q= may be free text on non-redirect paths; we already gated on /redirect.
     # Still require absolute / scheme-relative so garbage q= values stay put.
-    if not (
-        origin.lower().startswith(("http://", "https://")) or origin.startswith("//")
-    ):
+    if not (origin.lower().startswith(("http://", "https://")) or origin.startswith("//")):
         return None
     return _validate_embedded_origin_url(origin, refuse_hosts=_YOUTUBE_REDIRECT_HOSTS)
 
@@ -1054,14 +1057,9 @@ def _unwrap_href_li(netloc: str, query: str) -> str | None:
     if "%" in raw:
         candidates.append(unquote(raw))
     for origin in candidates:
-        if not (
-            origin.lower().startswith(("http://", "https://"))
-            or origin.startswith("//")
-        ):
+        if not (origin.lower().startswith(("http://", "https://")) or origin.startswith("//")):
             continue
-        validated = _validate_embedded_origin_url(
-            origin, refuse_hosts=_HREFLI_HOSTS
-        )
+        validated = _validate_embedded_origin_url(origin, refuse_hosts=_HREFLI_HOSTS)
         if validated is not None:
             return validated
     return None
@@ -1146,9 +1144,7 @@ def _unwrap_pinterest_redirect(netloc: str, path: str, query: str) -> str | None
     origin = _query_param(query, "url")
     if not origin:
         return None
-    return _validate_embedded_origin_url(
-        origin, refuse_hosts=_PINTEREST_REDIRECT_HOSTS
-    )
+    return _validate_embedded_origin_url(origin, refuse_hosts=_PINTEREST_REDIRECT_HOSTS)
 
 
 def _unwrap_flipboard_redirect(netloc: str, path: str, query: str) -> str | None:
@@ -1169,17 +1165,12 @@ def _unwrap_flipboard_redirect(netloc: str, path: str, query: str) -> str | None
     if host not in _FLIPBOARD_REDIRECT_HOSTS:
         return None
     p = (path or "/").lower()
-    if not any(
-        p == pref.rstrip("/") or p.startswith(pref)
-        for pref in _FLIPBOARD_REDIRECT_PATH_PREFIXES
-    ):
+    if not any(p == pref.rstrip("/") or p.startswith(pref) for pref in _FLIPBOARD_REDIRECT_PATH_PREFIXES):
         return None
     origin = _query_param(query, "url")
     if not origin:
         return None
-    return _validate_embedded_origin_url(
-        origin, refuse_hosts=_FLIPBOARD_REDIRECT_HOSTS
-    )
+    return _validate_embedded_origin_url(origin, refuse_hosts=_FLIPBOARD_REDIRECT_HOSTS)
 
 
 def _unwrap_buffer_redirect(netloc: str, path: str, query: str) -> str | None:
@@ -1206,9 +1197,7 @@ def _unwrap_buffer_redirect(netloc: str, path: str, query: str) -> str | None:
     origin = _query_param(query, "url")
     if not origin:
         return None
-    return _validate_embedded_origin_url(
-        origin, refuse_hosts=_BUFFER_REDIRECT_HOSTS
-    )
+    return _validate_embedded_origin_url(origin, refuse_hosts=_BUFFER_REDIRECT_HOSTS)
 
 
 def _unwrap_medium_redirect(netloc: str, path: str, query: str) -> str | None:
@@ -1236,9 +1225,7 @@ def _unwrap_medium_redirect(netloc: str, path: str, query: str) -> str | None:
     origin = _query_param(query, "url", "sourceLink")
     if not origin:
         return None
-    return _validate_embedded_origin_url(
-        origin, refuse_hosts=_MEDIUM_REDIRECT_HOSTS
-    )
+    return _validate_embedded_origin_url(origin, refuse_hosts=_MEDIUM_REDIRECT_HOSTS)
 
 
 def _normalize_path(path: str) -> str:
@@ -1410,6 +1397,11 @@ def canonical_url(url: str | None) -> str | None:
     if scheme == "http":
         scheme = "https"
     netloc = parts.netloc.lower()
+    # Never let userinfo (potentially credentials) leak into identity keys —
+    # feed URLs may carry ``user:pass@``; canonical_url feeds doc_id and the
+    # fetch gate (M-01 red-team).
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
     path = parts.path or "/"
     # Drop default ports (both original http:80 and https:443 after upgrade).
     if ":" in netloc and not netloc.startswith("["):
@@ -1482,9 +1474,7 @@ def canonical_url(url: str | None) -> str | None:
 
     # Filter and sort query params for stable identity.
     pairs = [
-        (k, v)
-        for k, v in parse_qsl(parts.query, keep_blank_values=True)
-        if not _is_noise_query_pair(k, v)
+        (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if not _is_noise_query_pair(k, v)
     ]
     pairs.sort()
     query = urlencode(pairs, doseq=True)
@@ -1572,6 +1562,24 @@ def is_public_http_url(url: str | None) -> bool:  # noqa: PLR0911
     host = host.rstrip(".").lower()
     if host == "localhost" or host.endswith(".localhost"):
         return False
+
+    # M-02 red-team: reject non-canonical IPv4 literal forms BEFORE DNS so the
+    # verdict is platform-independent. Decimal/hex integer forms ("2130706433",
+    # "0x7f000001") and leading-zero octets ("0177.0.0.1") resolve to loopback
+    # on some resolvers and to errors on others — never treat them as public.
+    if re.fullmatch(r"[0-9]+", host):
+        return False  # decimal IPv4-integer form
+    if re.fullmatch(r"0x[0-9a-fA-F]+", host):
+        return False  # hex IPv4-integer form
+    if re.fullmatch(r"[0-9.]+", host):
+        octets = host.split(".")
+        if len(octets) != 4 or any(o == "" or len(o) > 3 for o in octets):
+            return False
+        if any(len(o) > 1 and o.startswith("0") for o in octets):
+            return False  # leading zeros (e.g. 0177.0.0.1)
+        if any(int(o) > 255 for o in octets):
+            return False
+        return bool(ipaddress.ip_address(host).is_global)
 
     try:
         return ipaddress.ip_address(host).is_global

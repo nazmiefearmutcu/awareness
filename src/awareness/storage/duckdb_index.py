@@ -16,12 +16,12 @@ A combined ``captures`` view UNIONs both with row-level dedup on
 
 from __future__ import annotations
 
-from datetime import datetime
 import contextlib
 import hashlib
 import random
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ import duckdb
 
 try:
     import fcntl
+
     HAS_FCNTL = True
 except ImportError:
     HAS_FCNTL = False
@@ -83,23 +84,23 @@ DEFAULT_SEARCH_MAX_RESULTS = 200
 # DuckDB FTS scores title+text as one blob, so it cannot field-boost. We re-rank
 # the top-`max_results` BM25 candidates with independent, bounded multiplicative
 # factors; all-neutral collapses to identity (pure BM25 order preserved).
-_RERANK_TITLE_BOOST = 0.5        # Wt: full title-term coverage multiplies score by 1+Wt
+_RERANK_TITLE_BOOST = 0.5  # Wt: full title-term coverage multiplies score by 1+Wt
 _RERANK_TITLE_PHRASE_BOOST = 0.35  # Wp: ordered multi-term title phrase multiplies by 1+Wp
 _RERANK_TITLE_EXACT_BOOST = 0.4  # We: title tokens == query terms multiplies by 1+We
 _RERANK_TITLE_PREFIX_BOOST = 0.25  # Wtp: title tokens start with query multiplies by 1+Wtp
-_RERANK_URL_BOOST = 0.25         # Wu: full url/domain term coverage multiplies by 1+Wu
-_RERANK_URL_PHRASE_BOOST = 0.2   # Wup: ordered multi-term URL-slug phrase multiplies by 1+Wup
-_RERANK_URL_EXACT_BOOST = 0.3    # Wue: last path-slug tokens == query terms multiplies by 1+Wue
-_RERANK_URL_PREFIX_BOOST = 0.2   # Wupr: leaf slug tokens start with query multiplies by 1+Wupr
-_RERANK_DOMAIN_NAV_BOOST = 0.3   # Wd: domain-label term coverage multiplies by 1+Wd
-_RERANK_LEAD_HIT_BOOST = 0.15    # Wh: bag-of-words lead term coverage multiplies by 1+Wh
-_RERANK_LEAD_PHRASE_BOOST = 0.2   # Wl: ordered multi-term phrase in lead text multiplies by 1+Wl
+_RERANK_URL_BOOST = 0.25  # Wu: full url/domain term coverage multiplies by 1+Wu
+_RERANK_URL_PHRASE_BOOST = 0.2  # Wup: ordered multi-term URL-slug phrase multiplies by 1+Wup
+_RERANK_URL_EXACT_BOOST = 0.3  # Wue: last path-slug tokens == query terms multiplies by 1+Wue
+_RERANK_URL_PREFIX_BOOST = 0.2  # Wupr: leaf slug tokens start with query multiplies by 1+Wupr
+_RERANK_DOMAIN_NAV_BOOST = 0.3  # Wd: domain-label term coverage multiplies by 1+Wd
+_RERANK_LEAD_HIT_BOOST = 0.15  # Wh: bag-of-words lead term coverage multiplies by 1+Wh
+_RERANK_LEAD_PHRASE_BOOST = 0.2  # Wl: ordered multi-term phrase in lead text multiplies by 1+Wl
 _RERANK_LEAD_PREFIX_BOOST = 0.2  # Wlp: lead tokens start with query multiplies by 1+Wlp
 _RERANK_LEAD_EXACT_BOOST = 0.25  # Wle: lead tokens == query terms multiplies by 1+Wle
-_RERANK_LEAD_CHARS = 280         # news lede window (chars) for lead hit/phrase/prefix/exact credit
-_RERANK_LEN_PIVOT = 4000         # chars; docs up to here are not length-damped
-_RERANK_LEN_FLOOR = 0.75         # the most a very long doc can be damped to
-_RERANK_RECENCY_WEIGHT = 0.0     # Wr: 0 disables the recency prior (off by default)
+_RERANK_LEAD_CHARS = 280  # news lede window (chars) for lead hit/phrase/prefix/exact credit
+_RERANK_LEN_PIVOT = 4000  # chars; docs up to here are not length-damped
+_RERANK_LEN_FLOOR = 0.75  # the most a very long doc can be damped to
+_RERANK_RECENCY_WEIGHT = 0.0  # Wr: 0 disables the recency prior (off by default)
 _RERANK_RECENCY_HALFLIFE_DAYS = 30.0
 
 # Canonical captures columns in UNION order. The staging projection is built
@@ -107,21 +108,37 @@ _RERANK_RECENCY_HALFLIFE_DAYS = 30.0
 # `captures` view (absent columns become typed NULLs) instead of Binder-erroring
 # the whole view out of existence.
 _CAPTURE_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("doc_id", "VARCHAR"), ("capture_id", "VARCHAR"), ("parent_doc_or_dup_group", "VARCHAR"),
-    ("source_type", "VARCHAR"), ("source_name", "VARCHAR"), ("source_locator", "VARCHAR"),
-    ("source_shard", "VARCHAR"), ("source_offset_or_record_id", "VARCHAR"),
-    ("discovery_channel", "VARCHAR"), ("job_id", "VARCHAR"), ("batch_id", "VARCHAR"),
-    ("ingest_version", "VARCHAR"), ("url", "VARCHAR"), ("canonical_url", "VARCHAR"),
+    ("doc_id", "VARCHAR"),
+    ("capture_id", "VARCHAR"),
+    ("parent_doc_or_dup_group", "VARCHAR"),
+    ("source_type", "VARCHAR"),
+    ("source_name", "VARCHAR"),
+    ("source_locator", "VARCHAR"),
+    ("source_shard", "VARCHAR"),
+    ("source_offset_or_record_id", "VARCHAR"),
+    ("discovery_channel", "VARCHAR"),
+    ("job_id", "VARCHAR"),
+    ("batch_id", "VARCHAR"),
+    ("ingest_version", "VARCHAR"),
+    ("url", "VARCHAR"),
+    ("canonical_url", "VARCHAR"),
     ("domain", "VARCHAR"),
-    ("fetch_ts", "TIMESTAMPTZ"), ("observed_ts", "TIMESTAMPTZ"),
-    ("published_ts", "TIMESTAMPTZ"), ("last_modified", "TIMESTAMPTZ"),
-    ("content_type", "VARCHAR"), ("http_status", "INTEGER"), ("etag", "VARCHAR"),
-    ("title", "VARCHAR"), ("text", "VARCHAR"), ("language", "VARCHAR"),
-    ("content_hash", "VARCHAR"), ("near_dup_hash", "BIGINT"),
-    ("robots_decision", "VARCHAR"), ("terms_note_if_relevant", "VARCHAR"),
+    ("fetch_ts", "TIMESTAMPTZ"),
+    ("observed_ts", "TIMESTAMPTZ"),
+    ("published_ts", "TIMESTAMPTZ"),
+    ("last_modified", "TIMESTAMPTZ"),
+    ("content_type", "VARCHAR"),
+    ("http_status", "INTEGER"),
+    ("etag", "VARCHAR"),
+    ("title", "VARCHAR"),
+    ("text", "VARCHAR"),
+    ("language", "VARCHAR"),
+    ("content_hash", "VARCHAR"),
+    ("near_dup_hash", "BIGINT"),
+    ("robots_decision", "VARCHAR"),
+    ("terms_note_if_relevant", "VARCHAR"),
 )
 _TS_COLUMNS = frozenset({"fetch_ts", "observed_ts", "published_ts", "last_modified"})
-
 
 
 def _is_staging_jsonl(path: Path) -> bool:
@@ -186,7 +203,7 @@ def _file_lock(lock_path: Path, timeout: float = 60.0):
     attempt = 0
     base_delay = 0.05
     max_delay = 2.0
-    
+
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_file = open(lock_path, "w")
@@ -197,7 +214,7 @@ def _file_lock(lock_path: Path, timeout: float = 60.0):
             except OSError:
                 if time.monotonic() - start_time >= timeout:
                     raise TimeoutError(f"Timeout waiting for file lock on {lock_path}")
-                delay = min(max_delay, base_delay * (2 ** attempt))
+                delay = min(max_delay, base_delay * (2**attempt))
                 time.sleep(delay * (0.5 + random.random()))
                 attempt += 1
         yield
@@ -208,6 +225,7 @@ def _file_lock(lock_path: Path, timeout: float = 60.0):
             except OSError:
                 pass
             lock_file.close()
+
 
 # ── search configuration surface ─────────────────────────────────────────────
 # Columns the caller may point a search at. Mapped 1:1 onto the ``captures``
@@ -220,27 +238,19 @@ DEFAULT_SEARCH_FIELDS: tuple[str, ...] = ("title", "text")
 #   prefix    — stem-root substring per token (finance -> financ% -> financial).
 #   substring — raw ILIKE on the whole query string. No tokenization.
 #   auto      — FTS first; if it returns nothing, fall back to prefix. Default.
+# Quoted whole-query ("phrase") uses substring matching; response mode is "phrase".
 SEARCH_MODES: tuple[str, ...] = ("auto", "fts", "prefix", "substring")
 DEFAULT_SEARCH_MODE = "auto"
 # Hard ceiling on rows materialized in a single search call (overload guard).
 DEFAULT_SEARCH_MAX_RESULTS = 200
 
-
-def _clean_fields(fields: list[str] | tuple[str, ...] | None) -> list[str]:
-    """Normalize + whitelist the requested search columns.
-
-    Unknown columns are dropped silently; an empty/None request falls back
-    to :data:`DEFAULT_SEARCH_FIELDS`. This is the *only* place a field name
-    reaches SQL, so the whitelist here is the injection boundary.
-    """
-    if not fields:
-        return list(DEFAULT_SEARCH_FIELDS)
-    seen: list[str] = []
-    for f in fields:
-        key = (f or "").strip().lower()
-        if key in ALLOWED_SEARCH_FIELDS and key not in seen:
-            seen.append(key)
-    return seen or list(DEFAULT_SEARCH_FIELDS)
+# M-03: remote (s3://, gs://, ...) iceberg warehouses cannot be fingerprinted
+# cheaply by stat-ing metadata files (they live on object storage). To keep the
+# FTS/signature machinery honest, the source signature includes a coarse
+# time bucket for remote warehouses — every bucket rollover re-probes and
+# rebuilds views/FTS if the remote table changed. Local warehouses keep the
+# exact metadata mtime fingerprint.
+_REMOTE_SIGNATURE_BUCKET_SECONDS = 300
 
 
 def _collapse_key(row: dict[str, Any]) -> str:
@@ -303,7 +313,6 @@ def _collapse_search_rows(
     return [best[k] for k in order]
 
 
-
 def _serialize_window_bound(value: Any) -> Any:
     """JSON-friendly form of a search window bound (datetime → ISO-8601)."""
     if value is None:
@@ -349,16 +358,12 @@ def build_search_diagnostics(
                 parts.append("source")
             if language:
                 parts.append("language")
-            hints.append(
-                f"{'/'.join(parts).capitalize()} filter may exclude matching captures."
-            )
+            hints.append(f"{'/'.join(parts).capitalize()} filter may exclude matching captures.")
         if corpus_size is None or corpus_size > 0:
             # Always offer a recall tip when the corpus is non-empty / unknown.
             if mode_used == "phrase":
                 # Quoted exact-phrase path — do not suggest substring (already used).
-                hints.append(
-                    "No exact phrase matches; try without quotes or fewer words."
-                )
+                hints.append("No exact phrase matches; try without quotes or fewer words.")
             elif mode_used != "substring" or len(query_terms) > 1:
                 hints.append("Try fewer terms or substring mode.")
             else:
@@ -432,6 +437,10 @@ class DuckDbIndex:
         # this, every query paid a full view-refresh (~150ms over a few JSONL
         # chunks); steady-state queries are now bound by the query itself.
         self._views_signature: tuple[Any, ...] | None = None
+        # M-01: staging view build state — "ok" | "ok_empty" |
+        # "fallback_ignore_errors" | "fallback_per_file" | "failed". Surfaced in
+        # health_snapshot so a corrupt chunk is visible even when queries work.
+        self._staging_view_state: str = "ok"
         # BM25F avg field lengths (title, text) keyed by views_signature so
         # repeated searches skip the full-table AVG(length(...)) scan while
         # the corpus fingerprint is unchanged.
@@ -492,14 +501,14 @@ class DuckDbIndex:
         with self._lock:
             if self._conn is not None:
                 return self._conn
-            
+
             lock_path = self._db_path.with_suffix(".lock")
             with _file_lock(lock_path):
                 conn = None
                 max_retries = 10
                 base_delay = 0.05
                 max_delay = 1.0
-                
+
                 for attempt in range(max_retries):
                     try:
                         conn = duckdb.connect(str(self._db_path))
@@ -508,13 +517,19 @@ class DuckDbIndex:
                         exc_str = str(exc).lower()
                         is_lock_error = any(
                             msg in exc_str
-                            for msg in ("lock", "resource temporarily unavailable", "permission", "locked", "io error")
+                            for msg in (
+                                "lock",
+                                "resource temporarily unavailable",
+                                "permission",
+                                "locked",
+                                "io error",
+                            )
                         )
                         if is_lock_error and attempt < max_retries - 1:
-                            time.sleep(min(max_delay, base_delay * (2 ** attempt)) * (0.5 + random.random()))
+                            time.sleep(min(max_delay, base_delay * (2**attempt)) * (0.5 + random.random()))
                         else:
                             raise
-                
+
                 self._configure_connection(conn)
                 self._refresh_views_if_stale(conn)
                 self._conn = conn
@@ -594,25 +609,51 @@ class DuckDbIndex:
             jsonl = tuple(sorted(entries))
         iceberg: tuple[Any, ...] = ()
         wh = self._iceberg_warehouse
-        if wh and not str(wh).startswith(("s3://", "s3a://", "gs://", "gcs://")):
-            meta_dir = Path(wh).resolve() / "awareness" / "captures" / "metadata"
-            if meta_dir.exists():
-                try:
-                    iceberg = tuple(
-                        sorted((str(p), p.stat().st_mtime_ns) for p in meta_dir.glob("*.json"))
-                    )
-                except OSError:
-                    iceberg = ()
+        if wh:
+            if not str(wh).startswith(("s3://", "s3a://", "gs://", "gcs://")):
+                meta_dir = Path(wh).resolve() / "awareness" / "captures" / "metadata"
+                if meta_dir.exists():
+                    try:
+                        iceberg = tuple(
+                            sorted((str(p), p.stat().st_mtime_ns) for p in meta_dir.glob("*.json"))
+                        )
+                    except OSError:
+                        iceberg = ()
+            else:
+                # M-03: remote warehouses are excluded from the signature today,
+                # so FTS never rebuilds when remote data changes. There is no
+                # cheap metadata stat over object storage from here (the catalog
+                # DB lives elsewhere), so fall back to a max-age-based refresh:
+                # a coarse time bucket in the signature forces a view/FTS
+                # re-probe every _REMOTE_SIGNATURE_BUCKET_SECONDS. Preferable to
+                # a stronger pyiceberg snapshot-id probe (which would need the
+                # catalog connection wired into this index) — documented tradeoff.
+                iceberg = (("remote_bucket", int(time.time() // _REMOTE_SIGNATURE_BUCKET_SECONDS)),)
         return (jsonl, iceberg)
 
     def _refresh_views_if_stale(self, conn: duckdb.DuckDBPyConnection) -> None:
-        """Rebuild views only when the source-file signature changed."""
+        """Rebuild views only when the source-file signature changed.
+
+        On a failed refresh (M-02) the signature is left untouched so the next
+        call retries instead of caching a broken view state.
+        """
         sig = self._source_signature()
         if sig != self._views_signature:
-            self._refresh_views(conn)
-            self._views_signature = sig
+            if self._refresh_views(conn):
+                self._views_signature = sig
 
-    def _refresh_views(self, conn: duckdb.DuckDBPyConnection) -> None:
+    def _refresh_views(self, conn: duckdb.DuckDBPyConnection) -> bool:
+        """(Re)build the staging/iceberg/captures views; return True on success.
+
+        M-01: a single corrupt JSONL chunk must not brick every query — the
+        staging view falls back to tolerant reads (ignore_errors) and then to
+        per-file globs of only readable chunks, and the failure state is
+        surfaced via :meth:`health_snapshot`.
+
+        M-02: if the union step fails, a staging-only ``captures`` fallback
+        view is left in place and False is returned so the caller keeps the
+        OLD signature — the next call retries the full refresh.
+        """
         captures_root = self._jsonl_dir / "captures"
         has_files = False
         if captures_root.exists():
@@ -624,19 +665,69 @@ class DuckDbIndex:
             except OSError:
                 pass
 
+        staging_state: str = "ok"
         if has_files:
             globs = self._get_partition_globs()
             if not globs:
                 globs = self._staging_globs()
 
             glob_list = ", ".join(f"'{g}'" for g in globs)
-            conn.execute(  # nosemgrep
-                f"""
-                CREATE OR REPLACE VIEW staging_captures_raw AS
-                SELECT *
-                FROM read_json_auto([{glob_list}], union_by_name=true);
-                """
-            )
+            try:
+                conn.execute(  # nosemgrep
+                    f"""
+                    CREATE OR REPLACE VIEW staging_captures_raw AS
+                    SELECT *
+                    FROM read_json_auto([{glob_list}], union_by_name=true);
+                    """
+                )
+            except duckdb.Error as exc:
+                logger.warning("duckdb_view_setup_failed", err=str(exc), stage="staging")
+                # M-01: fall back to tolerant reads (skip malformed rows).
+                try:
+                    conn.execute(  # nosemgrep
+                        f"""
+                        CREATE OR REPLACE VIEW staging_captures_raw AS
+                        SELECT *
+                        FROM read_json_auto([{glob_list}], union_by_name=true, ignore_errors=true);
+                        """
+                    )
+                    staging_state = "fallback_ignore_errors"
+                except duckdb.Error as exc2:
+                    logger.warning("duckdb_view_setup_failed", err=str(exc2), stage="staging_ignore_errors")
+                    # M-01: last resort — per-file globs, only readable chunks.
+                    good_globs: list[str] = []
+                    for g in globs:
+                        try:
+                            conn.execute(  # nosemgrep
+                                f"SELECT * FROM read_json_auto('{g}', union_by_name=true, "
+                                "ignore_errors=true) LIMIT 1"
+                            )
+                            good_globs.append(g)
+                        except duckdb.Error:
+                            continue
+                    if good_globs:
+                        good_list = ", ".join(f"'{g}'" for g in good_globs)
+                        try:
+                            conn.execute(  # nosemgrep
+                                f"""
+                                CREATE OR REPLACE VIEW staging_captures_raw AS
+                                SELECT *
+                                FROM read_json_auto([{good_list}], union_by_name=true, ignore_errors=true);
+                                """
+                            )
+                            staging_state = "fallback_per_file"
+                        except duckdb.Error as exc3:
+                            logger.warning(
+                                "duckdb_view_setup_failed", err=str(exc3), stage="staging_per_file"
+                            )
+                            staging_state = "failed"
+                    else:
+                        staging_state = "failed"
+            self._staging_view_state = staging_state
+            if staging_state == "failed":
+                # No readable chunk at all — leave the previous view (or none)
+                # and force a retry on the next call.
+                return False
         else:
             conn.execute(
                 """
@@ -663,13 +754,12 @@ class DuckDbIndex:
                 WHERE 1=0;
                 """
             )
+            self._staging_view_state = "ok_empty"
 
         # Build a unified ``captures`` view that casts timestamps to TIMESTAMPTZ
         # so BETWEEN/range queries against datetime parameters work.
         # We try to load and union the Iceberg warehouse captures when available.
-        present = {
-            str(r[0]) for r in conn.execute("DESCRIBE staging_captures_raw").fetchall()
-        }
+        present = {str(r[0]) for r in conn.execute("DESCRIBE staging_captures_raw").fetchall()}
         staging_proj = _staging_projection(present)
         iceberg_ok = False
         if self._iceberg_warehouse:
@@ -678,11 +768,11 @@ class DuckDbIndex:
                     table_path = f"{self._iceberg_warehouse}/awareness/captures"
                 else:
                     table_path = str(Path(self._iceberg_warehouse).resolve() / "awareness" / "captures")
-                
+
                 is_valid = True
                 if not str(self._iceberg_warehouse).startswith(("s3://", "s3a://", "gs://", "gcs://")):
                     is_valid = Path(table_path).exists()
-                
+
                 if is_valid:
                     conn.execute("SET unsafe_enable_version_guessing = true;")
                     # table_path is derived from operator config, not request input.
@@ -696,6 +786,13 @@ class DuckDbIndex:
             except Exception as exc:
                 logger.info("duckdb_iceberg_view_setup_skipped", err=str(exc))
 
+        # H-12: the captures view always dedups by capture_id (newest fetch_ts
+        # wins) — including the no-Iceberg (staging-only) branch. Without this,
+        # default installs (Iceberg disabled) served duplicate capture_ids.
+        row_number_proj = (
+            f"{staging_proj},\n                      "
+            f"ROW_NUMBER() OVER (PARTITION BY capture_id ORDER BY fetch_ts DESC, capture_id ASC) AS rn"
+        )
         try:
             if iceberg_ok:
                 conn.execute(  # nosemgrep
@@ -726,7 +823,7 @@ class DuckDbIndex:
                     CREATE OR REPLACE VIEW captures AS
                     SELECT * EXCLUDE (rn) FROM (
                         SELECT *,
-                               ROW_NUMBER() OVER (PARTITION BY capture_id ORDER BY fetch_ts DESC) AS rn
+                               ROW_NUMBER() OVER (PARTITION BY capture_id ORDER BY fetch_ts DESC, capture_id ASC) AS rn
                         FROM captures_raw_union
                     ) WHERE rn = 1;
                     """
@@ -735,20 +832,43 @@ class DuckDbIndex:
                 conn.execute(  # nosemgrep
                     f"""
                     CREATE OR REPLACE VIEW captures AS
-                    SELECT
-                      {staging_proj}
-                    FROM staging_captures_raw;
+                    SELECT * EXCLUDE (rn) FROM (
+                        SELECT
+                          {row_number_proj}
+                        FROM staging_captures_raw
+                    ) WHERE rn = 1;
                     """
                 )
             # Backwards-compat alias.
             conn.execute("CREATE OR REPLACE VIEW staging_captures AS SELECT * FROM captures;")
         except duckdb.Error as exc:
-            logger.warning("duckdb_view_setup_failed", err=str(exc))
+            logger.warning("duckdb_view_setup_failed", err=str(exc), stage="union")
+            # M-02: the union step failed (e.g. iceberg projection drift). Leave
+            # a staging-only fallback captures view so queries still work, and
+            # return False so the caller keeps the OLD signature and retries on
+            # the next call.
+            try:
+                conn.execute(  # nosemgrep
+                    f"""
+                    CREATE OR REPLACE VIEW captures AS
+                    SELECT * EXCLUDE (rn) FROM (
+                        SELECT
+                          {row_number_proj}
+                        FROM staging_captures_raw
+                    ) WHERE rn = 1;
+                    """
+                )
+                conn.execute("CREATE OR REPLACE VIEW staging_captures AS SELECT * FROM captures;")
+                logger.warning("duckdb_captures_fallback_staging_only", stage="union")
+            except duckdb.Error as exc2:
+                logger.warning("duckdb_view_setup_failed", err=str(exc2), stage="union_fallback")
+            return False
+        return True
 
     def refresh(self) -> None:
         with self._lock, self._connection_context() as conn:
-            self._refresh_views(conn)
-            self._views_signature = self._source_signature()
+            if self._refresh_views(conn):
+                self._views_signature = self._source_signature()
 
     def execute(self, sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         with self._lock, self._connection_context() as conn:
@@ -809,10 +929,11 @@ class DuckDbIndex:
                     "fts_built": bool(fts_built),
                     "fts_built_for_count": int(self._fts_built_for_count),
                     "views_signature_present": self._views_signature is not None,
+                    "staging_view_state": str(self._staging_view_state),
                     "db_path": str(self._db_path),
                     "jsonl_dir": str(self._jsonl_dir),
                 }
-        except Exception as exc:  # noqa: BLE001 — health must never raise
+        except Exception as exc:
             return {
                 "ready": False,
                 "error": f"{type(exc).__name__}: {exc}",
@@ -922,6 +1043,11 @@ class DuckDbIndex:
         DuckDB FTS has no public partial-update API, so the inverted index is
         still rebuilt; we skip re-scanning the entire JSONL-backed view into a
         brand-new captures_idx table when old rows are still valid.
+
+        H-10: before the incremental path we verify overlapping rows are
+        unchanged (content_hash comparison between captures_idx and captures).
+        A capture_id whose text was re-fetched/updated keeps its id, so naive
+        "count-only" growth detection would serve STALE content forever.
         """
         if not self._main_table_exists(conn, "captures_idx"):
             return False
@@ -934,6 +1060,17 @@ class DuckDbIndex:
             return False
         t0 = time.perf_counter()
         try:
+            # H-10: content-change detection — overlapping capture_ids whose
+            # content_hash differs (or one side is NULL) are stale.
+            stale_row = conn.execute(
+                """
+                SELECT COUNT(*) FROM captures_idx i
+                JOIN captures c ON c.capture_id = i.capture_id
+                WHERE (i.content_hash IS NOT DISTINCT FROM c.content_hash) = FALSE
+                """
+            ).fetchone()
+            if stale_row is not None and int(stale_row[0]) > 0:
+                return False
             missing = conn.execute(
                 """
                 SELECT COUNT(*) FROM captures_idx i
@@ -961,14 +1098,19 @@ class DuckDbIndex:
                 """
             )
             conn.execute(self._FTS_CREATE_PRAGMA)
-            self._mark_fts_ready(new_count)
+            # H-10: fts.indexed_rows / _fts_built_for_count must reflect the
+            # materialized captures_idx count, not the (dedup'd) view count —
+            # they are the source the FTS index was actually built from.
+            idx_row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
+            idx_count = int(idx_row[0]) if idx_row else new_count
+            self._mark_fts_ready(idx_count)
             self._persist_fts_signature(conn)
             self._fts_incremental_appends += 1
             elapsed = max(0.0, time.perf_counter() - t0)
-            _record_fts_build("incremental", seconds=elapsed, rows=new_count)
+            _record_fts_build("incremental", seconds=elapsed, rows=idx_count)
             logger.info(
                 "duckdb_fts_index_appended",
-                rows=new_count,
+                rows=idx_count,
                 prev_rows=old_count,
                 seconds=round(elapsed, 4),
             )
@@ -994,12 +1136,17 @@ class DuckDbIndex:
                 """
             )
             conn.execute(self._FTS_CREATE_PRAGMA)
-            self._mark_fts_ready(count)
+            # H-10: report the materialized captures_idx count (see
+            # _try_incremental_fts_append) so health_snapshot gauges match the
+            # actual FTS source.
+            idx_row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
+            idx_count = int(idx_row[0]) if idx_row else count
+            self._mark_fts_ready(idx_count)
             self._persist_fts_signature(conn)
             self._fts_full_rebuilds += 1
             elapsed = max(0.0, time.perf_counter() - t0)
-            _record_fts_build("full", seconds=elapsed, rows=count)
-            logger.info("duckdb_fts_index_built", rows=count, seconds=round(elapsed, 4))
+            _record_fts_build("full", seconds=elapsed, rows=idx_count)
+            logger.info("duckdb_fts_index_built", rows=idx_count, seconds=round(elapsed, 4))
             return True
         except duckdb.Error as exc:
             elapsed = max(0.0, time.perf_counter() - t0)
@@ -1127,7 +1274,6 @@ class DuckDbIndex:
                 roots.append(root)
         return roots
 
-
     def _match_facets(
         self,
         conn: duckdb.DuckDBPyConnection,
@@ -1147,11 +1293,7 @@ class DuckDbIndex:
         lim = max(1, min(int(limit), 50))
         if kind == "fts" and base:
             # Placeholders live only inside *base* (terms + range/source filters).
-            p = {
-                k: v
-                for k, v in params.items()
-                if f"${k}" in base or k.startswith("term_")
-            }
+            p = {k: v for k, v in params.items() if f"${k}" in base or k.startswith("term_")}
             # Case-normalize domains so Example.com / example.com roll into one
             # SPA chip (matches lower(domain) filter semantics).
             dom_sql = (
@@ -1277,9 +1419,7 @@ class DuckDbIndex:
         # Candidate window for collapse-then-page: fetch up to the overload
         # ceiling (no SQL offset) so exact dups don't under-fill the page.
         candidate_cap = (
-            int(max_results)
-            if max_results is not None and max_results > 0
-            else DEFAULT_SEARCH_MAX_RESULTS
+            int(max_results) if max_results is not None and max_results > 0 else DEFAULT_SEARCH_MAX_RESULTS
         )
         # Still honor an explicit offset+limit inside the cap for the window.
         if not page_beyond_cap:
@@ -1287,8 +1427,14 @@ class DuckDbIndex:
 
         mode_label = "phrase" if is_phrase else mode
         empty = {
-            "total": 0, "limit": limit, "offset": offset, "rows": [],
-            "ranked": False, "mode": mode_label, "fields": cols, "query": query,
+            "total": 0,
+            "limit": limit,
+            "offset": offset,
+            "rows": [],
+            "ranked": False,
+            "mode": mode_label,
+            "fields": cols,
+            "query": query,
         }
         if not query:
             empty["diagnostics"] = build_search_diagnostics(
@@ -1306,7 +1452,6 @@ class DuckDbIndex:
             return empty
 
         with self._lock, self._connection_context() as conn:
-
             # Shared range/source/domain/language filters.
             def base_filters() -> tuple[list[str], dict[str, Any]]:
                 w: list[str] = []
@@ -1348,6 +1493,7 @@ class DuckDbIndex:
                 fts = self._ensure_fts(conn)
                 if fts:
                     import math
+
                     from awareness.config import get_settings
 
                     where, params = base_filters()
@@ -1361,7 +1507,9 @@ class DuckDbIndex:
 
                     if stemmed_terms:
                         # Get total docs from stats or captures_idx
-                        num_docs_row = conn.execute("SELECT CAST(num_docs AS INTEGER) FROM fts_main_captures_idx.stats LIMIT 1").fetchone()
+                        num_docs_row = conn.execute(
+                            "SELECT CAST(num_docs AS INTEGER) FROM fts_main_captures_idx.stats LIMIT 1"
+                        ).fetchone()
                         N = num_docs_row[0] if num_docs_row else 1
                         if N <= 0:
                             count_row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
@@ -1432,7 +1580,9 @@ class DuckDbIndex:
                         """
 
                         count_params = {k: v for k, v in params.items() if f"${k}" in base or "term_" in k}
-                        total_row = conn.execute(f"SELECT COUNT(DISTINCT capture_id) {base}", count_params).fetchone()
+                        total_row = conn.execute(
+                            f"SELECT COUNT(DISTINCT capture_id) {base}", count_params
+                        ).fetchone()
                         total = int(total_row[0]) if total_row else 0
                         if total > 0:
                             sql = f"""
@@ -1442,6 +1592,7 @@ class DuckDbIndex:
                                   c.url, c.canonical_url, c.domain,
                                   c.fetch_ts, c.observed_ts, c.published_ts,
                                   c.title, c.text, c.language, c.content_hash,
+                                  c.near_dup_hash, c.robots_decision,
                                   sum(
                                     ln(1.0 + ($num_docs_n - sub.df + 0.5) / (sub.df + 0.5)) * (
                                       (
@@ -1461,7 +1612,8 @@ class DuckDbIndex:
                                   c.source_type, c.source_name, c.discovery_channel,
                                   c.url, c.canonical_url, c.domain,
                                   c.fetch_ts, c.observed_ts, c.published_ts,
-                                  c.title, c.text, c.language, c.content_hash
+                                  c.title, c.text, c.language, c.content_hash,
+                                  c.near_dup_hash, c.robots_decision
                                 ORDER BY score DESC, c.capture_id ASC
                                 LIMIT {int(candidate_cap)}
                             """
@@ -1570,13 +1722,12 @@ class DuckDbIndex:
                 else:
                     # Lower-bound unique total using dups observed in-window.
                     total = max(unique_n, total - (pre_collapse_n - unique_n))
+            # Prefix path already counted unique groups in SQL; still prefer
+            # the candidate-window unique count when we saw the full set.
+            elif pre_collapse_n < candidate_cap:
+                total = unique_n
             else:
-                # Prefix path already counted unique groups in SQL; still prefer
-                # the candidate-window unique count when we saw the full set.
-                if pre_collapse_n < candidate_cap:
-                    total = unique_n
-                else:
-                    total = max(unique_n, total)
+                total = max(unique_n, total)
 
             # Pageable ceiling: clients (SPA Next, CLI) treat total as the last
             # reachable index+1. Never report more than max_results when set.
@@ -1615,6 +1766,7 @@ class DuckDbIndex:
             # SPA/CLI can show "recency=…" without re-reading settings.
             try:
                 from awareness.config import get_settings as _get_settings
+
                 _rw = float(getattr(_get_settings(), "search_recency_boost", 0.0) or 0.0)
             except Exception:
                 _rw = 0.0
@@ -2096,7 +2248,9 @@ def _lead_exact_frac(
     return 1.0 if tokens == cleaned else 0.0
 
 
-def _length_factor(text_len: int, *, pivot: int = _RERANK_LEN_PIVOT, floor: float = _RERANK_LEN_FLOOR) -> float:
+def _length_factor(
+    text_len: int, *, pivot: int = _RERANK_LEN_PIVOT, floor: float = _RERANK_LEN_FLOOR
+) -> float:
     """1.0 for docs up to `pivot` chars, decaying toward `floor` for longer ones.
 
     Tames over-long blobs the single-field BM25 length-norm under-penalizes,
@@ -2208,28 +2362,14 @@ def _rerank(
         url_blob = c.get("url") or c.get("canonical_url") or ""
         domain_blob = c.get("domain") or ""
         url_f = 1.0 + url_boost * _url_hit_frac(str(url_blob), str(domain_blob), terms)
-        url_phrase_f = 1.0 + url_phrase_boost * _url_phrase_frac(
-            str(url_blob), str(domain_blob), terms
-        )
-        url_exact_f = 1.0 + url_exact_boost * _url_exact_frac(
-            str(url_blob), str(domain_blob), terms
-        )
-        url_prefix_f = 1.0 + url_prefix_boost * _url_prefix_frac(
-            str(url_blob), str(domain_blob), terms
-        )
+        url_phrase_f = 1.0 + url_phrase_boost * _url_phrase_frac(str(url_blob), str(domain_blob), terms)
+        url_exact_f = 1.0 + url_exact_boost * _url_exact_frac(str(url_blob), str(domain_blob), terms)
+        url_prefix_f = 1.0 + url_prefix_boost * _url_prefix_frac(str(url_blob), str(domain_blob), terms)
         domain_nav_f = 1.0 + domain_nav_boost * _domain_nav_frac(str(domain_blob), terms)
-        lead_hit_f = 1.0 + lead_hit_boost * _lead_hit_frac(
-            str(text), terms, lead_chars=lead_chars
-        )
-        lead_f = 1.0 + lead_phrase_boost * _lead_phrase_frac(
-            str(text), terms, lead_chars=lead_chars
-        )
-        lead_prefix_f = 1.0 + lead_prefix_boost * _lead_prefix_frac(
-            str(text), terms, lead_chars=lead_chars
-        )
-        lead_exact_f = 1.0 + lead_exact_boost * _lead_exact_frac(
-            str(text), terms, lead_chars=lead_chars
-        )
+        lead_hit_f = 1.0 + lead_hit_boost * _lead_hit_frac(str(text), terms, lead_chars=lead_chars)
+        lead_f = 1.0 + lead_phrase_boost * _lead_phrase_frac(str(text), terms, lead_chars=lead_chars)
+        lead_prefix_f = 1.0 + lead_prefix_boost * _lead_prefix_frac(str(text), terms, lead_chars=lead_chars)
+        lead_exact_f = 1.0 + lead_exact_boost * _lead_exact_frac(str(text), terms, lead_chars=lead_chars)
         len_f = _length_factor(len(text), pivot=len_pivot, floor=len_floor)
         doc_epoch = _to_epoch(c.get("published_ts") or c.get("fetch_ts")) if recency_on else None
         rec_f = _recency_factor(

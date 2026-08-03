@@ -36,6 +36,8 @@ from awareness.util.hashing import (
 from awareness.util.hashing import (
     content_hash as compute_content_hash,
 )
+from awareness.util.http import RetryableHTTPError
+from awareness.util.lang import primary_language_tag
 from awareness.util.timeutil import to_utc, utcnow
 from awareness.util.urls import canonical_url, domain_of
 
@@ -59,6 +61,18 @@ def _normalize_filter_reason(reason: str | None) -> str:
     if reason.startswith("too_short"):
         return "too_short"
     return "normalize"
+
+
+def _normalize_languages_filter(languages: list[str] | None) -> set[str] | None:
+    """Reduce requested BCP-47 languages to primary subtags (``en-US`` → ``en``).
+
+    The CLI passes raw BCP-47 (``--lang EN``, ``en-US``); FineWeb rows carry
+    lowercase primary tags. ``None`` means no filter → every row passes.
+    """
+    if not languages:
+        return None
+    out = {primary for raw in languages if (primary := primary_language_tag(raw)) is not None}
+    return out or None
 
 
 def _record_fineweb_load(*, outcome: str, elapsed: float, dataset: str) -> None:
@@ -90,9 +104,7 @@ class FineWebAdapter(Adapter):
         self._rows = rows_per_partition
 
     def plan(self, request: BackfillRequest) -> list[PartitionSpec]:
-        explicitly_requested = bool(
-            {SourceKind.FINEWEB, SourceKind.FINEWEB_2} & set(request.sources or [])
-        )
+        explicitly_requested = bool({SourceKind.FINEWEB, SourceKind.FINEWEB_2} & set(request.sources or []))
         try:
             import datasets  # noqa: F401, PLC0415
         except ImportError as exc:
@@ -107,30 +119,40 @@ class FineWebAdapter(Adapter):
         crawls = crawl_ids_for_range(request.start, request.end)
         # If languages requested, pivot to fineweb-2 (multilingual).
         datasets_to_use = []
-        if request.languages and any(lang.lower() not in ("en", "english") for lang in request.languages):
+        if request.languages and any(
+            primary_language_tag(lang) not in ("en", "english") for lang in request.languages
+        ):
             datasets_to_use.append(("HuggingFaceFW/fineweb-2", SourceKind.FINEWEB_2))
         else:
             datasets_to_use.append((self._default, SourceKind.FINEWEB))
 
         out: list[PartitionSpec] = []
         seen_keys: set[str] = set()
+        m = get_metrics()
 
         for ds_name, kind in datasets_to_use:
             configs: list[str] = []
             try:
                 from datasets import get_dataset_config_names  # noqa: PLC0415
+
                 configs = get_dataset_config_names(ds_name)
             except Exception as exc:
                 logger.info("fineweb_failed_to_fetch_configs", ds=ds_name, err=str(exc))
 
             for crawl_id in crawls:
-                resolved_dump = crawl_id
                 if configs and crawl_id not in configs:
-                    fallback = "sample-10BT" if "sample-10BT" in configs else (configs[0] if configs else crawl_id)
-                    logger.warning("fineweb_crawl_id_mismatch", ds=ds_name, requested=crawl_id, fallback=fallback)
-                    resolved_dump = fallback
+                    # M-01: never fall back to an unrelated dump (sample-10BT or
+                    # configs[0]) — that would stream the WRONG corpus. Skip the
+                    # partition and surface the mismatch so operators notice.
+                    m.inc("fineweb.dump_mismatch", labels={"dataset": ds_name})
+                    logger.warning(
+                        "fineweb_crawl_id_mismatch_skipping",
+                        ds=ds_name,
+                        requested=crawl_id,
+                    )
+                    continue
 
-                part_key = f"{ds_name}:{resolved_dump}"
+                part_key = f"{ds_name}:{crawl_id}"
                 if part_key in seen_keys:
                     continue
                 seen_keys.add(part_key)
@@ -141,7 +163,7 @@ class FineWebAdapter(Adapter):
                         partition_key=part_key,
                         payload={
                             "dataset": ds_name,
-                            "dump": resolved_dump,
+                            "dump": crawl_id,
                             "rows_per_partition": self._rows,
                             "languages": request.languages,
                             "domains": request.domains,
@@ -166,7 +188,7 @@ class FineWebAdapter(Adapter):
 
         dump = partition.payload.get("dump")
         rows_per = int(partition.payload.get("rows_per_partition", self._rows))
-        languages = set(partition.payload.get("languages") or [])
+        languages = _normalize_languages_filter(partition.payload.get("languages"))
         domains_filter = set(partition.payload.get("domains") or [])
         start_offset = int(context.checkpoint.get("row_index", 0))
 
@@ -177,14 +199,26 @@ class FineWebAdapter(Adapter):
         t_load = time.perf_counter()
         try:
             ds = load_dataset(ds_name, name=dump, split="train", streaming=True)
+        except ImportError:
+            # Dependency quirk surfacing at load time — same no-op as a missing
+            # package; the partition is not retried.
+            _record_fineweb_load(
+                outcome="missing_dep",
+                elapsed=time.perf_counter() - t_load,
+                dataset=ds_label,
+            )
+            return
         except Exception as exc:
+            # H-15: any other load failure must NOT mark the partition
+            # COMPLETED — record the metric, then raise so the task layer
+            # retries with backoff.
             _record_fineweb_load(
                 outcome="error",
                 elapsed=time.perf_counter() - t_load,
                 dataset=ds_label,
             )
             logger.warning("fineweb_load_failed", ds=ds_name, dump=dump, err=str(exc))
-            return
+            raise RetryableHTTPError(f"fineweb load failed for {ds_name}/{dump}: {exc}") from exc
         _record_fineweb_load(
             outcome="ok",
             elapsed=time.perf_counter() - t_load,
@@ -210,8 +244,11 @@ class FineWebAdapter(Adapter):
                 continue
             url = row.get("url") or row.get("source")
             row_date = row.get("date") or row.get("date_download") or row.get("published_date")
-            lang = (row.get("language") or "").lower() or None
-            if languages and lang and lang not in languages:
+            lang = primary_language_tag(row.get("language"))
+            if languages and (lang is None or lang not in languages):
+                # H-18: primary-subtag comparison — a --lang EN / en-US request
+                # matches the dataset's lowercase "en". Rows without a language
+                # tag are skipped when a strict filter is set.
                 m.inc(
                     "fineweb.rows_filtered",
                     labels={"reason": "language", "dataset": ds_label},

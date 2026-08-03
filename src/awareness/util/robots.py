@@ -124,6 +124,10 @@ class RobotsCache:
     Use ``await is_allowed(url, user_agent)`` from async code.
     """
 
+    # Soft bound on in-memory entries (M-11): unbounded per-site retention
+    # leaks memory under large crawl fan-out. Oldest entries are dropped.
+    MAX_ENTRIES = 2048
+
     def __init__(self, state_db: StateDB | None = None, ttl: int = 3600, timeout: float = 10.0) -> None:
         self._state_db = state_db
         self._ttl = ttl
@@ -153,6 +157,27 @@ class RobotsCache:
             return ""
         return f"{parts.scheme.lower()}://{parts.netloc.lower()}"
 
+    def _remember(self, site: str, entry: RobotsEntry) -> None:
+        """Insert a memory entry, bounding the dict (M-11).
+
+        Drops expired entries first, then oldest-inserted entries when still
+        over the cap, so the cache cannot grow without bound.
+        """
+        self._entries[site] = entry
+        if len(self._entries) <= RobotsCache.MAX_ENTRIES:
+            return
+        now = time.time()
+        expired = [k for k, v in self._entries.items() if v.expires_at < now]
+        for k in expired:
+            self._entries.pop(k, None)
+            if len(self._entries) <= RobotsCache.MAX_ENTRIES:
+                return
+        while len(self._entries) > RobotsCache.MAX_ENTRIES:
+            oldest = next(iter(self._entries), None)
+            if oldest is None:
+                break
+            self._entries.pop(oldest, None)
+
     async def _load(self, site: str, user_agent: str) -> RobotsEntry:
         url = f"{site}/robots.txt"
         rp = RobotFileParser()
@@ -166,9 +191,7 @@ class RobotsCache:
             elapsed = time.perf_counter() - t0
             if resp is None:
                 # Redirect left public space or URL not fetchable.
-                _record_robots_fetch(
-                    outcome="blocked", status_class="none", elapsed=elapsed
-                )
+                _record_robots_fetch(outcome="blocked", status_class="none", elapsed=elapsed)
                 rp.parse([])
                 robots_txt = ""
             elif resp.status_code == 200 and resp.text:
@@ -204,6 +227,17 @@ class RobotsCache:
                 )
                 robots_txt = ""
                 rp.parse([])
+            elif resp.status_code == 200:
+                # 200 with an empty body: not a fetch error — the server
+                # explicitly answered. Label it "empty" (M-12) and treat it
+                # permissively, same as a missing robots.txt.
+                _record_robots_fetch(
+                    outcome="empty",
+                    status_class="2xx",
+                    elapsed=elapsed,
+                )
+                robots_txt = ""
+                rp.parse([])
             else:
                 _record_robots_fetch(
                     outcome="http_error",
@@ -220,9 +254,7 @@ class RobotsCache:
             )
         except (httpx.HTTPError, ValueError, OSError) as e:
             elapsed = time.perf_counter() - t0
-            _record_robots_fetch(
-                outcome="error", status_class="transport", elapsed=elapsed
-            )
+            _record_robots_fetch(outcome="error", status_class="transport", elapsed=elapsed)
             logger.warning("robots_fetch_failed", site=site, err=str(e))
             # Be cautious on failure: cache empty/permissive entry briefly.
             rp.parse([])
@@ -267,7 +299,7 @@ class RobotsCache:
                         crawl_delay=row.crawl_delay,
                         robots_txt=row.robots_txt,
                     )
-                    self._entries[site] = entry
+                    self._remember(site, entry)
                     if entry.parser is None:
                         return False
                     try:
@@ -280,7 +312,7 @@ class RobotsCache:
         # 3. Not in memory/DB or expired -> load and save
         _robots_cache_metric("network")
         entry = await self._load(site, user_agent)
-        self._entries[site] = entry
+        self._remember(site, entry)
 
         if self._state_db is not None:
             try:
@@ -302,28 +334,58 @@ class RobotsCache:
             return False
 
     def crawl_delay(self, url: str) -> float | None:
+        """Return the cached per-site crawl-delay for ``url`` (memory only).
+
+        Sync callers (e.g. ``sources/tail_recrawl``) must never block the
+        event loop on a sync DB read — M-10. The memory entry is normally
+        populated by the ``is_allowed`` call that precedes this, so the DB
+        fallback lives in :meth:`crawl_delay_async` for async callers.
+        TTL is checked before returning so an expired entry is not served
+        as a stale delay (L-09).
+        """
         site = self._site_key(url)
         e = self._entries.get(site)
-        if e is None and self._state_db is not None:
-            try:
-                row = self._state_db.get_robots_cache(site)
-                if row is not None and row.expires_at >= time.time():
-                    rp = RobotFileParser()
-                    rp.set_url(f"{site}/robots.txt")
-                    if row.robots_txt is not None:
-                        rp.parse(row.robots_txt.splitlines())
-                    else:
-                        rp.parse([])
-                    e = RobotsEntry(
-                        parser=rp,
-                        expires_at=row.expires_at,
-                        crawl_delay=row.crawl_delay,
-                        robots_txt=row.robots_txt,
-                    )
-                    self._entries[site] = e
-            except Exception as exc:
-                logger.warning("robots_db_crawl_delay_failed", site=site, err=str(exc))
-        return e.crawl_delay if e else None
+        if e is not None and e.expires_at >= time.time():
+            return e.crawl_delay
+        return None
+
+    async def crawl_delay_async(self, url: str) -> float | None:
+        """Async variant: memory → DB (via ``asyncio.to_thread``) → None.
+
+        Both cache layers are TTL-checked (L-09); a DB hit is cached in
+        memory so the sync :meth:`crawl_delay` sees it next time.
+        """
+        site = self._site_key(url)
+        if not site:
+            return None
+        e = self._entries.get(site)
+        if e is not None and e.expires_at >= time.time():
+            return e.crawl_delay
+        if self._state_db is None:
+            return None
+        try:
+            row = await asyncio.to_thread(self._state_db.get_robots_cache, site)
+        except Exception as exc:
+            logger.warning("robots_db_crawl_delay_failed", site=site, err=str(exc))
+            return None
+        if row is None or row.expires_at < time.time():
+            return None
+        rp = RobotFileParser()
+        rp.set_url(f"{site}/robots.txt")
+        if row.robots_txt is not None:
+            rp.parse(row.robots_txt.splitlines())
+        else:
+            rp.parse([])
+        self._remember(
+            site,
+            RobotsEntry(
+                parser=rp,
+                expires_at=row.expires_at,
+                crawl_delay=row.crawl_delay,
+                robots_txt=row.robots_txt,
+            ),
+        )
+        return row.crawl_delay
 
     async def get_robots_txt(self, url: str, user_agent: str) -> str | None:
         """Return the robots.txt body for the site of ``url`` (cached).

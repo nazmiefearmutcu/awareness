@@ -45,6 +45,7 @@ class RedisLock:
         if redis is None:
             try:
                 import redis as _redis
+
                 redis = _redis
             except ImportError:
                 pass
@@ -59,11 +60,18 @@ class RedisLock:
         self.timeout_sec = timeout_sec
         self.token = str(uuid.uuid4())
         self._client: redis.Redis | None = None
+        # H-29: a blackholed Redis must never hang a worker forever — bound
+        # socket connect/read so acquire() honors timeout_sec in wall time.
+        self._socket_timeout = min(5.0, max(0.1, float(timeout_sec)))
 
     @property
     def client(self) -> redis.Redis:
         if self._client is None:
-            self._client = redis.Redis.from_url(self.redis_url)
+            self._client = redis.Redis.from_url(
+                self.redis_url,
+                socket_timeout=self._socket_timeout,
+                socket_connect_timeout=self._socket_timeout,
+            )
         return self._client
 
     def acquire(self) -> bool:

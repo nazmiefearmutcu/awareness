@@ -67,17 +67,17 @@ AWARENESS_THEME = Theme(
 
 # Big outline wordmark — figlet "cyberlarge": hollow pixel-outline, no fill.
 _BIG_LINES = [
-    r' _______ _  _  _ _______  ______ _______ __   _ _______ _______ _______',
-    r' |_____| |  |  | |_____| |_____/ |______ | \  | |______ |______ |______',
-    r' |     | |__|__| |     | |    \_ |______ |  \_| |______ ______| ______|',
+    r" _______ _  _  _ _______  ______ _______ __   _ _______ _______ _______",
+    r" |_____| |  |  | |_____| |_____/ |______ | \  | |______ |______ |______",
+    r" |     | |__|__| |     | |    \_ |______ |  \_| |______ ______| ______|",
 ]
 _BIG_WIDTH = max(len(line) for line in _BIG_LINES)
 
 # Compact wordmark — figlet "cybermedium": same family, for narrow terminals.
 _SMALL_LINES = [
-    r'____ _ _ _ ____ ____ ____ _  _ ____ ____ ____ ',
-    r'|__| | | | |__| |__/ |___ |\ | |___ [__  [__  ',
-    r'|  | |_|_| |  | |  \ |___ | \| |___ ___] ___] ',
+    r"____ _ _ _ ____ ____ ____ _  _ ____ ____ ____ ",
+    r"|__| | | | |__| |__/ |___ |\ | |___ [__  [__  ",
+    r"|  | |_|_| |  | |  \ |___ | \| |___ ___] ___] ",
 ]
 SMALL_BANNER = "\n" + "\n".join(_SMALL_LINES) + "\n"
 _SMALL_WIDTH = max(len(line) for line in _SMALL_LINES)
@@ -191,10 +191,18 @@ def boot_sequence(ctx: dict[str, Any] | None = None, width: int | None = None) -
         ("power-on self test", "OK", True),
         ("mount  /var/awareness/store", "OK", True),
         ("open   iceberg.catalog", ("OK" if ctx.get("cloud") else "LOCAL"), bool(ctx.get("cloud"))),
-        ("attach state.db (sqlite)", ("OK" if ctx.get("initialized") else "NEW"), bool(ctx.get("initialized"))),
+        (
+            "attach state.db (sqlite)",
+            ("OK" if ctx.get("initialized") else "NEW"),
+            bool(ctx.get("initialized")),
+        ),
         ("build  dedup index", "OK", True),
         ("tail   daemon", ("LIVE" if ctx.get("tail_running") else "STANDBY"), bool(ctx.get("tail_running"))),
-        (f"serve  api :{port}", ("OK" if ctx.get("api_running") else "STANDBY"), bool(ctx.get("api_running"))),
+        (
+            f"serve  api :{port}",
+            ("OK" if ctx.get("api_running") else "STANDBY"),
+            bool(ctx.get("api_running")),
+        ),
     ]
     # Each row is "▸ <label> <dots> <status>" sized to span *target* columns, so
     # the status words right-align flush with the frame the log sits inside.
@@ -238,6 +246,7 @@ def ready_bar(pct: int = 100, width: int | None = None) -> Text:
 
 def status_chips(ctx: dict[str, Any]) -> Text:
     """Compact API/Tail/storage status line (kept for inline status displays)."""
+
     def chip(label: str, on: bool) -> tuple[str, str]:
         dot = "●" if on else "○"
         return (f"{dot} {label}", (f"bold {C_FG}" if on else C_FAINT))
@@ -345,73 +354,100 @@ def render_intro(
 
 # ── full command map (used by `commands` and the shell `help`) ───────────────
 COMMAND_CATEGORIES: list[tuple[str, list[tuple[str, str]]]] = [
-    ("Service & lifecycle", [
-        ("start", "Start API server (+ live tail) in the background"),
-        ("stop", "Stop the background API server & tail"),
-        ("restart", "Stop then start the API server"),
-        ("status", "Services, recent jobs & disk usage"),
-        ("health", "Quick JSON liveness probe"),
-        ("dashboard", "Open the web dashboard in a browser"),
-        ("tui", "Live full-screen terminal dashboard"),
-        ("logs", "View / follow API & app logs"),
-        ("service …", "Install & manage the macOS launchd agent"),
-    ]),
-    ("Ingest — BODY (historical)", [
-        ("backfill submit", "Queue a historical date-range crawl"),
-        ("backfill run", "Run a queued backfill job to completion"),
-        ("backfill status", "Inspect a backfill job"),
-        ("compact", "Fold JSONL staging into Iceberg (--status for backlog)"),
-    ]),
-    ("Ingest — TAIL (live)", [
-        ("tail start", "Capture newly-published text until stopped"),
-        ("tail stop", "Request a running tail to stop"),
-        ("tail status", "Show tail daemon state"),
-        ("tail check-seeds", "Validate feeds/sitemaps in tail_seeds.yaml"),
-    ]),
-    ("Explore your corpus", [
-        ("search", "Search captures (ranked; --mode/--fields/--max-results)"),
-        ("browse", "Page through captures & read full text (--unique)"),
-        ("inspect", "Tabular query by date / domain / source"),
-        ("counts", "Aggregate counts by source, domain & language"),
-        ("export", "Export captures to JSONL/txt (--limit, --unique)"),
-        ("hf-push", "Publish captures to a Hugging Face dataset"),
-    ]),
-    ("Deduplication", [
-        ("dedup check", "Test a URL / text / file against the index"),
-        ("dedup-stats", "Dump dedup index statistics"),
-    ]),
-    ("Recovery", [
-        ("dlq list", "List dead-lettered tasks (newest first; --json)"),
-        ("dlq count", "Count dead-letter queue rows"),
-        ("dlq replay", "Re-arm a dead-lettered task by DLQ id"),
-        ("dlq purge", "Drop a DLQ entry without re-arming the task"),
-        ("dlq purge-bulk", "Drop many DLQ entries (optional --job-id / --limit)"),
-    ]),
-    ("Config & cloud", [
-        ("init", "Initialise storage layout & choose data dir"),
-        ("configure", "Set WHERE tail writes (wizard) — before capturing"),
-        ("config show", "Show config by section, with each value's source"),
-        ("config get", "Show one value: source, type, default, range"),
-        ("config set", "Persist a validated config value to awareness.yaml"),
-        ("config unset", "Drop a key back to its default"),
-        ("config reset", "Clear all overrides (back to defaults)"),
-        ("config validate", "Check the override file for problems"),
-        ("config doctor", "Diagnose write destinations (paths, cloud, Drive)"),
-        ("config path", "Print the config file path & active env overrides"),
-        ("config edit", "Open the config file in $EDITOR"),
-        ("config interactive", "Edit any setting interactively"),
-        ("cloud auth-gdrive", "Authorise Google Drive storage"),
-        ("cloud status", "Show cloud storage integration status"),
-    ]),
-    ("Insight", [
-        ("stats", "Detailed storage / DB / ingestion metrics"),
-        ("metrics", "In-process counters & histograms snapshot"),
-    ]),
-    ("Interactive", [
-        ("shell", "Full REPL — any command, history & Tab-complete"),
-        ("commands", "Show this command map"),
-        ("clear", "Clear the screen"),
-    ]),
+    (
+        "Service & lifecycle",
+        [
+            ("start", "Start API server (+ live tail) in the background"),
+            ("stop", "Stop the background API server & tail"),
+            ("restart", "Stop then start the API server"),
+            ("status", "Services, recent jobs & disk usage"),
+            ("health", "Quick JSON liveness probe"),
+            ("dashboard", "Open the web dashboard in a browser"),
+            ("tui", "Live full-screen terminal dashboard"),
+            ("logs", "View / follow API & app logs"),
+            ("service …", "Install & manage the macOS launchd agent"),
+        ],
+    ),
+    (
+        "Ingest — BODY (historical)",
+        [
+            ("backfill submit", "Queue a historical date-range crawl"),
+            ("backfill run", "Run a queued backfill job to completion"),
+            ("backfill status", "Inspect a backfill job"),
+            ("compact", "Fold JSONL staging into Iceberg (--status for backlog)"),
+        ],
+    ),
+    (
+        "Ingest — TAIL (live)",
+        [
+            ("tail start", "Capture newly-published text until stopped"),
+            ("tail stop", "Request a running tail to stop"),
+            ("tail status", "Show tail daemon state"),
+            ("tail check-seeds", "Validate feeds/sitemaps in tail_seeds.yaml"),
+        ],
+    ),
+    (
+        "Explore your corpus",
+        [
+            ("search", "Search captures (ranked; --mode/--fields/--max-results)"),
+            ("browse", "Page through captures & read full text (--unique)"),
+            ("inspect", "Tabular query by date / domain / source"),
+            ("counts", "Aggregate counts by source, domain & language"),
+            ("export", "Export captures to JSONL/txt (--limit, --unique)"),
+            ("hf-push", "Publish captures to a Hugging Face dataset"),
+        ],
+    ),
+    (
+        "Deduplication",
+        [
+            ("dedup check", "Test a URL / text / file against the index"),
+            ("dedup-stats", "Dump dedup index statistics"),
+        ],
+    ),
+    (
+        "Recovery",
+        [
+            ("dlq list", "List dead-lettered tasks (newest first; --json)"),
+            ("dlq count", "Count dead-letter queue rows"),
+            ("dlq replay", "Re-arm a dead-lettered task by DLQ id"),
+            ("dlq purge", "Drop a DLQ entry without re-arming the task"),
+            ("dlq purge-bulk", "Drop many DLQ entries (optional --job-id / --limit)"),
+        ],
+    ),
+    (
+        "Config & cloud",
+        [
+            ("init", "Initialise storage layout & choose data dir"),
+            ("configure", "Set WHERE tail writes (wizard) — before capturing"),
+            ("config show", "Show config by section, with each value's source"),
+            ("config get", "Show one value: source, type, default, range"),
+            ("config set", "Persist a validated config value to awareness.yaml"),
+            ("config unset", "Drop a key back to its default"),
+            ("config reset", "Clear all overrides (back to defaults)"),
+            ("config validate", "Check the override file for problems"),
+            ("config doctor", "Diagnose write destinations (paths, cloud, Drive)"),
+            ("config path", "Print the config file path & active env overrides"),
+            ("config edit", "Open the config file in $EDITOR"),
+            ("config interactive", "Edit any setting interactively"),
+            ("cloud auth-gdrive", "Authorise Google Drive storage"),
+            ("cloud status", "Show cloud storage integration status"),
+        ],
+    ),
+    (
+        "Insight",
+        [
+            ("stats", "Detailed storage / DB / ingestion metrics"),
+            ("metrics", "In-process counters & histograms snapshot"),
+        ],
+    ),
+    (
+        "Interactive",
+        [
+            ("shell", "Full REPL — any command, history & Tab-complete"),
+            ("commands", "Show this command map"),
+            ("clear", "Clear the screen"),
+        ],
+    ),
 ]
 
 

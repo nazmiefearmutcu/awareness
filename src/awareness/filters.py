@@ -29,6 +29,10 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from awareness.obs.logging import get_logger
+
+logger = get_logger("filters")
+
 _FIELDS = ("title", "text", "both")
 
 
@@ -67,9 +71,25 @@ class TopicFilter:
                 try:
                     pattern = re.compile(term, re.IGNORECASE)
                 except re.error:
-                    pattern = None  # bad regex → treat as a literal below
+                    # M-25: a bad regex silently becoming a literal substring
+                    # can drop everything (or nothing) — surface it.
+                    logger.warning(
+                        "topic_filter_bad_regex",
+                        term=term,
+                        fallback="literal",
+                    )
+                    pattern = None
             if pattern is None:
                 pattern = re.compile(_word_boundary(term), re.IGNORECASE)
+            if self.regex and self.match_all and pattern.search("") is not None:
+                # M-24: a pattern that matches the empty string (``.*``,
+                # ``.+?``) makes an AND filter trivially true for every doc —
+                # drop it so the remaining terms still constrain.
+                logger.warning(
+                    "topic_filter_empty_match_regex_dropped",
+                    term=term,
+                )
+                continue
             self._patterns.append(pattern)
 
     @property

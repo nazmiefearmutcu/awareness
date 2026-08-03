@@ -144,6 +144,9 @@ async def test_run_partition_download_ok_metrics(tmp_project: Path, monkeypatch:
         async def __aexit__(self, *args):
             return None
 
+        async def aclose(self):
+            return None
+
     class _FakeClient:
         def __init__(self, *a, **k):
             pass

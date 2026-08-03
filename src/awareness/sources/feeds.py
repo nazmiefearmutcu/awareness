@@ -88,11 +88,10 @@ def _record_feed_fetch(
     }
     # Sitemap probes only: root index vs nested child urlset/index.
     if kind == "sitemap":
-        labels["depth"] = _sitemap_probe_depth_label(
-            1 if depth is None else int(depth)
-        )
+        labels["depth"] = _sitemap_probe_depth_label(1 if depth is None else int(depth))
     m.inc("feeds.fetch_attempts", labels=labels)
     m.observe("feeds.fetch_seconds", max(0.0, elapsed), labels=labels)
+
 
 # Content negotiation: many CDNs gate XML feeds without a sensible Accept.
 # Prefer RSS/Atom, then JSON Feed (https://www.jsonfeed.org/), then generic XML.
@@ -101,6 +100,67 @@ FEED_ACCEPT = (
     "application/json;q=0.9, application/xml;q=0.85, text/xml;q=0.8, */*;q=0.1"
 )
 SITEMAP_ACCEPT = "application/xml, text/xml, application/gzip, */*;q=0.1"
+
+_FEED_REDIRECT_LIMIT = 10
+
+
+def is_public_fetch_url(value: Any) -> bool:
+    """http(s) URL that is public AND carries no userinfo (``user:pass@``).
+
+    ``is_public_http_url`` validates the host only; the userinfo component is
+    checked here so a feed can never embed credentials into a later fetch.
+    """
+    if not isinstance(value, str):
+        return False
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    if parts.username or parts.password:
+        return False
+    return is_public_http_url(value)
+
+
+async def _fetch_public_url(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> httpx.Response | None:
+    """GET ``url`` while validating every redirect hop as public.
+
+    ``httpx`` would otherwise follow redirects transparently, letting a public
+    feed bounce the crawler onto an internal service. Redirects are followed
+    manually and each target is re-checked with :func:`is_public_fetch_url`
+    before any request is sent. Returns ``None`` when a hop is not public or
+    the redirect chain exceeds :data:`_FEED_REDIRECT_LIMIT`.
+    """
+    current_url = url
+    for _ in range(_FEED_REDIRECT_LIMIT + 1):
+        if not is_public_fetch_url(current_url):
+            return None
+        response = await get_with_retries(client, current_url, headers=headers)
+        if not response.is_redirect:
+            return response
+        location = response.headers.get("Location")
+        if not location:
+            return response
+        current_url = urljoin(str(response.url), location)
+    return None
+
+
+def _retry_exhausted_status_class(exc: Exception) -> str:
+    """Best-effort status class from a :class:`RetryableHTTPError`.
+
+    ``get_with_retries`` embeds the last response status in its message
+    (``url -> 503 after N attempts``); transport exhaustion carries none.
+    """
+    message = str(getattr(exc, "args", [None])[0] or "")
+    if "->" in message:
+        for token in message.replace("->", " ").split():
+            if token.isdigit() and len(token) == 3:
+                return _status_class(int(token))
+    return "5xx"
 
 
 def _maybe_decompress_body(body: bytes) -> bytes:
@@ -202,9 +262,7 @@ def _coerce_http_url(value: Any, base_url: str | None = None) -> str | None:
     return None
 
 
-def _entry_attr_http_url(
-    entry: Any, *attrs: str, base_url: str | None = None
-) -> str | None:
+def _entry_attr_http_url(entry: Any, *attrs: str, base_url: str | None = None) -> str | None:
     """First http(s) URL found among named entry attributes (or nested dicts)."""
     for attr in attrs:
         value = getattr(entry, attr, None)
@@ -601,14 +659,14 @@ async def _enqueue_robots_sitemaps(seed_url: str, context: AdapterContext) -> in
         return 0
     try:
         body = await robots.get_robots_txt(seed_url, context.user_agent)
-    except Exception as exc:  # noqa: BLE001 — discovery must not fail the seed
+    except Exception as exc:
         logger.warning("robots_sitemap_discover_failed", seed=seed_url, err=str(exc))
         return 0
 
     enqueue = context.extras.setdefault("enqueue", [])
     added = 0
     for sm_url in extract_sitemap_urls(body):
-        if not is_public_http_url(sm_url):
+        if not is_public_fetch_url(sm_url):
             continue
         key = canonical_url(sm_url) or sm_url
         enqueue.append(
@@ -629,15 +687,25 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
     t0 = time.perf_counter()
     try:
         # Reuse process-wide pooled client (connection keep-alive across seeds).
-        client = await get_shared_async_client(timeout=30.0, follow_redirects=True)
+        # follow_redirects=False: each hop is re-validated by _fetch_public_url.
+        client = await get_shared_async_client(timeout=30.0, follow_redirects=False)
         # Transient 429/5xx retried inside get_with_retries (global slot held
         # only during each GET). Exhausted retries raise RetryableHTTPError.
-        r = await get_with_retries(
+        r = await _fetch_public_url(
             client,
             url,
             headers={"User-Agent": user_agent, "Accept": FEED_ACCEPT},
         )
         elapsed = time.perf_counter() - t0
+        if r is None:
+            get_metrics().inc("feeds.blocked_internal_url", labels={"kind": "rss"})
+            _record_feed_fetch(
+                kind="rss",
+                outcome="blocked_internal",
+                status_class="blocked",
+                elapsed=elapsed,
+            )
+            return []
         if r.status_code != 200:
             logger.warning("feed_fetch_non_200", url=url, status=r.status_code)
             get_metrics().inc(
@@ -661,11 +729,11 @@ async def _read_feed(url: str, user_agent: str) -> list[str]:
             return []
         body = _maybe_decompress_body(r.content)
         ctype = r.headers.get("content-type") or r.headers.get("Content-Type")
-    except RetryableHTTPError:
+    except RetryableHTTPError as exc:
         _record_feed_fetch(
             kind="rss",
             outcome="retry_exhausted",
-            status_class="5xx",
+            status_class=_retry_exhausted_status_class(exc),
             elapsed=time.perf_counter() - t0,
         )
         get_metrics().inc(
@@ -707,14 +775,25 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
     t0 = time.perf_counter()
     try:
         # Longer timeout for large sitemap indexes; still pooled by timeout key.
-        client = await get_shared_async_client(timeout=60.0, follow_redirects=True)
+        # follow_redirects=False: each redirect target is re-validated as public.
+        client = await get_shared_async_client(timeout=60.0, follow_redirects=False)
         # Same retry policy as feeds / CC discovery: transient → retry/raise.
-        r = await get_with_retries(
+        r = await _fetch_public_url(
             client,
             url,
             headers={"User-Agent": user_agent, "Accept": SITEMAP_ACCEPT},
         )
         elapsed = time.perf_counter() - t0
+        if r is None:
+            get_metrics().inc("feeds.blocked_internal_url", labels={"kind": "sitemap"})
+            _record_feed_fetch(
+                kind="sitemap",
+                outcome="blocked_internal",
+                status_class="blocked",
+                elapsed=elapsed,
+                depth=depth,
+            )
+            return []
         if r.status_code != 200:
             logger.warning("sitemap_fetch_non_200", url=url, status=r.status_code)
             get_metrics().inc(
@@ -744,11 +823,11 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
             return []
         body = _maybe_decompress_body(r.content)
         ctype = r.headers.get("content-type") or r.headers.get("Content-Type")
-    except RetryableHTTPError:
+    except RetryableHTTPError as exc:
         _record_feed_fetch(
             kind="sitemap",
             outcome="retry_exhausted",
-            status_class="5xx",
+            status_class=_retry_exhausted_status_class(exc),
             elapsed=time.perf_counter() - t0,
             depth=depth,
         )
@@ -805,9 +884,7 @@ async def _read_sitemap(url: str, user_agent: str, depth: int = 1) -> list[str]:
     return dedupe_feed_urls(out)
 
 
-def _sitemap_loc_texts(
-    root: Any, *, parent_local: str, base_url: str | None = None
-) -> list[str]:
+def _sitemap_loc_texts(root: Any, *, parent_local: str, base_url: str | None = None) -> list[str]:
     """Collect ``<loc>`` text under ``parent_local`` elements, any namespace.
 
     Standard sitemaps use ``{http://www.sitemaps.org/schemas/sitemap/0.9}``,

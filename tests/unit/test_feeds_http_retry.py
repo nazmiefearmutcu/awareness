@@ -765,7 +765,7 @@ async def test_read_feed_uses_feedburner_origlink(
 
     _patch_client_and_retries(monkeypatch, handler, module="awareness.sources.feeds")
 
-    urls = await _read_feed("https://feeds.example.com/rss", "TestBot/1.0")
+    urls = await _read_feed("https://example.com/rss", "TestBot/1.0")
     assert urls == ["https://example.com/real-story/42"]
 
 

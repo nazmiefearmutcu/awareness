@@ -23,12 +23,20 @@ DUMMY_WET_RECORD = (
 )
 
 
-def test_crawl_ids_for_range_edges() -> None:
+def test_crawl_ids_for_range_edges(monkeypatch) -> None:
+    import awareness.sources.cc_crawls as cc
+
+    # Deterministic: use the bundled snapshot of REAL crawl IDs (no network).
+    monkeypatch.setattr(cc, "_fetch_catalog", lambda: None)
+    monkeypatch.setattr(cc, "_read_cache", lambda: None)
     start = datetime(2024, 6, 1, tzinfo=UTC)
     end = datetime(2024, 6, 10, tzinfo=UTC)
     crawls = crawl_ids_for_range(start, end)
     assert len(crawls) >= 1
-    assert "CC-MAIN-2024-23" in crawls or "CC-MAIN-2024-21" in crawls
+    # Real published crawls whose windows overlap June 1-10 2024 (from the
+    # bundled catalog: CC-MAIN-2024-22 covers 2024-05-27..2024-06-17).
+    assert set(crawls).issubset(set(cc.BUNDLED_CRAWL_IDS))
+    assert "CC-MAIN-2024-22" in crawls
 
 
 async def test_run_partition_wet_shard_process_pool(tmp_project: Path) -> None:

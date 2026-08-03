@@ -58,6 +58,13 @@ from awareness.util.hashing import (
 from awareness.util.hashing import (
     content_hash as compute_content_hash,
 )
+from awareness.util.http import (
+    RETRYABLE_STATUS,
+    RetryableHTTPError,
+    _backoff_delay,
+    _retry_after_seconds,
+)
+from awareness.util.lang import primary_language_tag
 from awareness.util.timeutil import to_utc, utcnow
 from awareness.util.urls import canonical_url, domain_of
 
@@ -85,20 +92,28 @@ def _iso_year_weeks(start: datetime, end: datetime) -> list[tuple[int, int]]:
 
 
 def crawl_ids_for_range(start: datetime, end: datetime) -> list[str]:
-    """Convert a date range to candidate crawl_ids like ``CC-MAIN-2024-26``."""
+    """Convert a date range to the REAL crawl_ids that overlap it.
+
+    Delegates to :func:`cc_crawls.resolve_crawl_ids`, which fetches the
+    authoritative ``collinfo.json`` catalog (TTL-cached on disk) and falls back
+    to a bundled snapshot of known crawl IDs when offline. This replaces the
+    old even-week fabrication that missed ~90% of published crawls.
+
+    When catalog resolution itself fails (never expected — the bundled
+    fallback should cover it), we fall back to enumerating every ISO week in
+    the range (no odd-week parity coercion); nonexistent crawls are skipped on
+    first fetch failure by the discovery pass.
+    """
+    from awareness.sources.cc_crawls import resolve_crawl_ids  # noqa: PLC0415
+
+    try:
+        real = resolve_crawl_ids(start, end)
+        if real:
+            return real
+    except Exception as exc:  # resolution is best-effort
+        logger.warning("cc_crawl_resolution_failed_using_week_fallback", err=str(exc))
     pairs = _iso_year_weeks(start, end)
-    # Common Crawl crawls span ~2 weeks; we coalesce to even-week starts.
-    seen: set[tuple[int, int]] = set()
-    out: list[str] = []
-    for year, week in pairs:
-        anchor_week = week if week % 2 == 1 else week - 1
-        anchor_week = max(anchor_week, 1)
-        key = (year, anchor_week)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(f"CC-MAIN-{year}-{anchor_week:02d}")
-    return out
+    return [f"CC-MAIN-{year}-{week:02d}" for year, week in pairs]
 
 
 def _normalize_domain_filter(domains: list[str] | None) -> set[str] | None:
@@ -110,6 +125,19 @@ def _normalize_domain_filter(domains: list[str] | None) -> set[str] | None:
     return {d for d in normalized if d} or None
 
 
+def _normalize_languages_filter(languages: list[str] | None) -> set[str] | None:
+    """Reduce requested BCP-47 languages to primary subtags (``en-US`` → ``en``).
+
+    The CLI passes raw BCP-47 (``--lang EN``, ``en-US``); records carry a LID
+    primary tag. Comparing primary-to-primary keeps the filter case- and
+    format-insensitive. ``None`` means no filter → every record passes.
+    """
+    if not languages:
+        return None
+    out = {primary for raw in languages if (primary := primary_language_tag(raw)) is not None}
+    return out or None
+
+
 def _record_passes_domain_filter(url: str, domains_filter: set[str] | None) -> bool:
     if not domains_filter:
         return True
@@ -118,9 +146,7 @@ def _record_passes_domain_filter(url: str, domains_filter: set[str] | None) -> b
     return dom in domains_filter
 
 
-def _wet_quality_verdict(
-    text: str, *, enabled: bool, lang: str | None = None
-) -> QualityVerdict:
+def _wet_quality_verdict(text: str, *, enabled: bool, lang: str | None = None) -> QualityVerdict:
     """Gopher/C4 quality decision for a WET record.
 
     English-leaning Gopher gates only judge English; a record admitted in
@@ -233,9 +259,7 @@ class CommonCrawlWetAdapter(Adapter):
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
             # Transient failures raise RetryableHTTPError (task retries with
             # backoff); a genuine 404 means this crawl has no wet.paths — skip.
-            resp = await get_with_retries(
-                client, url, headers={"User-Agent": context.user_agent}
-            )
+            resp = await get_with_retries(client, url, headers={"User-Agent": context.user_agent})
             if resp.status_code != 200:
                 logger.info("cc_wet_paths_not_found", crawl_id=crawl_id, status=resp.status_code)
                 return
@@ -269,7 +293,7 @@ class CommonCrawlWetAdapter(Adapter):
         if False:  # pragma: no cover
             yield
 
-    async def _run_shard(
+    async def _run_shard(  # noqa: PLR0915
         self,
         partition: PartitionSpec,
         context: AdapterContext,
@@ -277,7 +301,7 @@ class CommonCrawlWetAdapter(Adapter):
         crawl_id = partition.payload["crawl_id"]
         shard_path = partition.payload["shard_path"]
         domains_filter = _normalize_domain_filter(partition.payload.get("domains"))
-        languages_filter = set(partition.payload.get("languages") or []) or None
+        languages_filter = _normalize_languages_filter(partition.payload.get("languages"))
 
         url = f"{CC_BASE}/{shard_path}"
         logger.info("cc_wet_shard_start", crawl_id=crawl_id, shard=shard_path, url=url)
@@ -291,33 +315,38 @@ class CommonCrawlWetAdapter(Adapter):
         local = cache_dir / shard_path.replace("/", "_")
         if not local.exists():
             t0 = time.perf_counter()
+            tmp: Path | None = None
             try:
                 async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
-                    async with client.stream(
-                        "GET", url, headers={"User-Agent": context.user_agent}
-                    ) as resp:
-                        if resp.status_code != 200:
-                            elapsed = max(0.0, time.perf_counter() - t0)
-                            get_metrics().inc(
-                                "cc_wet.shard_download_attempts",
-                                labels={
-                                    "crawl_id": crawl_id,
-                                    "outcome": "http_status",
-                                },
-                            )
-                            get_metrics().observe(
-                                "cc_wet.shard_download_seconds",
-                                elapsed,
-                                labels={"outcome": "http_status"},
-                            )
-                            logger.warning(
-                                "cc_wet_shard_not_found",
-                                crawl_id=crawl_id,
-                                shard=shard_path,
-                                status=resp.status_code,
-                            )
-                            return
-                        tmp = local.with_suffix(local.suffix + ".tmp")
+                    resp = await _stream_shard_with_retries(
+                        client, url, headers={"User-Agent": context.user_agent}
+                    )
+                    if resp.status_code != 200:
+                        # A 404 (or other non-retryable status) means this
+                        # shard is gone — skip, the task must not retry.
+                        await resp.aclose()
+                        elapsed = max(0.0, time.perf_counter() - t0)
+                        get_metrics().inc(
+                            "cc_wet.shard_download_attempts",
+                            labels={
+                                "crawl_id": crawl_id,
+                                "outcome": "http_status",
+                            },
+                        )
+                        get_metrics().observe(
+                            "cc_wet.shard_download_seconds",
+                            elapsed,
+                            labels={"outcome": "http_status"},
+                        )
+                        logger.warning(
+                            "cc_wet_shard_not_found",
+                            crawl_id=crawl_id,
+                            shard=shard_path,
+                            status=resp.status_code,
+                        )
+                        return
+                    tmp = local.with_suffix(local.suffix + ".tmp")
+                    try:
                         with open(tmp, "wb") as fh:  # noqa: ASYNC230
                             async for chunk in resp.aiter_bytes(1 << 20):
                                 if context.is_stopping():
@@ -330,25 +359,41 @@ class CommonCrawlWetAdapter(Adapter):
                                             "outcome": "stopped",
                                         },
                                     )
-                                    return
+                                    # Stop mid-download must NOT mark the task
+                                    # COMPLETED — cancel so the task layer
+                                    # re-queues PENDING for retry.
+                                    raise asyncio.CancelledError("shard download stopped")
                                 fh.write(chunk)
                         tmp.rename(local)
-                elapsed = max(0.0, time.perf_counter() - t0)
-                get_metrics().inc(
-                    "cc_wet.shard_download_attempts",
-                    labels={"crawl_id": crawl_id, "outcome": "ok"},
-                )
-                get_metrics().observe(
-                    "cc_wet.shard_download_seconds",
-                    elapsed,
-                    labels={"outcome": "ok"},
-                )
-                logger.info(
-                    "cc_wet_shard_cached",
-                    path=str(local),
-                    seconds=round(elapsed, 4),
-                )
-            except httpx.HTTPError as exc:
+                    finally:
+                        await resp.aclose()
+                    elapsed = max(0.0, time.perf_counter() - t0)
+                    get_metrics().inc(
+                        "cc_wet.shard_download_attempts",
+                        labels={"crawl_id": crawl_id, "outcome": "ok"},
+                    )
+                    get_metrics().observe(
+                        "cc_wet.shard_download_seconds",
+                        elapsed,
+                        labels={"outcome": "ok"},
+                    )
+                    logger.info(
+                        "cc_wet_shard_cached",
+                        path=str(local),
+                        seconds=round(elapsed, 4),
+                    )
+            except asyncio.CancelledError:
+                # H-14: stop during download → propagate cancel so the task
+                # layer re-queues; never leave a half-written .tmp behind.
+                if tmp is not None:
+                    tmp.unlink(missing_ok=True)
+                raise
+            except Exception as exc:  # every failure must clean tmp
+                # H-13: transient failures (httpx.HTTPError, exhausted retries,
+                # or local I/O) must raise so the task retries with backoff
+                # instead of silently skipping the shard. M-04: unlink tmp.
+                if tmp is not None:
+                    tmp.unlink(missing_ok=True)
                 elapsed = max(0.0, time.perf_counter() - t0)
                 get_metrics().inc(
                     "cc_wet.shard_download_attempts",
@@ -360,7 +405,9 @@ class CommonCrawlWetAdapter(Adapter):
                     labels={"outcome": "error"},
                 )
                 logger.warning("cc_wet_shard_download_failed", err=str(exc))
-                return
+                if isinstance(exc, RetryableHTTPError):
+                    raise
+                raise RetryableHTTPError(str(exc)) from exc
         else:
             get_metrics().inc(
                 "cc_wet.shard_download_attempts",
@@ -402,6 +449,44 @@ class CommonCrawlWetAdapter(Adapter):
         )
 
 
+async def _stream_shard_with_retries(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    max_attempts: int = 4,
+    base_delay: float = 0.5,
+) -> httpx.Response:
+    """Stream a GET with retries on transient statuses/errors.
+
+    Mirrors ``util.http.get_with_retries`` but for ``client.stream`` so large
+    shard bodies are never buffered in memory. Returns the response only when
+    the caller should consume it: a 404 (or other non-retryable status) comes
+    back for the caller to skip; a transient status (408/429/5xx) or transport
+    error that persists across attempts raises :class:`RetryableHTTPError` so
+    the task layer retries with its own backoff lease.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max(1, max_attempts)):
+        try:
+            resp = client.stream("GET", url, headers=headers)
+            await resp.__aenter__()
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt + 1 >= max_attempts:
+                break
+            await asyncio.sleep(_backoff_delay(attempt, base_delay, None))
+            continue
+        if resp.status_code in RETRYABLE_STATUS:
+            await resp.aclose()
+            if attempt + 1 >= max_attempts:
+                raise RetryableHTTPError(f"{url} -> {resp.status_code} after {max_attempts} attempts")
+            await asyncio.sleep(_backoff_delay(attempt, base_delay, _retry_after_seconds(resp)))
+            continue
+        return resp
+    raise RetryableHTTPError(f"{url} failed transiently after {max_attempts} attempts: {last_exc}")
+
+
 def _ensure_warcio_available() -> None:
     import warcio  # noqa: F401, PLC0415
 
@@ -434,6 +519,10 @@ def _iter_wet_captures(
     ``advance_checkpoint`` is true, those keys are updated after each yield
     (safe for sync callers). Streaming path advances on the consumer side so
     a full queue cannot move the cursor past delivered captures.
+
+    Language filtering is primary-subtag based (``en-US`` request matches a
+    record LID'd ``en``). A record with no detected language passes when no
+    languages filter is set and is skipped when a strict filter is active.
     """
     from warcio.archiveiterator import ArchiveIterator  # noqa: PLC0415
 
@@ -495,14 +584,15 @@ def _iter_wet_captures(
                 if norm.discarded_reason:
                     continue
                 lang = detect_language(norm.text) or None
-                if languages_filter and lang not in languages_filter:
-                    continue
+                if languages_filter:
+                    # H-18: compare primary subtags so CLI BCP-47 input
+                    # (--lang EN, en-US) matches LID's lowercase primary tag.
+                    if primary_language_tag(lang) not in languages_filter:
+                        continue
                 # Quality gating runs DOWNSTREAM of language selection so the
                 # English-leaning Gopher gates only judge text the language filter
                 # has already admitted (see normalize/quality.py docstring).
-                qv = _wet_quality_verdict(
-                    norm.text, enabled=settings.wet_quality_filter, lang=lang
-                )
+                qv = _wet_quality_verdict(norm.text, enabled=settings.wet_quality_filter, lang=lang)
                 if not qv.ok:
                     get_metrics().inc(
                         "cc_wet.quality_filtered",
@@ -657,9 +747,7 @@ async def _stream_wet_captures(
     Checkpoint keys are advanced only when a capture is yielded to the caller,
     so a stop/drain cannot leave ``last_record_id`` past delivered progress.
     """
-    queue: asyncio.Queue[tuple[DocCapture, int] | None] = asyncio.Queue(
-        maxsize=max(1, queue_maxsize)
-    )
+    queue: asyncio.Queue[tuple[DocCapture, int] | None] = asyncio.Queue(maxsize=max(1, queue_maxsize))
     loop = asyncio.get_running_loop()
     stop = threading.Event()
     errors: list[BaseException] = []

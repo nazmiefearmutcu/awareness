@@ -20,8 +20,8 @@ from awareness.schemas.doc import SourceKind
 
 class JobKind(str, Enum):
     BACKFILL = "backfill"  # historical body
-    TAIL = "tail"          # live capture
-    REPAIR = "repair"      # gap-fill / WARC repair
+    TAIL = "tail"  # live capture
+    REPAIR = "repair"  # gap-fill / WARC repair
 
 
 class JobStatus(str, Enum):

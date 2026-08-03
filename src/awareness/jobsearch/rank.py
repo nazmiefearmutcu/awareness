@@ -28,6 +28,10 @@ _FRESH_ZERO_HOURS = 14.0 * 24.0  # ~14 days → boost decays to 0
 _LINKEDIN_RESERVE_FRAC = 0.30
 
 
+# Token characters: word chars plus the tech-stack punctuation (+ # . / -).
+_TOKEN_CHAR_CLASS = r"[\w+#./-]"
+
+
 def _tokens(s: str) -> list[str]:
     return [t for t in re.split(r"[^\w+#./-]+", (s or "").lower()) if len(t) >= 2]
 
@@ -48,15 +52,17 @@ def _haystack_from_fields(fields: dict[str, str]) -> str:
 
 
 def _token_in_field(token: str, text: str) -> bool:
-    """Prefer word-ish boundaries; fall back to substring for short tech tokens."""
+    """Real word-boundary match over the token-char class (M-06).
+
+    ``ai`` matches " ai " and "ai," but never "email" — the old short-token
+    substring fallback was the leak. ``c++`` / ``c#`` / ``.net`` still match
+    because ``+ # .`` belong to the token-char class, so no separate
+    substring path is needed.
+    """
     if not token or not text:
         return False
-    if re.search(rf"(?<![\w+#./-]){re.escape(token)}(?![\w+#./-])", text):
-        return True
-    # Short stack tokens (e.g. c++, go) often sit in free text without clean edges
-    if len(token) <= 3 and token in text:
-        return True
-    return token in text and len(token) >= 4
+    pattern = rf"(?<!{_TOKEN_CHAR_CLASS}){re.escape(token)}(?!{_TOKEN_CHAR_CLASS})"
+    return re.search(pattern, text) is not None
 
 
 def _field_hits(token: str, fields: dict[str, str]) -> list[str]:
@@ -95,10 +101,10 @@ def score_job(job: JobListing, profile: JobProfile, query: str = "") -> JobListi
     score = 0.0
     reasons: list[str] = []
 
-    # Hard exclude: large penalty when term appears anywhere
+    # Hard exclude: large penalty when the term matches as a real token/phrase
     for ex in profile.exclude:
         ex_l = ex.lower().strip()
-        if ex_l and ex_l in hay:
+        if ex_l and _token_in_field(ex_l, hay):
             score -= 25.0
             reasons.append(f"exclude:{ex}")
 
@@ -257,7 +263,6 @@ def _diversify_by_source(jobs: list[JobListing], limit: int) -> list[JobListing]
     other_pool = [j for j in jobs if j.source != "linkedin"]
 
     out: list[JobListing] = []
-    used_ids: set[int] = set()
 
     # Reserve ~30% for LinkedIn (best LI first — pools already score-sorted)
     if li_pool:
@@ -265,7 +270,6 @@ def _diversify_by_source(jobs: list[JobListing], limit: int) -> list[JobListing]
         li_slots = min(li_slots, len(li_pool), limit)
         for j in li_pool[:li_slots]:
             out.append(j)
-            used_ids.add(id(j))
         li_remain = li_pool[li_slots:]
     else:
         li_remain = []

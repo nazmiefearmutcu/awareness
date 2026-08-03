@@ -7,7 +7,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # Public / guest-accessible boards. LinkedIn uses guest HTML (logged-out view).
 SOURCE_CATALOG: dict[str, dict[str, str]] = {
     "linkedin": {
@@ -87,6 +86,9 @@ class JobListing(BaseModel):
     description: str = ""
     score: float = 0.0
     score_reasons: list[str] = Field(default_factory=list)
+    # True only when a real detail body was merged in (apply_detail_to_listing);
+    # feeds the response "enriched" metric (M-37).
+    enriched: bool = False
 
 
 class JobSearchRequest(BaseModel):

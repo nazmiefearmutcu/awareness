@@ -180,11 +180,14 @@ def _match_query(text: str, query: str) -> bool:
     if not q:
         return True
     hay = (text or "").lower()
-    # All tokens must appear (simple AND)
+    # All tokens must appear as real tokens (AND) — same boundary class as the
+    # ranker (M-06): "ai" must not match "email", "go" must not match "golang".
+    from awareness.jobsearch.rank import _token_in_field
+
     tokens = [t for t in re_split(q) if len(t) > 1]
     if not tokens:
         return True
-    return all(t in hay for t in tokens)
+    return all(_token_in_field(t, hay) for t in tokens)
 
 
 def _normalize_board_list(raw: Any) -> list[str]:
@@ -229,9 +232,9 @@ def _candidate_board_paths() -> list[Path]:
 
             data_dir = Path(get_settings().data_dir)
             paths.append(data_dir.parent / "configs" / "jobsearch_boards.yaml")
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     # CWD fallbacks
@@ -282,7 +285,7 @@ def load_boards() -> dict[str, list[str]]:
                 ashby = ab
             loaded_from = str(path)
             break
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("jobsearch_boards_load_fail", path=str(path), error=str(exc)[:120])
             continue
 
@@ -356,9 +359,7 @@ async def _fetch_boards_batched(
     return out
 
 
-async def _fetch_greenhouse_board(
-    client: httpx.AsyncClient, board: str, query: str = ""
-) -> list[JobListing]:
+async def _fetch_greenhouse_board(client: httpx.AsyncClient, board: str, query: str = "") -> list[JobListing]:
     out: list[JobListing] = []
     url = f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs"
     try:
@@ -367,7 +368,7 @@ async def _fetch_greenhouse_board(
             return out
         r.raise_for_status()
         data = r.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("greenhouse_board_fail", board=board, error=str(exc)[:120])
         return out
     jobs = data.get("jobs") if isinstance(data, dict) else None
@@ -413,9 +414,7 @@ async def fetch_greenhouse(client: httpx.AsyncClient, query: str = "") -> list[J
     return await _fetch_boards_batched(boards, one)
 
 
-async def _fetch_lever_company(
-    client: httpx.AsyncClient, company: str, query: str = ""
-) -> list[JobListing]:
+async def _fetch_lever_company(client: httpx.AsyncClient, company: str, query: str = "") -> list[JobListing]:
     out: list[JobListing] = []
     url = f"https://api.lever.co/v0/postings/{company}"
     try:
@@ -424,7 +423,7 @@ async def _fetch_lever_company(
             return out
         r.raise_for_status()
         rows = r.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("lever_company_fail", company=company, error=str(exc)[:120])
         return out
     if not isinstance(rows, list):
@@ -474,9 +473,7 @@ async def fetch_lever(client: httpx.AsyncClient, query: str = "") -> list[JobLis
     return await _fetch_boards_batched(companies, one)
 
 
-async def _fetch_ashby_board(
-    client: httpx.AsyncClient, board: str, query: str = ""
-) -> list[JobListing]:
+async def _fetch_ashby_board(client: httpx.AsyncClient, board: str, query: str = "") -> list[JobListing]:
     """Ashby public posting API — fail soft on missing boards / errors."""
     out: list[JobListing] = []
     url = f"https://api.ashbyhq.com/posting-api/job-board/{board}"
@@ -486,7 +483,7 @@ async def _fetch_ashby_board(
             return out
         r.raise_for_status()
         data = r.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("ashby_board_fail", board=board, error=str(exc)[:120])
         return out
 
@@ -511,8 +508,10 @@ async def _fetch_ashby_board(
         if not desc and row.get("descriptionHtml"):
             desc = _strip_html(str(row.get("descriptionHtml") or ""))[:3000]
         workplace = str(row.get("workplaceType") or "")
-        remote = bool(row.get("isRemote")) or workplace.lower() == "remote" or _is_remote(
-            f"{title} {desc} {workplace}", loc
+        remote = (
+            bool(row.get("isRemote"))
+            or workplace.lower() == "remote"
+            or _is_remote(f"{title} {desc} {workplace}", loc)
         )
         blob = f"{title} {loc} {team} {workplace} {desc}"
         if not _match_query(blob, query):

@@ -52,6 +52,9 @@ class TailEngine:
         self._planner = planner
         self._engine: WorkerEngine | None = None
         self._stop_event = asyncio.Event()
+        # Set when the reseed loop observes a terminal job status (C-01): the
+        # worker loop watches it and requests an engine stop too.
+        self._stopped_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._reseed_task: asyncio.Task[None] | None = None
         self._job_id: str | None = None
@@ -111,6 +114,7 @@ class TailEngine:
         self._job_id = job_id
         self._engine = WorkerEngine(self._state, self._planner, mute_duplicates=mute_duplicates)
         self._stop_event.clear()
+        self._stopped_event.clear()
 
         # Seed an initial GDELT slot immediately (don't wait a full poll).
         if self._gdelt:
@@ -136,6 +140,18 @@ class TailEngine:
                     self._next_reseed_at = utcnow().timestamp() + settings.tail_poll_seconds
                     await asyncio.sleep(settings.tail_poll_seconds)
                     if self._stop_event.is_set():
+                        break
+                    # C-01: planner.stop_tail marks the job COMPLETED (and flips
+                    # tail_state.running=False). A stopped tail must stop re-arming
+                    # discovery tasks — otherwise reseed keeps feeding the pool.
+                    job = self._state.get_job(job_id)
+                    if job is not None and job.status in (
+                        JobStatus.CANCELLED,
+                        JobStatus.COMPLETED,
+                        JobStatus.FAILED,
+                    ):
+                        logger.info("tail_reseed_job_terminal", job_id=job_id, status=job.status.value)
+                        self._stopped_event.set()
                         break
                     iteration += 1
                     try:
@@ -201,7 +217,20 @@ class TailEngine:
         async def worker_loop() -> None:
             assert self._engine is not None
             try:
-                await self._engine.run_tail(job_id, poll_seconds=settings.tail_poll_seconds)
+                run_task = asyncio.create_task(
+                    self._engine.run_tail(job_id, poll_seconds=settings.tail_poll_seconds)
+                )
+                # C-01: if the reseed loop observed a terminal job, stop the worker
+                # loop as well (belt-and-suspenders; run_tail also checks status).
+                stop_watch = asyncio.create_task(self._stopped_event.wait())
+                await asyncio.wait({run_task, stop_watch}, return_when=asyncio.FIRST_COMPLETED)
+                if not stop_watch.done():
+                    stop_watch.cancel()
+                if self._stopped_event.is_set() and not run_task.done():
+                    self._engine.request_stop()
+                # Always await the worker task so its outcome is observed and its
+                # finally-block (aclose) runs even on cancellation/exception.
+                await asyncio.gather(run_task, return_exceptions=True)
             finally:
                 await self._engine.aclose()
 
@@ -224,6 +253,10 @@ class TailEngine:
             await asyncio.wait_for(self._task, timeout=drain_seconds)
         except TimeoutError:
             logger.warning("tail_drain_timeout", drain_seconds=drain_seconds)
+            # H-04: never abandon a still-running worker task — cancel it and
+            # await it so its finally-block (aclose) actually runs.
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
         if self._job_id:
             self._planner.stop_tail(self._job_id, note="user-requested-stop")
         self._task = None

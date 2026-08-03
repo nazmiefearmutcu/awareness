@@ -24,12 +24,33 @@ _CACHE_TTL = timedelta(days=7)
 _CATALOG_TIMEOUT = 15.0
 
 BUNDLED_CRAWL_IDS: list[str] = [
-    "CC-MAIN-2026-21", "CC-MAIN-2026-17", "CC-MAIN-2026-12", "CC-MAIN-2026-08", "CC-MAIN-2026-04",
-    "CC-MAIN-2025-51", "CC-MAIN-2025-47", "CC-MAIN-2025-43", "CC-MAIN-2025-38", "CC-MAIN-2025-33",
-    "CC-MAIN-2025-30", "CC-MAIN-2025-26", "CC-MAIN-2025-21", "CC-MAIN-2025-18", "CC-MAIN-2025-13",
-    "CC-MAIN-2025-08", "CC-MAIN-2025-05",
-    "CC-MAIN-2024-51", "CC-MAIN-2024-46", "CC-MAIN-2024-42", "CC-MAIN-2024-38", "CC-MAIN-2024-33",
-    "CC-MAIN-2024-30", "CC-MAIN-2024-26", "CC-MAIN-2024-22", "CC-MAIN-2024-18", "CC-MAIN-2024-10",
+    "CC-MAIN-2026-21",
+    "CC-MAIN-2026-17",
+    "CC-MAIN-2026-12",
+    "CC-MAIN-2026-08",
+    "CC-MAIN-2026-04",
+    "CC-MAIN-2025-51",
+    "CC-MAIN-2025-47",
+    "CC-MAIN-2025-43",
+    "CC-MAIN-2025-38",
+    "CC-MAIN-2025-33",
+    "CC-MAIN-2025-30",
+    "CC-MAIN-2025-26",
+    "CC-MAIN-2025-21",
+    "CC-MAIN-2025-18",
+    "CC-MAIN-2025-13",
+    "CC-MAIN-2025-08",
+    "CC-MAIN-2025-05",
+    "CC-MAIN-2024-51",
+    "CC-MAIN-2024-46",
+    "CC-MAIN-2024-42",
+    "CC-MAIN-2024-38",
+    "CC-MAIN-2024-33",
+    "CC-MAIN-2024-30",
+    "CC-MAIN-2024-26",
+    "CC-MAIN-2024-22",
+    "CC-MAIN-2024-18",
+    "CC-MAIN-2024-10",
 ]
 
 Crawl = tuple[str, datetime, datetime]
@@ -58,8 +79,10 @@ def _bundled_catalog() -> list[Crawl]:
 
 def _cache_path():
     settings = get_settings()
-    assert settings.data_dir is not None
-    return settings.data_dir / "cache" / "cc_collinfo.json"
+    # Honor an explicit cache_dir; fall back to data_dir/cache (model_post_init
+    # already defaults cache_dir, but keep the fallback for minimal settings).
+    base = settings.cache_dir or (settings.data_dir / "cache")
+    return base / "cc_collinfo.json"
 
 
 def _parse_dt(raw: str) -> datetime | None:
@@ -120,9 +143,7 @@ def _write_cache(catalog: list[Crawl]) -> None:
             json.dumps(
                 {
                     "fetched_at": datetime.now(UTC).isoformat(),
-                    "crawls": [
-                        {"id": c, "from": f.isoformat(), "to": t.isoformat()} for c, f, t in catalog
-                    ],
+                    "crawls": [{"id": c, "from": f.isoformat(), "to": t.isoformat()} for c, f, t in catalog],
                 }
             )
         )
@@ -153,3 +174,12 @@ def resolve_crawl_ids(start: datetime, end: datetime) -> list[str]:
     catalog = _load_catalog()
     overlapping = [cid for cid, cf, ct in catalog if cf <= end and ct >= start]
     return sorted(set(overlapping), reverse=True)
+
+
+def crawl_window_for(crawl_id: str) -> tuple[datetime, datetime] | None:
+    """Public [from, to] window approximation for ``CC-MAIN-YYYY-WW``.
+
+    Wraps :func:`_iso_week_window` so adapters (e.g. cc_index) can intersect a
+    crawl's window with a backfill request without importing internals.
+    """
+    return _iso_week_window(crawl_id)

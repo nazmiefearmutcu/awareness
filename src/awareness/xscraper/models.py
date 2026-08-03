@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -98,9 +98,6 @@ class SearchRequest(BaseModel):
             raise ValueError("Provide at least one keyword, account, or raw query term")
         if self.start_time and self.end_time and self.end_time < self.start_time:
             raise ValueError("end_time must be greater than or equal to start_time")
-        if self.start_time is not None and self.lookback and self.lookback.strip():
-            # The UI can still send both, but start/end take precedence.
-            pass
         return self
 
 

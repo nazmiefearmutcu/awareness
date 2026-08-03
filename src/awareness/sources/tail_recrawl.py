@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterator
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -113,12 +113,7 @@ class TailRecrawlAdapter(Adapter):
 
         # Exact-URL gate: skip HTTP when this canonical URL was already fetched.
         pre_cu = canonical_url(url)
-        if (
-            state is not None
-            and pre_cu
-            and not force_refresh
-            and state.was_url_fetched(pre_cu)
-        ):
+        if state is not None and pre_cu and not force_refresh and state.was_url_fetched(pre_cu):
             get_metrics().inc("tail.fetch_skipped_seen", labels={"domain": dom})
             logger.debug("tail_skip_already_fetched", url=url, canonical_url=pre_cu)
             return
@@ -149,12 +144,21 @@ class TailRecrawlAdapter(Adapter):
                     follow_redirects=False,
                 )
                 r = await _get_public_url(
-                    client, url, headers={"User-Agent": context.user_agent}
+                    client,
+                    url,
+                    headers={"User-Agent": context.user_agent},
+                    user_agent=context.user_agent,
+                    robots=robots,
+                    limiter=limiter,
                 )
                 if r is None:
                     fetch_outcome = "blocked_redirect"
                     metrics.inc("tail.blocked_internal_url", labels={"domain": dom})
-                elif r.status_code >= 400 or not r.content:
+                elif not r.content:
+                    # L-06: a 200 with an empty body is not a non-200 — classify
+                    # it as "empty" so dashboards don't mislabel it an error.
+                    fetch_outcome = "empty"
+                elif r.status_code >= 400:
                     fetch_outcome = "non_200"
             except RetryableHTTPError:
                 # Transient failure exhausted retries — task layer requeues.
@@ -182,6 +186,9 @@ class TailRecrawlAdapter(Adapter):
             return
 
         metrics.inc("tail.fetches", labels={"domain": dom})
+        if fetch_outcome == "empty":
+            # L-06: fetched but the body was empty — nothing to extract.
+            return
         if fetch_outcome == "non_200":
             metrics.inc(
                 "tail.fetch_non_200",
@@ -284,12 +291,25 @@ class TailRecrawlAdapter(Adapter):
         )
 
 
+def _hop_host(url: str) -> str | None:
+    """Normalized host (netloc) used to detect cross-host redirect hops."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    host = parts.hostname
+    return host.lower() if host else None
+
+
 async def _get_public_url(
     client: httpx.AsyncClient,
     url: str,
     *,
     headers: dict[str, str] | None = None,
     max_redirects: int = 10,
+    user_agent: str | None = None,
+    robots: RobotsCache | None = None,
+    limiter: PerDomainLimiter | None = None,
 ) -> httpx.Response | None:
     """Fetch a public URL while validating every redirect target.
 
@@ -297,13 +317,41 @@ async def _get_public_url(
     which means an attacker-controlled public URL can redirect the crawler to an
     internal service. Keep redirect handling explicit so each hop is checked
     before any request is sent.
+
+    L-07: when ``robots`` / ``limiter`` are provided, every hop onto a NEW
+    domain is politeness-checked before the fetch — the target domain's
+    robots.txt is consulted (disallowed → ``None``) and the hop's GET runs
+    under that domain's limiter slot with its crawl-delay. The first hop is
+    covered by the caller (``run_partition`` already checks robots and holds
+    the initial domain's limiter slot), so only cross-domain redirect hops
+    re-check here.
     """
     current_url = url
+    prev_host: str | None = _hop_host(url)
     for _ in range(max_redirects + 1):
         if not is_public_http_url(current_url):
             return None
-        # get_with_retries acquires the global fetch slot per attempt (no outer slot).
-        response = await get_with_retries(client, current_url, headers=headers)
+        hop_host = _hop_host(current_url)
+        new_host = hop_host != prev_host
+        if new_host:
+            prev_host = hop_host
+            if robots is not None and user_agent:
+                # Per-hop robots gate for the NEW host.
+                try:
+                    allowed = await robots.is_allowed(current_url, user_agent)
+                except Exception:
+                    allowed = True
+                if not allowed:
+                    return None
+        if limiter is not None and new_host and hop_host:
+            # L-07: the new host pays its own politeness slot + crawl-delay.
+            # (The first hop's slot is held by the caller in run_partition.)
+            crawl_delay = robots.crawl_delay(current_url) if robots is not None else None
+            # get_with_retries acquires the global fetch slot per attempt.
+            async with limiter.domain(hop_host, override_delay=crawl_delay):
+                response = await get_with_retries(client, current_url, headers=headers)
+        else:
+            response = await get_with_retries(client, current_url, headers=headers)
         if not response.is_redirect:
             return response
 
@@ -313,6 +361,7 @@ async def _get_public_url(
         current_url = urljoin(str(response.url), location)
 
     return None
+
 
 _LIMITER: PerDomainLimiter | None = None
 _ROBOTS: RobotsCache | None = None
@@ -332,6 +381,7 @@ def _global_robots(settings) -> RobotsCache:
     global _ROBOTS  # noqa: PLW0603
     if _ROBOTS is None:
         from awareness.storage.state import StateDB
+
         state_db = None
         if settings.state_db_url:
             state_db = StateDB(settings.state_db_url)

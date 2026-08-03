@@ -40,9 +40,21 @@ def run() -> None:
             pass
 
     async def _drive() -> None:
-        await tail.start()
-        await shutdown.wait()
-        await tail.stop()
+        reaper = None
+        # H-09: the tail daemon previously never ran the DatabaseReaper, so
+        # completed task rows grew unbounded for the lifetime of the process.
+        if settings.reaper_enabled:
+            from awareness.workers.engine import DatabaseReaper
+
+            reaper = DatabaseReaper(state)
+            await reaper.start()
+        try:
+            await tail.start()
+            await shutdown.wait()
+            await tail.stop()
+        finally:
+            if reaper:
+                await reaper.stop()
 
     try:
         loop.run_until_complete(_drive())

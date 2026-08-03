@@ -17,6 +17,7 @@ Also exposes:
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 import threading
 import time
@@ -24,6 +25,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -88,7 +90,15 @@ RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 DEFAULT_MAX_ATTEMPTS = 4
 DEFAULT_BASE_DELAY = 0.5
 DEFAULT_MAX_DELAY = 30.0
-# Cap connect phase so hung SYN/TLS handshakes fail fast while still allowing
+# Retry-After is honored as a floor (with jitter) up to this cap — M-35. The
+# old clamp of 30s ignored long server backoff windows (e.g. 60-120s rate
+# limit resets) and re-firing early just earned another 429. 600s bounds the
+# worst-case stall of a task while still respecting the server's instruction.
+DEFAULT_RETRY_AFTER_CAP = 600.0
+# Jitter fraction applied ON TOP of the server's Retry-After so a fleet of
+# workers that hit the same 429 don't all wake at the same instant.
+RETRY_AFTER_JITTER_FRAC = 0.5
+# Connect phase cap so hung SYN/TLS handshakes fail fast while still allowing
 # long reads for large feed/sitemap bodies (full budget goes to read/write).
 DEFAULT_CONNECT_TIMEOUT_CAP = 10.0
 DEFAULT_CONNECT_TIMEOUT_FLOOR = 1.0
@@ -164,6 +174,24 @@ def _record_fetch_attempt(
         m.inc("http.fetch_retries", labels={"outcome": outcome})
     if status_code is not None:
         m.inc("http.fetch_status", labels={"status_class": _status_class(status_code)})
+
+
+def _safe_url_for_error(url: str) -> str:
+    """Strip userinfo (potential credentials) from a URL for error messages.
+
+    Feeds can surface authenticated URLs; log/exception text must never carry
+    ``user:pass@`` — M-01 red-team.
+    """
+    try:
+        parts = urlsplit(url)
+        netloc = parts.netloc
+        if "@" in netloc:
+            netloc = netloc.rsplit("@", 1)[1]
+        if netloc != parts.netloc:
+            parts = parts._replace(netloc=netloc)
+        return urlunsplit(parts)
+    except (ValueError, AttributeError):
+        return url
 
 
 class RetryableHTTPError(Exception):
@@ -276,7 +304,7 @@ async def aclose_shared_async_clients() -> None:
     for client in clients:
         try:
             await client.aclose()
-        except Exception as exc:  # noqa: BLE001 — best-effort close
+        except Exception as exc:
             logger.warning("shared_http_client_close_failed", err=str(exc))
 
 
@@ -298,7 +326,11 @@ def shared_async_client_pool_size() -> int:
 
 def _backoff_delay(attempt: int, base_delay: float, retry_after: float | None) -> float:
     if retry_after is not None:
-        return min(retry_after, DEFAULT_MAX_DELAY)
+        # Honor the server's Retry-After as a FLOOR with jitter on top
+        # (M-35): wait at least the server value (capped at 600s) plus up
+        # to 50% jitter so synchronized 429 bursts do not stampede back.
+        floor = min(max(0.0, retry_after), DEFAULT_RETRY_AFTER_CAP)
+        return floor * (1.0 + RETRY_AFTER_JITTER_FRAC * random.random())
     return min(base_delay * (2**attempt), DEFAULT_MAX_DELAY)
 
 
@@ -360,9 +392,7 @@ async def get_with_retries(
         except httpx.HTTPError as exc:
             elapsed = time.perf_counter() - t0
             last_exc = exc
-            _record_fetch_attempt(
-                elapsed_sec=elapsed, outcome="transport_error", attempt=attempt
-            )
+            _record_fetch_attempt(elapsed_sec=elapsed, outcome="transport_error", attempt=attempt)
             if attempt + 1 >= max_attempts:
                 break
             await asyncio.sleep(_backoff_delay(attempt, base_delay, None))
@@ -375,8 +405,13 @@ async def get_with_retries(
                 status_code=resp.status_code,
                 attempt=attempt,
             )
+            # Release the response body back to the pool before sleeping so
+            # retries cannot starve connections (H-27).
+            await resp.aclose()
             if attempt + 1 >= max_attempts:
-                raise RetryableHTTPError(f"{url} -> {resp.status_code} after {max_attempts} attempts")
+                raise RetryableHTTPError(
+                    f"{_safe_url_for_error(url)} -> {resp.status_code} after {max_attempts} attempts"
+                )
             await asyncio.sleep(_backoff_delay(attempt, base_delay, _retry_after_seconds(resp)))
             continue
         # success OR non-retryable (e.g. 404) — caller decides
@@ -388,7 +423,9 @@ async def get_with_retries(
             attempt=attempt,
         )
         return resp
-    raise RetryableHTTPError(f"{url} failed transiently after {max_attempts} attempts: {last_exc}")
+    raise RetryableHTTPError(
+        f"{_safe_url_for_error(url)} failed transiently after {max_attempts} attempts: {last_exc}"
+    )
 
 
 def normalize_charset_label(label: str | None) -> str | None:
@@ -445,12 +482,20 @@ def charset_from_html_meta(body: bytes, *, peek: int = 8192) -> str | None:
         if m:
             try:
                 label = m.group(1).decode("ascii", errors="ignore")
-            except Exception:  # noqa: BLE001 — defensive
+            except Exception:
                 label = ""
             codec = normalize_charset_label(label)
             if codec:
                 return codec
     return None
+
+
+# Single-byte codecs where a label (latin-1 / cp1252 / …) is often a lie:
+# many modern publishers serve UTF-8 bytes while still declaring a legacy
+# single-byte charset. A body that decodes cleanly as UTF-8 is UTF-8 (H-28).
+_SINGLE_BYTE_CODECS = frozenset(
+    {"ascii", "latin-1", "iso-8859-9", "cp1252", "cp1254", "cp1256", "cp1250", "cp1251"}
+)
 
 
 def _try_decode(body: bytes, codec: str) -> str | None:
@@ -514,6 +559,17 @@ def decode_http_text(
             candidates.append(label)
 
     for codec in candidates:
+        # H-28: when the declared charset is a single-byte legacy label and the
+        # body is valid UTF-8, honor the bytes over the label — decoding
+        # UTF-8 as latin-1/cp1252 produces mojibake that the strict-UTF-8
+        # fallback below would never recover. Multi-byte labels (shift_jis,
+        # gb18030…) stay authoritative because their bytes rarely overlap
+        # valid UTF-8 by accident.
+        if codec in _SINGLE_BYTE_CODECS:
+            try:
+                return body.decode("utf-8"), "utf-8"
+            except UnicodeDecodeError:
+                pass
         text = _try_decode(body, codec)
         if text is not None:
             return text, codec
@@ -534,7 +590,7 @@ def decode_http_text(
                 enc = normalize_charset_label(getattr(best, "encoding", None)) or "utf-8"
                 text = str(best)
                 return text, enc
-        except Exception as exc:  # noqa: BLE001 — detector is best-effort
+        except Exception as exc:
             logger.debug("charset_detect_failed", err=str(exc))
 
     return body.decode("utf-8", errors="replace"), "utf-8-replace"

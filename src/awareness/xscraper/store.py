@@ -122,17 +122,16 @@ class SessionStore:
         await db.execute(
             """
             INSERT INTO sessions (
-                session_id, title, status, query, created_at, started_at,
+                session_id, title, status, query, created_at,
                 keywords_json, accounts_json, similar_accounts_json,
                 lookback_seconds, request_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
                 request.title,
                 "queued",
                 query,
-                _iso(now),
                 _iso(now),
                 json.dumps(list(request.keywords)),
                 json.dumps(list(request.accounts)),
@@ -184,14 +183,22 @@ class SessionStore:
     ) -> None:
         db = self._require_db()
         ended_at = _iso(utcnow()) if ended else None
+        now = _iso(utcnow())
+        # M-17: started_at is NULL while queued and is stamped on the first
+        # transition into backfilling/streaming (not at create time).
         await db.execute(
             """
             UPDATE sessions
-            SET status = ?, error = COALESCE(?, error),
-                ended_at = COALESCE(?, ended_at)
+            SET status = ?,
+                error = ?,
+                ended_at = COALESCE(?, ended_at),
+                started_at = CASE
+                    WHEN started_at IS NULL AND ? IN ('backfilling', 'streaming') THEN ?
+                    ELSE started_at
+                END
             WHERE session_id = ?
             """,
-            (status, error, ended_at, session_id),
+            (status, error, ended_at, status, now, session_id),
         )
         await db.commit()
 
@@ -200,16 +207,17 @@ class SessionStore:
         if not tweets:
             return 0
         db = self._require_db()
+        # M-16: validate EVERY tweet's session_id up front so a mismatch cannot
+        # leave a partial write (some rows inserted, then ValueError).
+        for tweet in tweets:
+            if tweet.session_id != session_id:
+                raise ValueError(f"tweet session_id {tweet.session_id!r} does not match {session_id!r}")
         inserted = 0
         backfill = 0
         stream = 0
         duplicates = 0
 
         for tweet in tweets:
-            if tweet.session_id != session_id:
-                raise ValueError(
-                    f"tweet session_id {tweet.session_id!r} does not match {session_id!r}"
-                )
             try:
                 await db.execute(
                     """
@@ -236,7 +244,11 @@ class SessionStore:
                         json.dumps(tweet.raw or {}),
                     ),
                 )
-            except aiosqlite.IntegrityError:
+            except aiosqlite.IntegrityError as exc:
+                # FK failure (session row missing) is a real error, NOT a
+                # duplicate — only PK collisions count as duplicates.
+                if "foreign key" in str(exc).lower():
+                    raise
                 duplicates += 1
                 continue
 
@@ -285,7 +297,9 @@ class SessionStore:
         rows = await cur.fetchall()
         return [self._row_to_tweet(r) for r in rows]
 
-    async def list_events(self, session_id: str, *, after_id: int = 0, limit: int = 500) -> list[SessionEvent]:
+    async def list_events(
+        self, session_id: str, *, after_id: int = 0, limit: int = 500
+    ) -> list[SessionEvent]:
         db = self._require_db()
         cur = await db.execute(
             """

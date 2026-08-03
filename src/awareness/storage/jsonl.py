@@ -66,33 +66,78 @@ def _finalized_path_for_temp(tmp: Path) -> Path:
     return tmp
 
 
+def _temp_opener(tmp: Path) -> tuple[Any, str]:
+    """Pick the (opener, text-mode) for a temp path (gzip vs plain)."""
+    if tmp.name.endswith(".jsonl.gz.tmp") or str(tmp).endswith(".jsonl.gz.tmp"):
+        return gzip.open, "rt"
+    return open, "r"
+
+
+def _drop_trailing_partial_record(tmp: Path) -> bool:
+    """Drop a trailing partial record from a truncated temp; return True if any.
+
+    A crash mid-write can leave a truncated gzip stream whose last record is
+    incomplete (gzip EOF mid-stream, partial JSON line). The complete records
+    before it are valid and must be promoted (H-11); only the partial tail is
+    dropped so DuckDB's reader never sees a malformed line.
+    """
+    opener, mode = _temp_opener(tmp)
+    lines_out: list[str] = []
+    dropped = False
+    try:
+        with opener(tmp, mode, encoding="utf-8") as fh:  # type: ignore[call-arg]
+            for line in fh:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    json.loads(stripped)
+                except json.JSONDecodeError:
+                    # Partial trailing line (or mid-line truncation tail).
+                    dropped = True
+                    continue
+                lines_out.append(stripped)
+    except (EOFError, gzip.BadGzipFile, UnicodeDecodeError, OSError):
+        # Truncated gzip stream: records read so far are complete.
+        dropped = True
+    if not dropped or not lines_out:
+        return False
+    with opener(tmp, "wt", encoding="utf-8") as fh:  # type: ignore[call-arg]
+        for line in lines_out:
+            fh.write(line + "\n")
+    return True
+
+
 def _temp_has_valid_jsonl_record(tmp: Path) -> bool:
     """Return True if *tmp* contains at least one complete JSON object line.
 
-    Gzip and plain temps are supported. A trailing partial line (mid-write crash)
-    is ignored; empty or unreadable files return False.
+    Gzip and plain temps are supported. A trailing partial line (mid-write
+    crash) is ignored; a truncated gzip stream with ≥1 complete record counts
+    as valid (H-11) — only a file unreadable from the start is invalid.
     """
     try:
-        if tmp.name.endswith(".jsonl.gz.tmp") or str(tmp).endswith(".jsonl.gz.tmp"):
-            opener: Any = gzip.open
-            mode = "rt"
-        else:
-            opener = open
-            mode = "r"
-        with opener(tmp, mode, encoding="utf-8") as fh:  # type: ignore[call-arg]
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(obj, dict) and obj:
-                    return True
+        opener, mode = _temp_opener(tmp)
+        saw_valid = False
+        try:
+            with opener(tmp, mode, encoding="utf-8") as fh:  # type: ignore[call-arg]
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(obj, dict) and obj:
+                        saw_valid = True
+        except (EOFError, gzip.BadGzipFile, UnicodeDecodeError, OSError):
+            # Truncated stream (crash mid-write): records parsed before the
+            # truncation point are complete — keep them (H-11).
+            return saw_valid
+        return saw_valid
     except (OSError, EOFError, gzip.BadGzipFile, UnicodeDecodeError):
+        # Unreadable from the start (empty gzip header, zero bytes, ...).
         return False
-    return False
 
 
 def recover_orphan_temps(root: Path) -> list[Path]:
@@ -118,6 +163,15 @@ def recover_orphan_temps(root: Path) -> list[Path]:
             m.inc("jsonl.orphans_removed")
             logger.info("jsonl_orphan_temp_removed", path=str(tmp))
             continue
+        # H-11: a truncated temp (crash mid-write) is promoted with its complete
+        # records 1..N-1; drop only the trailing partial record before rename so
+        # downstream readers never see a malformed line.
+        try:
+            if _drop_trailing_partial_record(tmp):
+                m.inc("jsonl.orphans_truncated_repaired")
+                logger.info("jsonl_orphan_temp_truncated_repaired", path=str(tmp))
+        except OSError as exc:
+            logger.warning("jsonl_orphan_truncate_repair_failed", path=str(tmp), err=str(exc))
         final = _finalized_path_for_temp(tmp)
         try:
             if final.exists():
@@ -270,7 +324,11 @@ class JsonlStagingWriter:
         self._fh = None
 
         # Rename .tmp → final
-        finalized = self._current_path.with_suffix("") if str(self._current_path).endswith(".tmp") else self._current_path
+        finalized = (
+            self._current_path.with_suffix("")
+            if str(self._current_path).endswith(".tmp")
+            else self._current_path
+        )
         if str(self._current_path).endswith(".tmp"):
             finalized = Path(str(self._current_path)[:-4])
         try:

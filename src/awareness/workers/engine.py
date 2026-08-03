@@ -22,13 +22,13 @@ from rich.console import Console
 from rich.markup import escape
 
 from awareness.config import get_settings
-from awareness.dedup.engine import DedupDecision, DedupEngine, TIGHT_NEAR_STORE_THRESHOLD
+from awareness.dedup.engine import TIGHT_NEAR_STORE_THRESHOLD, DedupDecision, DedupEngine
 from awareness.filters import TopicFilter
 from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
 from awareness.planner.planner import Planner
 from awareness.schemas.doc import DocCapture
-from awareness.schemas.jobs import JobStatus, TaskState
+from awareness.schemas.jobs import JobStatus, TaskState, TaskStatus
 from awareness.sources import get_adapter_registry
 from awareness.sources.base import AdapterContext, PartitionSpec
 from awareness.storage.iceberg import IcebergWriter
@@ -48,20 +48,7 @@ def _format_size(size_bytes: int) -> str:
         return "0 B"
     size_name = ("B", "KB", "MB", "GB", "TB")
     import math
-    try:
-        i = int(math.floor(math.log(size_bytes, 1024)))
-        p = math.pow(1024, i)
-        s = round(size_bytes / p, 2)
-        return f"{s} {size_name[i]}"
-    except Exception:
-        return f"{size_bytes} B"
 
-
-def _format_size(size_bytes: int) -> str:
-    if size_bytes == 0:
-        return "0 B"
-    size_name = ("B", "KB", "MB", "GB", "TB")
-    import math
     try:
         i = int(math.floor(math.log(size_bytes, 1024)))
         p = math.pow(1024, i)
@@ -105,7 +92,7 @@ class WorkerEngine:
                         count=len(recovered),
                         root=str(staging_root),
                     )
-            except Exception as exc:  # noqa: BLE001 — never block worker start
+            except Exception as exc:
                 logger.warning("jsonl_orphan_recover_on_start_failed", err=str(exc))
         self._jsonl = jsonl_writer or JsonlStagingWriter(
             root=staging_root,
@@ -136,10 +123,16 @@ class WorkerEngine:
         self._total_docs_processed = 0
         self._total_docs_filtered = 0
         self._silent_progress = silent_progress
-        self._mute_duplicates = settings.terminal_mute_duplicates if mute_duplicates is None else mute_duplicates
+        self._mute_duplicates = (
+            settings.terminal_mute_duplicates if mute_duplicates is None else mute_duplicates
+        )
         # One-time destination warnings (avoid spamming every flush).
         self._gdrive_unauth_warned = False
         self._no_sink_warned = False
+        # JSONL write failed on the previous flush; the buffer was retained for
+        # one retry. If the next flush fails again the batch is dropped with a
+        # critical log + metric instead of growing unbounded.
+        self._jsonl_retry_pending = False
         # Per-job compiled topic filter (None = no filter). Cached so we read
         # the job request once, not once per task.
         self._topic_filters: dict[str, TopicFilter | None] = {}
@@ -209,9 +202,10 @@ class WorkerEngine:
         start_time = time.time()
         progress_bar = None
         progress_task_id = None
-        
+
         if self._is_tty and job:
-            from rich.progress import Progress, TextColumn, BarColumn, TimeElapsedColumn, MofNCompleteColumn
+            from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+
             progress_bar = Progress(
                 TextColumn("[bold blue]{task.description}"),
                 BarColumn(),
@@ -220,9 +214,7 @@ class WorkerEngine:
                 console=self._console,
             )
             progress_task_id = progress_bar.add_task(
-                "Ingesting tasks", 
-                total=job.tasks_total, 
-                completed=job.tasks_completed
+                "Ingesting tasks", total=job.tasks_total, completed=job.tasks_completed
             )
             progress_bar.start()
 
@@ -243,30 +235,54 @@ class WorkerEngine:
                         progress_task_id,
                         advance=1,
                         total=total_tasks,
-                        description=f"[bold blue]Ingesting ({_format_size(self._total_bytes_processed)}, {self._total_docs_processed} docs{filt_str}{speed_str})"
+                        description=f"[bold blue]Ingesting ({_format_size(self._total_bytes_processed)}, {self._total_docs_processed} docs{filt_str}{speed_str})",
                     )
 
         try:
             drained = False
             empty_polls = 0
+            last_orphan_reap_at = 0.0
             while not self.is_stopping():
                 js = self._state.get_job(job_id)
                 if js:
-                    if js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
+                    if js.status in (JobStatus.CANCELLED, JobStatus.COMPLETED, JobStatus.FAILED):
                         break
                     while js.status == JobStatus.PAUSED and not self.is_stopping():
                         await asyncio.sleep(1.0)
                         js = self._state.get_job(job_id)
-                    if js and js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
+                    if js and js.status in (JobStatus.CANCELLED, JobStatus.COMPLETED, JobStatus.FAILED):
                         break
 
                 tasks = self._state.claim_pending_tasks(job_id, limit=self._concurrency * 2)
                 if not tasks:
-                    empty_polls += 1
-                    if empty_polls >= 3:
-                        drained = True
-                        break
-                    await asyncio.sleep(poll_seconds)
+                    # H-01/H-02: a job is drained only when NO task is PENDING
+                    # (including retries parked in backoff) and NO task is RUNNING
+                    # (e.g. an un-expired orphan lease after a crash+quick restart).
+                    # Empty claims while such tasks exist must not declare drain.
+                    counts = self._state.task_status_counts(job_id)
+                    pending = counts.get(TaskStatus.PENDING.value, 0)
+                    running = counts.get(TaskStatus.RUNNING.value, 0)
+                    if pending == 0 and running == 0:
+                        empty_polls += 1
+                        if empty_polls >= 3:
+                            drained = True
+                            break
+                        await asyncio.sleep(poll_seconds)
+                        continue
+                    empty_polls = 0
+                    # PENDING-but-unclaimable = retry in backoff; RUNNING = orphan
+                    # lease not yet expired. Don't busy-loop; poll at most ~2s.
+                    if running and time.monotonic() - last_orphan_reap_at > 30.0:
+                        last_orphan_reap_at = time.monotonic()
+                        try:
+                            self._state.requeue_orphaned_running(
+                                job_id,
+                                older_than_seconds=ORPHAN_LEASE_SECONDS,
+                                max_retries=get_settings().max_retries,
+                            )
+                        except Exception as exc:
+                            logger.warning("orphan_reap_mid_run_failed", job_id=job_id, err=str(exc))
+                    await asyncio.sleep(min(2.0, poll_seconds))
                     continue
                 empty_polls = 0
                 await asyncio.gather(*(run_one(t) for t in tasks), return_exceptions=False)
@@ -284,7 +300,17 @@ class WorkerEngine:
                 self._state.set_job_status(job_id, JobStatus.COMPLETED)
 
     async def run_tail(self, job_id: str, *, poll_seconds: float) -> None:
-        """Like run_job, but never stops until ``request_stop`` is set."""
+        """Like run_job, but never stops until the job is terminal or stop is requested."""
+        # H-03: resume a tail after a crash/stop by requeueing RUNNING tasks that
+        # no live worker is executing. Short lease: discovery tasks are quick.
+        try:
+            self._state.requeue_orphaned_running(
+                job_id,
+                older_than_seconds=max(60.0, 2.0 * poll_seconds),
+                max_retries=get_settings().max_retries,
+            )
+        except Exception as exc:
+            logger.warning("tail_orphan_reap_on_start_failed", job_id=job_id, err=str(exc))
         sem = asyncio.Semaphore(self._concurrency)
 
         # Initialize running metrics from DB if available
@@ -297,19 +323,17 @@ class WorkerEngine:
         start_time = time.time()
         progress_bar = None
         progress_task_id = None
-        
+
         if self._is_tty and job:
-            from rich.progress import Progress, TextColumn, BarColumn, TimeElapsedColumn
+            from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+
             progress_bar = Progress(
                 TextColumn("[bold green]{task.description}"),
                 BarColumn(),
                 TimeElapsedColumn(),
                 console=self._console,
             )
-            progress_task_id = progress_bar.add_task(
-                "Tailing Live Feeds", 
-                total=None
-            )
+            progress_task_id = progress_bar.add_task("Tailing Live Feeds", total=None)
             progress_bar.start()
 
         async def run_one(task: TaskState) -> None:
@@ -325,19 +349,21 @@ class WorkerEngine:
                     filt_str = f", {self._total_docs_filtered} filtered" if self._total_docs_filtered else ""
                     progress_bar.update(
                         progress_task_id,
-                        description=f"[bold green]Tailing ({_format_size(self._total_bytes_processed)}, {self._total_docs_processed} docs{filt_str}{speed_str})"
+                        description=f"[bold green]Tailing ({_format_size(self._total_bytes_processed)}, {self._total_docs_processed} docs{filt_str}{speed_str})",
                     )
 
         try:
             while not self.is_stopping():
                 js = self._state.get_job(job_id)
                 if js:
-                    if js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
+                    # C-01: planner.stop_tail marks the job COMPLETED; observe it
+                    # so an in-process tail actually terminates.
+                    if js.status in (JobStatus.CANCELLED, JobStatus.COMPLETED, JobStatus.FAILED):
                         break
                     while js.status == JobStatus.PAUSED and not self.is_stopping():
                         await asyncio.sleep(1.0)
                         js = self._state.get_job(job_id)
-                    if js and js.status in (JobStatus.CANCELLED, JobStatus.FAILED):
+                    if js and js.status in (JobStatus.CANCELLED, JobStatus.COMPLETED, JobStatus.FAILED):
                         break
 
                 tasks = self._state.claim_pending_tasks(job_id, limit=self._concurrency * 2)
@@ -368,8 +394,12 @@ class WorkerEngine:
 
         adapter = self._registry.get(task.source_type)
         if adapter is None:
-            self._state.fail_task(task.task_id, error=f"no_adapter:{task.source_type.value}", dead_letter=True)
+            self._state.fail_task(
+                task.task_id, error=f"no_adapter:{task.source_type.value}", dead_letter=True
+            )
             self._state.add_dlq(task.job_id, task.task_id, task.payload, error="no_adapter")
+            # M-05: the no_adapter DLQ path was missing its job counters.
+            self._state.increment_job_counters(task.job_id, failed=1, dead_lettered=1)
             metrics.inc(
                 "tasks.failed",
                 labels={"source": source_label, "outcome": "no_adapter"},
@@ -443,8 +473,6 @@ class WorkerEngine:
                     bytes_processed += len(cap.text)
                     self._total_bytes_processed += len(cap.text)
                     self._total_docs_processed += 1
-                    if outcome.decision == DedupDecision.NEAR_DUP:
-                        dedup_dropped += 1
                 # Terminal lines: mute_duplicates hides EXACT_DUP / REVISION /
                 # NEAR_DUP and tight near-dup skip-store messages consistently.
                 is_unique = outcome.decision == DedupDecision.NEW
@@ -453,7 +481,11 @@ class WorkerEngine:
                     title = cap.title or "(No Title)"
                     if len(title) > 50:
                         title = title[:47] + "..."
-                    domain = cap.domain or (cap.url.split("/")[2] if cap.url and "//" in cap.url else cap.url) or "unknown"
+                    domain = (
+                        cap.domain
+                        or (cap.url.split("/")[2] if cap.url and "//" in cap.url else cap.url)
+                        or "unknown"
+                    )
                     if len(domain) > 30:
                         domain = domain[:27] + "..."
                     chars = len(cap.text)
@@ -497,7 +529,8 @@ class WorkerEngine:
             fail_outcome = "dead_letter" if dead else "retry"
             if dead:
                 self._state.add_dlq(task.job_id, task.task_id, task.payload, error=str(exc))
-                self._state.increment_job_counters(task.job_id, dead_lettered=1)
+                # M-05: tasks_failed was never incremented; count terminal failures.
+                self._state.increment_job_counters(task.job_id, dead_lettered=1, failed=1)
             metrics.inc(
                 "tasks.failed",
                 labels={"source": source_label, "outcome": fail_outcome},
@@ -532,122 +565,155 @@ class WorkerEngine:
 
     # ── flushing ─────────────────────────────────────────────────────────
     async def _flush(self, *, force: bool) -> None:
-        """Write the buffered captures to JSONL (and Iceberg). Idempotent."""
+        """Write the buffered captures to JSONL (and Iceberg). Idempotent.
+
+        C-08: the buffer is cleared only AFTER a successful JSONL write. A failed
+        write keeps the rows for one retry; a second consecutive failure drops the
+        batch with a critical log + metric so the buffer cannot grow unbounded.
+        The whole flush holds ``_buffer_lock`` so the clear-after-write cannot
+        race a concurrent flush/append.
+        """
         async with self._buffer_lock:
             if not self._batch_buffer:
                 return
             settings = get_settings()
             now = time.time()
-            if not force and len(self._batch_buffer) < settings.storage_flush_records and (now - self._last_flush_at) < settings.storage_flush_seconds:
+            if (
+                not force
+                and len(self._batch_buffer) < settings.storage_flush_records
+                and (now - self._last_flush_at) < settings.storage_flush_seconds
+            ):
                 return
             rows = [c.as_iceberg_row() for c in self._batch_buffer]
             n = len(rows)
-            self._batch_buffer.clear()
             self._last_flush_at = now
 
-        # Terminal-only mode (every sink disabled): captures are shown but not
-        # persisted. Intentional, but warn once so it's never a silent surprise.
-        if not (settings.enable_jsonl_staging or settings.enable_iceberg or settings.enable_gdrive):
-            if not self._no_sink_warned:
-                logger.warning("all_destinations_disabled_captures_not_persisted")
-                self._no_sink_warned = True
+            # Terminal-only mode (every sink disabled): captures are shown but not
+            # persisted. Intentional, but warn once so it's never a silent surprise.
+            if not (settings.enable_jsonl_staging or settings.enable_iceberg or settings.enable_gdrive):
+                if not self._no_sink_warned:
+                    logger.warning("all_destinations_disabled_captures_not_persisted")
+                    self._no_sink_warned = True
 
-        # JSONL always first if enabled or if we need a temporary chunk for cloud
-        # uploading (Iceberg append reads `rows` directly, but Google Drive uploads
-        # the finalized JSONL file, so a GDrive-only run still needs the chunk).
-        written = 0
-        chunk = None
-        if settings.enable_jsonl_staging or settings.enable_iceberg or settings.enable_gdrive:
-            try:
-                written = await asyncio.get_event_loop().run_in_executor(None, self._jsonl.write, rows)
-            except Exception:
-                logger.exception("jsonl_write_failed")
-                return
-            
-            chunk = self._jsonl.flush()
-            if chunk is not None and chunk.exists():
+            # JSONL always first if enabled or if we need a temporary chunk for cloud
+            # uploading (Iceberg append reads `rows` directly, but Google Drive uploads
+            # the finalized JSONL file, so a GDrive-only run still needs the chunk).
+            written = 0
+            chunk = None
+            gdrive_ok = True
+            if settings.enable_jsonl_staging or settings.enable_iceberg or settings.enable_gdrive:
                 try:
-                    bytes_ = chunk.stat().st_size
-                except OSError:
-                    bytes_ = 0
-                
-                # Record in sqlite manifest only if staging is enabled.
-                if settings.enable_jsonl_staging:
-                    await asyncio.get_event_loop().run_in_executor(
-                        None, self._state.add_manifest, str(chunk), n, bytes_
-                    )
-                
-                from awareness.storage import gdrive
-                # Did the Google Drive sink take responsibility for this chunk?
-                # gdrive_ok stays True only when the upload actually succeeded; if
-                # Drive is the *only* enabled sink and the upload fails, we must NOT
-                # delete the chunk below — that would be silent data loss.
-                gdrive_ok = True
-                if settings.enable_gdrive:
-                    if not gdrive.is_authorized():
-                        gdrive_ok = False
-                        if not self._gdrive_unauth_warned:
-                            logger.warning("gdrive_enabled_but_unauthorized")
-                            if self._is_tty:
-                                self._console.print(
-                                    "[bold red]☁️  [GDrive] Enabled but NOT authorized — uploads are skipped. "
-                                    "Run [bold]awareness cloud auth-gdrive[/bold].[/bold red]"
-                                )
-                            self._gdrive_unauth_warned = True
-                    else:
-                        if self._is_tty:
-                            self._console.print(
-                                f"[bold blue]☁️  [GDrive][/bold blue] Uploading JSONL chunk [bold]{chunk.name}[/bold]..."
-                            )
-                        def _upload():
-                            try:
-                                return gdrive.upload_file(chunk)
-                            except Exception as e:
-                                logger.exception("gdrive_upload_failed", err=str(e))
-                                return None
-                        file_id = await asyncio.get_event_loop().run_in_executor(None, _upload)
-                        gdrive_ok = bool(file_id)
-                        if file_id:
-                            if self._is_tty:
-                                self._console.print(
-                                    f"[bold green]☁️  [GDrive] ✔ Uploaded successfully![/bold green] File ID: [dim]{file_id}[/dim]"
-                                )
+                    written = await asyncio.get_event_loop().run_in_executor(None, self._jsonl.write, rows)
+                except Exception:
+                    if self._jsonl_retry_pending:
+                        # Second consecutive failure: drop rather than grow unbounded.
+                        self._batch_buffer.clear()
+                        self._jsonl_retry_pending = False
+                        logger.critical("jsonl_write_failed_batch_dropped", records=n)
+                        get_metrics().add("flushes.dropped", n)
+                        return
+                    self._jsonl_retry_pending = True
+                    logger.exception("jsonl_write_failed_buffer_retained", records=n)
+                    return
+                self._jsonl_retry_pending = False
+                # Durable now — drop exactly the rows we wrote.
+                self._batch_buffer.clear()
+                chunk = self._jsonl.flush()
+                if chunk is not None and chunk.exists():
+                    try:
+                        bytes_ = chunk.stat().st_size
+                    except OSError:
+                        bytes_ = 0
+
+                    # Record in sqlite manifest only if staging is enabled.
+                    if settings.enable_jsonl_staging:
+                        await asyncio.get_event_loop().run_in_executor(
+                            None, self._state.add_manifest, str(chunk), n, bytes_
+                        )
+
+                    from awareness.storage import gdrive
+
+                    # Did the Google Drive sink take responsibility for this chunk?
+                    # gdrive_ok stays True only when the upload actually succeeded; if
+                    # Drive is the *only* enabled sink and the upload fails, we must NOT
+                    # delete the chunk below — that would be silent data loss.
+                    if settings.enable_gdrive:
+                        if not gdrive.is_authorized():
+                            gdrive_ok = False
+                            if not self._gdrive_unauth_warned:
+                                logger.warning("gdrive_enabled_but_unauthorized")
+                                if self._is_tty:
+                                    self._console.print(
+                                        "[bold red]☁️  [GDrive] Enabled but NOT authorized — uploads are skipped. "
+                                        "Run [bold]awareness cloud auth-gdrive[/bold].[/bold red]"
+                                    )
+                                self._gdrive_unauth_warned = True
                         else:
-                            logger.warning("gdrive_upload_failed_chunk_retained", path=str(chunk))
                             if self._is_tty:
                                 self._console.print(
-                                    "[bold red]☁️  [GDrive] ✘ Upload failed.[/bold red] [yellow]Chunk retained on disk for recovery.[/yellow]"
+                                    f"[bold blue]☁️  [GDrive][/bold blue] Uploading JSONL chunk [bold]{chunk.name}[/bold]..."
                                 )
 
-                # Clean up the temp staging file only when local staging is disabled.
-                # Guard: if Drive was the responsible sink and its upload did NOT
-                # succeed, keep the chunk so the data is recoverable (no silent loss).
-                if not settings.enable_jsonl_staging:
-                    gdrive_pending = settings.enable_gdrive and not gdrive_ok
-                    if not gdrive_pending:
-                        try:
-                            chunk.unlink(missing_ok=True)
-                        except OSError:
-                            pass
+                            def _upload():
+                                try:
+                                    return gdrive.upload_file(chunk)
+                                except Exception as e:
+                                    logger.exception("gdrive_upload_failed", err=str(e))
+                                    return None
 
-        # Iceberg if enabled.
-        if self._iceberg is not None and rows:
-            try:
-                await asyncio.get_event_loop().run_in_executor(None, self._iceberg.append, rows)
-            except Exception as exc:
-                logger.warning("iceberg_append_failed", err=str(exc))
+                            file_id = await asyncio.get_event_loop().run_in_executor(None, _upload)
+                            gdrive_ok = bool(file_id)
+                            if file_id:
+                                if self._is_tty:
+                                    self._console.print(
+                                        f"[bold green]☁️  [GDrive] ✔ Uploaded successfully![/bold green] File ID: [dim]{file_id}[/dim]"
+                                    )
+                            else:
+                                logger.warning("gdrive_upload_failed_chunk_retained", path=str(chunk))
+                                if self._is_tty:
+                                    self._console.print(
+                                        "[bold red]☁️  [GDrive] ✘ Upload failed.[/bold red] [yellow]Chunk retained on disk for recovery.[/yellow]"
+                                    )
 
-        get_metrics().add("flushes.records", written or n)
+            # Iceberg if enabled.
+            iceberg_ok = True
+            if self._iceberg is not None and rows:
+                try:
+                    await asyncio.get_event_loop().run_in_executor(None, self._iceberg.append, rows)
+                except Exception as exc:
+                    logger.warning("iceberg_append_failed", err=str(exc))
+                    iceberg_ok = False
+
+            # Clean up the temp staging file only when local staging is disabled.
+            # Guard: if the only remaining sink (Drive and/or Iceberg) did NOT
+            # succeed, keep the chunk so the data is recoverable (no silent loss).
+            if not settings.enable_jsonl_staging and chunk is not None and chunk.exists():
+                sink_pending = (settings.enable_gdrive and not gdrive_ok) or (
+                    settings.enable_iceberg and not iceberg_ok
+                )
+                if not sink_pending:
+                    try:
+                        chunk.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+            get_metrics().add("flushes.records", written or n)
 
 
 class DatabaseReaper:
     """Background asyncio daemon job that periodically cleans up old completed tasks and vacuums the DB."""
 
-    def __init__(self, state: StateDB, interval_seconds: int | None = None, retention_days: int | None = None) -> None:
+    def __init__(
+        self, state: StateDB, interval_seconds: int | None = None, retention_days: int | None = None
+    ) -> None:
         self._state = state
         self._settings = get_settings()
-        self._interval_seconds = interval_seconds if interval_seconds is not None else self._settings.reaper_interval_seconds
-        self._retention_days = retention_days if retention_days is not None else self._settings.reaper_retention_days
+        self._interval_seconds = (
+            interval_seconds if interval_seconds is not None else self._settings.reaper_interval_seconds
+        )
+        self._retention_days = (
+            retention_days if retention_days is not None else self._settings.reaper_retention_days
+        )
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
 
@@ -656,7 +722,9 @@ class DatabaseReaper:
             return
         self._stop_event.clear()
         self._task = asyncio.create_task(self._run_loop())
-        logger.info("reaper_started", interval_seconds=self._interval_seconds, retention_days=self._retention_days)
+        logger.info(
+            "reaper_started", interval_seconds=self._interval_seconds, retention_days=self._retention_days
+        )
 
     async def stop(self) -> None:
         if self._task is None:
@@ -676,9 +744,11 @@ class DatabaseReaper:
                 try:
                     logger.info("reaper_run_started")
                     # Run cleanup in a thread to keep the event loop responsive
-                    deleted_count = await asyncio.to_thread(self._state.cleanup_old_tasks, self._retention_days)
+                    deleted_count = await asyncio.to_thread(
+                        self._state.cleanup_old_tasks, self._retention_days
+                    )
                     logger.info("reaper_cleanup_done", deleted_tasks=deleted_count)
-                    
+
                     # Run vacuum in a thread
                     await asyncio.to_thread(self._state.vacuum_database)
                     logger.info("reaper_run_completed")

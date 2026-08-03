@@ -11,6 +11,7 @@ from awareness.obs.metrics import get_metrics
 from awareness.schemas.jobs import SourceKind
 from awareness.sources.base import AdapterContext, PartitionSpec
 from awareness.sources.warc_repair import WarcRepairAdapter
+from awareness.util.http import RetryableHTTPError
 
 
 def _context() -> AdapterContext:
@@ -41,25 +42,56 @@ def _partition(**extra: object) -> PartitionSpec:
     )
 
 
+def _mock_shared_client(resp: object) -> MagicMock:
+    client = MagicMock()
+    client.get = AsyncMock(return_value=resp)
+    return client
+
+
+def _http_resp(status: int, content: bytes = b"") -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status
+    resp.content = content
+    resp.aclose = AsyncMock(return_value=None)
+    return resp
+
+
+def _minimal_warc(body: str) -> bytes:
+    """Build a single WARC/1.0 response record wrapping an HTTP response."""
+    http_block = (
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "\r\n"
+        f"{body}"
+    )
+    warc = (
+        "WARC/1.0\r\n"
+        "WARC-Type: response\r\n"
+        "WARC-Target-URI: https://example.test/page\r\n"
+        "WARC-Date: 2024-01-01T00:00:00Z\r\n"
+        "Content-Type: application/http; msgtype=response\r\n"
+        f"Content-Length: {len(http_block)}\r\n"
+        "\r\n"
+        f"{http_block}\r\n\r\n"
+    )
+    return warc.encode("utf-8")
+
+
 @pytest.mark.asyncio
 async def test_warc_repair_http_error_metrics() -> None:
+    """404/410 range responses are permanent — skipped, no retry, http_error."""
     m = get_metrics()
     before = m.counter_value(
         "warc_repair.fetch_attempts",
         labels={"outcome": "http_error", "crawl_id": "CC-MAIN-2024-10"},
     )
 
-    resp = MagicMock()
-    resp.status_code = 404
-    resp.content = b""
-
-    mock_client = AsyncMock()
-    mock_client.get = AsyncMock(return_value=resp)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=None)
-
     adapter = WarcRepairAdapter()
-    with patch("awareness.sources.warc_repair.httpx.AsyncClient", return_value=mock_client):
+    with patch(
+        "awareness.sources.warc_repair.get_shared_async_client",
+        AsyncMock(return_value=_mock_shared_client(_http_resp(404))),
+    ):
         out = [c async for c in adapter.run_partition(_partition(), _context())]
 
     assert out == []
@@ -81,23 +113,23 @@ async def test_warc_repair_http_error_metrics() -> None:
 
 
 @pytest.mark.asyncio
-async def test_warc_repair_network_error_metrics() -> None:
+async def test_warc_repair_transient_status_raises_retryable() -> None:
+    """M-02: a 503 range response must raise so the task layer retries."""
     m = get_metrics()
     before = m.counter_value(
         "warc_repair.fetch_attempts",
         labels={"outcome": "network_error", "crawl_id": "CC-MAIN-2024-10"},
     )
 
-    mock_client = AsyncMock()
-    mock_client.get = AsyncMock(side_effect=httpx.ConnectError("boom"))
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=None)
-
     adapter = WarcRepairAdapter()
-    with patch("awareness.sources.warc_repair.httpx.AsyncClient", return_value=mock_client):
-        out = [c async for c in adapter.run_partition(_partition(), _context())]
+    with patch(
+        "awareness.sources.warc_repair.get_shared_async_client",
+        AsyncMock(return_value=_mock_shared_client(_http_resp(503))),
+    ):
+        with pytest.raises(RetryableHTTPError):
+            out = [c async for c in adapter.run_partition(_partition(), _context())]
+            assert out == []
 
-    assert out == []
     assert (
         m.counter_value(
             "warc_repair.fetch_attempts",
@@ -108,8 +140,65 @@ async def test_warc_repair_network_error_metrics() -> None:
 
 
 @pytest.mark.asyncio
+async def test_warc_repair_network_error_raises_retryable() -> None:
+    """M-02: transient transport failure raises (task retries), metric recorded."""
+    m = get_metrics()
+    before = m.counter_value(
+        "warc_repair.fetch_attempts",
+        labels={"outcome": "network_error", "crawl_id": "CC-MAIN-2024-10"},
+    )
+
+    client = MagicMock()
+    client.get = AsyncMock(side_effect=httpx.ConnectError("boom"))
+
+    adapter = WarcRepairAdapter()
+    with patch(
+        "awareness.sources.warc_repair.get_shared_async_client",
+        AsyncMock(return_value=client),
+    ):
+        with pytest.raises(RetryableHTTPError):
+            out = [c async for c in adapter.run_partition(_partition(), _context())]
+            assert out == []
+
+    assert (
+        m.counter_value(
+            "warc_repair.fetch_attempts",
+            labels={"outcome": "network_error", "crawl_id": "CC-MAIN-2024-10"},
+        )
+        >= before + 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_warc_repair_200_full_file_is_http_error() -> None:
+    """H-25: a 200 to a byte-range request is never parsed — wrong record."""
+    m = get_metrics()
+    before = m.counter_value(
+        "warc_repair.fetch_attempts",
+        labels={"outcome": "http_error", "crawl_id": "CC-MAIN-2024-10"},
+    )
+
+    adapter = WarcRepairAdapter()
+    with patch(
+        "awareness.sources.warc_repair.get_shared_async_client",
+        AsyncMock(return_value=_mock_shared_client(_http_resp(200, _minimal_warc("x" * 300)))),
+    ):
+        out = [c async for c in adapter.run_partition(_partition(), _context())]
+
+    assert out == []
+    assert (
+        m.counter_value(
+            "warc_repair.fetch_attempts",
+            labels={"outcome": "http_error", "crawl_id": "CC-MAIN-2024-10"},
+        )
+        >= before + 1
+    )
+    assert m.counter_sum("warc_repair.parse_attempts") == 0
+
+
+@pytest.mark.asyncio
 async def test_warc_repair_ok_fetch_empty_parse_metrics() -> None:
-    """Successful range GET with non-parseable payload still counts parse empty."""
+    """206 range with a record too short to extract still counts parse empty."""
     m = get_metrics()
     before_ok = m.counter_value(
         "warc_repair.fetch_attempts",
@@ -120,17 +209,12 @@ async def test_warc_repair_ok_fetch_empty_parse_metrics() -> None:
         labels={"outcome": "empty", "crawl_id": "CC-MAIN-2024-10"},
     )
 
-    resp = MagicMock()
-    resp.status_code = 206
-    resp.content = b"not-a-warc"
-
-    mock_client = AsyncMock()
-    mock_client.get = AsyncMock(return_value=resp)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=None)
-
+    resp = _http_resp(206, _minimal_warc("tiny body under the min floor"))
     adapter = WarcRepairAdapter()
-    with patch("awareness.sources.warc_repair.httpx.AsyncClient", return_value=mock_client):
+    with patch(
+        "awareness.sources.warc_repair.get_shared_async_client",
+        AsyncMock(return_value=_mock_shared_client(resp)),
+    ):
         out = [c async for c in adapter.run_partition(_partition(), _context())]
 
     assert out == []
@@ -151,3 +235,31 @@ async def test_warc_repair_ok_fetch_empty_parse_metrics() -> None:
     snap = m.snapshot()
     parse_hists = [h for h in snap["histograms"] if h["name"] == "warc_repair.parse_seconds"]
     assert parse_hists and sum(h["count"] for h in parse_hists) >= 1
+
+
+@pytest.mark.asyncio
+async def test_warc_repair_parse_exception_is_error_not_empty() -> None:
+    """M-04 variant: a malformed payload raises; outcome 'error' != 'empty'."""
+    m = get_metrics()
+    before_error = m.counter_value(
+        "warc_repair.parse_attempts",
+        labels={"outcome": "error", "crawl_id": "CC-MAIN-2024-10"},
+    )
+
+    resp = _http_resp(206, b"not-a-warc")
+    adapter = WarcRepairAdapter()
+    with patch(
+        "awareness.sources.warc_repair.get_shared_async_client",
+        AsyncMock(return_value=_mock_shared_client(resp)),
+    ):
+        with pytest.raises(RetryableHTTPError):
+            out = [c async for c in adapter.run_partition(_partition(), _context())]
+            assert out == []
+
+    assert (
+        m.counter_value(
+            "warc_repair.parse_attempts",
+            labels={"outcome": "error", "crawl_id": "CC-MAIN-2024-10"},
+        )
+        >= before_error + 1
+    )

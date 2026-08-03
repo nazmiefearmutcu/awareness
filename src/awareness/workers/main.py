@@ -46,6 +46,7 @@ def run() -> None:
         reaper = None
         if settings.reaper_enabled:
             from awareness.workers.engine import DatabaseReaper
+
             reaper = DatabaseReaper(state)
             await reaper.start()
         try:

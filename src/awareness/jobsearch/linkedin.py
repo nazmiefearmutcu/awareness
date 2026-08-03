@@ -166,7 +166,12 @@ def build_search_locations(locations: list[str] | None) -> list[str]:
 
 
 def extract_job_id(url_or_text: str) -> str:
-    """Extract numeric job posting id from a LinkedIn URL, urn, or free text."""
+    """Extract numeric job posting id from a LinkedIn URL, urn, or free text.
+
+    The bare-numeric fallback (8-12 digits) only fires when the input is
+    URL-shaped — free text (e.g. a description) may legitimately contain
+    long digit runs that are not job ids (L-05).
+    """
     s = (url_or_text or "").strip()
     if not s:
         return ""
@@ -177,8 +182,11 @@ def extract_job_id(url_or_text: str) -> str:
         r"/jobs/view/(\d+)",
         r"currentJobId=(\d+)",
         r"jobPosting/(\d+)",
-        r"(?<!\d)(\d{8,12})(?!\d)",  # bare numeric id (LinkedIn ids are long)
     ]
+    lower = s.lower()
+    if "http://" in lower or "https://" in lower or "linkedin.com" in lower:
+        # Bare numeric id — LinkedIn ids are long. URL text only (L-05).
+        patterns.append(r"(?<!\d)(\d{8,12})(?!\d)")
     for p in patterns:
         m = re.search(p, s, re.I)
         if m:
@@ -257,6 +265,13 @@ def _parse_cards(html: str) -> list[JobListing]:
         if not job_id:
             job_id = extract_job_id(href)
 
+        if not href and job_id:
+            # L-01: no card link but we have the job id — synthesize the
+            # canonical guest URL so the listing stays fetchable/enrichable
+            # instead of being silently dropped.
+            href = f"https://www.linkedin.com/jobs/view/{job_id}"
+        if not title or not href:
+            continue
         remote = _is_remote(f"{title} {location}")
         out.append(
             JobListing(
@@ -281,9 +296,7 @@ def _criteria_value(html: str, header: str) -> str:
     # Typical: <h3 ...>Seniority level</h3> ... <span ...>Mid-Senior level</span>
     esc = re.escape(header)
     pat = (
-        r'class="[^"]*description__job-criteria-subheader[^"]*"[^>]*>\s*'
-        + esc
-        + r'\s*</[^>]+>.{0,400}?'
+        r'class="[^"]*description__job-criteria-subheader[^"]*"[^>]*>\s*' + esc + r"\s*</[^>]+>.{0,400}?"
         r'class="[^"]*description__job-criteria-text[^"]*"[^>]*>(.*?)</(?:span|div|p|li|h\d)>'
     )
     m = re.search(pat, html, re.I | re.S)
@@ -382,8 +395,10 @@ def apply_detail_to_listing(job: JobListing, detail: dict[str, str]) -> JobListi
     # Prefer real description over card stub ("Title at Company — Loc")
     stub = f"{job.title} at {job.company}".lower()
     current = (job.description or "").strip()
+    enriched = job.enriched
     if desc and (len(desc) > len(current) + 40 or current.lower().startswith(stub[:40].lower())):
         data["description"] = desc[:5000]
+        enriched = True
     tags = list(job.tags or [])
     for key, prefix in (
         ("seniority", "seniority"),
@@ -399,6 +414,9 @@ def apply_detail_to_listing(job: JobListing, detail: dict[str, str]) -> JobListi
             tags.append(tag)
     data["tags"] = tags
     data["remote"] = job.remote or _is_remote(data.get("description", ""), data.get("location", ""))
+    # M-37: "enriched" means a real detail body was merged in, not merely
+    # "has any description". Tracked on the listing itself.
+    data["enriched"] = enriched
     return JobListing(**data)
 
 
@@ -462,7 +480,7 @@ async def fetch_job_detail(
             cache_params={"job_id": jid},
             cache_ttl=DETAIL_TTL_SEC,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("linkedin_detail_fail", job_id=jid, error=str(exc)[:160])
         return {}
     detail = parse_job_detail(html)
@@ -534,14 +552,14 @@ async def fetch_linkedin(
     if js_cache is None and data_dir is not None:
         js_cache = JobSearchCache(data_dir)
 
-    primary = (user_q if user_q is not None else query) or ""
-    queries = build_search_queries(primary, titles, skills)
-    # If user_q was empty but engine soft-filled ``query`` with titles already,
-    # build_search_queries still dedupes. When primary is empty, also try query.
-    if not primary and query and query.strip().lower() not in {q.lower() for q in queries}:
-        # prepend soft query if distinct and room remains
-        merged = build_search_queries(query, titles, skills)
-        queries = merged
+    # L-02: the user's explicit search box string is PREPENDED to the
+    # profile-derived fanout instead of replacing it — a profile-heavy soft
+    # query (titles/skills) must keep contributing coverage.
+    queries = build_search_queries(query, titles, skills)
+    if user_q and user_q.strip():
+        user_q_clean = re.sub(r"\s+", " ", user_q.strip())
+        if user_q_clean.lower() not in {q.lower() for q in queries}:
+            queries = [user_q_clean, *queries]
 
     locs = build_search_locations(locations)
     pages = max(1, min(int(pages or MAX_PAGES), 5))

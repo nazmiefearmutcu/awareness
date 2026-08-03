@@ -13,13 +13,20 @@ from awareness.sources.commoncrawl_wet import crawl_ids_for_range
 from awareness.storage.state import StateDB
 
 
-def test_crawl_ids_for_range_covers_a_year() -> None:
+def test_crawl_ids_for_range_covers_a_year(monkeypatch) -> None:
     # Stay inside ISO year 2024 to avoid the year-boundary ISO-week shift
     # (Dec 30-31 2024 fall in ISO year 2025).
+    import awareness.sources.cc_crawls as cc
+
+    # Deterministic: force the bundled snapshot (no network) so the planned
+    # IDs are the REAL published crawls, not fabricated even-week anchors.
+    monkeypatch.setattr(cc, "_fetch_catalog", lambda: None)
+    monkeypatch.setattr(cc, "_read_cache", lambda: None)
     start = datetime(2024, 1, 8, tzinfo=UTC)  # ISO week 2 of 2024
     end = datetime(2024, 12, 22, tzinfo=UTC)
     crawls = crawl_ids_for_range(start, end)
-    assert 12 <= len(crawls) <= 30
+    assert len(crawls) >= 9
+    assert set(crawls).issubset(set(cc.BUNDLED_CRAWL_IDS))
     assert all(c.startswith("CC-MAIN-2024-") for c in crawls)
 
 

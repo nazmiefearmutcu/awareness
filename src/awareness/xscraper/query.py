@@ -110,11 +110,11 @@ def build_search_query(
 
     kw_terms = _dedupe([_format_keyword(term) for term in (keywords or []) if term and term.strip()])
     if kw_terms:
-        parts.append(f"({ ' OR '.join(kw_terms) })")
+        parts.append(f"({' OR '.join(kw_terms)})")
 
     handles = _dedupe([normalize_handle(handle) for handle in (accounts or []) if normalize_handle(handle)])
     if handles:
-        parts.append(f"({ ' OR '.join(f'from:{handle}' for handle in handles) })")
+        parts.append(f"({' OR '.join(f'from:{handle}' for handle in handles)})")
 
     if raw_query and raw_query.strip():
         parts.append(f"({raw_query.strip()})")

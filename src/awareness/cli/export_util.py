@@ -10,9 +10,7 @@ from awareness.storage.duckdb_index import DuckDbIndex
 
 # Match API /captures?unique= fold keys (newest fetch_ts per key).
 _UNIQUE_FOLD_KEY_SQL: dict[str, str] = {
-    "content": (
-        "COALESCE(NULLIF(TRIM(CAST(content_hash AS VARCHAR)), ''), capture_id)"
-    ),
+    "content": ("COALESCE(NULLIF(TRIM(CAST(content_hash AS VARCHAR)), ''), capture_id)"),
     "group": (
         "COALESCE("
         "NULLIF(TRIM(CAST(parent_doc_or_dup_group AS VARCHAR)), ''), "

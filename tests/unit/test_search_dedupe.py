@@ -518,4 +518,4 @@ async def test_worker_tight_near_dup_skips_batch_buffer(
     assert job is not None
     # NEW + loose NEAR_DUP + unique NEW stored; tight NEAR_DUP dropped only.
     assert job.docs_emitted == 3
-    assert job.docs_dedup_dropped >= 2  # tight (skip) + loose (store+count)
+    assert job.docs_dedup_dropped == 1  # tight (skip) only; loose NEAR_DUP is stored, not dropped

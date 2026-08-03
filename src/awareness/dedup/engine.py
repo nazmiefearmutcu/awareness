@@ -26,8 +26,8 @@ from enum import Enum
 
 from awareness.obs.logging import get_logger
 from awareness.schemas.doc import DocCapture
-from awareness.storage.state import StateDB
-from awareness.util.hashing import hamming128, simhash128
+from awareness.storage.state import NEAR_DUP_SEGMENTS, StateDB
+from awareness.util.hashing import hamming64, hamming128, simhash128
 
 logger = get_logger("dedup")
 
@@ -39,7 +39,12 @@ DEFAULT_NEAR_THRESHOLD = 24
 # NEAR_DUP captures at or below this Hamming distance are treated like
 # EXACT_DUP for storage: count as a dedup drop, do not re-store full text.
 # Distances in (threshold, near_threshold] still persist for provenance.
+# Worker-facing effective tight-store cutoff is min(TIGHT_NEAR_STORE_THRESHOLD,
+# near_threshold) — see DedupEngine.tight_store_threshold (L-05).
 TIGHT_NEAR_STORE_THRESHOLD = 12
+
+# Low 64-bit mask used to compare legacy 64-bit candidate signatures (M-23).
+_MASK64 = (1 << 64) - 1
 
 
 class DedupDecision(str, Enum):
@@ -63,14 +68,32 @@ class DedupOutcome:
 
 
 class DedupEngine:
-    def __init__(self, state: StateDB, near_threshold: int = 24) -> None:
+    def __init__(self, state: StateDB, near_threshold: int = DEFAULT_NEAR_THRESHOLD) -> None:
         # 128-bit signatures: unrelated documents sit at Hamming ~45+, so a
         # Hamming≤24 default folds tight-to-moderate near-dups at perfect
         # precision (no false-merges) while leaving headroom to the unrelated
         # floor. Raising it catches more (recall) until precision erodes near
         # ~36 (see benchmarks/); the value is fully tunable per caller.
         self._state = state
-        self._near_threshold = max(0, near_threshold)
+        # M-19: clamp into [0, NEAR_DUP_SEGMENTS - 1] — the band index only
+        # guarantees retrieval up to Hamming ≤ (segments - 1); an unclamped
+        # threshold (>31) would silently miss every pair in the gap.
+        self._near_threshold = max(0, min(int(near_threshold), NEAR_DUP_SEGMENTS - 1))
+
+    @property
+    def near_threshold(self) -> int:
+        """Effective near-dup merge threshold (clamped into banding range)."""
+        return self._near_threshold
+
+    @property
+    def tight_store_threshold(self) -> int:
+        """Worker-facing tight-store cutoff (L-05).
+
+        A tight NEAR_DUP is one at Hamming ≤ this value. It can never exceed
+        the engine's merge threshold: with near_threshold < 12 the tight store
+        cutoff collapses to the threshold itself.
+        """
+        return min(TIGHT_NEAR_STORE_THRESHOLD, self._near_threshold)
 
     def evaluate(self, cap: DocCapture) -> DedupOutcome:
         """Decide dedup state for ``cap`` and update its ``parent_doc_or_dup_group``."""
@@ -78,7 +101,11 @@ class DedupEngine:
         canonical_doc_id, was_new = self._state.upsert_dedup(cap.content_hash, cap.doc_id)
 
         if not was_new:
-            cap.parent_doc_or_dup_group = canonical_doc_id
+            # H-23: EXACT_DUP/REVISION must fold to the *union-find root*, not
+            # the raw first-seen doc_id — same as the NEAR_DUP path below — so
+            # downstream folding (search collapse, related()) stays consistent
+            # when the canonical doc later joins a near-dup cluster.
+            cap.parent_doc_or_dup_group = self._state.uf_find(canonical_doc_id)
             if canonical_doc_id == cap.doc_id:
                 # Same URL+content already seen; this is a fresh capture (different fetch_ts).
                 return DedupOutcome(
@@ -102,7 +129,14 @@ class DedupEngine:
             for other_doc_id, other_sig in self._state.find_near_dup_candidates(sig):
                 if other_doc_id == cap.doc_id:
                     continue
-                dist = hamming128(sig, other_sig)
+                # M-23: legacy 64-bit candidates (sig_hex NULL rows) carry only
+                # the low 64 bits — compare them with hamming64 against the
+                # query's low half, not hamming128 (which would count every set
+                # bit in the query's high half as a mismatch).
+                if other_sig.bit_length() <= 64:
+                    dist = hamming64(sig & _MASK64, other_sig)
+                else:
+                    dist = hamming128(sig, other_sig)
                 if dist < best_dist:
                     best_dist = dist
                     best_doc = other_doc_id

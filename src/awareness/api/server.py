@@ -31,15 +31,17 @@ Run with ``awareness-api`` script or ``uvicorn awareness.api.server:create_app``
 from __future__ import annotations
 
 import asyncio
-import threading
+import hmac
 import os
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
+from urllib.parse import urlsplit
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -50,7 +52,7 @@ from awareness.obs.logging import configure_logging, get_logger
 from awareness.obs.metrics import get_metrics
 from awareness.planner.planner import Planner
 from awareness.schemas.doc import SourceKind
-from awareness.schemas.jobs import BackfillRequest
+from awareness.schemas.jobs import BackfillRequest, JobStatus
 from awareness.storage.duckdb_index import DuckDbIndex
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
@@ -59,6 +61,77 @@ from awareness.util.timeutil import coerce_relative_end, inclusive_end, to_utc
 from awareness.workers.engine import WorkerEngine
 
 logger = get_logger("api")
+
+# State-changing routes that reject non-JSON bodies and cross-origin requests
+# (CSRF posture: text/plain is CORS-safelisted and skips preflight).
+_CSRF_ROUTE_PREFIXES = (
+    "/backfill",
+    "/tail/start",
+    "/tail/stop",
+    "/jobsearch/search",
+    "/settings/",
+    "/jobsearch/profile",
+)
+
+
+def _is_csrf_protected(method: str, path: str) -> bool:
+    if method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return False
+    return path.startswith(_CSRF_ROUTE_PREFIXES)
+
+
+def _body_present(request: Request) -> bool:
+    length = request.headers.get("content-length")
+    if length and length.strip().isdigit() and int(length) > 0:
+        return True
+    return "transfer-encoding" in request.headers
+
+
+def _origin_allowed(request: Request) -> bool:
+    """True when a present Origin header belongs to this server's host."""
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    try:
+        origin_host = urlsplit(origin).netloc
+    except ValueError:
+        return False
+    if not origin_host:
+        return False
+    host = request.headers.get("host", "")
+    return origin_host == host
+
+
+def _check_api_key(request: Request) -> str | None:
+    """Return an error message when the request fails API-key auth.
+
+    ``GET /healthz`` stays open for load-balancer probes. Only enforced when
+    ``AW_API_KEY`` is set; without a key the localhost-trust behavior applies.
+    """
+    if request.method == "GET" and request.url.path == "/healthz":
+        return None
+    settings = get_settings()
+    expected = settings.api_key
+    if not expected:
+        return None
+    authorization = request.headers.get("authorization", "")
+    provided = ""
+    if authorization.startswith("Bearer "):
+        provided = authorization[7:].strip()
+    if not provided or not hmac.compare_digest(provided, expected):
+        return "missing or invalid API key"
+    return None
+
+
+def require_api_key(request: Request) -> None:
+    """Optional bearer-token auth for the control plane (router dependency)."""
+    error = _check_api_key(request)
+    if error is not None:
+        raise HTTPException(
+            status_code=401,
+            detail=error,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 class BackfillBody(BaseModel):
@@ -91,6 +164,7 @@ class _State:
     tail: TailEngine | None = None
     index: DuckDbIndex | None = None
     background_tasks: set[asyncio.Task[Any]] = set()
+    active_job_runs: ClassVar[set[str]] = set()
 
 
 _index_lock = threading.Lock()
@@ -124,13 +198,10 @@ def _close_index() -> None:
             _State.index = None
 
 
-
 # Fold key expressions for GET /captures?unique=…
 # Keep newest fetch_ts per key via DISTINCT ON; empty/null hash falls back to capture_id.
 _UNIQUE_FOLD_KEY_SQL: dict[str, str] = {
-    "content": (
-        "COALESCE(NULLIF(TRIM(CAST(content_hash AS VARCHAR)), ''), capture_id)"
-    ),
+    "content": ("COALESCE(NULLIF(TRIM(CAST(content_hash AS VARCHAR)), ''), capture_id)"),
     "group": (
         "COALESCE("
         "NULLIF(TRIM(CAST(parent_doc_or_dup_group AS VARCHAR)), ''), "
@@ -236,7 +307,7 @@ def create_app() -> FastAPI:
         state.get_tail(reconcile=True)
         try:
             state.reconcile_orphan_tail_jobs()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("orphan_tail_reconcile_failed", error=str(exc))
         _State.state = state
         _State.planner = Planner(state)
@@ -245,6 +316,7 @@ def create_app() -> FastAPI:
         reaper = None
         if settings.reaper_enabled:
             from awareness.workers.engine import DatabaseReaper
+
             reaper = DatabaseReaper(state)
             await reaper.start()
 
@@ -255,8 +327,13 @@ def create_app() -> FastAPI:
                 await reaper.stop()
             if _State.tail and _State.tail.running:
                 await _State.tail.stop(drain_seconds=10.0)
-            for t in list(_State.background_tasks):
+            # Cancel AND await background jobs so their finally blocks (engine
+            # close, active-run markers) run before the loop shuts down.
+            pending = [t for t in list(_State.background_tasks) if not t.done()]
+            for t in pending:
                 t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
             _close_index()
             # Drain process-wide pooled httpx clients so sockets/TLS sessions
             # do not leak across uvicorn reloads / process exit.
@@ -264,10 +341,43 @@ def create_app() -> FastAPI:
                 from awareness.util.http import aclose_shared_async_clients
 
                 await aclose_shared_async_clients()
-            except Exception as exc:  # noqa: BLE001 — best-effort shutdown
+            except Exception as exc:
                 logger.warning("shared_http_clients_shutdown_failed", error=str(exc))
 
-    app = FastAPI(title="Awareness", version=__version__, lifespan=lifespan)
+    app = FastAPI(
+        title="Awareness",
+        version=__version__,
+        lifespan=lifespan,
+        dependencies=[Depends(require_api_key)],
+    )
+
+    @app.middleware("http")
+    async def _security(request: Request, call_next):  # type: ignore[no-untyped-def]
+        """Auth fallback (covers mounts) + CSRF posture for mutating routes.
+
+        The API-key dependency handles router routes; this middleware catches
+        anything it does not (e.g. the static mount) and enforces the CSRF
+        rules: mutating requests with a body must be ``application/json``
+        (415 otherwise) and a present ``Origin`` must match the request host
+        (403 otherwise). Middlewares cannot raise HTTPException (Starlette only
+        converts those below ExceptionMiddleware), so auth failures here return
+        a response directly.
+        """
+        auth_error = _check_api_key(request)
+        if auth_error is not None:
+            return PlainTextResponse(
+                f"401: {auth_error}",
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if _is_csrf_protected(request.method, request.url.path):
+            if _body_present(request):
+                ctype = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+                if ctype != "application/json":
+                    return PlainTextResponse("415: content-type must be application/json", status_code=415)
+            if not _origin_allowed(request):
+                return PlainTextResponse("403: cross-origin request rejected", status_code=403)
+        return await call_next(request)
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
@@ -276,13 +386,11 @@ def create_app() -> FastAPI:
         ``ok`` stays True while the process can answer (liveness). ``index_ready``
         reports whether DuckDB views are queryable; clients that need search
         should wait for ``index_ready`` (and optionally ``index.fts_built``).
+        No config values (state db URL, data dir) are exposed here.
         """
-        s = get_settings()
         out: dict[str, Any] = {
             "ok": True,
             "version": __version__,
-            "state_db": _State.state.url if _State.state else None,
-            "data_dir": str(s.data_dir),
             "index_ready": False,
             "index": None,
         }
@@ -291,7 +399,7 @@ def create_app() -> FastAPI:
             snap = idx.health_snapshot()
             out["index"] = snap
             out["index_ready"] = bool(snap.get("ready"))
-        except Exception as exc:  # noqa: BLE001 — healthz must never 500
+        except Exception as exc:
             logger.warning("healthz_index_probe_failed", error=str(exc))
             out["index"] = {
                 "ready": False,
@@ -311,7 +419,7 @@ def create_app() -> FastAPI:
     @app.get("/metrics")
     def metrics(
         request: Request,
-        format: str | None = Query(  # noqa: A002 — Prometheus-style query name
+        format: str | None = Query(
             default=None,
             description="Response format: omit/json (default) or prometheus/prom/text",
         ),
@@ -379,8 +487,11 @@ def create_app() -> FastAPI:
     def submit_backfill(body: BackfillBody) -> dict[str, Any]:
         if _State.planner is None:
             raise HTTPException(500, "not initialized")
-        end = body.end or (coerce_relative_end(body.end_str or "now"))
-        srcs = [SourceKind(s) for s in body.sources] if body.sources else []
+        try:
+            end = body.end or (coerce_relative_end(body.end_str or "now"))
+            srcs = [SourceKind(s) for s in body.sources] if body.sources else []
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, f"invalid backfill parameters: {exc}") from exc
         start_dt = to_utc(body.start)
         if start_dt is None:
             raise HTTPException(400, "Invalid start date")
@@ -409,14 +520,24 @@ def create_app() -> FastAPI:
     async def run_backfill(job_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
         if _State.state is None or _State.planner is None:
             raise HTTPException(500, "not initialized")
+        # In-flight guard: one engine per job. The in-process marker is race-free
+        # (both requests share the event loop); the DB RUNNING check catches a
+        # second process racing to run the same job.
+        if job_id in _State.active_job_runs:
+            raise HTTPException(409, f"job {job_id} is already running")
+        job = _State.state.get_job(job_id)
+        if job is not None and job.status == JobStatus.RUNNING:
+            raise HTTPException(409, f"job {job_id} is already running")
         engine = WorkerEngine(_State.state, _State.planner)
 
         async def _runner() -> None:
             try:
                 await engine.run_job(job_id)
             finally:
+                _State.active_job_runs.discard(job_id)
                 await engine.aclose()
 
+        _State.active_job_runs.add(job_id)
         task = asyncio.create_task(_runner())
         _State.background_tasks.add(task)
         task.add_done_callback(_State.background_tasks.discard)
@@ -429,7 +550,7 @@ def create_app() -> FastAPI:
         return _State.planner.status(job_id)
 
     @app.get("/jobs")
-    def list_jobs(limit: int = 20) -> list[dict[str, Any]]:
+    def list_jobs(limit: int = Query(20, ge=1, le=500)) -> list[dict[str, Any]]:
         if _State.state is None:
             raise HTTPException(500, "not initialized")
         return [j.model_dump(mode="json") for j in _State.state.list_jobs(limit=limit)]
@@ -443,8 +564,8 @@ def create_app() -> FastAPI:
         body = body or TailStartBody()
         if body.match_field not in ("title", "text", "both"):
             raise HTTPException(400, "match_field must be one of: title, text, both")
-        if body.gdelt_max_urls < 0:
-            raise HTTPException(400, "gdelt_max_urls must be >= 0")
+        if body.gdelt_max_urls != 0 and not (1 <= body.gdelt_max_urls <= 100_000):
+            raise HTTPException(400, "gdelt_max_urls must be 0 (config default) or in 1..100000")
         s = get_settings()
         use_gdelt = s.tail_gdelt if body.gdelt is None else body.gdelt
         await _State.tail.start(
@@ -509,7 +630,7 @@ def create_app() -> FastAPI:
             # Best-effort cleanup so subsequent reads stay quiet.
             try:
                 state.abandon_inflight_tasks(job_id, note="stale-tasks-on-stopped-tail")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("abandon_inflight_on_tail_status_failed", error=str(exc))
         counts = state.task_status_counts(job_id)
         if not live:
@@ -550,7 +671,7 @@ def create_app() -> FastAPI:
             SELECT doc_id, capture_id, source_type, source_name, fetch_ts,
                    domain, title, length(text) AS text_len, language
             FROM captures
-            WHERE {' AND '.join(where)}
+            WHERE {" AND ".join(where)}
             ORDER BY fetch_ts DESC
             LIMIT {int(limit)}
         """
@@ -689,11 +810,7 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         s = get_settings()
         idx = _get_index()
-        field_list = [
-            f.strip().lower()
-            for f in (fields or s.search_default_fields).split(",")
-            if f.strip()
-        ]
+        field_list = [f.strip().lower() for f in (fields or s.search_default_fields).split(",") if f.strip()]
         return idx.search(
             q,
             limit=limit,
@@ -743,7 +860,10 @@ def create_app() -> FastAPI:
     def settings_put_tail_seeds(body: dict[str, Any]) -> dict[str, Any]:
         from awareness.config.persist import write_tail_seeds
 
-        return write_tail_seeds(body or {})
+        try:
+            return write_tail_seeds(body or {})
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     # ── job search (public boards + personalization) ─────────────────────
     @app.get("/jobsearch/sources")
@@ -788,10 +908,15 @@ def create_app() -> FastAPI:
             li_pages = int(body.get("linkedin_pages") or 3)
         except (TypeError, ValueError):
             li_pages = 3
+        try:
+            limit = int(body.get("limit") or 40)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "limit must be an integer") from None
+        limit = max(1, min(limit, 100))
         req = JobSearchRequest(
             q=str(body.get("q") or ""),
             profile=profile,
-            limit=int(body.get("limit") or 40),
+            limit=limit,
             save_profile=bool(body.get("save_profile", False)),
             linkedin_pages=max(1, min(li_pages, 5)),
         )
@@ -851,6 +976,12 @@ def run() -> None:
 
     host = os.environ.get("AW_API_HOST", "127.0.0.1")
     port = int(os.environ.get("AW_API_PORT", "8085"))
+    if host not in ("127.0.0.1", "::1", "localhost") and not get_settings().api_key:
+        logger.warning(
+            "api_binding_non_loopback_without_key",
+            host=host,
+            hint="set AW_API_KEY before binding to a non-loopback interface",
+        )
     uvicorn.run("awareness.api.server:create_app", host=host, port=port, factory=True)
 
 

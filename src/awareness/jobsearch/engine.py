@@ -72,14 +72,9 @@ class JobSearchEngine:
         source_counts: dict[str, int] = {}
         for j in ranked:
             source_counts[j.source] = source_counts.get(j.source, 0) + 1
-        # Enriched = LinkedIn (or any) with a real description body, not just title line
-        enriched = sum(
-            1
-            for j in ranked
-            if j.description
-            and len(j.description) > 80
-            and j.description != f"{j.title} at {j.company} — {j.location}".strip(" —")
-        )
+        # Enriched = listings that actually received a merged detail body via
+        # apply_detail_to_listing (flag tracked on the listing) — M-37.
+        enriched = sum(1 for j in ranked if j.enriched)
 
         return JobSearchResponse(
             query=req.q,

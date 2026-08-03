@@ -16,6 +16,7 @@ from awareness.sources.fineweb import (
     _normalize_filter_reason,
     _record_fineweb_load,
 )
+from awareness.util.http import RetryableHTTPError
 
 
 def test_fineweb_dataset_label() -> None:
@@ -123,8 +124,11 @@ async def test_run_partition_load_error(
     monkeypatch.setitem(__import__("sys").modules, "datasets", mod)
 
     adapter = FineWebAdapter()
-    async for _ in adapter.run_partition(_part(), _ctx()):
-        pass
+    # H-15: a load failure must NOT mark the partition COMPLETED — it records
+    # the metric, then raises RetryableHTTPError so the task retries.
+    with pytest.raises(RetryableHTTPError):
+        async for _ in adapter.run_partition(_part(), _ctx()):
+            pass
     assert metrics.counter_value(
         "fineweb.load_attempts",
         labels={"outcome": "error", "dataset": "fineweb"},

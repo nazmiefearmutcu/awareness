@@ -214,7 +214,9 @@ class Planner:
             url = entry.get("url")
             if not url:
                 continue
-            tasks.append(self._task(job_id, SourceKind.RSS, f"sitemap:{url}", {"kind": "sitemap", "url": url}))
+            tasks.append(
+                self._task(job_id, SourceKind.RSS, f"sitemap:{url}", {"kind": "sitemap", "url": url})
+            )
 
         if tasks:
             self._state.add_tasks(tasks)
@@ -228,7 +230,9 @@ class Planner:
         logger.info("planner_tail_stopped", job_id=job_id)
 
     # ── helpers ──────────────────────────────────────────────────────────
-    def _task(self, job_id: str, source: SourceKind, partition_key: str, payload: dict[str, Any]) -> TaskState:
+    def _task(
+        self, job_id: str, source: SourceKind, partition_key: str, payload: dict[str, Any]
+    ) -> TaskState:
         return TaskState(
             task_id=f"t-{uuid.uuid4().hex[:16]}",
             job_id=job_id,

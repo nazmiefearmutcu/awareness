@@ -25,12 +25,13 @@ from datetime import datetime, timedelta
 
 import httpx
 
+from awareness.config import get_settings
 from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
 from awareness.schemas.doc import DocCapture, SourceKind
 from awareness.schemas.jobs import BackfillRequest
-from awareness.util.http import get_shared_async_client
 from awareness.sources.base import Adapter, AdapterContext, PartitionSpec
+from awareness.util.http import get_shared_async_client
 from awareness.util.timeutil import to_utc, utcnow
 from awareness.util.urls import canonical_url
 
@@ -92,17 +93,28 @@ class GdeltAdapter(Adapter):
 
     def plan(self, request: BackfillRequest) -> list[PartitionSpec]:
         slots = _quarter_hours(request.start, request.end)
-        # Cap to avoid runaway tasks in smoke runs.
-        cap = request.max_tasks or 8
-        slots = slots[:cap]
-        return [
-            PartitionSpec(
-                source_type=self.source_type,
-                partition_key=f"gdelt:gkg:{slot}",
-                payload={"slot": slot},
+        # M-14: never silently truncate a real backfill to 8 slots. Only honor
+        # request.max_tasks when it was EXPLICITLY set (CLI --max-tasks smoke
+        # mode). Backfill payloads also carry max_urls mirroring the
+        # tail_gdelt_max_urls setting so sub-partitions are capped for
+        # backfill discovery too.
+        if request.max_tasks is not None:
+            slots = slots[: max(0, request.max_tasks)]
+        settings = get_settings()
+        max_urls = int(getattr(settings, "tail_gdelt_max_urls", 500) or 0)
+        out = []
+        for slot in slots:
+            payload: dict[str, object] = {"slot": slot}
+            if max_urls > 0:
+                payload["max_urls"] = max_urls
+            out.append(
+                PartitionSpec(
+                    source_type=self.source_type,
+                    partition_key=f"gdelt:gkg:{slot}",
+                    payload=payload,
+                )
             )
-            for slot in slots
-        ]
+        return out
 
     async def run_partition(
         self,
@@ -119,15 +131,11 @@ class GdeltAdapter(Adapter):
             sc = _status_class(r.status_code)
             if r.status_code != 200:
                 outcome = "missing" if r.status_code == 404 else "http_error"
-                _record_gdelt_fetch(
-                    outcome=outcome, status_class=sc, elapsed=elapsed, slot=slot
-                )
+                _record_gdelt_fetch(outcome=outcome, status_class=sc, elapsed=elapsed, slot=slot)
                 logger.info("gdelt_slot_missing", slot=slot, status=r.status_code)
                 return
             payload = r.content
-            _record_gdelt_fetch(
-                outcome="ok", status_class=sc, elapsed=elapsed, slot=slot
-            )
+            _record_gdelt_fetch(outcome="ok", status_class=sc, elapsed=elapsed, slot=slot)
         except httpx.HTTPError as exc:
             elapsed = time.perf_counter() - t0
             _record_gdelt_fetch(

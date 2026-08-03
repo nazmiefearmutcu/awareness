@@ -18,6 +18,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from awareness.util.timeutil import to_utc
+
 
 class RobotsDecision(str, Enum):
     """Outcome of robots.txt evaluation for a URL."""
@@ -119,8 +121,16 @@ class DocCapture(BaseModel):
     @field_validator("fetch_ts", "observed_ts", "published_ts", "last_modified", mode="before")
     @classmethod
     def _ensure_utc(cls, v: Any) -> Any:
-        if v is None or isinstance(v, str):
-            return v
+        if v is None:
+            return None
+        if isinstance(v, str):
+            # M-26: naive strings must parse through to_utc so they get a UTC
+            # tzinfo attached — the old code passed strings through untouched
+            # and pydantic kept them naive, producing naive datetimes in
+            # downstream rows. Unparseable strings are returned unchanged so
+            # pydantic still reports a proper validation error.
+            parsed = to_utc(v)
+            return parsed if parsed is not None else v
         if isinstance(v, datetime):
             if v.tzinfo is None:
                 return v.replace(tzinfo=UTC)

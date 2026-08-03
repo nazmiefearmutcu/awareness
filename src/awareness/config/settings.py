@@ -2,8 +2,9 @@
 
 All runtime knobs live here. Environment variables (prefix AW_) override
 defaults; a YAML file at AW_CONFIG_FILE is optional and merges on top of
-defaults but is overridden by env. We intentionally keep this small — the
-adapters' source-specific knobs live in their own configs.
+defaults but is overridden by env. Precedence is always: env > YAML > default
+(the YAML override file cannot shadow an ``AW_*`` variable). We intentionally
+keep this small — the adapters' source-specific knobs live in their own configs.
 """
 
 from __future__ import annotations
@@ -65,10 +66,7 @@ class Settings(BaseSettings):
 
     # ── identity ─────────────────────────────────────────────────────────
     ingest_version: str = "0.1.0"
-    user_agent: str = (
-        "AwarenessBot/0.1 (+https://github.com/nazmiefearmutcu/awareness; "
-        "public-text-research)"
-    )
+    user_agent: str = "AwarenessBot/0.1 (+https://github.com/nazmiefearmutcu/awareness; public-text-research)"
     contact_email: str = "research@example.invalid"
 
     # ── politeness / fetch ────────────────────────────────────────────────
@@ -90,7 +88,7 @@ class Settings(BaseSettings):
     # ── state db reaper ──────────────────────────────────────────────────
     reaper_enabled: bool = True
     reaper_interval_seconds: int = 86400  # default 24 hours
-    reaper_retention_days: int = 7        # keep completed/old tasks for 7 days
+    reaper_retention_days: int = 7  # keep completed/old tasks for 7 days
     redis_url: str | None = None
 
     # ── tail ─────────────────────────────────────────────────────────────
@@ -99,7 +97,9 @@ class Settings(BaseSettings):
     tail_gdelt: bool = False  # also discover via GDELT (global news firehose)
     tail_gdelt_max_urls: int = 500  # cap URLs pulled per 15-min GDELT slot
     tail_show_captures: bool = True  # print each capture to the terminal as it lands
-    terminal_mute_duplicates: bool = False  # skip printing EXACT_DUP / NEAR_DUP / REVISION and tight near-dup skip-store lines
+    terminal_mute_duplicates: bool = (
+        False  # skip printing EXACT_DUP / NEAR_DUP / REVISION and tight near-dup skip-store lines
+    )
 
     # ── corpus filters ───────────────────────────────────────────────────
     text_min_chars: int = 200
@@ -138,11 +138,17 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = True
 
+    # ── API auth ─────────────────────────────────────────────────────────
+    # Env-only (AW_API_KEY); never exposed through the YAML config surface.
+    # When set, the HTTP control plane requires ``Authorization: Bearer``.
+    api_key: str | None = Field(default=None, exclude=True)
+
     def model_post_init(self, __context: Any) -> None:
         """Resolve derived paths and create directories."""
         root = self.project_root
         if self.data_dir is None:
             self.data_dir = root / "data"
+        self._validate_data_dir()
         if self.iceberg_warehouse is None:
             self.iceberg_warehouse = self.data_dir / "iceberg"
         if self.iceberg_catalog_db is None:
@@ -179,6 +185,21 @@ class Settings(BaseSettings):
                     Path(p).mkdir(parents=True, exist_ok=True)
 
     # ── helpers ──────────────────────────────────────────────────────────
+    def _validate_data_dir(self) -> None:
+        """Reject existing non-directory or unwritable ``data_dir`` targets.
+
+        Guards against bricking the app with ``data_dir=/dev/null`` (or any
+        other file/device path) coming from YAML or an ``AW_*`` variable.
+        """
+        assert self.data_dir is not None
+        if self.data_dir.exists() and not self.data_dir.is_dir():
+            raise ValueError(
+                f"data_dir {self.data_dir} exists and is not a directory "
+                f"(refusing a file or device target like /dev/null)"
+            )
+        if self.data_dir.exists() and not os.access(self.data_dir, os.W_OK):
+            raise ValueError(f"data_dir {self.data_dir} is not writable")
+
     def staging_jsonl_dir(self) -> Path:
         assert self.data_dir is not None
         return self.data_dir / "jsonl"
@@ -194,9 +215,21 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return cached Settings; YAML overrides applied first, env wins."""
+    """Return cached Settings; YAML overrides applied first, env wins.
+
+    Precedence is env > YAML > default. ``pydantic-settings`` gives init
+    kwargs (the YAML map) higher priority than env vars, so keys that have an
+    ``AW_*`` variable set are filtered out of the overrides here — an operator
+    ``AW_*`` override can never be silently shadowed by the YAML file.
+    """
     overrides = _load_yaml_overrides()
-    return Settings(**overrides)
+    env = os.environ
+    filtered = {
+        key: value
+        for key, value in overrides.items()
+        if ("AW_" + str(key).upper().replace("-", "_")) not in env
+    }
+    return Settings(**filtered)
 
 
 def reset_settings() -> None:

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from dateutil import parser as _dateutil_parser
@@ -20,13 +21,11 @@ def to_utc(dt: datetime | str | None) -> datetime | None:
         s = dt.strip().lower()
         if s in ("now", "today"):
             return utcnow()
-        if s.endswith("days ago"):
-            try:
-                days = int(s.split()[0])
-                from datetime import timedelta
-                return utcnow() - timedelta(days=days)
-            except (ValueError, IndexError):
-                pass
+        # Relative form: "1 day ago" / "2 days ago" (singular day was missed
+        # by the old plural-only suffix check — M-32).
+        m = re.match(r"(\d+)\s+days?\s+ago$", s)
+        if m:
+            return utcnow() - timedelta(days=int(m.group(1)))
         try:
             dt = _dateutil_parser.parse(dt)
         except (ValueError, TypeError):
@@ -82,11 +81,19 @@ def inclusive_end(dt: datetime | str | None) -> datetime | None:
 
 
 def coerce_relative_end(end: Any) -> datetime:
-    """Allow ``now``/``today`` literal end markers in CLI/API payloads."""
+    """Allow ``now``/``today`` literal end markers in CLI/API payloads.
+
+    Empty string means "no end bound" and resolves to ``utcnow()`` (M-03).
+    Raises :class:`ValueError` for anything unparseable so callers can turn
+    it into a user-facing error.
+    """
     if isinstance(end, datetime):
         return to_utc(end)  # type: ignore[return-value]
     if isinstance(end, str):
         s = end.strip().lower()
+        if not s:
+            # Empty = no upper bound → "now" (inclusive window).
+            return utcnow()
         if s in ("now", "today"):
             return utcnow()
         parsed = _dateutil_parser.parse(end)

@@ -35,6 +35,38 @@ from awareness.storage.iceberg_schema import (
 logger = get_logger("storage.iceberg")
 
 
+def _parse_ts_string(v: str) -> datetime | None:
+    """Parse an ISO-8601 timestamp string, tolerating nanosecond fractions.
+
+    ``datetime.fromisoformat`` supports at most 6 fractional digits; naive
+    exporters (JS ``toISOString``-adjacent tooling, some parsers) emit 9
+    (nanoseconds), which would abort the whole Iceberg append (M-36). We
+    truncate the fraction to microseconds after the plain parse fails.
+    """
+    candidates = [v, v.replace("Z", "+00:00")]
+    for cand in candidates:
+        try:
+            return datetime.fromisoformat(cand)
+        except ValueError:
+            pass
+    # Truncate fractional seconds >6 digits: ".123456789" -> ".123456".
+    truncated = v
+    dot = v.find(".")
+    if dot >= 0:
+        frac_end = dot + 1
+        while frac_end < len(v) and v[frac_end].isdigit():
+            frac_end += 1
+        digits = frac_end - dot - 1
+        if digits > 6:
+            truncated = v[: dot + 7] + v[frac_end:]
+    for cand in [truncated, truncated.replace("Z", "+00:00")]:
+        try:
+            return datetime.fromisoformat(cand)
+        except ValueError:
+            pass
+    return None
+
+
 def _to_arrow(rows: Iterable[dict[str, Any]], schema: pa.Schema) -> pa.Table:
     """Coerce row dicts to a PyArrow table matching ``schema``.
 
@@ -58,13 +90,7 @@ def _to_arrow(rows: Iterable[dict[str, Any]], schema: pa.Schema) -> pa.Table:
             if f.name in ts_fields:
                 ts_val: datetime | None = None
                 if isinstance(v, str):
-                    try:
-                        ts_val = datetime.fromisoformat(v)
-                    except ValueError:
-                        try:
-                            ts_val = datetime.fromisoformat(v.replace("Z", "+00:00"))
-                        except ValueError:
-                            ts_val = None
+                    ts_val = _parse_ts_string(v)
                 elif isinstance(v, datetime):
                     ts_val = v
 
@@ -104,6 +130,7 @@ class IcebergWriter:
     def _ensure_catalog(self) -> Catalog:
         if self._catalog is None:
             import os
+
             self._catalog_db.parent.mkdir(parents=True, exist_ok=True)
             warehouse_str = str(self._warehouse)
             properties = {}
@@ -121,10 +148,7 @@ class IcebergWriter:
                 uri_warehouse = f"file://{local_path.resolve()}"
 
             self._catalog = SqlCatalog(
-                "awareness",
-                uri=f"sqlite:///{self._catalog_db}",
-                warehouse=uri_warehouse,
-                **properties
+                "awareness", uri=f"sqlite:///{self._catalog_db}", warehouse=uri_warehouse, **properties
             )
         return self._catalog
 

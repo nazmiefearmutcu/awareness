@@ -54,7 +54,7 @@ def _parse_ts(value: Any) -> datetime | None:
         from dateutil import parser as date_parser  # type: ignore
 
         return date_parser.parse(s).astimezone(UTC)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -362,7 +362,7 @@ async def fetch_sources(
                 jobs.extend(rows)
                 ok.append(name)
                 logger.info("job_source_ok", source=name, n=len(rows))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 err[name] = str(exc)[:200]
                 logger.warning("job_source_fail", source=name, error=str(exc))
 
@@ -372,14 +372,28 @@ async def fetch_sources(
 
 
 def dedupe_jobs(jobs: list[JobListing]) -> list[JobListing]:
-    seen: set[str] = set()
+    """Dedupe listings: URL-first, with a content fallback key.
+
+    The old ``company::title`` alt key over-deduped — the same company posting
+    two distinct roles (or two locations of one role) collapsed into one
+    (M-07). Now:
+    * identical URLs are dropped;
+    * otherwise the same company + title + location from the SAME source is
+      treated as one posting (tracking-param URL variants), never across
+      sources (LinkedIn vs ATS legitimately list the same role).
+    """
+    seen_urls: set[str] = set()
+    seen_same_source: set[str] = set()
     out: list[JobListing] = []
     for j in jobs:
-        key = j.url.rstrip("/").lower()
-        alt = f"{j.company.lower()}::{j.title.lower()}"
-        if key in seen or alt in seen:
+        url_key = (j.url or "").rstrip("/").lower()
+        if url_key:
+            if url_key in seen_urls:
+                continue
+            seen_urls.add(url_key)
+        alt = f"{j.source}::{j.company.lower()}::{j.title.lower()}::{j.location.lower()}"
+        if alt in seen_same_source:
             continue
-        seen.add(key)
-        seen.add(alt)
+        seen_same_source.add(alt)
         out.append(j)
     return out

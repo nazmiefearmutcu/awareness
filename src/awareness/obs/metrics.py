@@ -119,12 +119,10 @@ class MetricsRegistry:
             # Updated gauges keep /metrics dashboards simple without client math.
             self._refresh_robots_hit_ratio_unlocked()
             gauges = [
-                {"name": n, "labels": dict(lbl), "value": v}
-                for (n, lbl), v in sorted(self._gauges.items())
+                {"name": n, "labels": dict(lbl), "value": v} for (n, lbl), v in sorted(self._gauges.items())
             ]
             histograms = [
-                {"name": n, "labels": dict(lbl), **h.as_dict()}
-                for (n, lbl), h in sorted(self._hist.items())
+                {"name": n, "labels": dict(lbl), **h.as_dict()} for (n, lbl), h in sorted(self._hist.items())
             ]
             snap = {
                 "uptime_seconds": round(time.time() - self._started_at, 2),
@@ -135,9 +133,7 @@ class MetricsRegistry:
             return self.filter_snapshot(snap, prefix=prefix)
 
     @staticmethod
-    def filter_snapshot(
-        snap: dict[str, Any], *, prefix: str | None = None
-    ) -> dict[str, Any]:
+    def filter_snapshot(snap: dict[str, Any], *, prefix: str | None = None) -> dict[str, Any]:
         """Filter a snapshot dict by metric-name prefix (pure helper)."""
         if not prefix:
             return snap
@@ -169,20 +165,12 @@ class MetricsRegistry:
     @staticmethod
     def _prom_label_value(value: str) -> str:
         """Escape a label value for Prometheus text exposition."""
-        return (
-            str(value)
-            .replace("\\", "\\\\")
-            .replace("\n", "\\n")
-            .replace('"', '\\"')
-        )
+        return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
     def _prom_labels(self, labels: tuple[tuple[str, str], ...]) -> str:
         if not labels:
             return ""
-        parts = [
-            f'{self._prom_metric_name(k)}="{self._prom_label_value(v)}"'
-            for k, v in labels
-        ]
+        parts = [f'{self._prom_metric_name(k)}="{self._prom_label_value(v)}"' for k, v in labels]
         return "{" + ",".join(parts) + "}"
 
     def render_prometheus(self, *, prefix: str | None = None) -> str:
@@ -275,7 +263,6 @@ class MetricsRegistry:
         self._gauges[("robots.cache.db_ratio", ())] = round(db_ratio, 6)
         self._gauges[("robots.cache.network_ratio", ())] = round(network_ratio, 6)
         self._gauges[("robots.cache.resolutions", ())] = float(total)
-
 
 
 _REGISTRY: MetricsRegistry | None = None

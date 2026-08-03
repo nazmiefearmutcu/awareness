@@ -17,10 +17,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     DateTime,
     Float,
     Integer,
-    BigInteger,
     String,
     UniqueConstraint,
     create_engine,
@@ -67,8 +67,6 @@ def _verify_dedup_schema(inspector: Any) -> None:
             "read-only, locked, or partially migrated; near-dup indexing "
             "would fail. Fix or recreate the state DB."
         )
-
-
 
 
 class Base(DeclarativeBase):
@@ -135,11 +133,10 @@ class DedupNearRow(Base):
     """Coarse simhash-bucket index for near-dup search.
 
     To search for near-dupes for a 128-bit simhash ``H`` we split H into
-    :data:`NEAR_DUP_SEGMENTS` bands of :data:`NEAR_DUP_SEG_BITS` bits and store
-    rows keyed by ``(segment_index, segment_value)``. Two near-dupes share at
-    least one band exactly when their Hamming distance is ≤ (bands − 1)
-    (Manku/Jain pigeonhole; 32 bands → Hamming ≤ 31), and probabilistically
-    beyond it. Query is ``WHERE seg = ? AND value = ?``.
+    :data:`_NEAR_DUP_DATA_BANDS` bands of :data:`NEAR_DUP_SEG_BITS` bits and
+    store rows keyed by ``(segment_index, segment_value)``. Two near-dupes
+    share at least one band exactly when their Hamming distance is ≤ (bands - 1) (Manku/Jain pigeonhole), and probabilistically beyond it. Query is
+    ``WHERE seg = ? AND value = ?``.
 
     ``sig_hex`` holds the full 128-bit signature (32 hex chars); the legacy
     ``near_dup_hash`` int column is retained, nullable, for backward
@@ -170,18 +167,38 @@ class DupParentRow(Base):
     parent_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
 
-# 128 bits split into 32 bands of 4 bits. The Manku/Jain pigeonhole guarantee is
-# "a pair within Hamming ≤ (bands-1) shares ≥1 identical band", so 32 bands give
-# an EXACT-retrieval guarantee up to Hamming ≤31 — covering DEFAULT_NEAR_THRESHOLD
-# (24), which 16×8 banding (guarantee ≤15) did not. Cost: 32 tiny index rows/doc.
-# Reindex: existing near_dup rows written under 16×8 are wrong band width after
-# upgrade; rebuild the dedup_near index if upgrading mid-corpus.
+# 128 bits split into 32 bands of 8 bits (H-24). 8-bit band VALUES give 1/256
+# selectivity per (seg, value) bucket, so the 1024-row candidate cap covers
+# ~256k docs before silent truncation (the old 32x4 layout had 1/16 selectivity
+# and truncated past ~16k docs — empirically 61%/82%/96% recall loss at
+# 50k/100k/500k docs). Cost: 16 tiny index rows/doc.
+#
+# Note on the pigeonhole guarantee: a signature is only 128 bits, so only
+# 128 // 8 = 16 bands carry real bits (see _NEAR_DUP_DATA_BANDS) — bands beyond
+# the signature width are constant-zero for every doc and are NOT indexed
+# (indexing them would put the whole corpus in one bucket and flood every
+# query). The exact-retrieval guarantee is therefore Hamming ≤ 15; distances
+# 16..31 (which includes DEFAULT_NEAR_THRESHOLD=24) are retrieved
+# probabilistically — per-band miss ≈ (15/16)^d, i.e. < ~1.5% at d=24 — a
+# massive improvement over the 4-bit layout's capacity-driven 61%+ miss.
+#
+# Reindex: dedup_near rows written under the old 32x4 layout are wrong band
+# width after this upgrade; init() detects the legacy layout and warns loudly —
+# rebuild with `DELETE FROM dedup_near;` then re-run ingestion/dedup so band
+# rows are regenerated at 8-bit width.
 NEAR_DUP_SEGMENTS = 32
-NEAR_DUP_SEG_BITS = 4
+NEAR_DUP_SEG_BITS = 8
 _NEAR_DUP_SEG_MASK = (1 << NEAR_DUP_SEG_BITS) - 1
+# Bands that can carry signature bits: 128-bit signatures / 8 bits per band.
+_NEAR_DUP_DATA_BANDS = min(NEAR_DUP_SEGMENTS, 128 // NEAR_DUP_SEG_BITS)
 # Per-band candidate cap. Higher than the 64-bit era's 256 so moderate-scale
 # corpora don't silently truncate true near-dup candidates out of a hot band.
 NEAR_DUP_CANDIDATE_LIMIT = 1024
+
+# Legacy 4-bit layout detection: 8-bit band values are uniform in [0, 255], so
+# P(all 32 band values of a doc < 16) = (1/16)^32 — a legacy 32x4 table (all
+# seg_value < 16) is unmistakable on any non-empty corpus.
+_LEGACY_4BIT_MAX_SEG_VALUE = (1 << 4) - 1
 
 # Exponential backoff for failed-task retries: base * 2**(attempts-1), capped.
 RETRY_BACKOFF_BASE_SECONDS = 30
@@ -191,7 +208,6 @@ RETRY_BACKOFF_CAP_SECONDS = 3600
 def _retry_delay_seconds(attempts: int) -> float:
     exp = max(0, attempts - 1)
     return float(min(RETRY_BACKOFF_BASE_SECONDS * (2**exp), RETRY_BACKOFF_CAP_SECONDS))
-
 
 
 class ManifestRow(Base):
@@ -231,7 +247,6 @@ class TailRow(Base):
     pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
-
 class UrlFetchLogRow(Base):
     """Successful HTTP fetches keyed by canonical URL (skip re-fetch gate)."""
 
@@ -258,7 +273,7 @@ class StateDB:
         # Strip ``+aiosqlite`` if present; we use sync.
         if url.startswith("sqlite+aiosqlite:"):
             url = "sqlite:" + url[len("sqlite+aiosqlite:") :]
-        
+
         self._redis_url = redis_url
         if url.startswith(("redis://", "rediss://", "redlock://", "redlocks://")):
             self._redis_url = url
@@ -267,18 +282,17 @@ class StateDB:
         if self._redis_url is None:
             try:
                 from awareness.config import get_settings
+
                 self._redis_url = get_settings().redis_url
             except Exception:
                 pass
 
         self._url = url
-        
+
         # SQLite-specific logic: enable WAL mode, timeouts, etc.
         if url.startswith("sqlite:"):
             self._engine = create_engine(
-                url,
-                future=True,
-                connect_args={"timeout": 30, "check_same_thread": False}
+                url, future=True, connect_args={"timeout": 30, "check_same_thread": False}
             )
 
             @event.listens_for(self._engine, "connect")
@@ -356,14 +370,78 @@ class StateDB:
                             conn.execute(text("ALTER TABLE tail_state ADD COLUMN pid INTEGER"))
                     task_cols = [c["name"] for c in inspector.get_columns("tasks")]
                     if task_cols and "next_attempt_at" not in task_cols:
+                        # C-07: mirror the SQLite migration with Postgres-idiomatic
+                        # types (TIMESTAMP WITH TIME ZONE) + the retry index so
+                        # claim_pending_tasks' next_attempt_at gate stays usable.
                         with self._engine.begin() as conn:
-                            conn.execute(text("ALTER TABLE tasks ADD COLUMN next_attempt_at TIMESTAMP"))
+                            conn.execute(
+                                text("ALTER TABLE tasks ADD COLUMN next_attempt_at TIMESTAMP WITH TIME ZONE")
+                            )
+                            conn.execute(
+                                text(
+                                    "CREATE INDEX IF NOT EXISTS ix_tasks_next_attempt_at "
+                                    "ON tasks (next_attempt_at)"
+                                )
+                            )
+                    # C-07: dedup_near.sig_hex must exist on Postgres too — without
+                    # it _verify_dedup_schema() raises and legacy Postgres DBs fail
+                    # init permanently.
+                    near_cols = [c["name"] for c in inspector.get_columns("dedup_near")]
+                    if near_cols and "sig_hex" not in near_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE dedup_near ADD COLUMN sig_hex VARCHAR"))
                 except Exception as e:
                     logger.warning("migration_failed", error=str(e))
 
             from sqlalchemy import inspect as _sa_inspect
 
             _verify_dedup_schema(_sa_inspect(self._engine))
+
+            # H-24/M-23: startup detection for legacy dedup_near layouts. We must
+            # never silently mix band widths or compare half-width signatures —
+            # both silently corrupt near-dup recall. Warn loudly and require a
+            # rebuild of the dedup index.
+            try:
+                from sqlalchemy.orm import Session as _Session  # noqa: F401
+
+                with self._sessionmaker() as s:
+                    near_total = int(s.scalar(select(func.count(DedupNearRow.id))) or 0)
+                    if near_total:
+                        max_seg = int(s.scalar(select(func.max(DedupNearRow.seg_value))) or -1)
+                        if max_seg >= 0 and max_seg <= _LEGACY_4BIT_MAX_SEG_VALUE:
+                            logger.warning(
+                                "dedup_near_legacy_4bit_layout_detected",
+                                rows=near_total,
+                                hint=(
+                                    "dedup_near was written with the old 32x4-bit "
+                                    "band layout (NEAR_DUP_SEG_BITS=4); band values "
+                                    "are all <16. Near-dup recall is wrong at the "
+                                    "current 8-bit band width. Rebuild the dedup "
+                                    "index: `DELETE FROM dedup_near;` then re-run "
+                                    "ingestion (no `awareness dedup reindex` "
+                                    "command exists)."
+                                ),
+                            )
+                        null_sig = int(
+                            s.scalar(
+                                select(func.count(DedupNearRow.id)).where(DedupNearRow.sig_hex.is_(None))
+                            )
+                            or 0
+                        )
+                        if null_sig:
+                            logger.warning(
+                                "dedup_near_legacy_null_sig_rows_detected",
+                                rows=null_sig,
+                                hint=(
+                                    "dedup_near rows with NULL sig_hex are legacy "
+                                    "64-bit index rows; they are compared with "
+                                    "hamming64 and should be re-indexed: "
+                                    "`DELETE FROM dedup_near;` then re-run "
+                                    "ingestion."
+                                ),
+                            )
+            except Exception as e:
+                logger.warning("dedup_near_layout_detection_failed", error=str(e))
 
             self._initialized = True
 
@@ -398,6 +476,7 @@ class StateDB:
 
     def delete_job(self, job_id: str) -> None:
         from sqlalchemy import delete
+
         with self.session() as s:
             s.execute(delete(TaskRow).where(TaskRow.job_id == job_id))
             s.execute(delete(JobRow).where(JobRow.job_id == job_id))
@@ -490,6 +569,7 @@ class StateDB:
 
         if self._redis_url:
             from awareness.util.lock import RedisLock
+
             job_id = materialized[0].job_id
             try:
                 with RedisLock(self._redis_url, f"add_tasks:{job_id}", expire_sec=30.0, timeout_sec=15.0):
@@ -504,6 +584,34 @@ class StateDB:
             return self._do_add_tasks(materialized)
 
     def _do_add_tasks(self, materialized: list[TaskState]) -> int:
+        """Read-then-insert task addition with bounded conflict retry (NEW-2).
+
+        The (job_id, partition_key) unique constraint means two concurrent
+        ``add_tasks`` callers can both read "no row" then both insert; the
+        loser hits an IntegrityError at commit. Per the docstring intent
+        ("silently RESET the existing row instead of crashing"), the whole
+        batch is retried — all-or-nothing per attempt — and the retry naturally
+        takes the re-arm path once the winner's row is visible.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                return self._do_add_tasks_once(materialized)
+            except IntegrityError as exc:
+                last_exc = exc
+                logger.warning(
+                    "add_tasks_integrity_conflict_retrying",
+                    attempt=attempt + 1,
+                    job_id=materialized[0].job_id,
+                )
+        raise RuntimeError(
+            f"add_tasks could not commit after 3 attempts for job "
+            f"{materialized[0].job_id!r} (concurrent writer conflicts)"
+        ) from last_exc
+
+    def _do_add_tasks_once(self, materialized: list[TaskState]) -> int:
         added = 0
         rearmed = 0
         # Count re-arms by *previous status* so we can keep the job's status
@@ -530,6 +638,10 @@ class StateDB:
                         and t.source_type == SourceKind.TAIL_RECRAWL
                     ):
                         continue
+                    # H-05: never re-arm a row a worker is currently executing —
+                    # that would duplicate execution and double-count job counters.
+                    if existing.status == TaskStatus.RUNNING.value:
+                        continue
                     # Re-arm: reset status, remember the previous one.
                     prev = existing.status
                     rearmed_from[prev] = rearmed_from.get(prev, 0) + 1
@@ -537,6 +649,8 @@ class StateDB:
                     existing.started_at = None
                     existing.completed_at = None
                     existing.last_error = None
+                    # H-05: a re-armed task must not inherit a stale backoff lease.
+                    existing.next_attempt_at = None
                     # Keep attempts so we still respect max_retries semantics
                     # across reseeds.
                     rearmed += 1
@@ -595,6 +709,7 @@ class StateDB:
         """Atomically transition PENDING tasks to RUNNING for processing."""
         if self._redis_url:
             from awareness.util.lock import RedisLock
+
             try:
                 with RedisLock(self._redis_url, f"claim:{job_id}", expire_sec=30.0, timeout_sec=15.0):
                     return self._do_claim_pending_tasks(job_id, limit)
@@ -658,9 +773,7 @@ class StateDB:
             rows.sort(key=lambda r: (r.created_at, r.task_id))
             return [self._task_state_from_row(r) for r in rows]
 
-    def requeue_orphaned_running(
-        self, job_id: str, *, older_than_seconds: float, max_retries: int
-    ) -> int:
+    def requeue_orphaned_running(self, job_id: str, *, older_than_seconds: float, max_retries: int) -> int:
         """Reset RUNNING tasks whose ``started_at`` is older than the lease back
         to PENDING so a worker re-claims them after a crash/stop. Tasks that have
         already exhausted ``max_retries`` are dead-lettered instead. Returns the
@@ -685,6 +798,18 @@ class StateDB:
                     r.status = TaskStatus.DEAD_LETTERED.value
                     r.completed_at = _utcnow()
                     r.last_error = "orphaned_running_exceeded_max_retries"
+                    # M-07: dead-lettered orphan tasks must also enter the DLQ so
+                    # operators can replay them — status alone made them
+                    # unrecoverable before.
+                    try:
+                        self.add_dlq(
+                            r.job_id,
+                            r.task_id,
+                            json.loads(r.payload_json or "{}"),
+                            "orphaned_running_exceeded_max_retries",
+                        )
+                    except Exception as exc:
+                        logger.warning("orphan_dlq_write_failed", task_id=r.task_id, error=str(exc))
                     dead += 1
                 else:
                     r.status = TaskStatus.PENDING.value
@@ -764,9 +889,7 @@ class StateDB:
     def task_status_counts(self, job_id: str) -> dict[str, int]:
         with self.session() as s:
             stmt = (
-                select(TaskRow.status, func.count())
-                .where(TaskRow.job_id == job_id)
-                .group_by(TaskRow.status)
+                select(TaskRow.status, func.count()).where(TaskRow.job_id == job_id).group_by(TaskRow.status)
             )
             return {status: int(n) for status, n in s.execute(stmt).all()}
 
@@ -867,8 +990,7 @@ class StateDB:
         with self.session() as s:
             # Discovery partitions (one per seed feed) — group by partition_key.
             discovery = s.execute(
-                select(TaskRow.partition_key, TaskRow.status)
-                .where(
+                select(TaskRow.partition_key, TaskRow.status).where(
                     TaskRow.job_id == job_id,
                     TaskRow.source_type.in_(["rss", "atom", "sitemap", "gdelt"]),
                 )
@@ -895,11 +1017,7 @@ class StateDB:
     def list_recent_manifests(self, limit: int = 8) -> list[dict[str, Any]]:
         """Most recently committed JSONL chunks."""
         with self.session() as s:
-            stmt = (
-                select(ManifestRow)
-                .order_by(ManifestRow.id.desc())
-                .limit(limit)
-            )
+            stmt = select(ManifestRow).order_by(ManifestRow.id.desc()).limit(limit)
             return [
                 {
                     "id": r.id,
@@ -938,6 +1056,7 @@ class StateDB:
         """Insert a new content_hash if absent. Returns (canonical_doc_id, was_new)."""
         if self._redis_url:
             from awareness.util.lock import RedisLock
+
             try:
                 with RedisLock(self._redis_url, f"dedup:{content_hash}", expire_sec=10.0, timeout_sec=5.0):
                     return self._do_upsert_dedup(content_hash, doc_id)
@@ -950,88 +1069,137 @@ class StateDB:
             return self._do_upsert_dedup(content_hash, doc_id)
 
     def _do_upsert_dedup(self, content_hash: str, doc_id: str) -> tuple[str, bool]:
+        """Insert a new content_hash if absent, else bump capture_count.
+
+        Returns ``(canonical_doc_id, was_new)``. ``was_new`` is only ever True
+        for a row this call actually INSERTED — on a concurrent-writer
+        IntegrityError the insert is retried (bounded) instead of returning
+        ``was_new=True`` for an unpersisted row (M-20), which would make the
+        dedup engine skip near-dup indexing of a brand-new doc.
+        """
         from sqlalchemy.exc import IntegrityError
+
+        for _attempt in range(3):
+            with self.session() as s:
+                row = s.get(DedupRow, content_hash)
+                if row is None:
+                    try:
+                        s.add(DedupRow(content_hash=content_hash, first_doc_id=doc_id))
+                        s.commit()
+                        return doc_id, True
+                    except IntegrityError:
+                        s.rollback()
+                        # Another worker won the race for this content_hash;
+                        # loop and re-read instead of claiming was_new.
+                        continue
+                row.capture_count += 1
+                s.commit()
+                return row.first_doc_id, False
+        # Exhausted retries (persistent write conflict). Never claim was_new for
+        # a row we could not persist — surface the conflict loudly instead of
+        # silently dropping the doc's near-dup band index.
         with self.session() as s:
             row = s.get(DedupRow, content_hash)
-            if row is None:
-                try:
-                    s.add(DedupRow(content_hash=content_hash, first_doc_id=doc_id))
-                    s.commit()
-                    return doc_id, True
-                except IntegrityError:
-                    s.rollback()
-                    # Re-fetch since another worker inserted it concurrently
-                    row = s.get(DedupRow, content_hash)
-                    if row is not None:
-                        row.capture_count += 1
-                        s.commit()
-                        return row.first_doc_id, False
-                    return doc_id, True
-            row.capture_count += 1
-            s.commit()
-            return row.first_doc_id, False
+            if row is not None:
+                row.capture_count += 1
+                s.commit()
+                return row.first_doc_id, False
+        raise RuntimeError(
+            f"upsert_dedup could not persist content_hash {content_hash!r} after "
+            "3 attempts (concurrent writer conflict) — refusing to report was_new "
+            "for an unpersisted row"
+        )
 
     def add_near_dup_index(self, doc_id: str, simhash_unsigned: int) -> None:
-        """Insert ``NEAR_DUP_SEGMENTS`` band rows for a 128-bit signature."""
+        """Insert band rows for a 128-bit signature (one per data band).
+
+        All bands for the doc are upserted in ONE transaction / commit (M-21) —
+        previously each band committed separately (32 commits per doc).
+        """
         if simhash_unsigned <= 0:
             return
         sig_hex = sig128_to_hex(simhash_unsigned)
         # Calculate legacy 64-bit signed hash for backward compatibility / database schema constraints
-        legacy_hash = simhash_unsigned & 0xffffffffffffffff
+        legacy_hash = simhash_unsigned & 0xFFFFFFFFFFFFFFFF
         if legacy_hash >= (1 << 63):
-            legacy_hash -= (1 << 64)
+            legacy_hash -= 1 << 64
+
+        bands = [
+            ((simhash_unsigned >> (NEAR_DUP_SEG_BITS * seg)) & _NEAR_DUP_SEG_MASK)
+            for seg in range(_NEAR_DUP_DATA_BANDS)
+        ]
 
         from sqlalchemy.exc import IntegrityError
-        with self.session() as s:
-            for seg in range(NEAR_DUP_SEGMENTS):
-                value = (simhash_unsigned >> (NEAR_DUP_SEG_BITS * seg)) & _NEAR_DUP_SEG_MASK
-                # Check by unique constraint (doc_id, seg)
-                row = s.execute(
-                    select(DedupNearRow).where(
-                        DedupNearRow.doc_id == doc_id,
-                        DedupNearRow.seg == seg,
-                    )
-                ).scalar_one_or_none()
-                if row is None:
-                    try:
-                        s.add(
-                            DedupNearRow(
-                                doc_id=doc_id,
-                                sig_hex=sig_hex,
-                                near_dup_hash=legacy_hash,
-                                seg=seg,
-                                seg_value=value,
-                            )
-                        )
-                        s.commit()
-                    except IntegrityError:
-                        s.rollback()
-                        row = s.execute(
-                            select(DedupNearRow).where(
-                                DedupNearRow.doc_id == doc_id,
-                                DedupNearRow.seg == seg,
-                            )
-                        ).scalar_one_or_none()
-                        if row is not None:
-                            row.sig_hex = sig_hex
-                            row.near_dup_hash = legacy_hash
-                            row.seg_value = value
-                            s.commit()
-                else:
-                    row.sig_hex = sig_hex
-                    row.near_dup_hash = legacy_hash
-                    row.seg_value = value
+
+        for _attempt in range(3):
+            with self.session() as s:
+                try:
+                    self._upsert_band_rows(s, doc_id, sig_hex, legacy_hash, bands)
                     s.commit()
+                    return
+                except IntegrityError:
+                    s.rollback()
+                    # Concurrent writer inserted some bands mid-flight; the
+                    # per-(doc_id, seg) unique constraint means re-running the
+                    # upsert is safe — retry bounded.
+                    continue
+        # Persistent conflict (3 tries) — last resort: merge rows one commit.
+        with self.session() as s:
+            self._upsert_band_rows(s, doc_id, sig_hex, legacy_hash, bands, ignore_existing=True)
+            s.commit()
+
+    @staticmethod
+    def _upsert_band_rows(
+        s: Session,
+        doc_id: str,
+        sig_hex: str,
+        legacy_hash: int,
+        bands: list[int],
+        *,
+        ignore_existing: bool = False,
+    ) -> None:
+        """Upsert ``(seg, seg_value)`` band rows for ``doc_id`` in one pass.
+
+        Rows are keyed by the unique ``(doc_id, seg)`` constraint; existing rows
+        are updated in place. When ``ignore_existing`` is True (retry path after
+        IntegrityError), rows that already exist are refreshed instead of
+        re-inserted.
+        """
+        existing = {
+            row.seg: row
+            for row in s.execute(select(DedupNearRow).where(DedupNearRow.doc_id == doc_id)).scalars()
+        }
+        for seg, value in enumerate(bands):
+            row = existing.get(seg)
+            if row is None:
+                if ignore_existing:
+                    continue
+                s.add(
+                    DedupNearRow(
+                        doc_id=doc_id,
+                        sig_hex=sig_hex,
+                        near_dup_hash=legacy_hash,
+                        seg=seg,
+                        seg_value=value,
+                    )
+                )
+            else:
+                row.sig_hex = sig_hex
+                row.near_dup_hash = legacy_hash
+                row.seg_value = value
 
     def find_near_dup_candidates(self, simhash_unsigned: int) -> list[tuple[str, int]]:
         """Look up doc_ids that share at least one band with this 128-bit signature.
 
         Returns ``(doc_id, signature_int)`` pairs. Rows written by the legacy
-        64-bit index (``sig_hex`` NULL) fall back to their stored int.
+        64-bit index (``sig_hex`` NULL) fall back to their stored int — the
+        caller must compare those with :func:`~awareness.util.hashing.hamming64`
+        against the query's low 64 bits (M-23). Garbage ``sig_hex`` values
+        decode to ``None`` and are skipped (L-04).
         """
         out: dict[str, int] = {}
         with self.session() as s:
-            for seg in range(NEAR_DUP_SEGMENTS):
+            for seg in range(_NEAR_DUP_DATA_BANDS):
                 value = (simhash_unsigned >> (NEAR_DUP_SEG_BITS * seg)) & _NEAR_DUP_SEG_MASK
                 stmt = (
                     select(DedupNearRow.doc_id, DedupNearRow.sig_hex, DedupNearRow.near_dup_hash)
@@ -1040,17 +1208,21 @@ class StateDB:
                 )
                 for did, sig_hex, legacy in s.execute(stmt).all():
                     if sig_hex:
-                        out[did] = sig128_from_hex(sig_hex)
+                        parsed = sig128_from_hex(sig_hex)
+                        if parsed is not None:
+                            out[did] = parsed
                     elif legacy is not None:
-                        out[did] = legacy & 0xffffffffffffffff
+                        out[did] = legacy & 0xFFFFFFFFFFFFFFFF
         return list(out.items())
 
     def uf_find(self, doc_id: str) -> str:
         """Find the canonical root of ``doc_id``'s near-dup cluster.
 
-        Walks parent links in ``dup_parent`` and applies path compression so
-        subsequent finds are O(1) amortized. A missing row means the doc is its
-        own root (not yet linked into any cluster).
+        Walks parent links in ``dup_parent``. Read-only (M-22): a missing row
+        means the doc is its own root — no self-root row is inserted and no
+        path-compression writes happen here, so ``uf_find`` can never mutate
+        state or commit. (``uf_union`` still creates rows when linking NEW
+        docs into clusters.)
         """
         if not doc_id:
             return doc_id
@@ -1061,33 +1233,13 @@ class StateDB:
             for _ in range(256):
                 row = s.get(DupParentRow, cur)
                 if row is None or row.parent_id == cur:
-                    root = cur
-                    break
+                    return cur
                 if cur in seen:
                     # Cycle — treat current as root and break.
-                    root = cur
-                    break
+                    return cur
                 seen.append(cur)
                 cur = row.parent_id
-            else:
-                root = cur
-
-            # Path compression: point every visited node straight at root.
-            for mid in seen:
-                mid_row = s.get(DupParentRow, mid)
-                if mid_row is None:
-                    s.add(DupParentRow(doc_id=mid, parent_id=root))
-                elif mid_row.parent_id != root:
-                    mid_row.parent_id = root
-
-            # Ensure root row exists so later unions have a stable anchor.
-            root_row = s.get(DupParentRow, root)
-            if root_row is None:
-                s.add(DupParentRow(doc_id=root, parent_id=root))
-            elif root_row.parent_id != root:
-                root_row.parent_id = root
-            s.commit()
-            return root
+            return cur
 
     def uf_union(self, a: str, b: str) -> str:
         """Link ``a`` under :meth:`uf_find` of ``b``; return the resulting root.
@@ -1143,6 +1295,7 @@ class StateDB:
     # ── manifests ────────────────────────────────────────────────────────
     def add_manifest(self, path: str, records: int, bytes_: int) -> None:
         from sqlalchemy.exc import IntegrityError
+
         with self.session() as s:
             row = s.execute(select(ManifestRow).where(ManifestRow.path == path)).scalar_one_or_none()
             if row is None:
@@ -1205,17 +1358,13 @@ class StateDB:
                 oldest_dt = dt
                 oldest_committed_at = dt.isoformat()
         if oldest_dt is not None:
-            oldest_age_seconds = max(
-                0.0, (_utcnow() - oldest_dt).total_seconds()
-            )
+            oldest_age_seconds = max(0.0, (_utcnow() - oldest_dt).total_seconds())
         return {
             "pending_count": len(pending),
             "total_records": total_records,
             "total_bytes": total_bytes,
             "oldest_committed_at": oldest_committed_at,
-            "oldest_age_seconds": (
-                round(oldest_age_seconds, 1) if oldest_age_seconds is not None else None
-            ),
+            "oldest_age_seconds": (round(oldest_age_seconds, 1) if oldest_age_seconds is not None else None),
             "manifests": pending,
         }
 
@@ -1549,9 +1698,7 @@ class StateDB:
 
             stale_job = info.get("job_id")
             reason = (
-                "reconciled-stale-no-pid"
-                if observed_pid is None
-                else f"reconciled-dead-pid:{observed_pid}"
+                "reconciled-stale-no-pid" if observed_pid is None else f"reconciled-dead-pid:{observed_pid}"
             )
             now = _utcnow()
             # Atomic conditional clear of the exact orphan we observed.
@@ -1574,7 +1721,7 @@ class StateDB:
                 from awareness.schemas.jobs import JobStatus  # local import
 
                 self.set_job_status(cancelled_job, JobStatus.CANCELLED, note="orphaned-by-process-exit")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("tail_reconcile_job_status_failed", job_id=cancelled_job, error=str(exc))
 
         return self.get_tail(reconcile=False)
@@ -1587,9 +1734,7 @@ class StateDB:
                 update(TaskRow)
                 .where(
                     TaskRow.job_id == job_id,
-                    TaskRow.status.in_(
-                        [TaskStatus.PENDING.value, TaskStatus.RUNNING.value]
-                    ),
+                    TaskRow.status.in_([TaskStatus.PENDING.value, TaskStatus.RUNNING.value]),
                 )
                 .values(
                     status=TaskStatus.SKIPPED.value,
@@ -1627,9 +1772,7 @@ class StateDB:
                 # Tasks may still be PENDING/RUNNING after a crash mid-stop.
                 if active_id is not None and job.job_id == active_id:
                     continue
-                abandoned = self.abandon_inflight_tasks(
-                    job.job_id, note="stale-tasks-on-terminal-job"
-                )
+                abandoned = self.abandon_inflight_tasks(job.job_id, note="stale-tasks-on-terminal-job")
                 if abandoned:
                     cancelled += 1  # count as reconcile work units
         if cancelled:
@@ -1640,6 +1783,7 @@ class StateDB:
     def cleanup_old_tasks(self, retention_days: int) -> int:
         """Delete completed tasks older than retention_days."""
         from datetime import timedelta
+
         from sqlalchemy import delete
 
         threshold = _utcnow() - timedelta(days=retention_days)
@@ -1681,7 +1825,9 @@ class StateDB:
         with self.session() as s:
             return s.get(RobotsCacheRow, site)
 
-    def set_robots_cache(self, site: str, robots_txt: str | None, expires_at: float, crawl_delay: float | None) -> None:
+    def set_robots_cache(
+        self, site: str, robots_txt: str | None, expires_at: float, crawl_delay: float | None
+    ) -> None:
         with self.session() as s:
             s.merge(
                 RobotsCacheRow(
@@ -1740,4 +1886,3 @@ class StateDB:
             return None
         with self.session() as s:
             return s.get(UrlFetchLogRow, canonical_url)
-

@@ -123,6 +123,7 @@ def _register_defaults(reg: AdapterRegistry) -> None:
         try:
             if cls is CommonCrawlWetAdapter:
                 from awareness.config import get_settings
+
                 reg.register(cls(max_shards_per_crawl=get_settings().cc_wet_max_shards_per_crawl))
             else:
                 reg.register(cls())

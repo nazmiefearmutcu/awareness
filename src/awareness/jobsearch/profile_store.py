@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from awareness.jobsearch.models import JobProfile
@@ -32,7 +34,7 @@ def load_profile(data_dir: Path) -> JobProfile:
             profile.sources = ["linkedin", "ats"] + [s for s in src if s in SOURCE_CATALOG]
             logger.info("job_profile_upgraded_sources", sources=profile.sources)
         return profile
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("job_profile_load_failed", error=str(exc))
         return JobProfile()
 
@@ -40,5 +42,16 @@ def load_profile(data_dir: Path) -> JobProfile:
 def save_profile(data_dir: Path, profile: JobProfile) -> JobProfile:
     path = profile_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
+    # Atomic write (L-03): tmp + rename so a crash cannot corrupt the profile.
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(profile.model_dump_json(indent=2))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return profile

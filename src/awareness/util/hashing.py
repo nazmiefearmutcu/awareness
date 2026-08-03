@@ -91,7 +91,7 @@ def simhash64(text: str, k: int = 3) -> int:
     sums = (bits * 2 - 1).sum(axis=0)  # +1 if bit set, -1 otherwise
     val = _bits_to_int(sums >= 0)
     if val >= (1 << 63):
-        val -= (1 << 64)
+        val -= 1 << 64
     return val
 
 
@@ -114,10 +114,7 @@ def simhash128(
         counts = Counter(grams)
         uniq = list(counts.keys())
         weights = np.fromiter(
-            (
-                (1.0 + np.log1p(counts[g])) * (idf(g) if idf is not None else 1.0)
-                for g in uniq
-            ),
+            ((1.0 + np.log1p(counts[g])) * (idf(g) if idf is not None else 1.0) for g in uniq),
             dtype=np.float64,
             count=len(uniq),
         )
@@ -157,12 +154,20 @@ def sig128_to_hex(sig: int) -> str:
     return f"{sig & _MASK128:032x}"
 
 
-def sig128_from_hex(hexstr: str) -> int:
-    """Decode a 32-char hex signature back to an int (0 on bad input)."""
+def sig128_from_hex(hexstr: str) -> int | None:
+    """Decode a 32-char hex signature back to an int, or ``None`` on garbage.
+
+    Returns ``None`` (L-04) instead of 0 so callers can distinguish "valid
+    signature that happens to be zero" from "corrupt/legacy value" and skip
+    the row — mapping garbage to 0 would silently compare every such row as a
+    bit-identical signature.
+    """
+    if not isinstance(hexstr, str):
+        return None
     try:
         return int(hexstr, 16) & _MASK128
     except (ValueError, TypeError):
-        return 0
+        return None
 
 
 # A stable doc_id derived from (canonical_url || content_hash).

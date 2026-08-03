@@ -34,9 +34,7 @@ def primary_language_sql(column: str = "language") -> str:
     Keep in sync with ``primary_language_tag`` (underscore → hyphen, lower, split).
     *column* must be a trusted identifier (code-owned, never request input).
     """
-    return (
-        f"split_part(lower(replace(CAST({column} AS VARCHAR), '_', '-')), '-', 1)"
-    )
+    return f"split_part(lower(replace(CAST({column} AS VARCHAR), '_', '-')), '-', 1)"
 
 
 # Default over the bare ``language`` column (counts / facet WHERE path).

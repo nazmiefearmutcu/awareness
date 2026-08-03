@@ -129,7 +129,5 @@ def detect_language(text: str, *, min_confidence: float = DEFAULT_LID_MIN_CONFID
     the detector is at least ``DEFAULT_LID_MIN_CONFIDENCE`` sure, otherwise
     ``None`` (ambiguous text no longer gets a confidently-wrong label).
     """
-    lang, _conf = detect_language_conf(
-        text, min_chars=DEFAULT_LID_MIN_CHARS, min_confidence=min_confidence
-    )
+    lang, _conf = detect_language_conf(text, min_chars=DEFAULT_LID_MIN_CHARS, min_confidence=min_confidence)
     return lang
