@@ -2615,6 +2615,9 @@ async function initAnalytics() {
   $("#an-term-input").addEventListener("keydown", (e) => { if (e.key === "Enter") analyzeTerm(); });
   coBtn.addEventListener("click", loadCoOccurring);
   $("#an-co-input").addEventListener("keydown", (e) => { if (e.key === "Enter") loadCoOccurring(); });
+  const netBtn = $("#an-entity-build");
+  netBtn.addEventListener("click", () => void buildEntityNetwork($("#an-entity-input").value));
+  $("#an-entity-input").addEventListener("keydown", (e) => { if (e.key === "Enter") buildEntityNetwork($("#an-entity-input").value); });
 
   const [top, entities, domains] = await Promise.all([
     api("/analytics/top-terms?limit=40"),
@@ -2625,6 +2628,11 @@ async function initAnalytics() {
   renderChips($("#an-entities"), entities || [], {
     key: (x) => x.text, label: (x) => `${x.text} [${x.kind}] ×${x.count}`,
   });
+  const firstEntity = entities && entities.length ? entities[0].text : "";
+  if (firstEntity) {
+    $("#an-entity-input").value = firstEntity;
+    void buildEntityNetwork(firstEntity);
+  }
   const body = $("#an-domains-body");
   body.textContent = "";
   if (!domains || !domains.length) {
@@ -2644,6 +2652,69 @@ async function initAnalytics() {
     }
   }
   if ($("#an-term-input").value) void analyzeTerm();
+}
+
+// ── Entity network ────────────────────────────────────────────
+/** Pure ring layout: `count` points evenly spaced on a circle of `radius`.
+ * Returns [{angle, x, y}] with angle = 2πi/count; x/y centered on (0, 0). */
+function entityNetworkLayout(count, radius) {
+  const points = [];
+  for (let i = 0; i < count; i++) {
+    const angle = (2 * Math.PI * i) / count;
+    points.push({ angle, x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
+  }
+  return points;
+}
+
+/** Fetch co-occurring entities and render a concentric (root + ring) graph. */
+async function buildEntityNetwork(rootEntity) {
+  const name = String(rootEntity || "").trim();
+  if (!name) { toast("enter an entity first", "err"); return; }
+  const container = $("#an-entity-network");
+  if (!container) return;
+  try {
+    const nodes = await api(`/entities/co-occurring?entity=${encodeURIComponent(name)}&limit=12`);
+    container.textContent = "";
+    if (!nodes || !nodes.length) { container.textContent = "—"; return; }
+    const size = 280;
+    const center = size / 2;
+    const radius = 100;
+    const layout = entityNetworkLayout(nodes.length, radius);
+    const maxCount = Math.max(1, ...nodes.map((n) => n.count));
+    const svg = el("svg", {
+      class: "an-network-edges",
+      width: size, height: size,
+      viewBox: "0 0 " + size + " " + size,
+      "aria-hidden": "true",
+    });
+    const rootChip = el("button", {
+      class: "an-node an-root-node",
+      type: "button",
+      title: `${name} — root`,
+      style: { left: (center - 34) + "px", top: (center - 34) + "px", width: "68px", height: "68px" },
+    }, name);
+    rootChip.addEventListener("click", () => void buildEntityNetwork(name));
+    const ring = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      const p = layout[i];
+      const cx = center + p.x;
+      const cy = center + p.y;
+      svg.appendChild(el("line", { x1: center, y1: center, x2: cx, y2: cy, class: "an-edge" }));
+      const d = 20 + Math.round((node.count / maxCount) * 26);
+      const chip = el("button", {
+        class: "an-node",
+        type: "button",
+        title: `${node.entity} [${node.kind}] — ${node.count}`,
+        style: { left: (cx - d / 2) + "px", top: (cy - d / 2) + "px", width: d + "px", height: d + "px" },
+      }, node.entity);
+      chip.addEventListener("click", () => void buildEntityNetwork(node.entity));
+      ring.push(chip);
+    }
+    container.appendChild(svg);
+    container.appendChild(rootChip);
+    for (const chip of ring) container.appendChild(chip);
+  } catch (err) { toast("entity network failed: " + err.message, "err"); }
 }
 
 // ── Alerts ────────────────────────────────────────────────────

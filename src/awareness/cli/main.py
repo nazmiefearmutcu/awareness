@@ -23,15 +23,18 @@ import os
 import re
 import select
 import signal
+import smtplib
 import socket
 import subprocess
 import sys
 import threading
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
+import click
 import typer
 import yaml
 from rich import print as rprint
@@ -65,6 +68,7 @@ cloud_app = typer.Typer(no_args_is_help=True, help="Configure cloud storage inte
 dedup_app = typer.Typer(no_args_is_help=True, help="Deduplication inspection & checks")
 dlq_app = typer.Typer(no_args_is_help=True, help="Dead-letter queue: inspect failed tasks")
 alerts_app = typer.Typer(no_args_is_help=True, help="Alert rules: keyword/spike thresholds + webhooks")
+x_app = typer.Typer(no_args_is_help=True, help="X scraper sessions: create, list, inspect")
 
 app.add_typer(backfill_app, name="backfill")
 app.add_typer(tail_app, name="tail")
@@ -74,6 +78,7 @@ app.add_typer(cloud_app, name="cloud")
 app.add_typer(dedup_app, name="dedup")
 app.add_typer(dlq_app, name="dlq")
 app.add_typer(alerts_app, name="alerts")
+app.add_typer(x_app, name="x")
 
 # Wire the alert-rule CLI (created by the alerts feature team) into the app.
 from awareness.alerts import cli as _alerts_cli  # noqa: E402
@@ -3216,7 +3221,7 @@ def counts(
 
 
 @app.command(name="digest")
-def digest(
+def digest(  # noqa: PLR0917 (10 options incl. the SMTP delivery flags)
     days: int = typer.Option(
         7, "--days", min=1, max=365, help="Digest window length in days"
     ),
@@ -3225,8 +3230,32 @@ def digest(
     ),
     json_out: bool = typer.Option(False, "--json", help="Output raw digest JSON instead of markdown"),
     out: str = typer.Option("", "--out", help="Write the digest to this file instead of stdout"),
+    email_to: str = typer.Option(
+        "", "--email", help="Email the digest to this address via SMTP"
+    ),
+    smtp_host: str = typer.Option(
+        "", "--smtp-host", help="SMTP server host (default: $SMTP_HOST)"
+    ),
+    smtp_port: int | None = typer.Option(
+        None, "--smtp-port", min=1, max=65535,
+        help="SMTP server port (default: $SMTP_PORT or 587)",
+    ),
+    smtp_user: str = typer.Option(
+        "", "--smtp-user", help="SMTP login user (default: $SMTP_USER)"
+    ),
+    smtp_password: str = typer.Option(
+        "", "--smtp-password", help="SMTP login password (default: $SMTP_PASSWORD)"
+    ),
+    from_addr: str = typer.Option(
+        "", "--from", help="From address (default: $EMAIL_FROM)"
+    ),
 ) -> None:
-    """Generate a digest of the last N days of captures (markdown or JSON)."""
+    """Generate a digest of the last N days of captures (markdown or JSON).
+
+    With --email, the rendered markdown is delivered over SMTP instead of
+    being printed locally. SMTP details come from the --smtp-* flags or the
+    SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / EMAIL_FROM env vars.
+    """
     settings = get_settings()
     idx = DuckDbIndex(
         db_path=settings.duckdb_path(),
@@ -3241,6 +3270,18 @@ def digest(
             text = json.dumps(digest_obj.model_dump(mode="json"), indent=2)
         else:
             text = render_digest_markdown(digest_obj)
+        if email_to:
+            _email_digest(
+                to_addr=email_to,
+                subject=f"Awareness digest — {digest_obj.generated_at:%Y-%m-%d}",
+                body=text,
+                smtp_host=smtp_host,
+                smtp_port=smtp_port,
+                smtp_user=smtp_user,
+                smtp_password=smtp_password,
+                from_addr=from_addr,
+            )
+            return
         if out:
             out_path = Path(out)
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3250,6 +3291,365 @@ def digest(
             console.print(text)
     finally:
         idx.close()
+
+
+def _email_digest(
+    *,
+    to_addr: str,
+    subject: str,
+    body: str,
+    smtp_host: str,
+    smtp_port: int | None,
+    smtp_user: str,
+    smtp_password: str,
+    from_addr: str,
+) -> None:
+    """Deliver *body* (plain text) to *to_addr* over SMTP (stdlib only).
+
+    Explicit --smtp-* flags win; anything unset falls back to the
+    SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / EMAIL_FROM env
+    vars. Connection / auth / send failures print a rich red error and
+    exit with code 1.
+    """
+    host = smtp_host or os.environ.get("SMTP_HOST", "")
+    if not host:
+        rprint(
+            "[red]Email delivery needs an SMTP server:[/red] "
+            "pass --smtp-host or set SMTP_HOST."
+        )
+        raise typer.Exit(code=1)
+    raw_port = smtp_port or os.environ.get("SMTP_PORT") or "587"
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError) as exc:
+        rprint(f"[red]Invalid SMTP port:[/red] {escape(str(raw_port))}")
+        raise typer.Exit(code=1) from exc
+    user = smtp_user or os.environ.get("SMTP_USER", "")
+    password = smtp_password or os.environ.get("SMTP_PASSWORD", "")
+    sender = from_addr or os.environ.get("EMAIL_FROM", "") or user or to_addr
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = to_addr
+    msg.set_content(body)  # text/plain
+
+    server: smtplib.SMTP | smtplib.SMTP_SSL | None = None
+    try:
+        if port == 465:
+            server = smtplib.SMTP_SSL(host, port, timeout=30)
+        else:
+            server = smtplib.SMTP(host, port, timeout=30)
+        server.ehlo()
+        if user:
+            server.login(user, password)
+        server.send_message(msg)
+        rprint(f"[green]Digest emailed to {to_addr}[/green]")
+    except Exception as exc:  # connection / auth / send failures
+        rprint(f"[red]Email delivery failed:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if server is not None:
+            try:
+                server.quit()
+            except Exception:
+                server.close()
+
+
+# ── trends ──────────────────────────────────────────────────────────────────
+
+_SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+_SPARK_MIN_WIDTH = 20
+_SPARK_MAX_WIDTH = 60
+_SPIKE_Z_THRESHOLD = 2.5
+_SPIKE_MIN_ABSOLUTE = 3
+
+
+def _sparkline(values: list[float]) -> str:
+    """Block-character sparkline of *values*, scaled to the series min/max.
+
+    Width is clamped to ``[_SPARK_MIN_WIDTH, _SPARK_MAX_WIDTH]`` characters:
+    shorter series are linearly upsampled, longer ones downsampled, so the
+    sparkline stays readable for any window length.
+    """
+    n = len(values)
+    if n == 0:
+        return ""
+    width = min(max(n, _SPARK_MIN_WIDTH), _SPARK_MAX_WIDTH)
+    if width == 1:
+        return _SPARK_BLOCKS[0]
+    if n == width:
+        sampled = list(values)
+    else:
+        sampled = []
+        for i in range(width):
+            pos = (n - 1) * i / (width - 1)
+            lo = int(pos)
+            hi = min(lo + 1, n - 1)
+            frac = pos - lo
+            sampled.append(values[lo] * (1.0 - frac) + values[hi] * frac)
+    top = max(sampled)
+    low = min(sampled)
+    if top == low:
+        return _SPARK_BLOCKS[0] * width
+    scale = 7.0 / (top - low)
+    out = []
+    for value in sampled:
+        idx = round((value - low) * scale)
+        out.append(_SPARK_BLOCKS[min(max(idx, 0), 7)])
+    return "".join(out)
+
+
+def _bucket_day_range(ts: datetime, granularity: str) -> set:
+    """Calendar day set covered by one *granularity* bucket starting at *ts*."""
+    first = ts.date()
+    if granularity == "day":
+        return {first}
+    if granularity == "week":
+        return {first + timedelta(days=i) for i in range(7)}
+    if ts.month == 12:
+        next_month = ts.replace(year=ts.year + 1, month=1, day=1)
+    else:
+        next_month = ts.replace(month=ts.month + 1, day=1)
+    last = next_month - timedelta(days=1)
+    num_days = (last.date() - first).days + 1
+    return {first + timedelta(days=i) for i in range(num_days)}
+
+
+def _zscore_series(counts: list[int]) -> list[float]:
+    """Per-bucket z-scores (sample std, ``ddof=1``); 0.0 when underivable."""
+    n = len(counts)
+    if n == 0:
+        return []
+    mean = sum(counts) / n
+    if n < 2:
+        return [0.0] * n
+    var = sum((c - mean) ** 2 for c in counts) / (n - 1)
+    std = var**0.5
+    if std == 0.0:
+        return [0.0] * n
+    return [(c - mean) / std for c in counts]
+
+
+@app.command(name="trends")
+def trends(
+    term: str = typer.Argument(..., help="Term to trend across the captured corpus"),
+    days: int = typer.Option(14, "--days", min=1, max=365, help="Window length in days"),
+    granularity: str = typer.Option(
+        "day",
+        "--granularity",
+        click_type=click.Choice(["day", "week", "month"]),
+        help="Time bucket size",
+    ),
+    chart: bool = typer.Option(False, "--chart", help="Append a sparkline of the series"),
+    with_sentiment: bool = typer.Option(
+        False, "--sentiment", help="Also score each bucket with the sentiment engine"
+    ),
+) -> None:
+    """Show term frequency over time, z-scores and (optionally) sentiment.
+
+    Buckets are zero-filled over the window, so the series is chart-ready.
+    A z-score at or above 2.5 is marked with ``!``. With ``--chart`` a
+    block-character sparkline (clamped to 20-60 chars) is printed under the
+    table; with ``--sentiment`` an average-score column is added.
+    """
+    cleaned = (term or "").strip()
+    if not cleaned:
+        raise typer.BadParameter("term must not be empty")
+    settings = get_settings()
+    idx = DuckDbIndex(
+        db_path=settings.duckdb_path(),
+        jsonl_dir=settings.staging_jsonl_dir(),
+        iceberg_warehouse=settings.iceberg_warehouse,
+    )
+    from awareness.analytics.engine import TermFrequencyEngine  # noqa: PLC0415
+
+    try:
+        engine = TermFrequencyEngine(idx)
+        buckets = engine.term_frequency_over_time(
+            cleaned, window_days=days, granularity=granularity
+        )
+        spikes = engine.detect_spikes(
+            cleaned, window_days=days, zscore_threshold=_SPIKE_Z_THRESHOLD
+        )
+    finally:
+        idx.close()
+    spike_days = {s.bucket.date() for s in spikes}
+    counts = [b.count for b in buckets]
+    zscores = _zscore_series(counts)
+
+    sentiment_scores: dict[datetime, float] = {}
+    if with_sentiment:
+        try:
+            from awareness.sentiment.engine import SentimentEngine  # noqa: PLC0415
+        except ImportError:
+            rprint("[yellow]sentiment engine not available; skipping sentiment[/yellow]")
+        else:
+            sentiment_idx = DuckDbIndex(
+                db_path=settings.duckdb_path(),
+                jsonl_dir=settings.staging_jsonl_dir(),
+                iceberg_warehouse=settings.iceberg_warehouse,
+            )
+            try:
+                sentiment_buckets = SentimentEngine(sentiment_idx).term_sentiment_over_time(
+                    cleaned, window_days=days, granularity=granularity
+                )
+            finally:
+                sentiment_idx.close()
+            sentiment_scores = {sb.ts: sb.avg_score for sb in sentiment_buckets}
+
+    if not buckets:
+        rprint(f"[yellow]No captures found for {cleaned!r} in the last {days} days.[/yellow]")
+        return
+
+    table = Table(title=f"Trend: {cleaned!r} (last {days} days, {granularity} buckets)")
+    table.add_column("Date", style=banner.C_HI)
+    table.add_column("Count", justify="right")
+    table.add_column("Z", justify="right")
+    if with_sentiment and sentiment_scores:
+        table.add_column("Sentiment", justify="right")
+    for bucket, count, zscore in zip(buckets, counts, zscores, strict=True):
+        marked = " !" if bucket.ts.date() in spike_days else ""
+        date_col = f"{bucket.ts:%Y-%m-%d}"
+        if granularity != "day":
+            date_col = f"{date_col} ({_bucket_label(granularity)})"
+        row = [date_col, str(count), f"{zscore:.2f}{marked}"]
+        if with_sentiment and sentiment_scores:
+            row.append(f"{sentiment_scores.get(bucket.ts, 0.0):+.2f}")
+        table.add_row(*row)
+    console.print(table)
+    if chart:
+        console.print(
+            f"[dim]Sparkline ({granularity} buckets, window max = {max(counts)}):[/dim] "
+            + _sparkline([float(c) for c in counts])
+        )
+
+
+def _bucket_label(granularity: str) -> str:
+    return "week of" if granularity == "week" else "month of"
+
+
+# ── x: X scraper sessions ───────────────────────────────────────────────────
+
+
+async def _x_with_store(op):
+    """Open the process-local ``{data_dir}/xscraper.sqlite`` store, run *op*, close."""
+    settings = get_settings()
+    assert settings.data_dir is not None
+    from awareness.xscraper.store import SessionStore  # noqa: PLC0415
+
+    store = SessionStore(settings.data_dir / "xscraper.sqlite")
+    await store.open()
+    await store.init()
+    try:
+        return await op(store)
+    finally:
+        await store.close()
+
+
+@x_app.command(name="sessions")
+def x_sessions(
+    limit: int = typer.Option(50, "--limit", min=1, max=500, help="Max sessions to list"),
+) -> None:
+    """List X scraper sessions, newest first."""
+    sessions = asyncio.run(_x_with_store(lambda store: store.list_sessions(limit=limit)))
+    table = Table(title=f"X scraper sessions ({len(sessions)})")
+    table.add_column("ID", style=banner.C_HI)
+    table.add_column("Title")
+    table.add_column("Status")
+    table.add_column("Created", style=banner.C_DIM)
+    table.add_column("Tweets", justify="right")
+    for s in sessions:
+        table.add_row(
+            s.session_id,
+            s.title or "-",
+            s.status,
+            f"{s.created_at:%Y-%m-%d %H:%M:%S}",
+            str(s.backfill_tweets + s.stream_tweets),
+        )
+    console.print(table)
+
+
+@x_app.command(name="show")
+def x_show(
+    session_id: str = typer.Argument(..., help="Session id to inspect"),
+    limit: int = typer.Option(100, "--limit", min=1, max=5000, help="Max tweets to list"),
+) -> None:
+    """Show one X scraper session plus its tweets (newest first)."""
+
+    async def _show(store):
+        session = await store.get_session(session_id)
+        if session is None:
+            return None
+        tweets = await store.list_tweets(session_id, limit=limit)
+        return session, tweets
+
+    result = asyncio.run(_x_with_store(_show))
+    if result is None:
+        rprint(f"[red]session {session_id!r} not found[/red]")
+        raise typer.Exit(code=2)
+    session, tweets = result
+    total = session.backfill_tweets + session.stream_tweets
+    rprint(f"[bold cyan]Session:[/bold cyan] {session.title or session.session_id}")
+    rprint(f"  id:      {session.session_id}")
+    rprint(f"  status:  {session.status}")
+    rprint(f"  created: {session.created_at:%Y-%m-%d %H:%M:%S}")
+    rprint(f"  query:   {session.query}")
+    rprint(f"  tweets:  {total} (backfill={session.backfill_tweets}, stream={session.stream_tweets})")
+    table = Table(title=f"Tweets ({len(tweets)})")
+    table.add_column("Username", style=banner.C_HI)
+    table.add_column("Created", style=banner.C_DIM)
+    table.add_column("Text")
+    for t in tweets:
+        text = t.text if len(t.text) <= 140 else t.text[:137] + "..."
+        table.add_row(f"@{t.username}", f"{t.created_at:%Y-%m-%d %H:%M:%S}", text)
+    console.print(table)
+
+
+@x_app.command(name="create")
+def x_create(  # noqa: PLR0917 - spec-mandated option surface
+    title: str = typer.Option(..., "--title", help="Session title"),
+    keywords: str = typer.Option(..., "--keywords", help="Comma-separated search keywords"),
+    accounts: str = typer.Option("", "--accounts", help="Comma-separated X accounts (handles)"),
+    raw_query: str = typer.Option("", "--raw-query", help="Raw X query fragment"),
+    lookback: str = typer.Option("2h", "--lookback", help="Lookback window (e.g. 2h, 1d)"),
+    language: str = typer.Option("", "--language", help="BCP-47 language filter (e.g. en)"),
+) -> None:
+    """Create an X scraper session (queued) and print its id + query."""
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from awareness.xscraper.models import SearchRequest  # noqa: PLC0415
+    from awareness.xscraper.query import build_search_query  # noqa: PLC0415
+
+    keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
+    account_list = [a.strip() for a in accounts.split(",") if a.strip()]
+    try:
+        request = SearchRequest(
+            title=title,
+            keywords=keyword_list,
+            accounts=account_list,
+            raw_query=raw_query or None,
+            lookback=lookback,
+            language=language or None,
+        )
+        query = build_search_query(
+            keywords=request.keywords,
+            accounts=request.accounts,
+            raw_query=request.raw_query,
+            language=request.language,
+        )
+    except ValidationError as exc:
+        detail = "; ".join(
+            e["msg"] if not e.get("loc") else ".".join(str(p) for p in e["loc"]) + ": " + e["msg"]
+            for e in exc.errors()
+        )
+        raise typer.BadParameter(f"invalid search request: {detail}") from exc
+    except ValueError as exc:
+        raise typer.BadParameter(f"invalid search request: {exc}") from exc
+
+    session = asyncio.run(_x_with_store(lambda store: store.create_session(request, query)))
+    rprint(f"[green]session created[/green] id={session.session_id} status={session.status}")
+    rprint(f"query: {session.query}")
 
 
 @app.command()

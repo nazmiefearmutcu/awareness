@@ -991,16 +991,20 @@ def create_app() -> FastAPI:
     from awareness.alerts.store import AlertStore
     from awareness.analytics.router import create_analytics_router
     from awareness.consume.router import wire
+    from awareness.corpusx.router import create_corpusx_router
     from awareness.entities.router import create_entities_router
+    from awareness.gdeltx.router import create_gdeltx_router
     from awareness.origin.router import create_origin_router
     from awareness.sentiment.router import create_sentiment_router
     from awareness.sourceintel.router import router as sourceintel_router
 
     app.include_router(create_analytics_router(_get_index))
+    app.include_router(create_corpusx_router(_get_index))
     app.include_router(create_entities_router(_get_index))
     app.include_router(sourceintel_router)
     app.include_router(create_sentiment_router(_get_index))
     app.include_router(create_origin_router(_get_index))
+    app.include_router(create_gdeltx_router(_get_index))
 
     # Process-wide AlertStore: one SQLite connection for the app lifetime,
     # closed on shutdown. (Per-request construction leaked a connection + WAL
