@@ -159,7 +159,14 @@ class GdeltBridge:
                         articles = payload.get("articles")
                         if not isinstance(articles, list):
                             raise ValueError("GDELT API payload has no articles list")
-                        results.append(GdeltWindow(term=cleaned, ts=day, count=len(articles)))
+                        # GDELT DOC 2.0 artlist caps at 250 records/request; a
+                        # day that returns exactly 250 may be truncated (the
+                        # count is then a floor, flagged via count==250).
+                        results.append(
+                            GdeltWindow(
+                                term=cleaned, ts=day, count=len(articles), truncated=len(articles) >= 250
+                            )
+                        )
                         break
                     except (httpx.HTTPError, ValueError, TypeError) as exc:
                         last_err = exc
@@ -187,11 +194,13 @@ class GdeltBridge:
     # ── disk cache ───────────────────────────────────────────────────────
 
     def _cache_path(self, term: str, start_dt: datetime, end_dt: datetime, granularity: str) -> Path:
+        # Floor the end to the day: data is day-bucketed, so requests for the
+        # same day range must share a cache entry even though utcnow() ticks.
         key = json.dumps(
             {
                 "term": term.lower(),
                 "start": start_dt.isoformat(),
-                "end": end_dt.isoformat(),
+                "end": end_dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(),
                 "granularity": granularity,
             },
             sort_keys=True,

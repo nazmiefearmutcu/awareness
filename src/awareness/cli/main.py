@@ -12,6 +12,8 @@ Subcommands:
     inspect             — query stored captures by date range
     dedup-stats         — dedup metrics
     metrics             — counters/histograms
+    quality             — corpus quality report
+    feeds               — feed-health report
     init                — initialize storage layout
 """
 
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import select
@@ -3340,7 +3343,11 @@ def _email_digest(
             server = smtplib.SMTP_SSL(host, port, timeout=30)
         else:
             server = smtplib.SMTP(host, port, timeout=30)
-        server.ehlo()
+            # Explicit TLS (STARTTLS) on submission ports — without this,
+            # credentials and the digest body travel in the clear on 587.
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
         if user:
             server.login(user, password)
         server.send_message(msg)
@@ -3365,17 +3372,17 @@ _SPIKE_Z_THRESHOLD = 2.5
 _SPIKE_MIN_ABSOLUTE = 3
 
 
-def _sparkline(values: list[float]) -> str:
+def _sparkline(values: list[int | float], width: int = 40) -> str:
     """Block-character sparkline of *values*, scaled to the series min/max.
 
-    Width is clamped to ``[_SPARK_MIN_WIDTH, _SPARK_MAX_WIDTH]`` characters:
+    *width* is clamped to ``[_SPARK_MIN_WIDTH, _SPARK_MAX_WIDTH]`` characters:
     shorter series are linearly upsampled, longer ones downsampled, so the
     sparkline stays readable for any window length.
     """
     n = len(values)
     if n == 0:
         return ""
-    width = min(max(n, _SPARK_MIN_WIDTH), _SPARK_MAX_WIDTH)
+    width = min(max(width, _SPARK_MIN_WIDTH), _SPARK_MAX_WIDTH)
     if width == 1:
         return _SPARK_BLOCKS[0]
     if n == width:
@@ -3390,7 +3397,7 @@ def _sparkline(values: list[float]) -> str:
             sampled.append(values[lo] * (1.0 - frac) + values[hi] * frac)
     top = max(sampled)
     low = min(sampled)
-    if top == low:
+    if max(values) == min(values) or top == low:
         return _SPARK_BLOCKS[0] * width
     scale = 7.0 / (top - low)
     out = []
@@ -3527,6 +3534,192 @@ def trends(
 
 def _bucket_label(granularity: str) -> str:
     return "week of" if granularity == "week" else "month of"
+
+
+def _block_bar(count: int, max_count: int, width: int = 20) -> str:
+    """Block-character bar scaled to *max_count* (empty when *count* is 0)."""
+    if max_count <= 0 or count <= 0:
+        return ""
+    n = max(1, round(width * count / max_count))
+    return "█" * n
+
+
+def _ratio_verdict(ratio: float) -> str:
+    """Rich-styled percentage cell with a duplicate-ratio verdict.
+
+    Green below 5%, yellow below 20%, red at/above 20%.
+    """
+    pct = float(ratio) * 100.0
+    style = "green" if pct < 5.0 else ("yellow" if pct < 20.0 else "red")
+    return f"[{style}]{pct:.1f}%[/{style}]"
+
+
+@app.command(name="quality")
+def quality(
+    json_out: bool = typer.Option(
+        False, "--json", help="Output the raw quality snapshot as JSON instead of a table"
+    ),
+) -> None:
+    """Corpus quality report: sizes, duplicate ratios, languages, domains.
+
+    Builds the same DuckDB index as ``digest`` and prints
+    ``CorpusXEngine.quality_snapshot()`` as a Rich table (or raw JSON with
+    ``--json``). An empty corpus prints a clean "empty corpus" message.
+    """
+    settings = get_settings()
+    idx = DuckDbIndex(
+        db_path=settings.duckdb_path(),
+        jsonl_dir=settings.staging_jsonl_dir(),
+        iceberg_warehouse=settings.iceberg_warehouse,
+    )
+    from awareness.corpusx.engine import CorpusXEngine  # noqa: PLC0415
+
+    try:
+        snapshot = CorpusXEngine(idx).quality_snapshot()
+    finally:
+        idx.close()
+
+    if json_out:
+        print(json.dumps(snapshot.model_dump(mode="json"), indent=2, default=str))
+        return
+    if snapshot.total_captures == 0:
+        rprint("[yellow]empty corpus[/yellow]")
+        return
+
+    general = Table(title="General")
+    general.add_column("Metric", style=banner.C_HI)
+    general.add_column("Value", justify="right")
+    general.add_row("total_captures", f"{snapshot.total_captures:,}")
+    general.add_row("capture_rate_per_day", f"{snapshot.capture_rate_per_day:.1f}")
+    general.add_row("dedup_group_count", str(snapshot.dedup_group_count))
+    general.add_row("avg_length", f"{snapshot.avg_length:.0f}")
+    console.print(general)
+
+    ratios = Table(title="Ratios")
+    ratios.add_column("Metric", style=banner.C_HI)
+    ratios.add_column("Value", justify="right")
+    ratios.add_row("duplicate_ratio", _ratio_verdict(snapshot.duplicate_ratio))
+    ratios.add_row("near_duplicate_ratio", _ratio_verdict(snapshot.near_duplicate_ratio))
+    console.print(ratios)
+
+    top_langs = list(snapshot.languages.items())[:8]
+    max_lang = max((count for _, count in top_langs), default=0)
+    langs = Table(title="Languages (top 8)")
+    langs.add_column("language", style=banner.C_HI)
+    langs.add_column("count", justify="right")
+    langs.add_column("", style=banner.C_DIM)
+    for lang, count in top_langs:
+        langs.add_row(lang, str(count), _block_bar(count, max_lang))
+    console.print(langs)
+
+    domains = Table(title="Top domains (top 10)")
+    domains.add_column("domain", style=banner.C_HI)
+    domains.add_column("count", justify="right")
+    for dom in snapshot.top_domains[:10]:
+        domains.add_row(dom.domain, str(dom.count))
+    console.print(domains)
+
+
+def summarize_feed_health(snap: dict[str, Any]) -> dict[str, Any]:
+    """Aggregate feed/tail fetch health from a metrics snapshot.
+
+    Mirrors the dashboard SPA (``summarizeFeedHealth`` in
+    ``src/awareness/api/web/app.js``): ``feeds.fetch_attempts`` is bucketed
+    by outcome (``ok`` / ``retry_exhausted`` / everything else = error),
+    ``feeds.fetch_non_200`` and ``tail.fetch_non_200`` are summed, and the
+    ``feeds.fetch_seconds`` p95 is count-weighted across label series. The
+    0-100 health score is ``clamp(100 - 10*error_rate - 5*non200_rate)``
+    where the rates are percentages of total attempts (``None`` when no
+    attempts have been recorded yet).
+    """
+    attempts = 0.0
+    ok = 0.0
+    retry_exhausted = 0.0
+    non200 = 0.0
+    tail_non200 = 0.0
+    buckets: dict[str, float] = {}
+    for c in snap.get("counters") or []:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        val = float(c.get("value") or 0)
+        if name == "feeds.fetch_attempts":
+            attempts += val
+            outcome = (c.get("labels") or {}).get("outcome", "error")
+            buckets[outcome] = buckets.get(outcome, 0.0) + val
+        elif name == "feeds.fetch_non_200":
+            non200 += val
+        elif name == "tail.fetch_non_200":
+            tail_non200 += val
+    ok = buckets.get("ok", 0.0)
+    retry_exhausted = buckets.get("retry_exhausted", 0.0)
+    error = attempts - ok - retry_exhausted
+    weighted_p95 = 0.0
+    samples = 0
+    for h in snap.get("histograms") or []:
+        if isinstance(h, dict) and str(h.get("name") or "") == "feeds.fetch_seconds":
+            n = int(h.get("count") or 0)
+            if n > 0:
+                p95 = h.get("p95")
+                if isinstance(p95, (int, float)) and math.isfinite(float(p95)):
+                    samples += n
+                    weighted_p95 += float(p95) * n
+    p95_sec = weighted_p95 / samples if samples else None
+    error_rate = (100.0 * error / attempts) if attempts else None
+    non200_rate = (100.0 * non200 / attempts) if attempts else None
+    score: int | None = None
+    if attempts > 0:
+        score = round(min(100.0, max(0.0, 100.0 - 10.0 * error_rate - 5.0 * non200_rate)))
+    return {
+        "attempts": int(attempts),
+        "ok": int(ok),
+        "error": int(error),
+        "retry_exhausted": int(retry_exhausted),
+        "non200": int(non200),
+        "tail_non200": int(tail_non200),
+        "p95_sec": p95_sec,
+        "samples": samples,
+        "error_rate_pct": error_rate,
+        "non200_rate_pct": non200_rate,
+        "score": score,
+    }
+
+
+@app.command(name="feeds")
+def feeds(
+    json_out: bool = typer.Option(
+        False, "--json", help="Output the health summary as JSON instead of a table"
+    ),
+) -> None:
+    """Feed-health report from in-process fetch metrics.
+
+    Mirrors the dashboard "Feed health" band: attempts by outcome, non-200
+    responses (feeds + tail), fetch p95 latency and a 0-100 health score
+    (``100 - 10*error_rate - 5*non200_rate``, clamped).
+    """
+    summary = summarize_feed_health(get_metrics().snapshot())
+    if json_out:
+        print(json.dumps(summary, indent=2, default=str))
+        return
+    if summary["attempts"] == 0:
+        rprint("[yellow]no fetch activity recorded[/yellow]")
+        return
+    table = Table(title="Feed health")
+    table.add_column("Metric", style=banner.C_HI)
+    table.add_column("Value", justify="right")
+    table.add_row("attempts", f"{summary['attempts']:,}")
+    table.add_row("ok", f"{summary['ok']:,}")
+    table.add_row("error", f"{summary['error']:,} ({summary['error_rate_pct']:.1f}%)")
+    table.add_row("retry_exhausted", f"{summary['retry_exhausted']:,}")
+    table.add_row("non-200", f"{summary['non200']:,} ({summary['non200_rate_pct']:.1f}%)")
+    table.add_row("tail non-200", f"{summary['tail_non200']:,}")
+    p95 = summary["p95_sec"]
+    table.add_row("fetch p95", f"{p95 * 1000:.0f} ms" if p95 is not None else "—")
+    score = summary["score"]
+    if score is not None:
+        style = "green" if score >= 80 else ("yellow" if score >= 50 else "red")
+        table.add_row("health score", f"[{style}]{score}[/{style}]")
+    console.print(table)
 
 
 # ── x: X scraper sessions ───────────────────────────────────────────────────
@@ -3683,7 +3876,7 @@ def _make_tui_layout(state: StateDB, settings: Any, idx: DuckDbIndex, selected_j
         (time_str, "yellow"),
         "  |  Controls: ",
         (
-            "[Q] Quit  [C] Compact  [T] Toggle Tail  [A] Toggle API  [R] Refresh  [L] Logs  [S] Cancel  [D] Delete  [N] New",
+            "[Q] Quit  [C] Compact  [T] Toggle Tail  [A] Toggle API  [R] Refresh  [L] Logs  [Y] Analytics  [S] Cancel  [D] Delete  [N] New",
             "bold green",
         ),
     )
@@ -3935,7 +4128,7 @@ def _make_tui_log_layout(settings: Any, log_type: str, scroll_offset: int) -> tu
         "  |  Local Time: ",
         (time_str, "yellow"),
         "  |  Controls: ",
-        ("[Q] Quit  [L] Dashboard  [TAB/S] Toggle Log  [Up/Down/J/K/U/D] Scroll  [G] Reset", "bold green"),
+        ("[Q] Quit  [L] Cycle Views  [TAB/S] Toggle Log  [Up/Down/J/K/U/D] Scroll  [G] Reset", "bold green"),
     )
     layout["header"].update(Panel(header_text, border_style="yellow"))
 
@@ -3998,6 +4191,203 @@ def _make_tui_log_layout(settings: Any, log_type: str, scroll_offset: int) -> tu
     return layout, total_lines, visible_height
 
 
+# ── TUI analytics panel ────────────────────────────────────────────────────
+
+# Key that jumps straight to the analytics panel (free in the current keymap:
+# ``a`` is the API toggle, ``t`` the tail toggle on the dashboard).
+_TUI_ANALYTICS_KEY = "y"
+# Window (days, daily buckets) used for the per-term sparkline/spike/sentiment view.
+_TUI_ANALYTICS_WINDOW_DAYS = 14
+_TUI_ANALYTICS_TOP_TERMS = 10
+_TUI_ANALYTICS_TOP_DOMAINS = 8
+_TUI_ANALYTICS_SPARK_WIDTH = 40
+# Lazy, once-per-TUI-session analytics index; built on first analytics render
+# and closed by :func:`_close_tui_analytics_index` when the TUI exits.
+# Held in a dict so the cache can be mutated without ``global`` statements.
+_TUI_ANALYTICS_CACHE: dict[str, DuckDbIndex | None] = {"index": None}
+
+
+def _tui_analytics_index(settings: Any) -> DuckDbIndex:
+    """Return the process-cached analytics index, building it lazily once."""
+    if _TUI_ANALYTICS_CACHE["index"] is None:
+        _TUI_ANALYTICS_CACHE["index"] = DuckDbIndex(
+            db_path=settings.duckdb_path(),
+            jsonl_dir=settings.staging_jsonl_dir(),
+            iceberg_warehouse=settings.iceberg_warehouse,
+        )
+    return _TUI_ANALYTICS_CACHE["index"]
+
+
+def _close_tui_analytics_index() -> None:
+    """Close the lazy analytics index if the TUI ever opened one."""
+    cached = _TUI_ANALYTICS_CACHE["index"]
+    if cached is not None:
+        try:
+            cached.close()
+        except Exception as exc:
+            logger.info("tui_analytics_index_close_failed", err=str(exc))
+        _TUI_ANALYTICS_CACHE["index"] = None
+
+
+def _make_tui_analytics_layout(
+    settings: Any, idx: DuckDbIndex | None = None, term: str | None = None
+) -> Any:
+    """Render the analytics panel: top terms + domains, or a per-term view.
+
+    When *idx* is omitted the lazily-built analytics index (see
+    :func:`_tui_analytics_index`) is used; callers may pass an explicit index
+    (tests, mock) instead. Engine failures render an inline error instead of
+    crashing the TUI refresh loop.
+    """
+    from rich.layout import Layout  # noqa: PLC0415
+    from rich.panel import Panel  # noqa: PLC0415
+    from rich.text import Text  # noqa: PLC0415
+
+    if idx is None:
+        idx = _tui_analytics_index(settings)
+
+    layout = Layout()
+    layout.split_column(Layout(name="header", size=4), Layout(name="body"), Layout(name="footer", size=3))
+
+    # 1. Header
+    time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    header_text = Text.assemble(
+        (" AWARENESS ENGINE ANALYTICS ", "bold reverse green"),
+        "  |  Local Time: ",
+        (time_str, "yellow"),
+        "  |  Controls: ",
+        (
+            "[Q] Quit  [L] Cycle Views  [Y] Analytics  [T] Analyze Term  [ESC] Clear Term",
+            "bold green",
+        ),
+    )
+    layout["header"].update(Panel(header_text, border_style="green"))
+
+    # 2. Body
+    cleaned = (term or "").strip()
+    if cleaned:
+        body = _analytics_term_view(idx, cleaned)
+    else:
+        body = _analytics_overview(idx)
+    layout["body"].update(Panel(body, border_style="green"))
+
+    # 3. Footer
+    index_path = getattr(idx, "_db_path", None)
+    footer_text = Text(
+        f"Index: {index_path}  |  Term: {cleaned or '(top terms)'}",
+        justify="center",
+        style="dim green",
+    )
+    layout["footer"].update(Panel(footer_text, border_style="green"))
+
+    return layout
+
+
+def _analytics_overview(idx: DuckDbIndex) -> Any:
+    """Top-10 term counts + top-8 domain breakdown (index errors inline)."""
+    from rich.console import Group  # noqa: PLC0415
+    from rich.panel import Panel  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
+    from rich.text import Text  # noqa: PLC0415
+
+    try:
+        from awareness.analytics.engine import TermFrequencyEngine  # noqa: PLC0415
+
+        engine = TermFrequencyEngine(idx)
+        top = engine.top_terms(limit=_TUI_ANALYTICS_TOP_TERMS, min_count=2)
+        domains = engine.domain_breakdown(limit=_TUI_ANALYTICS_TOP_DOMAINS)
+    except Exception as exc:
+        return Text(f"[red]Analytics unavailable: {escape(str(exc))}[/red]")
+
+    top_table = Table(expand=True, box=None)
+    top_table.add_column("Term", style="cyan")
+    top_table.add_column("Count", justify="right", style="bold green")
+    if top:
+        for tc in top:
+            top_table.add_row(tc.term, str(tc.count))
+    else:
+        top_table.add_row("(no terms above min count)", "0")
+
+    domains_table = Table(expand=True, box=None)
+    domains_table.add_column("Domain", style="cyan")
+    domains_table.add_column("Captures", justify="right", style="bold green")
+    if domains:
+        for dc in domains:
+            domains_table.add_row(dc.domain, str(dc.count))
+    else:
+        domains_table.add_row("(no domains)", "0")
+
+    return Group(
+        Panel(top_table, title="[bold white]Top 10 Terms[/bold white]", border_style="blue"),
+        Panel(domains_table, title="[bold white]Top 8 Domains[/bold white]", border_style="blue"),
+    )
+
+
+def _analytics_term_view(idx: DuckDbIndex, term: str) -> Any:
+    """Per-term view: daily sparkline + count/z-score/sentiment table."""
+    from rich.console import Group  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
+    from rich.text import Text  # noqa: PLC0415
+
+    try:
+        from awareness.analytics.engine import TermFrequencyEngine  # noqa: PLC0415
+
+        engine = TermFrequencyEngine(idx)
+        buckets = engine.term_frequency_over_time(
+            term, window_days=_TUI_ANALYTICS_WINDOW_DAYS, granularity="day"
+        )
+        spikes = engine.detect_spikes(
+            term,
+            window_days=_TUI_ANALYTICS_WINDOW_DAYS,
+            zscore_threshold=_SPIKE_Z_THRESHOLD,
+        )
+    except Exception as exc:
+        return Text(f"[red]Analytics unavailable: {escape(str(exc))}[/red]")
+
+    if not buckets:
+        return Text(
+            f"[yellow]No captures found for {term!r} in the last "
+            f"{_TUI_ANALYTICS_WINDOW_DAYS} days.[/yellow]"
+        )
+
+    counts = [b.count for b in buckets]
+    zscores = _zscore_series(counts)
+    spike_days = {s.bucket.date() for s in spikes}
+
+    sentiment_scores: dict[datetime, float] = {}
+    try:
+        from awareness.sentiment.engine import SentimentEngine  # noqa: PLC0415
+
+        sentiment_buckets = SentimentEngine(idx).term_sentiment_over_time(
+            term, window_days=_TUI_ANALYTICS_WINDOW_DAYS, granularity="day"
+        )
+        sentiment_scores = {sb.ts: sb.avg_score for sb in sentiment_buckets}
+    except ImportError:
+        pass  # sentiment engine not installed — drop the column gracefully
+    except Exception as exc:
+        logger.info("tui_sentiment_skipped", term=term, err=str(exc))
+
+    table = Table(expand=True, box=None)
+    table.add_column("Date", style="cyan")
+    table.add_column("Count", justify="right")
+    table.add_column("Z", justify="right")
+    if sentiment_scores:
+        table.add_column("Sentiment", justify="right")
+    for bucket, count, zscore in zip(buckets, counts, zscores, strict=True):
+        marked = " !" if bucket.ts.date() in spike_days else ""
+        row = [f"{bucket.ts:%Y-%m-%d}", str(count), f"{zscore:.2f}{marked}"]
+        if sentiment_scores:
+            row.append(f"{sentiment_scores.get(bucket.ts, 0.0):+.2f}")
+        table.add_row(*row)
+
+    return Group(
+        Text(f"Term: {term!r} — {_TUI_ANALYTICS_WINDOW_DAYS}-day daily buckets", style="bold cyan"),
+        Text(f"Spikes: {len(spikes)} detected  |  Sparkline:", style="dim"),
+        Text(_sparkline([float(c) for c in counts], width=_TUI_ANALYTICS_SPARK_WIDTH)),
+        table,
+    )
+
+
 @app.command(name="tui")
 def tui(refresh_rate: float = typer.Option(2.0, "--refresh", "-r", help="Refresh rate in seconds")) -> None:
     """Launch the interactive Terminal User Interface (TUI) dashboard."""
@@ -4030,6 +4420,7 @@ def tui(refresh_rate: float = typer.Option(2.0, "--refresh", "-r", help="Refresh
     log_scroll_offset = 0
     max_scroll = 0
     visible_log_height = 10
+    analytics_term: str | None = None
 
     def compact_action() -> str:
         pending = state.list_pending_manifests()
@@ -4152,8 +4543,17 @@ def tui(refresh_rate: float = typer.Option(2.0, "--refresh", "-r", help="Refresh
                     elif key_lower == "l":
                         if current_view == "dashboard":
                             current_view = "api_logs"
+                        elif current_view == "api_logs":
+                            current_view = "app_logs"
+                        elif current_view == "app_logs":
+                            current_view = "analytics"
                         else:
                             current_view = "dashboard"
+                        log_scroll_offset = 0
+                        status_msg = ""
+                        last_update = 0.0
+                    elif key_lower == _TUI_ANALYTICS_KEY:
+                        current_view = "analytics"
                         log_scroll_offset = 0
                         status_msg = ""
                         last_update = 0.0
@@ -4384,12 +4784,35 @@ def tui(refresh_rate: float = typer.Option(2.0, "--refresh", "-r", help="Refresh
                         print("\033[H\033[2J\033[3J", end="")
                         live.start()
                         last_update = 0.0
+                    elif key_lower == "t" and current_view == "analytics":
+                        live.stop()
+                        print("\n\033[H\033[2J\033[3J", end="")
+                        rprint("[bold cyan]=== Analyze Term ===[/bold cyan]\n")
+                        term_input = typer.prompt("Term to analyze (empty clears)").strip()
+                        analytics_term = term_input or None
+                        print("\033[H\033[2J\033[3J", end="")
+                        live.start()
+                        status_msg = ""
+                        last_update = 0.0
+                    elif key_lower == "esc" and current_view == "analytics":
+                        analytics_term = None
+                        status_msg = "[dim]Term cleared — showing top terms.[/dim]"
+                        last_update = 0.0
 
                 # Check refresh interval
                 now = time.time()
                 if now - last_update >= refresh_rate:
                     if current_view == "dashboard":
                         layout = _make_tui_layout(state, settings, idx, selected_job_idx)
+                        if status_msg:
+                            footer_content = Text.assemble(
+                                (status_msg, "bold yellow"),
+                                "  |  ",
+                                (f"Data Root: {settings.data_dir}", "dim cyan"),
+                            )
+                            layout["footer"].update(Panel(footer_content, border_style="cyan"))
+                    elif current_view == "analytics":
+                        layout = _make_tui_analytics_layout(settings, term=analytics_term)
                         if status_msg:
                             footer_content = Text.assemble(
                                 (status_msg, "bold yellow"),
@@ -4410,6 +4833,8 @@ def tui(refresh_rate: float = typer.Option(2.0, "--refresh", "-r", help="Refresh
     except KeyboardInterrupt:
         pass
     finally:
+        # Close the lazy analytics index if the panel was ever opened.
+        _close_tui_analytics_index()
         # Extra clear screen on exit
         print("\033[H\033[2J\033[3J", end="")
         rprint("[yellow]TUI Dashboard exited.[/yellow]")

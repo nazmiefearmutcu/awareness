@@ -181,3 +181,45 @@ single-process FastAPI app (no extra services):
   and as the `awareness digest` CLI (`--days --markdown --json --out`); both
   share `awareness.consume.digest`.
 
+### Iteration 2 (2026-08-04)
+
+Read-side extensions from the Round-2 loop (`876dbc6`, `8c53af4`), still one
+FastAPI process, still zero extra services.
+
+- **Sentiment** (`/sentiment/*`): a finance lexicon (189 pos / 251 neg) with
+  negation and intensity scoring over the captured text. Exposes per-term
+  sentiment over time (`/sentiment/term`) and a market-heat snapshot
+  (`/sentiment/heat` — volatility + 7-day trend). Pure Python reads over the
+  DuckDB index; `awareness.sentiment.{engine,lexicon,router}`.
+- **Origin** (`/origin/*`): breaking-news origin tracking built on the dedup
+  groups — first publisher and lead minutes per story (`/origin/stories`),
+  plus a publisher-firsts ranking (`/origin/publishers`). Identifies who
+  broke a story and how long until the replicas followed,
+  `awareness.origin.{engine,router}`.
+- **GDELT bridge** (`/gdelt/*`): a DOC 2.0 cross-reference for the local
+  corpus. Per-day external article counts are cached on disk (6 h TTL); every
+  GDELT failure degrades to an empty series with a structured-log warning,
+  never an exception, so the bridge is safe when offline. Serves
+  local-vs-GDELT correlation (`/gdelt/compare`) and coverage-gap detection
+  (`/gdelt/gaps`), `awareness.gdeltx.{engine,router}`.
+- **Corpus intelligence** (`/corpus/*`): a term × domain topic matrix
+  (`/corpus/topic-matrix`) and a corpus-quality snapshot (`/corpus/quality` —
+  duplicate / near-dup ratios, language rollup, capture rate per day),
+  `awareness.corpusx.{engine,router}`.
+- **Materialized corpus table**: the deduped `captures` union is materialized
+  into a real `captures_materialized` table with a unique index on
+  `capture_id`; every query (COUNT, search, facets, FTS staleness joins) runs
+  against indexed table storage instead of re-parsing JSONL per query (365×
+  on `COUNT(*)`). Refresh semantics: a **full rebuild on source-signature
+  change** only — the `captures` view reads the table, so the query surface
+  stays byte-identical for callers. JSONL remains the durable staging layer.
+- **Entity-network SPA**: the dashboard gained an entity network band — a
+  concentric root + ring layout computed in pure JS, SVG edges, click-to-
+  rebuild from `/entities/co-occurring` — plus an Alerts view (rules CRUD,
+  active toggle, test-run, firings log) and feed-health KPIs.
+- **CLI**: `awareness trends` (zero-filled series, z-score spike marks,
+  `--chart` sparkline, `--sentiment` column), the `awareness x` group
+  (sessions / show / create over the X-scraper store), and
+  `awareness digest --email` (SMTP delivery via `--smtp-*` flags or
+  `SMTP_*`/`EMAIL_FROM` env, graceful failure).
+

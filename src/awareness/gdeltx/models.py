@@ -23,6 +23,7 @@ class GdeltWindow(BaseModel):
     term: str
     ts: datetime
     count: int
+    truncated: bool = False
 
 
 class GdeltComparison(BaseModel):

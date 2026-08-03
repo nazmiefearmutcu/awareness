@@ -39,6 +39,9 @@ class FakeSMTP:
     def ehlo(self) -> None:
         self.calls.append("ehlo")
 
+    def starttls(self) -> None:
+        self.calls.append("starttls")
+
     def login(self, user: str, password: str) -> None:
         self.calls.append(f"login:{user}:{password}")
 
@@ -119,7 +122,7 @@ def test_digest_email_sends_plaintext_markdown(tmp_project: Path) -> None:
     assert "# Weekly Digest" not in result.output  # emailed, not printed locally
 
     fake = _only_fake()
-    assert fake.calls == ["ehlo", "login:u1:p1", "send_message", "quit"]
+    assert fake.calls == ["ehlo", "starttls", "ehlo", "login:u1:p1", "send_message", "quit"]
     assert len(fake.sent) == 1
     msg = fake.sent[0]
     assert msg["To"] == "me@example.com"

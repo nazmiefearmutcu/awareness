@@ -129,14 +129,47 @@ length, replication, velocity), a replication map ("who copies whom", from the
 dedup groups), top replicators, and a freshness report: `/domains`,
 `/domain/{d}`, `/replication`, `/replicators`, `/freshness`.
 
+**Sentiment** (`/sentiment/*`) — a finance lexicon (189 positive / 251 negative
+terms) with negation and intensity scoring over the corpus: per-term sentiment
+over time at `/sentiment/term`, and a market-heat snapshot (volatility, 7-day
+trend) at `/sentiment/heat`.
+
+**Origin** (`/origin/*`) — breaking-news origin tracking from the dedup groups:
+first publisher + lead minutes per story at `/origin/stories`, and a
+publisher-firsts ranking at `/origin/publishers`.
+
+**GDELT bridge** (`/gdelt/*`) — cross-references external GDELT DOC 2.0 article
+counts with the local corpus: a local-vs-GDELT correlation at `/gdelt/compare`
+and coverage-gap detection ("GDELT says this story is big, our capture rate is
+near zero") at `/gdelt/gaps`. The bridge caches GDELT counts on disk (6 h TTL)
+and degrades to empty series with a structured-log warning when offline.
+
+**Corpus intelligence** (`/corpus/*`) — a term × domain topic matrix at
+`/corpus/topic-matrix` and a corpus-quality snapshot at `/corpus/quality`
+(duplicate / near-dup ratios, language rollup, capture rate per day).
+
 **Consumption** (`/consume/*`, `/x/*`) — LLM-ready dataset export (jsonl or
 parquet, deduped, streamed, atomic) at `/consume/export`, a weekly digest as
 JSON or markdown at `/consume/digest[/markdown]`, and the X-scraper bridge
 (`/x/sessions`, `/x/sessions/{id}/tweets`). The digest generator also ships as
-a CLI command:
+a CLI command — print, write, or email it:
 
 ```bash
 awareness digest --days 7 --markdown --out digest.md    # or --json to stdout
+awareness digest --days 7 --email me@example.com        # SMTP delivery
+# SMTP via --smtp-* flags or SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / EMAIL_FROM
+```
+
+The newer subsystems also ship terminal equivalents:
+
+```bash
+awareness trends "bitcoin" --days 30 --chart --sentiment  # zero-filled series, z-score
+                                                          # spike marks, optional sentiment
+awareness x sessions|show|create                          # X-scraper session store
+awareness quality [--json]                                # corpus snapshot: sizes, dup ratios,
+                                                          # languages, domains (/corpus/quality)
+awareness feeds                                           # feed-health report: fetch outcomes,
+                                                          # p95 latency, 0-100 health score
 ```
 
 Two opt-in knobs enable the newer runtime behavior: `AW_API_KEY` gates the
@@ -278,7 +311,11 @@ trade. Awareness picks the other corner on purpose: identical precision at **3.3
 64× less memory**, and because dedup only ever sets a *grouping hint* and never drops a row, lower
 recall costs a little less folding — never data. Full numbers and the other three benchmarks
 (xxh3 hashing, trafilatura extraction quality, the search/ingest speedups shipped while measuring)
-are in [`docs/benchmarks/`](docs/benchmarks/).
+are in [`docs/benchmarks/`](docs/benchmarks/). Two dated reports add the M1-baseline run
+([`benchmark_report_2026-08-04.md`](docs/benchmarks/benchmark_report_2026-08-04.md) — per-finding
+resolution status, including the 365× materialized-corpus fix) and the 100k-doc / Postgres-parity
+probe ([`perf_100k_2026-08-04.md`](docs/benchmarks/perf_100k_2026-08-04.md) — steady-state analytics
+≤2 s at 100k docs).
 
 ---
 

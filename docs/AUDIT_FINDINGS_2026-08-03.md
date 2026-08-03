@@ -212,3 +212,50 @@ RESOLVED, 0 OPEN. H-24's silent-truncation ceiling was raised (~16×) rather
 than removed (a hard cap remains by design); M-34's CLI path validates +
 coerces writes and the env-lock is enforced at load and in the API write
 path. Both are considered addressed per their findings' intent.
+
+---
+
+## Round 2 (2026-08-04) — Ralph loop iterations 1–3
+
+Generated against the working tree at `876dbc6` (iteration 1: fix-the-fixes
+audit W5-A + performance W7 + Postgres parity W6-C) and `8c53af4` (iteration
+2: gdeltx / corpusx / CLI trends + x-sessions / digest email / entity
+network). Iteration 3 (W12) has no report in `docs/` at this commit — **W12 in
+progress** (the `awareness quality` / `awareness feeds` CLI work landed in the
+working tree mid-audit, uncommitted, with `tests/unit/test_cli_quality.py`).
+
+### F-1 … F-6 (W5-A fix-the-fixes audit) — all RESOLVED in `876dbc6`
+
+| ID | Area | Finding | Status | Evidence |
+|----|------|---------|--------|----------|
+| F-1 | API auth | Non-loopback bind without `AW_API_KEY` only *warned* | RESOLVED `876dbc6` | bind now **refuses** (SystemExit) — covered by `tests/unit/test_auth_security_fixes.py` |
+| F-2 | API CSRF | Empty-body mutating requests bypassed the JSON CSRF gate; `Origin` was checked against the spoofable `Host` header | RESOLVED `876dbc6` | empty-body mutating requests → 415/422; Origin checked against the configured host, not `Host` |
+| F-3 | API disclosure | `/healthz` disclosed `db_path` / `jsonl_dir` | RESOLVED `876dbc6` | fields removed from health response |
+| F-4 | Storage repair | JSONL orphan repair was non-atomic; gzip boundary truncation (missing EOS) could not be repaired | RESOLVED `876dbc6` | repair now atomic (`.repair` temp + fsync + `os.replace`); truncated gzip repaired into valid gzip — `tests/unit/test_jsonl_repair_atomic.py` |
+| F-5 | FTS staleness | Incremental FTS staleness join ran against the view (O(corpus) re-parse) | RESOLVED `876dbc6` | join now hits the indexed materialized table — `tests/unit/test_materialized_corpus.py` |
+| F-6 | Alerts test flake | Flaky alerts-runner test counted engine calls instead of waiting on ticks | RESOLVED `876dbc6` | test waits on ticks, not `engine.calls` |
+
+### W6-C Postgres-parity findings — fixed / open
+
+| ID | Finding | Status | Evidence |
+|----|---------|--------|----------|
+| D1 | SQLite claim first-pass under-claims (`[3,3,0,0]` — unlocked SELECT race); claim invariant held, PG claims the full batch via `with_for_update(skip_locked=True)` | Verified (behavioral divergence, not a bug) | 4-thread claim exercise + `test_postgres_compatibility.py::test_claim_pending_tasks_with_skip_locked`; workers loop on SQLite |
+| D2 | `requeue_orphaned_running` uses a process-local RLock → two PG workers can both DLQ the same orphan (duplicate `dlq` rows, no unique key) | RESOLVED `876dbc6` | unique index `uq_dlq_task` on `dlq(task_id)` (both engines, legacy migration included) + conflict-tolerant `add_dlq` (`ON CONFLICT … DO NOTHING`) |
+| D3 | PG engine: default QueuePool(5+10), no `pool_pre_ping` — exhaustion with 15+ workers, stale connections after idle kill | RESOLVED `876dbc6` | `pool_pre_ping=True`, `pool_size=10` (SQLite pool untouched) |
+| D4 | Tail reconcile `os.kill(pid,0)` is same-host-only — remote PG would phantom-CANCEL live tails | Open (ops note) | gate on host/instance id in `tail_state` if remote PG |
+| D5 | PG `VACUUM` is full-database, not table-scoped — heavy on shared DBs | Open (ops note) | `VACUUM (ANALYZE)` on hot tables only |
+| D6 | `DuckDbIndex` singleton keyed only by `db_path` — same path + different `jsonl_dir` silently returned the old instance | RESOLVED `876dbc6` | keyed by `(db_path, jsonl_dir, warehouse)` |
+| D7 | `asyncpg`/`psycopg` only in the `postgres` extra; `+asyncpg` in a sync `StateDB` works only via greenlet | Open (docs note) | use compose-documented `postgresql+psycopg://`; deploy with `pip install -e '.[postgres]'` |
+
+**Parity verdict (W6-C):** all 15 sqlite-vs-postgres dialect branches in
+`state.py` audited — every PG branch syntactically/semantically correct, no
+PG-blocking bug found; C-07 migration parity regression covered by
+`test_postgres_migration_parity.py`. Live PG execution remains unverified
+(no docker/postgres on the audit host).
+
+**Iteration-2 features (no findings):** gdeltx bridge (6 h disk cache,
+offline degradation), corpusx (topic matrix, quality snapshot), CLI
+`awareness trends` / `awareness x` / `digest --email`, digest email +
+entity-network SPA nodes — test-covered (`test_gdeltx_*`,
+`test_corpusx_*`, `test_cli_trends`, `test_cli_xsessions`,
+`test_cli_digest_email`, `test_spa_entity_network`).
