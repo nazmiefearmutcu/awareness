@@ -126,7 +126,11 @@ async def test_exception_in_evaluate_does_not_kill_loop(
     runner = AlertRunner(lambda: engine, interval_seconds=0.05, on_firing=on_firing)
     await runner.start()
     try:
-        await _wait_until(lambda: engine.calls >= 2)
+        # F-6: wait for the second tick's on_firing callback, not just the
+        # engine call — on_firing runs in a later microtask after
+        # evaluate_once() returns, so engine.calls >= 2 alone can pass while
+        # ticks is still empty (flaky IndexError on ticks[0]).
+        await _wait_until(lambda: engine.calls >= 2 and len(ticks) >= 1)
         assert engine.calls >= 2  # the broken first tick did not stop the loop
         assert runner.running
         assert ticks[0] == []  # second tick reported an (empty) pass

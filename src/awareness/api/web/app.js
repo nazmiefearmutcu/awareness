@@ -178,7 +178,7 @@ function setKPI(id, target, opts = {}) {
 }
 
 // ── Router ────────────────────────────────────────────────────
-const ROUTES = ["dashboard", "captures", "work", "jobs", "tail", "analytics", "settings"];
+const ROUTES = ["dashboard", "captures", "work", "jobs", "tail", "analytics", "alerts", "settings"];
 let currentRoute = "dashboard";
 function navigate(route, { push = true } = {}) {
   if (!ROUTES.includes(route)) route = "dashboard";
@@ -206,6 +206,7 @@ function navigate(route, { push = true } = {}) {
   if (route === "jobs") void loadJobs();
   if (route === "tail") startTailPolling();
   if (route === "analytics") void initAnalytics();
+  if (route === "alerts") void initAlerts();
   if (route === "settings") void loadSettings();
 }
 window.addEventListener("popstate", (e) => {
@@ -361,6 +362,72 @@ function summarizeDiscoveryMetrics(metricsSnap) {
     feedFetchOk,
     feedFetchP95: feedHistCount > 0 ? feedWeightedP95 / feedHistCount : null,
   };
+}
+
+/**
+ * Summarize feed + tail fetch health from GET /metrics (process-local).
+ * Pure — no DOM. Buckets feeds.fetch_attempts by outcome (ok / error /
+ * retry_exhausted), sums non-200 counters, weighted p95 for feeds.fetch_seconds,
+ * and derives a 0-100 health score:
+ *   score = clamp(100 - 10*error_rate - 5*non200_rate, 0, 100)
+ * where error_rate / non200_rate are percentages of total attempts.
+ */
+function summarizeFeedHealth(metricsSnap) {
+  const empty = {
+    attempts: 0,
+    ok: 0,
+    error: 0,
+    retryExhausted: 0,
+    non200: 0,
+    tailNon200: 0,
+    p95Sec: null,
+    samples: 0,
+    score: null,
+  };
+  if (!metricsSnap || typeof metricsSnap !== "object") return empty;
+  const counters = Array.isArray(metricsSnap.counters) ? metricsSnap.counters : [];
+  let attempts = 0;
+  let ok = 0;
+  let error = 0;
+  let retryExhausted = 0;
+  let non200 = 0;
+  let tailNon200 = 0;
+  for (const c of counters) {
+    if (!c) continue;
+    const n = c.name;
+    const v = Number(c.value) || 0;
+    if (n === "feeds.fetch_attempts") {
+      attempts += v;
+      const outcome = (c.labels && c.labels.outcome) || "";
+      if (outcome === "ok") ok += v;
+      else if (outcome === "retry_exhausted") retryExhausted += v;
+      else error += v;
+    } else if (n === "feeds.fetch_non_200") {
+      non200 += v;
+    } else if (n === "tail.fetch_non_200") {
+      tailNon200 += v;
+    }
+  }
+  const hists = Array.isArray(metricsSnap.histograms) ? metricsSnap.histograms : [];
+  let weightedP95 = 0;
+  let samples = 0;
+  for (const h of hists) {
+    if (!h || h.name !== "feeds.fetch_seconds") continue;
+    const c = Number(h.count) || 0;
+    if (c <= 0) continue;
+    const p95 = Number(h.p95);
+    if (!Number.isFinite(p95)) continue;
+    samples += c;
+    weightedP95 += p95 * c;
+  }
+  const p95Sec = samples > 0 ? weightedP95 / samples : null;
+  let score = null;
+  if (attempts > 0) {
+    const errorRate = 100 * error / attempts;
+    const non200Rate = 100 * non200 / attempts;
+    score = Math.round(Math.max(0, Math.min(100, 100 - 10 * errorRate - 5 * non200Rate)));
+  }
+  return { attempts, ok, error, retryExhausted, non200, tailNon200, p95Sec, samples, score };
 }
 
 /**
@@ -934,6 +1001,77 @@ function formatHitRatio(ratio) {
   return Math.round(ratio * 100) + "%";
 }
 
+/** Last rendered feed-health summary — skip re-render when nothing changed. */
+let lastFeedHealthSnap = null;
+
+/**
+ * Render the dashboard "Feed health" band (4 KPI articles + score badge).
+ * DOM only — the math lives in summarizeFeedHealth(). All values are set via
+ * el()/textContent, never innerHTML.
+ */
+function renderFeedHealth(h) {
+  const band = $("#feed-health-band");
+  if (!band) return;
+  const key = JSON.stringify(h);
+  if (key === lastFeedHealthSnap) return;
+  lastFeedHealthSnap = key;
+
+  const scoreNode = $("#feed-health-score");
+  if (scoreNode) {
+    if (h.score == null) {
+      scoreNode.textContent = "—";
+      scoreNode.className = "feed-health-score";
+    } else {
+      scoreNode.textContent = h.score + "/100";
+      scoreNode.className = "feed-health-score is-" + (h.score >= 80 ? "good" : h.score >= 50 ? "mid" : "bad");
+    }
+  }
+
+  const grid = $("#feed-health-kpis");
+  if (!grid) return;
+  clear(grid);
+
+  const outcomeBits = [];
+  if (h.attempts > 0) {
+    if (h.ok) outcomeBits.push(`${fmt(h.ok)} ok`);
+    if (h.error) outcomeBits.push(`${fmt(h.error)} err`);
+    if (h.retryExhausted) outcomeBits.push(`${fmt(h.retryExhausted)} retry`);
+  } else {
+    outcomeBits.push("no attempts yet");
+  }
+  grid.appendChild(
+    el("article", { class: "kpi" },
+      el("div", { class: "kpi-label", text: "Feed attempts" }),
+      el("div", { class: "kpi-value" + (h.attempts ? "" : " is-zero"), text: fmt(h.attempts) }),
+      el("div", { class: "kpi-sub", text: outcomeBits.join(" · ") })
+    )
+  );
+
+  grid.appendChild(
+    el("article", { class: "kpi" },
+      el("div", { class: "kpi-label", text: "Feed non-200" }),
+      el("div", { class: "kpi-value" + (h.non200 ? "" : " is-zero"), text: fmt(h.non200) }),
+      el("div", { class: "kpi-sub", text: h.non200 ? "non-200 responses · process" : "no non-200 responses" })
+    )
+  );
+
+  grid.appendChild(
+    el("article", { class: "kpi" },
+      el("div", { class: "kpi-label", text: "Feed fetch p95" }),
+      el("div", { class: "kpi-value" + (h.samples ? "" : " is-zero"), text: formatFetchLatency(h.p95Sec) }),
+      el("div", { class: "kpi-sub", text: h.samples ? `${fmt(h.samples)} samples · feeds` : "no samples yet" })
+    )
+  );
+
+  grid.appendChild(
+    el("article", { class: "kpi" },
+      el("div", { class: "kpi-label", text: "Tail non-200" }),
+      el("div", { class: "kpi-value" + (h.tailNon200 ? "" : " is-zero"), text: fmt(h.tailNon200) }),
+      el("div", { class: "kpi-sub", text: h.tailNon200 ? "recrawl HTTP non-200" : "no recrawl errors" })
+    )
+  );
+}
+
 async function refreshDashboard() {
   let status, dedup, metricsSnap, stagingSnap;
   try {
@@ -1114,6 +1252,9 @@ async function refreshDashboard() {
       ? `${fmt(discovery.feedFetchOk)} succeeded`
       : "discovery GETs this process";
   }
+
+  // Feed health band: outcome buckets, non-200, fetch p95, health score.
+  renderFeedHealth(summarizeFeedHealth(metricsSnap));
 
   // WET Gopher/C4 quality filter (process-local).
   const wetQ = summarizeWetQualityMetrics(metricsSnap);
@@ -2505,6 +2646,204 @@ async function initAnalytics() {
   if ($("#an-term-input").value) void analyzeTerm();
 }
 
+// ── Alerts ────────────────────────────────────────────────────
+let alertsReady = false;
+
+async function initAlerts() {
+  if (alertsReady) return;
+  alertsReady = true;
+  $("#al-refresh")?.addEventListener("click", () => void loadAlertsView());
+  $("#al-form")?.addEventListener("submit", createAlertRule);
+  await loadAlertsView();
+}
+
+async function loadAlertsView() {
+  try {
+    const [rules, status, firings] = await Promise.all([
+      api("/alerts/rules"),
+      api("/alerts/status"),
+      api("/alerts/firings?limit=20"),
+    ]);
+    renderAlertsRules(rules || []);
+    updateAlertsStatus(status || {});
+    renderAlertsFirings(firings || []);
+  } catch (err) {
+    toast("alerts load failed: " + err.message, "err");
+  }
+}
+
+function updateAlertsStatus(status) {
+  const set = (id, text) => {
+    const node = $(id);
+    if (node) node.textContent = text;
+  };
+  set("#al-status-total", fmt(status.rules_total));
+  set("#al-status-active", fmt(status.rules_active));
+  set("#al-status-firings", fmt(status.firings_24h));
+  set("#al-status-last", status.last_firing ? ago(status.last_firing, false) : "—");
+}
+
+function renderAlertsRules(rules) {
+  const body = $("#al-rules-body");
+  if (!body) return;
+  clear(body);
+  if (!rules.length) {
+    const row = body.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 10;
+    cell.textContent = "No rules yet — create one below.";
+    return;
+  }
+  for (const r of rules) {
+    const row = body.insertRow();
+    row.insertCell().textContent = r.name || "—";
+    row.insertCell().textContent = r.kind || "—";
+    row.insertCell().textContent = r.term || "—";
+    row.insertCell().textContent = fmt(r.threshold);
+    row.insertCell().textContent = fmt(r.window_hours) + "h";
+    row.insertCell().textContent = fmt(r.cooldown_minutes) + "m";
+    const toggleCell = row.insertCell();
+    const toggle = el("input", {
+      type: "checkbox",
+      class: "al-toggle",
+      "aria-label": "Active: " + (r.name || r.term || r.id),
+      checked: !!r.active,
+    });
+    toggle.addEventListener("change", () => void toggleAlertRule(r.id, toggle.checked));
+    toggleCell.appendChild(toggle);
+    const url = r.webhook_url || "";
+    row.insertCell().textContent = url
+      ? (url.length > 42 ? url.slice(0, 42) + "…" : url)
+      : "—";
+    row.insertCell().textContent = r.created_at
+      ? new Date(r.created_at).toISOString().slice(0, 10)
+      : "—";
+    const actCell = row.insertCell();
+    const testBtn = el("button", { class: "btn btn-link al-test-btn", type: "button", text: "Test" });
+    testBtn.addEventListener("click", () => void runAlertsCheck());
+    actCell.appendChild(testBtn);
+    const delBtn = el("button", { class: "btn btn-link al-del-btn", type: "button", text: "Delete" });
+    delBtn.addEventListener("click", () => void deleteAlertRule(r.id, r.name));
+    actCell.appendChild(delBtn);
+  }
+}
+
+async function toggleAlertRule(ruleId, active) {
+  try {
+    await api("/alerts/rules/" + encodeURIComponent(ruleId), {
+      method: "PUT",
+      body: JSON.stringify({ active }),
+    });
+    toast(active ? "rule enabled" : "rule disabled", "ok");
+  } catch (err) {
+    toast("update failed: " + err.message, "err");
+  } finally {
+    void loadAlertsView();
+  }
+}
+
+async function deleteAlertRule(ruleId, name) {
+  if (!window.confirm(`Delete alert rule "${name || ruleId}"?`)) return;
+  try {
+    await api("/alerts/rules/" + encodeURIComponent(ruleId), { method: "DELETE" });
+    toast("rule deleted", "ok");
+  } catch (err) {
+    toast("delete failed: " + err.message, "err");
+  } finally {
+    void loadAlertsView();
+  }
+}
+
+/** Run a full evaluation pass (all active rules); show firings in the panel. */
+async function runAlertsCheck() {
+  const panel = $("#al-test-panel");
+  const body = $("#al-test-body");
+  if (panel) panel.hidden = false;
+  if (body) {
+    clear(body);
+    body.appendChild(document.createTextNode("Evaluating rules…"));
+  }
+  try {
+    const res = await api("/alerts/check", { method: "POST", body: "{}" });
+    const firings = Array.isArray(res.firings) ? res.firings : [];
+    const deliveries = Array.isArray(res.deliveries) ? res.deliveries : [];
+    if (body) {
+      clear(body);
+      body.appendChild(el("strong", { class: "al-test-count", text: `${firings.length} firing${firings.length === 1 ? "" : "s"}` }));
+      const last = firings[firings.length - 1];
+      if (last) {
+        const when = last.fired_at ? ago(last.fired_at, false) : "just now";
+        body.appendChild(document.createTextNode(" · last: "));
+        body.appendChild(el("span", { class: "al-test-last", text: `${last.rule_name || last.rule_id} — ${last.term} count ${last.count} vs ${last.threshold} (${when})` }));
+      } else {
+        body.appendChild(document.createTextNode(" · all active rules evaluated clean"));
+      }
+      if (deliveries.length) {
+        const okDel = deliveries.filter((d) => d.delivered).length;
+        body.appendChild(el("span", { class: "al-test-del", text: ` · webhooks ${okDel}/${deliveries.length} delivered` }));
+      }
+    }
+    toast(`check complete: ${firings.length} firing(s)`, firings.length ? "err" : "ok");
+  } catch (err) {
+    if (body) body.textContent = "check failed: " + err.message;
+    toast("check failed: " + err.message, "err");
+  }
+}
+
+async function createAlertRule(e) {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type=submit]');
+  btn.disabled = true;
+  try {
+    const name = ($("#al-name").value || "").trim();
+    if (!name) { toast("name is required", "err"); return; }
+    const term = ($("#al-term").value || "").trim();
+    if (!term) { toast("term is required", "err"); return; }
+    const body = {
+      name,
+      kind: $("#al-kind").value,
+      term,
+      threshold: Number($("#al-threshold").value),
+      window_hours: Number($("#al-window").value),
+      cooldown_minutes: Number($("#al-cooldown").value),
+      webhook_url: ($("#al-webhook").value || "").trim() || null,
+      active: $("#al-active").checked,
+    };
+    const created = await api("/alerts/rules", { method: "POST", body: JSON.stringify(body) });
+    toast(`rule "${created.name || body.name}" created`, "ok");
+    e.target.reset();
+    $("#al-active").checked = true;
+    void loadAlertsView();
+  } catch (err) {
+    // api() surfaces the backend 400 detail inside err.message.
+    toast("create failed: " + err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderAlertsFirings(firings) {
+  const body = $("#al-firings-body");
+  if (!body) return;
+  clear(body);
+  if (!firings.length) {
+    const row = body.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 6;
+    cell.textContent = "No firings yet.";
+    return;
+  }
+  for (const f of firings) {
+    const row = body.insertRow();
+    row.insertCell().textContent = f.fired_at ? new Date(f.fired_at).toLocaleString() : "—";
+    row.insertCell().textContent = f.rule_name || f.rule_id || "—";
+    row.insertCell().textContent = f.term || "—";
+    row.insertCell().textContent = fmt(f.count);
+    row.insertCell().textContent = fmt(f.threshold);
+    row.insertCell().textContent = f.detail || "—";
+  }
+}
+
 // ── Settings ──────────────────────────────────────────────────
 let settingsReady = false;
 let engineSchemaCache = null;
@@ -3160,6 +3499,7 @@ function buildCommands(query = "") {
     { kind: "nav", icon: "◇", label: "Go to Work",      do: () => navigate("work") },
     { kind: "nav", icon: "▱", label: "Go to Pipeline",  do: () => navigate("jobs") },
     { kind: "nav", icon: "⟳", label: "Go to Tail",      do: () => navigate("tail") },
+    { kind: "nav", icon: "△", label: "Go to Alerts",    do: () => navigate("alerts") },
     { kind: "nav", icon: "⚙", label: "Go to Settings",  do: () => navigate("settings") },
     { kind: "action", icon: "▶", label: "Start tail",   do: async () => { await api("/tail/start", { method: "POST", body: "{}" }); toast("tail started", "ok"); void refreshDashboard(); } },
     { kind: "action", icon: "■", label: "Pause tail",   do: async () => { await api("/tail/stop", { method: "POST", body: "{}" }); toast("tail paused", "ok"); void refreshDashboard(); } },
@@ -3230,8 +3570,8 @@ document.addEventListener("keydown", (e) => {
       setTimeout(() => $("#caps-search").focus(), 80);
     }
   }
-  // Number shortcuts 1..6 for routes (when not typing)
-  if (/^[1-6]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+  // Number shortcuts 1..8 for routes (when not typing)
+  if (/^[1-8]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
     const tag = (document.activeElement?.tagName || "").toLowerCase();
     if (tag !== "input" && tag !== "textarea" && tag !== "select") {
       navigate(ROUTES[parseInt(e.key, 10) - 1]);

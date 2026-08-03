@@ -68,9 +68,46 @@ def _finalized_path_for_temp(tmp: Path) -> Path:
 
 def _temp_opener(tmp: Path) -> tuple[Any, str]:
     """Pick the (opener, text-mode) for a temp path (gzip vs plain)."""
-    if tmp.name.endswith(".jsonl.gz.tmp") or str(tmp).endswith(".jsonl.gz.tmp"):
+    if _is_gzip_temp(tmp):
         return gzip.open, "rt"
     return open, "r"
+
+
+def _is_gzip_temp(tmp: Path) -> bool:
+    """True for gzip writer temps (``*.jsonl.gz.tmp``)."""
+    return tmp.name.endswith(".jsonl.gz.tmp") or str(tmp).endswith(".jsonl.gz.tmp")
+
+
+def _rewrite_atomically(tmp: Path, lines_out: list[str], is_gzip: bool) -> None:
+    """Rewrite *tmp* containing only the complete records, atomically (F-4).
+
+    The repaired content is written to a fresh ``*.repair`` sibling, fsync'd
+    (file + directory), then ``os.replace``-d over the original. A crash or
+    error mid-repair leaves the original untouched; a leftover ``.repair``
+    file is best-effort cleaned (and never matches the ``*.tmp`` glob, so it
+    is not promoted by a later recovery run). When *is_gzip* the rewrite
+    produces a fresh, valid gzip member (header + deflate + trailer) — never
+    plain text masquerading as gzip.
+    """
+    opener = gzip.open if is_gzip else open
+    repair = tmp.with_suffix(tmp.suffix + ".repair")
+    try:
+        with opener(repair, "wt", encoding="utf-8") as fh:  # type: ignore[call-arg]
+            for line in lines_out:
+                fh.write(line + "\n")
+        with open(repair, "rb") as raw:
+            os.fsync(raw.fileno())
+        try:
+            dir_fd = os.open(str(repair.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+        os.replace(repair, tmp)
+    finally:
+        repair.unlink(missing_ok=True)
 
 
 def _drop_trailing_partial_record(tmp: Path) -> bool:
@@ -80,8 +117,16 @@ def _drop_trailing_partial_record(tmp: Path) -> bool:
     incomplete (gzip EOF mid-stream, partial JSON line). The complete records
     before it are valid and must be promoted (H-11); only the partial tail is
     dropped so DuckDB's reader never sees a malformed line.
+
+    F-4: the repair itself is atomic (temp + fsync + rename) and a gzip
+    stream truncated exactly on a record boundary (complete last line but
+    missing the EOS marker/trailer) is detected — ``_eof`` stays ``False`` on
+    CPython < 3.13 when the stream ends without a verified trailer, and
+    3.13+ raises EOFError during iteration — and rewritten into a valid gzip
+    so strict readers never see an EOFError.
     """
     opener, mode = _temp_opener(tmp)
+    is_gzip = opener is gzip.open
     lines_out: list[str] = []
     dropped = False
     try:
@@ -97,14 +142,18 @@ def _drop_trailing_partial_record(tmp: Path) -> bool:
                     dropped = True
                     continue
                 lines_out.append(stripped)
+            if is_gzip and getattr(fh, "_eof", True) is not True:
+                # Stream ended without a verified gzip trailer (boundary
+                # truncation on CPython < 3.13): complete records must be
+                # rewritten into a fresh valid gzip, otherwise strict readers
+                # raise EOFError on the promoted file.
+                dropped = True
     except (EOFError, gzip.BadGzipFile, UnicodeDecodeError, OSError):
         # Truncated gzip stream: records read so far are complete.
         dropped = True
     if not dropped or not lines_out:
         return False
-    with opener(tmp, "wt", encoding="utf-8") as fh:  # type: ignore[call-arg]
-        for line in lines_out:
-            fh.write(line + "\n")
+    _rewrite_atomically(tmp, lines_out, is_gzip)
     return True
 
 

@@ -36,8 +36,15 @@ def test_postgres_engine_creation_and_bypass():
 
         db = StateDB("postgresql+psycopg://user:pass@localhost:5432/db")
         
-        # Verify custom engine was created
-        mock_create_engine.assert_called_once_with("postgresql+psycopg://user:pass@localhost:5432/db", future=True)
+        # Verify custom engine was created with pool tuning for Postgres
+        # (W6C-bug2: pool_pre_ping + sane pool sizing; SQLite stays untouched)
+        mock_create_engine.assert_called_once_with(
+            "postgresql+psycopg://user:pass@localhost:5432/db",
+            future=True,
+            pool_pre_ping=True,
+            pool_size=10,
+            max_overflow=20,
+        )
         # Verify event listener for SQLite connect pragmas was NOT registered
         mock_listens_for.assert_not_called()
 

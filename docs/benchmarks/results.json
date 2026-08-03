@@ -1,14 +1,14 @@
 {
   "meta": {
-    "awareness_version": "0.1.0",
+    "awareness_version": "0.2.0",
     "machine": {
-      "python": "3.11.14",
-      "platform": "macOS-26.5-arm64-arm-64bit",
+      "python": "3.13.9",
+      "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
       "processor": "arm",
       "machine": "arm64",
-      "cpu_count": 10
+      "cpu_count": 8
     },
-    "total_seconds": 125.3,
+    "total_seconds": 279.2,
     "suites_run": [
       "hashing",
       "simhash",
@@ -27,23 +27,15 @@
       "entries": [
         {
           "name": "xxh3_64 (Awareness)",
-          "value": 11438.256551378898,
+          "value": 6792.815754065371,
           "unit": "MB/s",
           "is_awareness": true,
           "note": "the digest Awareness uses",
           "extra": {}
         },
         {
-          "name": "BLAKE3",
-          "value": 795.8606376736102,
-          "unit": "MB/s",
-          "is_awareness": false,
-          "note": "",
-          "extra": {}
-        },
-        {
           "name": "MurmurHash3",
-          "value": 4876.2859288413765,
+          "value": 2052.3525698824674,
           "unit": "MB/s",
           "is_awareness": false,
           "note": "",
@@ -51,7 +43,7 @@
         },
         {
           "name": "BLAKE2b",
-          "value": 1167.8486709086606,
+          "value": 482.1969799332144,
           "unit": "MB/s",
           "is_awareness": false,
           "note": "",
@@ -59,7 +51,7 @@
         },
         {
           "name": "MD5",
-          "value": 710.637972081023,
+          "value": 320.9613565437436,
           "unit": "MB/s",
           "is_awareness": false,
           "note": "",
@@ -67,7 +59,7 @@
         },
         {
           "name": "SHA-256",
-          "value": 1836.9817957343882,
+          "value": 970.0471455982154,
           "unit": "MB/s",
           "is_awareness": false,
           "note": "",
@@ -84,7 +76,7 @@
       "entries": [
         {
           "name": "content_hash (normalize+xxh3)",
-          "value": 39.89679029642254,
+          "value": 15.419493446515546,
           "unit": "MB/s",
           "is_awareness": true,
           "note": "full Awareness fingerprint path",
@@ -92,7 +84,7 @@
         },
         {
           "name": "normalize_for_hash only",
-          "value": 39.78006952432175,
+          "value": 14.785277599929554,
           "unit": "MB/s",
           "is_awareness": false,
           "note": "normalization step",
@@ -100,7 +92,7 @@
         },
         {
           "name": "xxh3 digest only",
-          "value": 13040.15571170734,
+          "value": 6577.17941012933,
           "unit": "MB/s",
           "is_awareness": false,
           "note": "digest step",
@@ -117,7 +109,7 @@
       "entries": [
         {
           "name": "SimHash 128-bit weighted (Awareness)",
-          "value": 5329.246980393796,
+          "value": 1887.528693187844,
           "unit": "docs/s",
           "is_awareness": true,
           "note": "detection fingerprint, vectorized",
@@ -125,7 +117,7 @@
         },
         {
           "name": "SimHash 64-bit (vectorized)",
-          "value": 11843.279353303575,
+          "value": 4463.9724639899,
           "unit": "docs/s",
           "is_awareness": false,
           "note": "provenance fingerprint",
@@ -133,18 +125,10 @@
         },
         {
           "name": "SimHash 64-bit (naive Python loop)",
-          "value": 1668.3611682640274,
+          "value": 526.5293254158786,
           "unit": "docs/s",
           "is_awareness": false,
           "note": "pre-optimization baseline",
-          "extra": {}
-        },
-        {
-          "name": "MinHash (datasketch, k=128)",
-          "value": 1626.9129914546477,
-          "unit": "docs/s",
-          "is_awareness": false,
-          "note": "de-facto peer",
           "extra": {}
         }
       ]
@@ -170,24 +154,13 @@
         },
         {
           "name": "Awareness DedupEngine (tuned)",
-          "value": 0.964401294498382,
+          "value": 0.961038961038961,
           "unit": "F1",
           "is_awareness": false,
-          "note": "Hamming\u226432  (P=1.000 R=0.931) \u2014 still no false-merges",
+          "note": "Hamming\u226432  (P=1.000 R=0.925) \u2014 still no false-merges",
           "extra": {
             "precision": 1.0,
-            "recall": 0.93125
-          }
-        },
-        {
-          "name": "datasketch MinHashLSH",
-          "value": 0.9979144942648592,
-          "unit": "F1",
-          "is_awareness": false,
-          "note": "Jaccard\u22650.5  (P=0.999 R=0.997)",
-          "extra": {
-            "precision": 0.9989561586638831,
-            "recall": 0.996875
+            "recall": 0.925
           }
         },
         {
@@ -214,14 +187,6 @@
           "is_awareness": true,
           "note": "one 128-bit signature",
           "extra": {}
-        },
-        {
-          "name": "MinHash (datasketch, k=128)",
-          "value": 1024.0,
-          "unit": "B/doc",
-          "is_awareness": false,
-          "note": "128 \u00d7 uint64",
-          "extra": {}
         }
       ]
     },
@@ -234,39 +199,15 @@
       "entries": [
         {
           "name": "trafilatura (Awareness)",
-          "value": 0.9601095250648612,
+          "value": 0.9601095250648609,
           "unit": "F1",
           "is_awareness": true,
           "note": "the extractor Awareness uses",
           "extra": {}
         },
         {
-          "name": "readability-lxml",
-          "value": 0.8889804656673916,
-          "unit": "F1",
-          "is_awareness": false,
-          "note": "",
-          "extra": {}
-        },
-        {
-          "name": "inscriptis",
-          "value": 0.8189544633294862,
-          "unit": "F1",
-          "is_awareness": false,
-          "note": "",
-          "extra": {}
-        },
-        {
-          "name": "html2text",
-          "value": 0.8189544633294862,
-          "unit": "F1",
-          "is_awareness": false,
-          "note": "",
-          "extra": {}
-        },
-        {
           "name": "raw lxml text()",
-          "value": 0.7796866424947368,
+          "value": 0.7796866424947376,
           "unit": "F1",
           "is_awareness": false,
           "note": "no boilerplate removal",
@@ -283,39 +224,15 @@
       "entries": [
         {
           "name": "trafilatura (Awareness)",
-          "value": 376.46491911459293,
+          "value": 112.56478500159314,
           "unit": "pages/s",
           "is_awareness": true,
           "note": "the extractor Awareness uses",
           "extra": {}
         },
         {
-          "name": "readability-lxml",
-          "value": 1835.93334075704,
-          "unit": "pages/s",
-          "is_awareness": false,
-          "note": "",
-          "extra": {}
-        },
-        {
-          "name": "inscriptis",
-          "value": 5974.258474773169,
-          "unit": "pages/s",
-          "is_awareness": false,
-          "note": "",
-          "extra": {}
-        },
-        {
-          "name": "html2text",
-          "value": 2040.3170943884763,
-          "unit": "pages/s",
-          "is_awareness": false,
-          "note": "",
-          "extra": {}
-        },
-        {
           "name": "raw lxml text()",
-          "value": 51141.3601911862,
+          "value": 13181.562145431191,
           "unit": "pages/s",
           "is_awareness": false,
           "note": "no boilerplate removal",
@@ -401,11 +318,11 @@
       "title": "BM25 search latency \u2014 view-cache optimization",
       "metric": "Latency p50 (ms, lower=better)",
       "higher_is_better": false,
-      "subtitle": "DuckDB FTS BM25 over 20,000 docs; before vs after caching the view refresh",
+      "subtitle": "DuckDB FTS BM25 over 5,000 docs; before vs after caching the view refresh",
       "entries": [
         {
           "name": "DuckDB FTS \u2014 cached views (Awareness)",
-          "value": 22.19599997624755,
+          "value": 122.23583349987166,
           "unit": "ms",
           "is_awareness": true,
           "note": "refresh only when corpus changes",
@@ -413,7 +330,7 @@
         },
         {
           "name": "DuckDB FTS \u2014 refresh per query (before)",
-          "value": 190.27052097953856,
+          "value": 567.5621045011212,
           "unit": "ms",
           "is_awareness": false,
           "note": "pre-optimization baseline",
@@ -426,11 +343,11 @@
       "title": "Keyword search latency vs peers",
       "metric": "Latency p50 (ms, lower=better)",
       "higher_is_better": false,
-      "subtitle": "ranked/unranked lexical search over 20,000 docs (log scale)",
+      "subtitle": "ranked/unranked lexical search over 5,000 docs (log scale)",
       "entries": [
         {
           "name": "DuckDB FTS BM25 (Awareness)",
-          "value": 22.19599997624755,
+          "value": 122.23583349987166,
           "unit": "ms",
           "is_awareness": true,
           "note": "BM25-ranked, shares the analytical SQL surface",
@@ -438,7 +355,7 @@
         },
         {
           "name": "SQLite FTS5",
-          "value": 0.013417011359706521,
+          "value": 0.03991599805885926,
           "unit": "ms",
           "is_awareness": false,
           "note": "dedicated inverted index",
@@ -446,7 +363,7 @@
         },
         {
           "name": "naive Python substring scan",
-          "value": 14.202125486917794,
+          "value": 12.990896502742544,
           "unit": "ms",
           "is_awareness": false,
           "note": "unranked, no index",
@@ -459,11 +376,11 @@
       "title": "FTS index build time",
       "metric": "Build time (s, lower=better)",
       "higher_is_better": false,
-      "subtitle": "cold BM25 index over 20,000 documents",
+      "subtitle": "cold BM25 index over 5,000 documents",
       "entries": [
         {
           "name": "DuckDB FTS (Awareness)",
-          "value": 1.5947395829716697,
+          "value": 2.015539333006018,
           "unit": "s",
           "is_awareness": true,
           "note": "",
@@ -476,11 +393,11 @@
       "title": "Range-scan count latency",
       "metric": "Latency p50 (ms, lower=better)",
       "higher_is_better": false,
-      "subtitle": "windowed COUNT(*) over 20,000 docs",
+      "subtitle": "windowed COUNT(*) over 5,000 docs",
       "entries": [
         {
           "name": "DuckDB range scan (Awareness)",
-          "value": 45.54508300498128,
+          "value": 143.3924169978127,
           "unit": "ms",
           "is_awareness": true,
           "note": "",
@@ -497,7 +414,7 @@
       "entries": [
         {
           "name": "Awareness loop (vectorized simhash)",
-          "value": 6624.8195879279865,
+          "value": 1555.0788015108528,
           "unit": "docs/s",
           "is_awareness": true,
           "note": "",
@@ -505,7 +422,7 @@
         },
         {
           "name": "Awareness loop (naive simhash)",
-          "value": 1524.4156926676885,
+          "value": 339.6085045108154,
           "unit": "docs/s",
           "is_awareness": false,
           "note": "pre-optimization baseline",
@@ -522,7 +439,7 @@
       "entries": [
         {
           "name": "content_hash + simhash (vectorized)",
-          "value": 8898.747277428129,
+          "value": 2260.452366497494,
           "unit": "docs/s",
           "is_awareness": true,
           "note": "",
@@ -530,7 +447,7 @@
         },
         {
           "name": "content_hash + simhash (naive)",
-          "value": 1585.9582164867493,
+          "value": 513.5133663412122,
           "unit": "docs/s",
           "is_awareness": false,
           "note": "pre-optimization baseline",
@@ -565,19 +482,6 @@
             0.006644518272425249
           ],
           "is_awareness": true,
-          "note": ""
-        },
-        {
-          "name": "MinHashLSH (datasketch, k=128)",
-          "values": [
-            1.0,
-            1.0,
-            1.0,
-            0.9821882951653944,
-            0.8212180746561886,
-            0.42670157068062825
-          ],
-          "is_awareness": false,
           "note": ""
         }
       ],

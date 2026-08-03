@@ -132,9 +132,19 @@ async def test_csrf_rejects_non_json_body() -> None:
 async def test_csrf_rejects_cross_origin() -> None:
     app = server.create_app()
     async with _make_client(app) as client:
-        r = await client.post("/tail/stop", headers={"Origin": "https://evil.example"})
+        r = await client.post(
+            "/tail/stop",
+            json={},
+            headers={"Origin": "https://evil.example"},
+        )
         assert r.status_code == 403
-        r = await client.post("/tail/stop", headers={"Origin": "http://testserver"})
+        # Same-origin = Origin matches the CONFIGURED host (127.0.0.1:8085),
+        # not the (spoofable) Host header.
+        r = await client.post(
+            "/tail/stop",
+            json={},
+            headers={"Origin": "http://127.0.0.1:8085"},
+        )
         assert r.status_code == 500  # same-origin accepted
 
 
@@ -187,12 +197,12 @@ async def test_backfill_run_conflict_guard(monkeypatch: pytest.MonkeyPatch) -> N
     server._State.planner = _FakePlanner()
     app = server.create_app()
     async with _make_client(app) as client:
-        assert (await client.post("/backfill/job-1/run")).status_code == 409
+        assert (await client.post("/backfill/job-1/run", json={})).status_code == 409
         server._State.active_job_runs.add("job-2")
-        assert (await client.post("/backfill/job-2/run")).status_code == 409
-        assert (await client.post("/backfill/job-3/run")).status_code == 200
+        assert (await client.post("/backfill/job-2/run", json={})).status_code == 409
+        assert (await client.post("/backfill/job-3/run", json={})).status_code == 200
         assert "job-3" in server._State.active_job_runs
-        assert (await client.post("/backfill/job-3/run")).status_code == 409
+        assert (await client.post("/backfill/job-3/run", json={})).status_code == 409
         engine._release.set()
     await asyncio.gather(*list(server._State.background_tasks), return_exceptions=True)
     assert "job-3" not in server._State.active_job_runs

@@ -62,6 +62,41 @@ from awareness.workers.engine import WorkerEngine
 
 logger = get_logger("api")
 
+_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+def _api_bind_host() -> str:
+    """Configured bind host (AW_API_HOST, default loopback)."""
+    return os.environ.get("AW_API_HOST", "127.0.0.1")
+
+
+def _api_bind_port() -> str:
+    """Configured bind port (AW_API_PORT, default 8085)."""
+    return os.environ.get("AW_API_PORT", "8085")
+
+
+def _guard_non_loopback_without_key() -> None:
+    """Refuse to serve a non-loopback interface without AW_API_KEY.
+
+    Binding to 0.0.0.0 / a LAN IP without a bearer token exposes the full
+    control plane to the network. Called from ``run()`` before uvicorn binds
+    and again from the lifespan startup (belt and suspenders, so factory/
+    ``uvicorn awareness.api.server:create_app`` invocations are covered too).
+    """
+    import sys  # noqa: PLC0415
+
+    host = _api_bind_host()
+    if host in _LOOPBACK_HOSTS:
+        return
+    if get_settings().api_key:
+        return
+    logger.error(
+        "api_binding_refused_non_loopback_without_key",
+        host=host,
+        hint="set AW_API_KEY before binding to a non-loopback interface",
+    )
+    sys.exit(1)
+
 # State-changing routes that reject non-JSON bodies and cross-origin requests
 # (CSRF posture: text/plain is CORS-safelisted and skips preflight).
 _CSRF_ROUTE_PREFIXES = (
@@ -80,15 +115,15 @@ def _is_csrf_protected(method: str, path: str) -> bool:
     return path.startswith(_CSRF_ROUTE_PREFIXES)
 
 
-def _body_present(request: Request) -> bool:
-    length = request.headers.get("content-length")
-    if length and length.strip().isdigit() and int(length) > 0:
-        return True
-    return "transfer-encoding" in request.headers
-
-
 def _origin_allowed(request: Request) -> bool:
-    """True when a present Origin header belongs to this server's host."""
+    """True when a present Origin header matches the CONFIGURED server host.
+
+    The configured host (AW_API_HOST/AW_API_PORT, default 127.0.0.1:8085) is
+    the trust anchor, not the request's ``Host`` header — an attacker can
+    spoof ``Host`` but cannot make a browser send an Origin for a host it
+    did not actually load. Missing Origin stays permissive (those requests
+    are still gated by the JSON/body rules above).
+    """
     origin = request.headers.get("origin")
     if not origin:
         return True
@@ -98,8 +133,12 @@ def _origin_allowed(request: Request) -> bool:
         return False
     if not origin_host:
         return False
-    host = request.headers.get("host", "")
-    return origin_host == host
+    expected = f"{_api_bind_host()}:{_api_bind_port()}"
+    if origin_host == expected:
+        return True
+    # Tolerate an Origin that omits the port (browsers normalize away the
+    # default :80/:443) by comparing against the bare configured host.
+    return ":" not in origin_host and origin_host == expected.split(":", 1)[0]
 
 
 def _check_api_key(request: Request) -> str | None:
@@ -297,6 +336,7 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        _guard_non_loopback_without_key()
         state = StateDB(settings.state_db_url or "sqlite:///awareness.sqlite")
         state.init()
         # Reconcile phantom "running" tail state from a previous process that
@@ -375,8 +415,9 @@ def create_app() -> FastAPI:
 
         The API-key dependency handles router routes; this middleware catches
         anything it does not (e.g. the static mount) and enforces the CSRF
-        rules: mutating requests with a body must be ``application/json``
-        (415 otherwise) and a present ``Origin`` must match the request host
+        rules: mutating requests on protected prefixes must carry a non-empty
+        ``application/json`` body (415 for other content types, 422 for empty
+        bodies) and a present ``Origin`` must match the configured server host
         (403 otherwise). Middlewares cannot raise HTTPException (Starlette only
         converts those below ExceptionMiddleware), so auth failures here return
         a response directly.
@@ -389,10 +430,12 @@ def create_app() -> FastAPI:
                 headers={"WWW-Authenticate": "Bearer"},
             )
         if _is_csrf_protected(request.method, request.url.path):
-            if _body_present(request):
-                ctype = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
-                if ctype != "application/json":
-                    return PlainTextResponse("415: content-type must be application/json", status_code=415)
+            ctype = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                return PlainTextResponse("415: content-type must be application/json", status_code=415)
+            body = await request.body()
+            if not body or not body.strip():
+                return PlainTextResponse("422: empty body not allowed", status_code=422)
             if not _origin_allowed(request):
                 return PlainTextResponse("403: cross-origin request rejected", status_code=403)
         return await call_next(request)
@@ -415,7 +458,9 @@ def create_app() -> FastAPI:
         try:
             idx = _get_index()
             snap = idx.health_snapshot()
-            out["index"] = snap
+            # /healthz is unauthenticated: never leak filesystem paths
+            # (db_path / jsonl_dir) to anonymous probes.
+            out["index"] = {k: v for k, v in snap.items() if k not in ("db_path", "jsonl_dir")}
             out["index_ready"] = bool(snap.get("ready"))
         except Exception as exc:
             logger.warning("healthz_index_probe_failed", error=str(exc))
@@ -941,17 +986,21 @@ def create_app() -> FastAPI:
         result = await eng.search(req)
         return result.model_dump(mode="json")
 
-    # ── feature routers (analytics / alerts / entities / source-intel / consume) ──
-    from awareness.analytics.router import create_analytics_router
+    # ── feature routers (analytics / alerts / entities / sentiment / origin / source-intel / consume) ──
     from awareness.alerts.router import create_alerts_router
     from awareness.alerts.store import AlertStore
+    from awareness.analytics.router import create_analytics_router
     from awareness.consume.router import wire
     from awareness.entities.router import create_entities_router
+    from awareness.origin.router import create_origin_router
+    from awareness.sentiment.router import create_sentiment_router
     from awareness.sourceintel.router import router as sourceintel_router
 
     app.include_router(create_analytics_router(_get_index))
     app.include_router(create_entities_router(_get_index))
     app.include_router(sourceintel_router)
+    app.include_router(create_sentiment_router(_get_index))
+    app.include_router(create_origin_router(_get_index))
 
     # Process-wide AlertStore: one SQLite connection for the app lifetime,
     # closed on shutdown. (Per-request construction leaked a connection + WAL
@@ -1018,14 +1067,9 @@ def run() -> None:
     """Entry for the ``awareness-api`` script."""
     import uvicorn  # noqa: PLC0415
 
-    host = os.environ.get("AW_API_HOST", "127.0.0.1")
-    port = int(os.environ.get("AW_API_PORT", "8085"))
-    if host not in ("127.0.0.1", "::1", "localhost") and not get_settings().api_key:
-        logger.warning(
-            "api_binding_non_loopback_without_key",
-            host=host,
-            hint="set AW_API_KEY before binding to a non-loopback interface",
-        )
+    host = _api_bind_host()
+    port = int(_api_bind_port())
+    _guard_non_loopback_without_key()
     uvicorn.run("awareness.api.server:create_app", host=host, port=port, factory=True)
 
 

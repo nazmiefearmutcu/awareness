@@ -26,15 +26,26 @@ from enum import Enum
 
 from awareness.obs.logging import get_logger
 from awareness.schemas.doc import DocCapture
-from awareness.storage.state import NEAR_DUP_SEGMENTS, StateDB
+from awareness.storage.state import StateDB
 from awareness.util.hashing import hamming64, hamming128, simhash128
 
 logger = get_logger("dedup")
 
 # Default near-duplicate merge threshold in Hamming bits over the 128-bit
-# signature. Must stay <= (NEAR_DUP_SEGMENTS - 1) so the band index's pigeonhole
-# guarantee covers it — see tests/unit/test_dedup_invariant.py.
-DEFAULT_NEAR_THRESHOLD = 24
+# signature. With the 32x8 band layout (16 real data bands of 8 bits) the
+# exact pigeonhole guarantee is Hamming <= 15 and retrieval beyond is
+# probabilistic, yet the W7 benchmark measured the H<=32 default at F1 0.961
+# with P 1.0 — band sharing at 8-bit width still surfaces distance-32 pairs
+# and the per-band candidate limit binds before the banding width. Raised
+# from 24 (F1 0.845) per the benchmark; see
+# tests/unit/test_dedup_invariant.py and tests/unit/test_near_threshold_32.py.
+DEFAULT_NEAR_THRESHOLD = 32
+
+# Upper bound of the engine clamp. Must cover DEFAULT_NEAR_THRESHOLD (32).
+# Callers may tune past the banding's probabilistic retrieval range; the cap
+# prevents a misconfigured threshold from merging the whole corpus (precision
+# erodes past ~36 — unrelated 128-bit simhashes sit at Hamming ~45+).
+NEAR_CLAMP_MAX = 40
 
 # NEAR_DUP captures at or below this Hamming distance are treated like
 # EXACT_DUP for storage: count as a dedup drop, do not re-store full text.
@@ -75,14 +86,17 @@ class DedupEngine:
         # floor. Raising it catches more (recall) until precision erodes near
         # ~36 (see benchmarks/); the value is fully tunable per caller.
         self._state = state
-        # M-19: clamp into [0, NEAR_DUP_SEGMENTS - 1] — the band index only
-        # guarantees retrieval up to Hamming ≤ (segments - 1); an unclamped
-        # threshold (>31) would silently miss every pair in the gap.
-        self._near_threshold = max(0, min(int(near_threshold), NEAR_DUP_SEGMENTS - 1))
+        # M-19: clamp into [0, NEAR_CLAMP_MAX] — the 32x8 band layout retrieves
+        # candidates by shared 8-bit band; the exact pigeonhole guarantee is
+        # Hamming <= (128 // 8) - 1 = 15 and retrieval is probabilistic to ~31,
+        # but the W7 benchmark validated H<=32 (the default) empirically. The
+        # clamp still bounds pathological caller values so a misconfigured
+        # threshold can never collapse the whole corpus into one group.
+        self._near_threshold = max(0, min(int(near_threshold), NEAR_CLAMP_MAX))
 
     @property
     def near_threshold(self) -> int:
-        """Effective near-dup merge threshold (clamped into banding range)."""
+        """Effective near-dup merge threshold (clamped into [0, NEAR_CLAMP_MAX])."""
         return self._near_threshold
 
     @property

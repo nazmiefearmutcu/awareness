@@ -230,6 +230,12 @@ class DLQRow(Base):
     payload_json: Mapped[str] = mapped_column(String, default="{}")
     error: Mapped[str] = mapped_column(String, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+    # W6C-bug1: one DLQ row per task. The unique index makes add_dlq() safe
+    # under concurrent multi-process reapers (e.g. requeue_orphaned_running on
+    # Postgres) — the dead-letter insert becomes conflict-tolerant. Both NULL
+    # task_ids (a few legacy callers) stay allowed: NULLs never collide in a
+    # SQL UNIQUE index on either SQLite or Postgres.
+    __table_args__ = (UniqueConstraint("task_id", name="uq_dlq_task"),)
 
 
 class TailRow(Base):
@@ -307,7 +313,18 @@ class StateDB:
                 finally:
                     cursor.close()
         else:
-            self._engine = create_engine(url, future=True)
+            # W6C-bug2: Postgres needs pool tuning — a stale connection must be
+            # pre-pinged instead of surfacing mid-job, and the default tiny pool
+            # (5+10) serializes claim/checkpoint bursts across workers. Sizes are
+            # a sane default for the worker-concurrency scale this pipeline uses;
+            # SQLite keeps its single-file pool untouched above.
+            self._engine = create_engine(
+                url,
+                future=True,
+                pool_pre_ping=True,
+                pool_size=10,
+                max_overflow=20,
+            )
 
         self._sessionmaker = sessionmaker(self._engine, expire_on_commit=False)
         self._lock = threading.RLock()
@@ -356,6 +373,19 @@ class StateDB:
                                     "ON tasks (next_attempt_at)"
                                 )
                             )
+                    # W6C-bug1: legacy databases predate the DLQ unique index
+                    # (uq_dlq_task). add_dlq() relies on it to dedupe concurrent
+                    # dead-letter inserts, so create it here exactly like the
+                    # other IF NOT EXISTS migrations above.
+                    try:
+                        dlq_cols = [c["name"] for c in inspector.get_columns("dlq")]
+                    except Exception:
+                        dlq_cols = []
+                    if dlq_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(
+                                text("CREATE UNIQUE INDEX IF NOT EXISTS uq_dlq_task ON dlq (task_id)")
+                            )
                 except Exception as e:
                     logger.warning("migration_failed", error=str(e))
             else:
@@ -390,6 +420,19 @@ class StateDB:
                     if near_cols and "sig_hex" not in near_cols:
                         with self._engine.begin() as conn:
                             conn.execute(text("ALTER TABLE dedup_near ADD COLUMN sig_hex VARCHAR"))
+                    # W6C-bug1: mirror the SQLite branch — legacy Postgres DLQs
+                    # must carry the uq_dlq_task unique index for add_dlq()'s
+                    # ON CONFLICT (task_id) DO NOTHING to dedupe concurrent
+                    # dead-letter inserts from multi-process reapers.
+                    try:
+                        dlq_cols = [c["name"] for c in inspector.get_columns("dlq")]
+                    except Exception:
+                        dlq_cols = []
+                    if dlq_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(
+                                text("CREATE UNIQUE INDEX IF NOT EXISTS uq_dlq_task ON dlq (task_id)")
+                            )
                 except Exception as e:
                     logger.warning("migration_failed", error=str(e))
 
@@ -1378,15 +1421,39 @@ class StateDB:
 
     # ── DLQ ──────────────────────────────────────────────────────────────
     def add_dlq(self, job_id: str | None, task_id: str | None, payload: dict[str, Any], error: str) -> None:
+        """Insert a dead-letter row, deduplicated by ``task_id`` (W6C-bug1).
+
+        The ``dlq`` table carries a UNIQUE index on task_id (``uq_dlq_task``,
+        created by :meth:`init`); the insert is conflict-tolerant so two
+        processes reaping the same orphaned task concurrently (the dead-letter
+        branch of :meth:`requeue_orphaned_running` on a multi-process Postgres
+        deployment) cannot produce duplicate DLQ rows. Rows with a NULL
+        task_id are unaffected (NULLs never collide in a UNIQUE index).
+        """
+        from sqlalchemy import text  # noqa: PLC0415
+
         with self.session() as s:
-            s.add(
-                DLQRow(
-                    job_id=job_id,
-                    task_id=task_id,
-                    payload_json=json.dumps(payload),
-                    error=error[:4000],
+            params = {
+                "job_id": job_id,
+                "task_id": task_id,
+                "payload_json": json.dumps(payload),
+                "error": error[:4000],
+                "created_at": _utcnow(),
+            }
+            if self._engine.dialect.name == "sqlite":
+                stmt = text(
+                    "INSERT OR IGNORE INTO dlq "
+                    "(job_id, task_id, payload_json, error, created_at) "
+                    "VALUES (:job_id, :task_id, :payload_json, :error, :created_at)"
                 )
-            )
+            else:
+                stmt = text(
+                    "INSERT INTO dlq "
+                    "(job_id, task_id, payload_json, error, created_at) "
+                    "VALUES (:job_id, :task_id, :payload_json, :error, :created_at) "
+                    "ON CONFLICT (task_id) DO NOTHING"
+                )
+            s.execute(stmt, params)
             s.commit()
 
     def count_dlq(self, *, job_id: str | None = None) -> int:

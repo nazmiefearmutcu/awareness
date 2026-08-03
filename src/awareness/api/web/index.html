@@ -75,10 +75,15 @@
         <span class="nav-label">Analytics</span>
         <span class="nav-shortcut">6</span>
       </button>
+      <button class="nav-item" data-route="alerts">
+        <span class="nav-icon" aria-hidden="true">△</span>
+        <span class="nav-label">Alerts</span>
+        <span class="nav-shortcut">7</span>
+      </button>
       <button class="nav-item" data-route="settings">
         <span class="nav-icon" aria-hidden="true">⚙</span>
         <span class="nav-label">Settings</span>
-        <span class="nav-shortcut">7</span>
+        <span class="nav-shortcut">8</span>
       </button>
     </nav>
 
@@ -336,6 +341,16 @@
           <div class="kpi-sub" id="kpi-dash-tasks-failed-sub">retry · dead-letter · no-adapter</div>
         </article>
       </div>
+
+      <section class="band band-compact feed-health" id="feed-health-band" aria-labelledby="feed-health-title">
+        <header class="band-head">
+          <h2 id="feed-health-title" class="band-title">Feed health</h2>
+          <div class="band-meta">
+            <span class="feed-health-score" id="feed-health-score" title="100 − 10×error rate − 5×non-200 rate, clamped">—</span>
+          </div>
+        </header>
+        <div class="kpi-grid" id="feed-health-kpis" aria-label="Feed health KPIs"></div>
+      </section>
 
       <div class="dash-split">
         <section class="band band-compact" aria-labelledby="tail-strip-title">
@@ -806,6 +821,120 @@
           <table class="an-table" id="an-domains-table" aria-label="Top domains">
             <thead><tr><th>Domain</th><th>Score</th><th>Captures</th><th>Replication</th><th>Avg length</th><th>Velocity</th></tr></thead>
             <tbody id="an-domains-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <!-- ALERTS -->
+    <section class="view view-alerts" data-view="alerts" aria-labelledby="title-alerts" hidden>
+      <header class="view-head">
+        <div class="view-head-text">
+          <h1 class="page-title" id="title-alerts">Alerts</h1>
+          <p class="lede">Term-count and term-spike rules over the corpus, plus firing history.</p>
+        </div>
+      </header>
+
+      <div class="al-status-strip" aria-label="Alerts status">
+        <div class="al-status-chip">
+          <span class="al-status-lbl">Rules</span>
+          <span class="al-status-val" id="al-status-total">—</span>
+        </div>
+        <div class="al-status-chip">
+          <span class="al-status-lbl">Active</span>
+          <span class="al-status-val" id="al-status-active">—</span>
+        </div>
+        <div class="al-status-chip">
+          <span class="al-status-lbl">Firings 24h</span>
+          <span class="al-status-val" id="al-status-firings">—</span>
+        </div>
+        <div class="al-status-chip">
+          <span class="al-status-lbl">Last firing</span>
+          <span class="al-status-val" id="al-status-last">—</span>
+        </div>
+      </div>
+
+      <section class="band" aria-labelledby="al-rules-title">
+        <div class="band-head">
+          <h2 class="band-title" id="al-rules-title">Rules</h2>
+          <button type="button" class="btn btn-link" id="al-refresh">Refresh</button>
+        </div>
+        <div class="an-table-wrap">
+          <table class="an-table al-table" id="al-rules-table" aria-label="Alert rules">
+            <thead>
+              <tr>
+                <th>Name</th><th>Kind</th><th>Term</th><th>Threshold</th><th>Window</th>
+                <th>Cooldown</th><th>Active</th><th>Webhook</th><th>Created</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="al-rules-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="band" aria-labelledby="al-new-title">
+        <div class="band-head">
+          <h2 class="band-title" id="al-new-title">New rule</h2>
+        </div>
+        <form class="al-form-grid" id="al-form">
+          <label class="field">
+            <span class="field-label">Name</span>
+            <input id="al-name" type="text" required placeholder="BTC volume alert" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Kind</span>
+            <select id="al-kind">
+              <option value="term_count">term_count</option>
+              <option value="term_spike">term_spike</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Term</span>
+            <input id="al-term" type="text" required placeholder="bitcoin" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Threshold</span>
+            <input id="al-threshold" type="number" min="0.01" step="any" required value="10" />
+          </label>
+          <label class="field">
+            <span class="field-label">Window (hours)</span>
+            <input id="al-window" type="number" min="0.1" step="any" required value="24" />
+          </label>
+          <label class="field">
+            <span class="field-label">Cooldown (minutes)</span>
+            <input id="al-cooldown" type="number" min="0" step="any" required value="30" />
+          </label>
+          <label class="field field-wide">
+            <span class="field-label">Webhook URL (optional)</span>
+            <input id="al-webhook" type="url" placeholder="https://hooks.example.com/…" autocomplete="off" />
+          </label>
+          <label class="field field-check al-active-field">
+            <input id="al-active" type="checkbox" checked />
+            <span>Active</span>
+          </label>
+          <div class="al-form-actions">
+            <button type="submit" class="btn btn-primary">Create rule</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="band al-test-panel" id="al-test-panel" aria-labelledby="al-test-title" hidden>
+        <div class="band-head">
+          <h2 class="band-title" id="al-test-title">Test run</h2>
+        </div>
+        <div class="al-test-body" id="al-test-body" aria-live="polite">—</div>
+      </section>
+
+      <section class="band" aria-labelledby="al-firings-title">
+        <div class="band-head">
+          <h2 class="band-title" id="al-firings-title">Firings log</h2>
+        </div>
+        <div class="an-table-wrap">
+          <table class="an-table al-table" id="al-firings-table" aria-label="Recent firings">
+            <thead>
+              <tr><th>Fired at</th><th>Rule</th><th>Term</th><th>Count</th><th>Threshold</th><th>Detail</th></tr>
+            </thead>
+            <tbody id="al-firings-body"></tbody>
           </table>
         </div>
       </section>
