@@ -101,9 +101,23 @@ _PLACE_SUFFIXES: tuple[str, ...] = (
     "Peninsula", "Gulf",
 )
 
+# Common-noun tokens that make a title-case span a headline fragment
+# ("Bitcoin Rally", "Oil Price", "Market Rally Today") rather than a person.
+_COMMON_HEADLINE_NOUNS: frozenset[str] = frozenset(
+    {
+        "Rally", "Price", "Prices", "Market", "Markets", "Stock", "Stocks",
+        "Shares", "Rates", "Rate", "Deal", "Deals", "Record", "High", "Low",
+        "Peak", "Drop", "Rise", "Surge", "Slump", "Gain", "Gains", "Loss",
+        "Losses", "Profit", "Revenue", "Earnings", "Report", "Reports",
+        "Update", "Updates", "News", "Analysis", "Outlook", "Forecast",
+        "Growth", "Inflation", "Economy", "Fed", "Bond", "Bonds", "Yield",
+        "Yields", "Oil", "Gold", "Dollar", "Euro", "Index", "Indices",
+        "Fund", "Funds", "ETF", "ETFs", "Token", "Tokens", "Coin", "Coins",
+    }
+)
+
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9'&.-]*")
 _WS_RE = re.compile(r"\s+")
-_TRAILING_S_RE = re.compile(r"s$", re.IGNORECASE)
 
 
 def _collapsed(text: str) -> str:
@@ -187,6 +201,7 @@ def _span_entities(words: list[str]) -> list[tuple[str, str]]:
             and 2 <= len(run_clean) <= 3
             and run_clean[0] not in _PERSON_STOP
             and not any(w in _GEO_TERMS for w in run_clean)
+            and not any(w in _COMMON_HEADLINE_NOUNS for w in run_clean)
         ):
             results.append((" ".join(run_clean[:2]), "PERSON"))
 
@@ -195,13 +210,14 @@ def _span_entities(words: list[str]) -> list[tuple[str, str]]:
 
 
 def normalize_entity(text: str) -> str:
-    """Canonical form: collapsed whitespace, title-cased, plural-stripped.
+    """Canonical form: collapsed whitespace, title-cased.
 
-    Articles/conjunctions stay lowercase unless leading.
+    Plural stripping is intentionally NOT applied: it corrupts known
+    entities ("Los Angeles" -> "Los Angele", "United States" -> "United
+    State") and breaks query round-trips (a normalized query can never
+    match corpus text). Articles/conjunctions stay lowercase unless leading.
     """
     text = _collapsed(text)
-    if len(text) > 3:
-        text = _TRAILING_S_RE.sub("", text) if not text.endswith("SS") else text
     words = text.split()
     if not words:
         return text

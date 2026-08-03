@@ -83,6 +83,34 @@ for _cmd in list(_alerts_cli.app.registered_commands):
     alerts_app.registered_commands.append(_cmd)
 del _alerts_cli, _cmd
 
+
+@alerts_app.command(name="run-once")
+def alerts_run_once() -> None:
+    """Evaluate all active alert rules once (delivering webhooks) and exit."""
+    from awareness.alerts.runner import create_default_runner  # noqa: PLC0415
+
+    settings = get_settings()
+
+    def _index() -> DuckDbIndex:
+        return DuckDbIndex(
+            db_path=settings.duckdb_path(),
+            jsonl_dir=settings.staging_jsonl_dir(),
+            iceberg_warehouse=settings.iceberg_warehouse,
+        )
+
+    try:
+        firings = asyncio.run(create_default_runner(_index).evaluate_once())
+    except RuntimeError as exc:
+        rprint(f"[yellow]index not ready: {exc}[/yellow]")
+        raise typer.Exit(code=2) from exc
+    if firings:
+        console.print(
+            f"Fired {len(firings)} alert rule(s): "
+            + ", ".join(f.rule_name for f in firings)
+        )
+    else:
+        console.print("No alert firings.")
+
 logger = get_logger("cli")
 console = Console(theme=banner.AWARENESS_THEME)
 
@@ -3185,6 +3213,43 @@ def counts(
         )
     except Exception as exc:
         rprint(f"[red]Query failed:[/red] {escape(str(exc))}")
+
+
+@app.command(name="digest")
+def digest(
+    days: int = typer.Option(
+        7, "--days", min=1, max=365, help="Digest window length in days"
+    ),
+    markdown: bool = typer.Option(
+        False, "--markdown", help="Render the digest as markdown (default output format)"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Output raw digest JSON instead of markdown"),
+    out: str = typer.Option("", "--out", help="Write the digest to this file instead of stdout"),
+) -> None:
+    """Generate a digest of the last N days of captures (markdown or JSON)."""
+    settings = get_settings()
+    idx = DuckDbIndex(
+        db_path=settings.duckdb_path(),
+        jsonl_dir=settings.staging_jsonl_dir(),
+        iceberg_warehouse=settings.iceberg_warehouse,
+    )
+    from awareness.consume.digest import generate_digest, render_digest_markdown  # noqa: PLC0415
+
+    try:
+        digest_obj = generate_digest(idx, days=days)
+        if json_out and not markdown:
+            text = json.dumps(digest_obj.model_dump(mode="json"), indent=2)
+        else:
+            text = render_digest_markdown(digest_obj)
+        if out:
+            out_path = Path(out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(text, encoding="utf-8")
+            rprint(f"[green]Digest written to {out_path}[/green]")
+        else:
+            console.print(text)
+    finally:
+        idx.close()
 
 
 @app.command()

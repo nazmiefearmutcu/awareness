@@ -195,7 +195,14 @@ class EntityEngine:
         cursor = first
         while cursor <= last:
             series.append(TimeBucket(ts=cursor, count=counts.get(cursor, 0)))
-            cursor += step
+            if granularity == "month":
+                # Calendar-month arithmetic: day+31 drifts (Jun 1 + 31d = Jul 2).
+                if cursor.month == 12:
+                    cursor = cursor.replace(year=cursor.year + 1, month=1)
+                else:
+                    cursor = cursor.replace(month=cursor.month + 1)
+            else:
+                cursor += step
         return series
 
     def correlation(

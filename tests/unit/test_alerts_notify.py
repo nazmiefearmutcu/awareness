@@ -11,6 +11,15 @@ from awareness.alerts import notify
 from awareness.alerts.models import AlertFiring
 
 
+@pytest.fixture(autouse=True)
+def _allow_public_webhooks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bypass the public-host DNS gate for unit tests (httpx is mocked)."""
+    monkeypatch.setattr(
+        "awareness.alerts.notify.is_public_http_url",
+        lambda url: True,
+    )
+
+
 def _firing() -> AlertFiring:
     return AlertFiring(
         id=7,
@@ -113,3 +122,26 @@ async def test_deliver_sets_timeout(
     ok = await notify.deliver_webhook("https://hooks.example/alert", _firing())
     assert ok is True
     assert seen == [notify.TIMEOUT_SECONDS]
+
+
+def test_validate_webhook_rejects_private_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SSRF gate active (autouse public-gate bypass removed for this test)."""
+    import awareness.alerts.notify as notify_mod
+    from awareness.alerts.notify import validate_webhook_url
+
+    # Undo the autouse bypass so the real DNS/IP gate runs.
+    monkeypatch.undo()
+
+    def _fake_public(url: str) -> bool:
+        return url.startswith("https://hooks.example")
+
+    monkeypatch.setattr(notify_mod, "is_public_http_url", _fake_public)
+    with pytest.raises(ValueError):
+        validate_webhook_url("http://127.0.0.1:9000/hook")
+    with pytest.raises(ValueError):
+        validate_webhook_url("ftp://example.com/hook")
+    with pytest.raises(ValueError):
+        validate_webhook_url("http://user:pass@example.com/hook")
+    assert validate_webhook_url("https://hooks.example/alert") == "https://hooks.example/alert"

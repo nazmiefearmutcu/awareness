@@ -127,6 +127,14 @@ def test_check_fires_and_delivers_webhook(tmp_path: Path, monkeypatch: pytest.Mo
         return True
 
     monkeypatch.setattr(alerts_router, "deliver_webhook", _fake_deliver)
+    # Rule creation now validates webhook URLs against the public-host gate;
+    # bypass the internal validator for the fixture host.
+    from awareness.alerts import notify as alerts_notify_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        "awareness.alerts.notify.is_public_http_url",
+        lambda url: True,
+    )
     with _client(tmp_path, index_count=5) as client:
         rule = client.post(
             "/alerts/rules",

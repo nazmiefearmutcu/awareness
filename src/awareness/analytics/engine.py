@@ -244,7 +244,10 @@ class TermFrequencyEngine:
                     "WHERE",
                     _match_expr(mode),
                     "AND fetch_ts >= $start AND fetch_ts <= $end",
-                    "ORDER BY fetch_ts",
+                    # Newest-first: when the cap truncates, we keep the
+                    # recent buckets (where spike detection matters) rather
+                    # than silently dropping them.
+                    "ORDER BY fetch_ts DESC",
                     "LIMIT $max_rows",
                 ]
             ),

@@ -47,7 +47,11 @@ def test_deduplication_within_doc() -> None:
 def test_normalize_plural_and_case() -> None:
     assert normalize_entity("Bitcoin") == "Bitcoin"
     assert normalize_entity("bitcoin") == "Bitcoin"
-    assert normalize_entity("Banks") == "Bank"
+    # Plural forms are preserved: stripping corrupts known entities
+    # ("United States" -> "United State") and breaks query round-trips.
+    assert normalize_entity("Banks") == "Banks"
+    assert normalize_entity("United States") == "United States"
+    assert normalize_entity("Los Angeles") == "Los Angeles"
 
 
 def test_empty_and_short() -> None:

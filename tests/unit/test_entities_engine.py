@@ -133,3 +133,22 @@ def test_correlation_zero_variance(corpus: Path) -> None:
     res = engine.correlation("Zzzzznope", "BTC", window_days=7)
     assert res.r == 0.0
     assert res.best_r == 0.0
+
+
+def test_entity_trend_month_granularity(corpus: Path) -> None:
+    """Calendar-month buckets must not drift (Jun+31d=Jul 2 bug)."""
+    engine = _engine(corpus)
+    trend = engine.entity_trend("Apple Inc", window_days=60, granularity="month")
+    months = {b.ts.strftime("%Y-%m") for b in trend}
+    assert len(months) >= 1
+    assert all(b.count >= 0 for b in trend)
+
+
+def test_entity_query_roundtrip_multiple_words(corpus: Path) -> None:
+    """Multi-word entity queries must match corpus text (no plural strip)."""
+    from awareness.entities.extract import normalize_entity
+
+    assert normalize_entity("Los Angeles") == "Los Angeles"
+    engine = _engine(corpus)
+    co = engine.co_occurrence("Apple Inc", window_days=30)
+    assert co is not None

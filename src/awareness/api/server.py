@@ -320,6 +320,16 @@ def create_app() -> FastAPI:
             reaper = DatabaseReaper(state)
             await reaper.start()
 
+        # ── alerts runner (feature): opt-in periodic alert evaluation ──
+        # Gated on AW_ALERTS_AUTOSTART=1 (default off). Runs over the same
+        # lazy index the API serves; stopped below before the index closes.
+        alerts_runner = None
+        if os.environ.get("AW_ALERTS_AUTOSTART") == "1":
+            from awareness.alerts.runner import create_default_runner  # noqa: PLC0415
+
+            alerts_runner = create_default_runner(_get_index)
+            await alerts_runner.start()
+
         try:
             yield
         finally:
@@ -334,6 +344,14 @@ def create_app() -> FastAPI:
                 t.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
+            # Stop the alerts runner before the index closes underneath it.
+            if alerts_runner is not None:
+                await alerts_runner.stop()
+            if _alert_store_instance is not None:
+                try:
+                    _alert_store_instance.close()
+                except Exception as exc:
+                    logger.warning("alerts_store_close_failed", error=str(exc))
             _close_index()
             # Drain process-wide pooled httpx clients so sockets/TLS sessions
             # do not leak across uvicorn reloads / process exit.
@@ -935,8 +953,16 @@ def create_app() -> FastAPI:
     app.include_router(create_entities_router(_get_index))
     app.include_router(sourceintel_router)
 
+    # Process-wide AlertStore: one SQLite connection for the app lifetime,
+    # closed on shutdown. (Per-request construction leaked a connection + WAL
+    # lock for every /alerts call.)
+    _alert_store_instance: AlertStore | None = None
+
     def _alert_store() -> AlertStore:
-        return AlertStore(settings.data_dir / "alerts.db")
+        nonlocal _alert_store_instance
+        if _alert_store_instance is None:
+            _alert_store_instance = AlertStore(settings.data_dir / "alerts.db")
+        return _alert_store_instance
 
     app.include_router(create_alerts_router(_get_index, _alert_store))
     wire(app)

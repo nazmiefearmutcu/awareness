@@ -65,6 +65,15 @@ class AlertRuleCreate(BaseModel):
             raise ValueError("term must not contain control characters")
         return term
 
+    @field_validator("webhook_url")
+    @classmethod
+    def _validate_webhook(cls, value: Any) -> str | None:
+        if value is None or not str(value).strip():
+            return None
+        from awareness.alerts.notify import validate_webhook_url
+
+        return validate_webhook_url(str(value).strip())
+
 
 class AlertFiring(BaseModel):
     """A single firing event for one rule evaluation."""

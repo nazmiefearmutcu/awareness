@@ -2450,7 +2450,7 @@ async function analyzeTerm() {
         row.insertCell().textContent = s.bucket ? s.bucket.slice(0, 10) : "?";
         row.insertCell().textContent = s.count;
         row.insertCell().textContent = Number(s.zscore).toFixed(2);
-        row.insertCell().textContent = Number(s.mean).toFixed(1);
+        row.insertCell().textContent = s.vs_mean != null ? Number(s.vs_mean).toFixed(1) : "—";
       }
     }
   } catch (err) { toast("analytics failed: " + err.message, "err"); }
