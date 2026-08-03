@@ -64,6 +64,7 @@ config_app = typer.Typer(no_args_is_help=True, help="Configure Awareness setting
 cloud_app = typer.Typer(no_args_is_help=True, help="Configure cloud storage integrations (Google Drive, S3)")
 dedup_app = typer.Typer(no_args_is_help=True, help="Deduplication inspection & checks")
 dlq_app = typer.Typer(no_args_is_help=True, help="Dead-letter queue: inspect failed tasks")
+alerts_app = typer.Typer(no_args_is_help=True, help="Alert rules: keyword/spike thresholds + webhooks")
 
 app.add_typer(backfill_app, name="backfill")
 app.add_typer(tail_app, name="tail")
@@ -72,6 +73,15 @@ app.add_typer(config_app, name="config")
 app.add_typer(cloud_app, name="cloud")
 app.add_typer(dedup_app, name="dedup")
 app.add_typer(dlq_app, name="dlq")
+app.add_typer(alerts_app, name="alerts")
+
+# Wire the alert-rule CLI (created by the alerts feature team) into the app.
+from awareness.alerts import cli as _alerts_cli  # noqa: E402
+
+for _cmd in list(_alerts_cli.app.registered_commands):
+    _alerts_cli.app.registered_commands.remove(_cmd)
+    alerts_app.registered_commands.append(_cmd)
+del _alerts_cli, _cmd
 
 logger = get_logger("cli")
 console = Console(theme=banner.AWARENESS_THEME)

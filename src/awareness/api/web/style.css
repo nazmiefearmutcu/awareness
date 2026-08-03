@@ -2388,3 +2388,57 @@ body{
 :root[data-theme="light"] .theme-toggle .ico-light{display:block}
 @media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .theme-toggle .ico-dark{display:none}:root:not([data-theme="dark"]) .theme-toggle .ico-light{display:block}}
 @media (prefers-reduced-motion:reduce){body{background-attachment:scroll}}
+
+/* ── Analytics view ─────────────────────────────────────────── */
+.an-chart {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-2);
+  min-height: 130px;
+}
+.an-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.chip {
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--fg-strong);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chip:hover { background: var(--surface-hi); }
+.an-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-size: 13px;
+}
+.an-table th, .an-table td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.an-table th { color: var(--fg-soft); font-weight: 600; }
+.an-table-wrap { overflow-x: auto; }
+.band-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.band-tools .inp,
+.band-tools select {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--fg-strong);
+  font-size: 13px;
+}

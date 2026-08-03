@@ -98,6 +98,9 @@ ignore = ["S101", "PLR0913", "PLR2004", "E501"]
 # Benchmark suite is dev tooling: optional peer libs are imported lazily,
 # synthetic corpora use `random`, and md5/× are benchmarked/displayed on purpose.
 "benchmarks/**" = ["PLC0415", "S311", "S324", "RUF001", "RUF002", "S110", "PLW0108", "B007"]
+# Entity extractor is a single dense classifier function; branch-count is
+# inherent to the span-classification ruleset.
+"src/awareness/entities/**" = ["PLR0912"]
 
 [tool.mypy]
 python_version = "3.11"

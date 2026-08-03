@@ -178,7 +178,7 @@ function setKPI(id, target, opts = {}) {
 }
 
 // ── Router ────────────────────────────────────────────────────
-const ROUTES = ["dashboard", "captures", "work", "jobs", "tail", "settings"];
+const ROUTES = ["dashboard", "captures", "work", "jobs", "tail", "analytics", "settings"];
 let currentRoute = "dashboard";
 function navigate(route, { push = true } = {}) {
   if (!ROUTES.includes(route)) route = "dashboard";
@@ -205,6 +205,7 @@ function navigate(route, { push = true } = {}) {
   if (route === "work") void initWork();
   if (route === "jobs") void loadJobs();
   if (route === "tail") startTailPolling();
+  if (route === "analytics") void initAnalytics();
   if (route === "settings") void loadSettings();
 }
 window.addEventListener("popstate", (e) => {
@@ -2389,6 +2390,119 @@ for (const id of ["tail-stop-btn", "tail-big-stop"]) {
     catch (err) { toast("tail stop failed: " + err.message, "err"); }
     finally { e.target.disabled = false; void refreshDashboard(); void loadTailView(); }
   });
+}
+
+// ── Analytics ─────────────────────────────────────────────────
+let analyticsReady = false;
+
+/** Render a tiny inline bar chart (no deps) into a container. */
+function renderBarChart(el, points, { color = "var(--accent, #0e9b8d)", maxBars = 60 } = {}) {
+  el.textContent = "";
+  if (!points || !points.length) { el.textContent = "—"; return; }
+  const bars = points.slice(-maxBars);
+  const max = Math.max(1, ...bars.map((p) => p.count));
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display:flex;align-items:flex-end;gap:2px;height:120px;overflow-x:auto;";
+  for (const p of bars) {
+    const col = document.createElement("div");
+    const h = Math.max(2, Math.round((p.count / max) * 110));
+    col.style.cssText = `width:14px;height:${h}px;background:${color};border-radius:2px 2px 0 0;flex:0 0 auto;`;
+    col.title = `${p.ts ? p.ts.slice(0, 10) : "?"} — ${p.count}`;
+    wrap.appendChild(col);
+  }
+  el.appendChild(wrap);
+}
+
+/** Render clickable chips. */
+function renderChips(el, items, { key = (x) => x, label = (x) => x } = {}) {
+  el.textContent = "";
+  if (!items || !items.length) { el.textContent = "—"; return; }
+  for (const it of items) {
+    const chip = el("button", { class: "chip", type: "button" }, label(it));
+    chip.addEventListener("click", () => {
+      $("#an-term-input").value = key(it);
+      void analyzeTerm();
+    });
+    el.appendChild(chip);
+  }
+}
+
+async function analyzeTerm() {
+  const term = ($("#an-term-input").value || "").trim();
+  if (!term) { toast("enter a term first", "err"); return; }
+  const windowDays = $("#an-term-window").value || "14";
+  try {
+    const [freq, spikes] = await Promise.all([
+      api(`/analytics/term-frequency?term=${encodeURIComponent(term)}&window_days=${windowDays}`),
+      api(`/analytics/spikes?term=${encodeURIComponent(term)}&window_days=${windowDays}`),
+    ]);
+    renderBarChart($("#an-term-chart"), freq);
+    const body = $("#an-spikes-body");
+    body.textContent = "";
+    if (!spikes || !spikes.length) {
+      const row = body.insertRow();
+      const cell = row.insertCell();
+      cell.colSpan = 4;
+      cell.textContent = "No spikes detected in this window.";
+    } else {
+      for (const s of spikes) {
+        const row = body.insertRow();
+        row.insertCell().textContent = s.bucket ? s.bucket.slice(0, 10) : "?";
+        row.insertCell().textContent = s.count;
+        row.insertCell().textContent = Number(s.zscore).toFixed(2);
+        row.insertCell().textContent = Number(s.mean).toFixed(1);
+      }
+    }
+  } catch (err) { toast("analytics failed: " + err.message, "err"); }
+}
+
+async function loadCoOccurring() {
+  const term = ($("#an-co-input").value || "").trim();
+  if (!term) { toast("enter a term first", "err"); return; }
+  try {
+    const co = await api(`/analytics/co-occurring?term=${encodeURIComponent(term)}&limit=40`);
+    renderChips($("#an-co-terms"), co || [], { key: (x) => x.term, label: (x) => `${x.term} ×${x.count}` });
+  } catch (err) { toast("co-occurrence failed: " + err.message, "err"); }
+}
+
+async function initAnalytics() {
+  if (analyticsReady) return;
+  analyticsReady = true;
+  const goBtn = $("#an-term-go");
+  const coBtn = $("#an-co-go");
+  goBtn.addEventListener("click", analyzeTerm);
+  $("#an-term-input").addEventListener("keydown", (e) => { if (e.key === "Enter") analyzeTerm(); });
+  coBtn.addEventListener("click", loadCoOccurring);
+  $("#an-co-input").addEventListener("keydown", (e) => { if (e.key === "Enter") loadCoOccurring(); });
+
+  const [top, entities, domains] = await Promise.all([
+    api("/analytics/top-terms?limit=40"),
+    api("/entities/top?limit=40").catch(() => []),
+    api("/source-intel/domains?limit=20").catch(() => []),
+  ]);
+  renderChips($("#an-top-terms"), top || [], { key: (x) => x.term, label: (x) => `${x.term} ×${x.count}` });
+  renderChips($("#an-entities"), entities || [], {
+    key: (x) => x.text, label: (x) => `${x.text} [${x.kind}] ×${x.count}`,
+  });
+  const body = $("#an-domains-body");
+  body.textContent = "";
+  if (!domains || !domains.length) {
+    const row = body.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 6;
+    cell.textContent = "No corpus yet — start tail or run a backfill.";
+  } else {
+    for (const d of domains) {
+      const row = body.insertRow();
+      row.insertCell().textContent = d.domain;
+      row.insertCell().textContent = Number(d.score).toFixed(3);
+      row.insertCell().textContent = d.captures;
+      row.insertCell().textContent = d.replication_ratio != null ? Number(d.replication_ratio).toFixed(3) : "—";
+      row.insertCell().textContent = d.avg_length != null ? Math.round(d.avg_length) : "—";
+      row.insertCell().textContent = d.velocity != null ? Number(d.velocity).toFixed(2) : "—";
+    }
+  }
+  if ($("#an-term-input").value) void analyzeTerm();
 }
 
 // ── Settings ──────────────────────────────────────────────────

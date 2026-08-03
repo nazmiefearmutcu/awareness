@@ -923,6 +923,24 @@ def create_app() -> FastAPI:
         result = await eng.search(req)
         return result.model_dump(mode="json")
 
+    # ── feature routers (analytics / alerts / entities / source-intel / consume) ──
+    from awareness.analytics.router import create_analytics_router
+    from awareness.alerts.router import create_alerts_router
+    from awareness.alerts.store import AlertStore
+    from awareness.consume.router import wire
+    from awareness.entities.router import create_entities_router
+    from awareness.sourceintel.router import router as sourceintel_router
+
+    app.include_router(create_analytics_router(_get_index))
+    app.include_router(create_entities_router(_get_index))
+    app.include_router(sourceintel_router)
+
+    def _alert_store() -> AlertStore:
+        return AlertStore(settings.data_dir / "alerts.db")
+
+    app.include_router(create_alerts_router(_get_index, _alert_store))
+    wire(app)
+
     # ── static dashboard ─────────────────────────────────────────────────
     web_dir = Path(__file__).resolve().parent / "web"
     if web_dir.exists():
