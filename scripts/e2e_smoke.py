@@ -393,8 +393,8 @@ def stage_alerts(root: Path) -> dict[str, Any]:
         rule = r.json()
         _check(rule.get("id"), "created rule missing id")
 
-        r = client.post("/alerts/check")
-        _check(r.status_code == 200, f"POST /alerts/check -> {r.status_code}")
+        r = client.post("/alerts/check", json={})
+        _check(r.status_code == 200, f"POST /alerts/check -> {r.status_code}: {r.text[:300]}")
         firings = r.json().get("firings") or []
         _check(len(firings) >= 1, f"alerts check produced no firings (corpus term {CORPUS_TERM!r})")
 

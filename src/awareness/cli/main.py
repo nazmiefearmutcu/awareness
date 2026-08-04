@@ -3973,9 +3973,12 @@ def report(
     if json_out:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         if out or email_to:
+            import sys as _sys  # noqa: PLC0415
+
             rprint(
                 "[yellow]--json: printed to stdout; "
-                "--out/--email ignored for JSON mode[/yellow]"
+                "--out/--email ignored for JSON mode[/yellow]",
+                file=_sys.stderr,
             )
         return
     text = _render_report_markdown(digest_obj, quality_snap, firings, gdelt_note, no_gdelt)

@@ -268,3 +268,35 @@ extra services.
   the query field — the search API and CLI can explain why a term
   contributed nothing, instead of silently pruning it.
 
+### Iterations 7–8 (2026-08-04)
+
+SPA, export, and verification extensions from the last two Round-2
+iterations (`e4b1417`, `7d46372`), still one FastAPI process, still zero
+extra services.
+
+- **X sentiment trend + CSV export**: `xscraper/analyze.py` now aggregates a
+  per-day `sentiment_trend` (positive/negative counts + mean score per day)
+  alongside the existing author/term/timeline/engagement blocks, and
+  `export_tweets_csv()` writes a session's tweets to CSV atomically with
+  proper quoting. Both surface through `GET /x/sessions/{id}/analysis`,
+  `GET /x/sessions/{id}/tweets.csv` (download attachment), and the
+  `awareness x analyze` / `awareness x export` CLI — `x analyze` prints the
+  daily trend as a sparkline.
+- **SPA firing detail + saved band**: the Alerts view's firing log rows are
+  expandable (rule_id, count/threshold, local + UTC timestamps, view-rule
+  highlight) with the window raised from 20 to 50 firings and a Refresh
+  button; the dashboard gained a Saved-search band with chips and inline run
+  results, and the standalone Saved view sits behind the same store
+  (`saved_searches.db`).
+- **E2E smoke 11 stages**: `scripts/e2e_smoke.py` grew from 8 to 11 stages
+  — saved-search CRUD + run, X create/simulate/analyze/tweets, and the
+  `report` + `alerts history` CLI paths were added after the original
+  digest/export tail; the wrapper asserts each new stage and still exits
+  non-zero on the first failure with no network.
+- **Iteration-8 hardening**: FTS incremental append treats `fetch_ts`
+  mismatch as stale (W28), no-op refreshes stop re-arming the coalescing
+  window, and delta materialize forces a full rebuild when a changed chunk
+  shrank — the three W28 correctness fixes that closed the iteration-6
+  audit, recorded in
+  [`AUDIT_FINDINGS_2026-08-03.md`](AUDIT_FINDINGS_2026-08-03.md).
+

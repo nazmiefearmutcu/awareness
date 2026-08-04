@@ -152,7 +152,7 @@ async def test_empty_200_classified_empty_outcome(monkeypatch) -> None:
     assert out == []
     assert (
         reg.counter_value(
-            "tail.fetch_attempts", labels={"outcome": "empty", "domain": "example.com"}
+            "tail.fetch_attempts", labels={"outcome": "empty", "domain": "tail"}
         )
         == 1.0
     )

@@ -34,6 +34,8 @@ import asyncio
 import hmac
 import os
 import threading
+import time
+from collections import abc as _abc
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -106,6 +108,17 @@ _CSRF_ROUTE_PREFIXES = (
     "/jobsearch/search",
     "/settings/",
     "/jobsearch/profile",
+    "/alerts",
+    "/saved",
+    "/x/",
+    "/consume",
+)
+
+# Mutating endpoints that legitimately accept a request without a body (their
+# action is the verb itself). They still get the Origin gate; only the
+# content-type/body requirements are relaxed for them.
+_CSRF_BODYLESS_PATHS = (
+    "/alerts/check",
 )
 
 
@@ -138,16 +151,54 @@ def _origin_allowed(request: Request) -> bool:
         return True
     # Tolerate an Origin that omits the port (browsers normalize away the
     # default :80/:443) by comparing against the bare configured host.
-    return ":" not in origin_host and origin_host == expected.split(":", 1)[0]
+    if ":" not in origin_host and origin_host == expected.split(":", 1)[0]:
+        return True
+    # Loopback aliases: an operator opening the UI via http://localhost:8085
+    # (instead of 127.0.0.1) sends Origin: http://localhost:8085 — accept the
+    # alias when the configured bind is loopback.
+    bind_host = _api_bind_host()
+    if bind_host in ("127.0.0.1", "::1", "localhost"):
+        return origin_host in (
+            f"localhost:{_api_bind_port()}",
+            f"127.0.0.1:{_api_bind_port()}",
+        )
+    return False
+
+
+# Simple in-process token-bucket limiter for abuse-prone endpoints. Per-key
+# (path-class) buckets: each class allows _RATE_MAX_BURST requests per
+# _RATE_WINDOW_SECONDS. Deliberately coarse (keyless localhost trust model);
+# it exists to stop page-driven amplification (e.g. <img> GETs hammering
+# /gdelt/*), not to replace real auth.
+_RATE_WINDOW_SECONDS = 10.0
+_RATE_MAX_BURST = 20
+_RATE_LIMITED_PREFIXES = ("/gdelt/", "/consume/export", "/alerts/check")
+_rate_buckets: dict[str, tuple[float, int]] = {}
+_rate_lock = threading.Lock()
+
+
+def _rate_allowed(path: str) -> bool:
+    if not path.startswith(_RATE_LIMITED_PREFIXES):
+        return True
+    now = time.monotonic()
+    key = next(p for p in _RATE_LIMITED_PREFIXES if path.startswith(p))
+    with _rate_lock:
+        last, count = _rate_buckets.get(key, (0.0, 0))
+        if now - last >= _RATE_WINDOW_SECONDS:
+            _rate_buckets[key] = (now, 1)
+            return True
+        if count >= _RATE_MAX_BURST:
+            return False
+        _rate_buckets[key] = (last, count + 1)
+        return True
 
 
 def _check_api_key(request: Request) -> str | None:
     """Return an error message when the request fails API-key auth.
-
     ``GET /healthz`` stays open for load-balancer probes. Only enforced when
     ``AW_API_KEY`` is set; without a key the localhost-trust behavior applies.
     """
-    if request.method == "GET" and request.url.path == "/healthz":
+    if request.method in ("GET", "HEAD") and request.url.path == "/healthz":
         return None
     settings = get_settings()
     expected = settings.api_key
@@ -448,15 +499,26 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        if not _rate_allowed(request.url.path):
+            return PlainTextResponse(
+                "429: rate limit exceeded (abuse-prone endpoint)", status_code=429
+            )
         if _is_csrf_protected(request.method, request.url.path):
-            ctype = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
-            if ctype != "application/json":
-                return PlainTextResponse("415: content-type must be application/json", status_code=415)
-            body = await request.body()
-            if not body or not body.strip():
-                return PlainTextResponse("422: empty body not allowed", status_code=422)
+            # Origin gate applies to every mutating route (body or not).
             if not _origin_allowed(request):
                 return PlainTextResponse("403: cross-origin request rejected", status_code=403)
+            # Content-type/body requirements: relaxed for endpoints that
+            # legitimately take no body (their action is the verb itself —
+            # bodyless POSTs listed in _CSRF_BODYLESS_PATHS, and DELETE which
+            # is never CORS-safelisted and always preflighted). Everything
+            # else must carry a non-empty JSON body.
+            if request.method != "DELETE" and request.url.path not in _CSRF_BODYLESS_PATHS:
+                ctype = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+                if ctype != "application/json":
+                    return PlainTextResponse("415: content-type must be application/json", status_code=415)
+                body = await request.body()
+                if not body or not body.strip():
+                    return PlainTextResponse("422: empty body not allowed", status_code=422)
         return await call_next(request)
 
     @app.get("/healthz")

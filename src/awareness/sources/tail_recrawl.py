@@ -114,7 +114,7 @@ class TailRecrawlAdapter(Adapter):
         # Exact-URL gate: skip HTTP when this canonical URL was already fetched.
         pre_cu = canonical_url(url)
         if state is not None and pre_cu and not force_refresh and state.was_url_fetched(pre_cu):
-            get_metrics().inc("tail.fetch_skipped_seen", labels={"domain": dom})
+            get_metrics().inc("tail.fetch_skipped_seen", labels={"domain": "tail"})
             logger.debug("tail_skip_already_fetched", url=url, canonical_url=pre_cu)
             return
 
@@ -125,7 +125,7 @@ class TailRecrawlAdapter(Adapter):
             allowed = True
         robots_decision = RobotsDecision.ALLOWED if allowed else RobotsDecision.DISALLOWED
         if not allowed:
-            get_metrics().inc("tail.robots_disallowed", labels={"domain": dom})
+            get_metrics().inc("tail.robots_disallowed", labels={"domain": "tail"})
             return
 
         crawl_delay = robots.crawl_delay(url)
@@ -153,7 +153,7 @@ class TailRecrawlAdapter(Adapter):
                 )
                 if r is None:
                     fetch_outcome = "blocked_redirect"
-                    metrics.inc("tail.blocked_internal_url", labels={"domain": dom})
+                    metrics.inc("tail.blocked_internal_url", labels={"domain": "tail"})
                 elif not r.content:
                     # L-06: a 200 with an empty body is not a non-200 — classify
                     # it as "empty" so dashboards don't mislabel it an error.
@@ -163,18 +163,18 @@ class TailRecrawlAdapter(Adapter):
             except RetryableHTTPError:
                 # Transient failure exhausted retries — task layer requeues.
                 fetch_outcome = "retryable_error"
-                metrics.inc("tail.fetch_errors", labels={"domain": dom})
-                metrics.inc("tail.retryable_http_error", labels={"domain": dom})
+                metrics.inc("tail.fetch_errors", labels={"domain": "tail"})
+                metrics.inc("tail.retryable_http_error", labels={"domain": "tail"})
                 raise
             except httpx.HTTPError as exc:
                 fetch_outcome = "network_error"
                 logger.warning("tail_fetch_failed", url=url, err=str(exc))
-                metrics.inc("tail.fetch_errors", labels={"domain": dom})
+                metrics.inc("tail.fetch_errors", labels={"domain": "tail"})
             finally:
                 fetch_elapsed = max(0.0, time.perf_counter() - t_fetch)
                 metrics.inc(
                     "tail.fetch_attempts",
-                    labels={"outcome": fetch_outcome, "domain": dom},
+                    labels={"outcome": fetch_outcome, "domain": "tail"},
                 )
                 metrics.observe(
                     "tail.fetch_seconds",
@@ -185,14 +185,14 @@ class TailRecrawlAdapter(Adapter):
         if r is None or fetch_outcome in ("blocked_redirect", "network_error"):
             return
 
-        metrics.inc("tail.fetches", labels={"domain": dom})
+        metrics.inc("tail.fetches", labels={"domain": "tail"})
         if fetch_outcome == "empty":
             # L-06: fetched but the body was empty — nothing to extract.
             return
         if fetch_outcome == "non_200":
             metrics.inc(
                 "tail.fetch_non_200",
-                labels={"domain": dom, "status": str(r.status_code)},
+                labels={"domain": "tail", "status": str(r.status_code)},
             )
             return
 
@@ -220,7 +220,7 @@ class TailRecrawlAdapter(Adapter):
             max_chars=settings.text_max_chars,
         )
         if ext is None:
-            get_metrics().inc("tail.text_too_short", labels={"domain": dom})
+            get_metrics().inc("tail.text_too_short", labels={"domain": "tail"})
             return
         text = ext.text.text
         # Observability: news floor accepted a body the bulk floor would drop.
@@ -228,7 +228,7 @@ class TailRecrawlAdapter(Adapter):
         if min_chars < bulk_min and len(text) < bulk_min:
             get_metrics().inc(
                 "tail.news_floor_kept",
-                labels={"domain": dom, "discovery": str(discovery_channel or "")[:48]},
+                labels={"domain": "tail", "discovery": str(discovery_channel or "")[:48]},
             )
         ch = compute_content_hash(text)
         sim = simhash64(text)

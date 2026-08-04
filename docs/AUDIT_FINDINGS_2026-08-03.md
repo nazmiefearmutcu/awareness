@@ -358,8 +358,39 @@ index warm-up, GDELT SPA/digest, the W21 fixes, regression). No findings;
 three below-threshold notes recorded. Source: `e651d3b` commit message +
 `.ralph/loop-state.md` — no standalone W24 report file exists in `docs/`.
 
-### Iteration 6 — `e651d3b` (saved searches, X simulate/analyze, perf top-3) — W28 audit
+### Iteration 6 — `e651d3b` (saved searches, X simulate/analyze, perf top-3) — W28 audit RESOLVED
 
-**Pending.** The W28 fix-the-fixes audit of the iteration-6 output (W25 perf
-changes + W26 savedsearch + W27 X) is scheduled in `.ralph/loop-state.md`;
-no W28 report exists in `docs/` as of this writing (2026-08-04).
+The W28 fix-the-fixes audit of the iteration-6 output (W25 perf changes +
+W26 savedsearch + W27 X) was previously marked **Pending** here. It
+completed during iteration 7: **3 findings, all RESOLVED in `e4b1417`**
+("fix: W28"; verified against the commit message and the touched
+files — `duckdb_index.py` incremental paths + `fbd16a9`-era tests).
+
+| ID | Finding | Status | Verification |
+|----|---------|--------|-------------|
+| W28-1 | FTS incremental append treated a re-fetch with unchanged content as fresh — the materialized `fetch_ts` bumped but the FTS index kept the old one, so date-windowed ranked search silently missed docs | RESOLVED `e4b1417` | incremental FTS append now treats `fetch_ts` mismatch as stale; regression 34/34 green |
+| W28-2 | `refresh()` re-armed the FTS coalescing window on no-op refreshes — periodic callers could defer the FTS rebuild indefinitely | RESOLVED `e4b1417` | no-op refreshes no longer touch the coalescing window |
+| W28-3 | Delta materialize kept stale rows when a changed chunk shrank (same-path rewrite with removed rows) | RESOLVED `e4b1417` | delta path forces a full rebuild when a changed chunk shrank |
+
+### Iteration 7 — `e4b1417` (SPA X view, saved widgets, alert history, report CLI) — W32 audit RESOLVED
+
+W32 adversarial audit of the iteration-7 output (W29 SPA X view + saved
+band, W30 `alerts history` + `report` CLI, W31 docs/register): **5 findings,
+all RESOLVED in `7d46372`** ("fix: W32"). One residual noted (see W32-5).
+
+| ID | Finding | Status | Verification |
+|----|---------|--------|-------------|
+| W32-1 | `report --json` silently ignored `--out`/`--email`; `--out` writes non-atomic | RESOLVED `7d46372` | warns when `--out`/`--email` are ignored (and when combined); `--out` writes atomically (tmp + replace) |
+| W32-2 | Keyboard nav `0` did not reach the tenth route — Settings unreachable | RESOLVED `7d46372` | `0` now navigates to ROUTES[9] (Settings); view counts corrected to ten |
+| W32-3 | README view counts wrong (stated nine views) | RESOLVED `7d46372` | README corrected: ten views, shortcuts `1`–`9` + `0` |
+| W32-4 | `alerts history --json` emitted non-ISO timestamps | RESOLVED `7d46372` | strict ISO-8601 timestamps in JSON output |
+| W32-5 | Same-size rewrite gap in the delta-shrink heuristic (a chunk rewritten at identical byte size could evade detection) | RESOLVED (residual noted) | low risk — production writer uses atomic renames, so same-size rewrites are not observed in practice |
+
+### Iteration 8 — `7d46372` (X sentiment trend + CSV export, firing detail, E2E 11 stages) — W36 audit in progress
+
+**In progress.** As of this writing (2026-08-04) no W36 report exists in
+`docs/` and `.ralph/loop-state.md` does not yet record a W36 result; the
+iteration-8 commit itself carries no audit-fix header. The W36
+fix-the-fixes audit of the iteration-8 output (W33 X sentiment trend +
+CSV export, W34 firing-detail UX, W35 E2E stage expansion) is scheduled
+next. Status will be updated here when the report lands.

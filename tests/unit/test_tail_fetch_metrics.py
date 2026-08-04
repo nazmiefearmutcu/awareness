@@ -125,7 +125,7 @@ async def test_ok_fetch_records_attempt_and_duration(metrics: MetricsRegistry) -
     assert (
         metrics.counter_value(
             "tail.fetch_attempts",
-            labels={"outcome": "ok", "domain": "example.com"},
+            labels={"outcome": "ok", "domain": "tail"},
         )
         == 1.0
     )
@@ -138,7 +138,7 @@ async def test_ok_fetch_records_attempt_and_duration(metrics: MetricsRegistry) -
     ]
     assert hists and sum(h["count"] for h in hists) >= 1
     assert metrics.counter_value(
-        "tail.fetches", labels={"domain": "example.com"}
+        "tail.fetches", labels={"domain": "tail"}
     ) == 1.0
 
 
@@ -151,7 +151,7 @@ async def test_non_200_fetch_records_outcome(metrics: MetricsRegistry) -> None:
     assert (
         metrics.counter_value(
             "tail.fetch_attempts",
-            labels={"outcome": "non_200", "domain": "example.com"},
+            labels={"outcome": "non_200", "domain": "tail"},
         )
         == 1.0
     )
@@ -179,7 +179,7 @@ async def test_retryable_error_records_duration_then_raises(
     assert (
         metrics.counter_value(
             "tail.fetch_attempts",
-            labels={"outcome": "retryable_error", "domain": "example.com"},
+            labels={"outcome": "retryable_error", "domain": "tail"},
         )
         == 1.0
     )
@@ -203,7 +203,7 @@ async def test_network_error_records_outcome(metrics: MetricsRegistry) -> None:
     assert (
         metrics.counter_value(
             "tail.fetch_attempts",
-            labels={"outcome": "network_error", "domain": "example.com"},
+            labels={"outcome": "network_error", "domain": "tail"},
         )
         == 1.0
     )

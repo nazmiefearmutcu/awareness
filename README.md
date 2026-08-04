@@ -110,16 +110,20 @@ counts: `/term-frequency`, `/top-terms`, `/spikes`, `/domains`, `/languages`,
 `/co-occurring`.
 
 **Alerts** (`/alerts/*`) — a SQLite rule store for keyword and term-spike
-rules (threshold, window, cooldown), with CRUD at `/alerts/rules`, one-shot
-evaluation at `/alerts/check`, and `/alerts/status` + `/alerts/firings` for
-the audit trail (the SPA Alerts view renders that firing history — last-20
-log and a 24 h count — and can test-run rules). Firings deliver to webhooks
-with retry; webhook URLs are validated against the public-host gate before
-they are stored **or** called. The same engine is drivable from the
-terminal:
+rules (threshold, window, cooldown), with CRUD at `/alerts/rules` (plus
+`/alerts/rules/export` + `/alerts/rules/import` for moving rules between
+instances), one-shot evaluation at `/alerts/check`, and `/alerts/status` +
+`/alerts/firings` for the audit trail (the SPA Alerts view renders that
+firing history — last-50 log and a 24 h count — with expandable firing
+detail, and can test-run rules). Firings deliver to **all** configured
+webhooks with retry; payloads are plain JSON or Slack-style
+(`hooks.slack.com` auto-detected or forced per rule), and every webhook URL
+is validated against the public-host gate before it is stored **or** called.
+A periodic runner (`AW_ALERTS_AUTOSTART=1`) evaluates rules inside the API
+process. The same engine is drivable from the terminal:
 
 ```bash
-awareness alerts list|create|delete|check
+awareness alerts list|create|delete|check|export|import|history|run-once
 ```
 
 **Entities** (`/entities/*`) — dependency-free heuristic NER
@@ -160,10 +164,12 @@ parquet, deduped, streamed, atomic) at `/consume/export`, a weekly digest as
 JSON or markdown at `/consume/digest[/markdown]`, and the X-scraper bridge
 (`/x/sessions`, `/x/sessions/{id}/tweets`). X sessions can also be exercised
 without a live connection: deterministic, seeded tweet simulation at
-`POST /x/sessions/{id}/simulate` (no network) and aggregated analysis
-(authors, top terms, lexicon sentiment, timeline, engagement) at
-`GET /x/sessions/{id}/analysis`. The digest generator also ships as a CLI
-command — print, write, or email it:
+`POST /x/sessions/{id}/simulate` (no network), aggregated analysis
+(authors, top terms, lexicon sentiment, **per-day sentiment trend**,
+timeline, engagement) at `GET /x/sessions/{id}/analysis`, and a CSV export
+of a session's tweets at `GET /x/sessions/{id}/tweets.csv` (download
+attachment) or via `awareness x export`. The digest generator also ships as
+a CLI command — print, write, or email it:
 
 ```bash
 awareness digest --days 7 --markdown --out digest.md    # or --json to stdout
@@ -179,12 +185,15 @@ awareness trends "bitcoin" --days 30 --chart --sentiment  # zero-filled series, 
 awareness x sessions|show|create                          # X-scraper session store
 awareness x simulate <SESSION_ID> --seed 42 --count 100  # deterministic, no network
 awareness x analyze <SESSION_ID>                          # authors, terms, sentiment,
-                                                          # timeline, engagement
+                                                          # daily trend, timeline, engagement
+awareness x export <SESSION_ID> --out tweets.csv          # session tweets → CSV
 awareness quality [--json]                                # corpus snapshot: sizes, dup ratios,
                                                           # languages, domains (/corpus/quality)
 awareness feeds                                           # feed-health report: fetch outcomes,
                                                           # p95 latency, 0-100 health score
 awareness saved list|add|rm|run                           # named-query store (/saved/*)
+awareness report [--out report.md --email you@example.com]  # digest + quality + alert
+                                                            # activity + GDELT context
 ```
 
 Two opt-in knobs enable the newer runtime behavior: `AW_API_KEY` gates the
@@ -393,9 +402,10 @@ pytest -m integration     # integration only
 ruff check . && mypy src  # lint + types
 ```
 
-The end-to-end smoke harness walks the full stack (init → ingest → query →
-analytics → API → alerts → digest → export) against a throwaway project
-root with no network, and exits non-zero on the first failing stage:
+The end-to-end smoke harness walks the full stack — **11 stages**: init →
+ingest → query → analytics → API → alerts → digest → export → saved → X →
+report — against a throwaway project root with no network, and exits
+non-zero on the first failing stage:
 
 ```bash
 .venv/bin/python scripts/e2e_smoke.py                  # temp root

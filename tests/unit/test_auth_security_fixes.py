@@ -272,3 +272,46 @@ async def test_healthz_contains_no_paths(monkeypatch: pytest.MonkeyPatch, tmp_pa
             assert "/tmp" not in body  # noqa: S108
     finally:
         server._close_index()
+
+
+async def test_csrf_covers_feature_router_prefixes() -> None:
+    """W38 H-1: /alerts, /saved, /x, /consume mutating routes must be
+    CSRF-gated (form POST with evil Origin -> 403, never 200)."""
+    app = server.create_app()
+    async with _make_client(app) as client:
+        # form-encoded POST to a bodyless feature endpoint
+        r = await client.post(
+            "/alerts/check",
+            content=b"",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://evil.example",
+            },
+        )
+        assert r.status_code == 403
+        # form-encoded POST to a body endpoint
+        r = await client.post(
+            "/alerts/rules",
+            content=b"",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://evil.example",
+            },
+        )
+        assert r.status_code == 403
+        # same-origin (no Origin header) bodyless check still works
+        r = await client.post("/alerts/check")
+        assert r.status_code in (200, 503, 422)
+
+
+async def test_csrf_delete_bodyless_allowed_same_origin() -> None:
+    """DELETE is never CORS-safelisted (always preflighted); same-origin
+    (no Origin header) bodyless DELETE passes the CSRF gate."""
+    app = server.create_app()
+    async with _make_client(app) as client:
+        r = await client.delete("/saved/nonexistent-id")
+        assert r.status_code in (404, 204)
+        r = await client.delete(
+            "/saved/nonexistent-id", headers={"Origin": "https://evil.example"}
+        )
+        assert r.status_code == 403
