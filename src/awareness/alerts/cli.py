@@ -13,6 +13,8 @@ same DuckDbIndex the API uses.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Literal
 
 import typer
@@ -21,12 +23,15 @@ from rich.table import Table
 
 from awareness.alerts.engine import AlertEngine
 from awareness.alerts.models import AlertRuleCreate
+from awareness.alerts.notify import validate_webhook_url
 from awareness.alerts.store import AlertStore
 from awareness.config import get_settings
 from awareness.obs.logging import get_logger
 from awareness.storage.duckdb_index import DuckDbIndex
 
-app = typer.Typer(no_args_is_help=True, help="Alert rules: create, list, delete, check")
+app = typer.Typer(
+    no_args_is_help=True, help="Alert rules: create, list, delete, check, export, import"
+)
 console = Console()
 logger = get_logger("alerts.cli")
 
@@ -63,13 +68,13 @@ def list_rules() -> None:
     table = Table(title="Alert rules")
     for col in (
         "ID", "Name", "Kind", "Term", "Threshold", "Window(h)",
-        "Cooldown(min)", "Webhook", "Active",
+        "Cooldown(min)", "Webhooks", "Active",
     ):
         table.add_column(col)
     for r in rules:
         table.add_row(
             r.id, r.name, r.kind, r.term, f"{r.threshold:g}", f"{r.window_hours:g}",
-            f"{r.cooldown_minutes:g}", r.webhook_url or "-",
+            f"{r.cooldown_minutes:g}", ", ".join(r.webhooks) or "-",
             "yes" if r.active else "no",
         )
     console.print(table)
@@ -89,7 +94,13 @@ def create_rule(  # noqa: PLR0917 - spec-mandated option surface
         24.0, "--window-hours", help="Rolling window length in hours"
     ),
     webhook_url: str | None = typer.Option(
-        None, "--webhook-url", help="Optional webhook URL notified on firing"
+        None, "--webhook-url", help="Optional webhook URL notified on firing (deprecated)"
+    ),
+    webhooks: list[str] | None = typer.Option(  # noqa: B008
+        None, "--webhook", "-w", help="Optional webhook URL (repeatable)"
+    ),
+    webhook_format: Literal["json", "slack"] = typer.Option(
+        "json", "--webhook-format", help="Delivery format: json or slack"
     ),
     cooldown_minutes: float = typer.Option(
         30.0, "--cooldown-minutes", help="Cooldown between firings (minutes)"
@@ -99,6 +110,14 @@ def create_rule(  # noqa: PLR0917 - spec-mandated option surface
     ),
 ) -> None:
     """Create a new alert rule."""
+    urls = list(webhooks or [])
+    if webhook_url:
+        urls.append(webhook_url)
+    for url in urls:
+        try:
+            validate_webhook_url(url)
+        except ValueError as exc:
+            raise typer.BadParameter(f"invalid webhook URL {url!r}: {exc}") from exc
     try:
         payload = AlertRuleCreate(
             name=name,
@@ -106,7 +125,9 @@ def create_rule(  # noqa: PLR0917 - spec-mandated option surface
             term=term,
             threshold=threshold,
             window_hours=window_hours,
+            webhooks=webhooks or [],
             webhook_url=webhook_url,
+            webhook_format=webhook_format,
             cooldown_minutes=cooldown_minutes,
             active=active,
         )
@@ -167,3 +188,69 @@ def check() -> None:
             f"{f.threshold:g}", f.fired_at.isoformat(), f.detail,
         )
     console.print(table)
+
+
+@app.command(name="export")
+def export_rules(
+    out: str | None = typer.Option(
+        None, "--out", help="Write rules JSON to FILE instead of stdout"
+    ),
+) -> None:
+    """Export all alert rules as a JSON array (webhooks included)."""
+    store = _store()
+    try:
+        try:
+            rules = store.export_rules()
+        finally:
+            store.close()
+    except Exception as exc:
+        console.print(f"[red]export failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    text = json.dumps(rules, indent=2, ensure_ascii=False) + "\n"
+    if out:
+        try:
+            Path(out).write_text(text, encoding="utf-8")
+        except OSError as exc:
+            console.print(f"[red]export failed: {exc}[/red]")
+            raise typer.Exit(code=1) from exc
+        console.print(f"Exported {len(rules)} rules to {out}")
+    else:
+        console.print(text)
+
+
+@app.command(name="import")
+def import_rules(
+    file: Path = typer.Argument(  # noqa: B008
+        ..., help="JSON file with an array of rules"
+    ),
+    replace: bool = typer.Option(
+        False, "--replace", help="Delete and recreate rules whose name already exists"
+    ),
+) -> None:
+    """Import alert rules from a JSON file (skips existing names; exit 1 on error)."""
+    try:
+        data = json.loads(file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        console.print(f"[red]import failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    if not isinstance(data, list):
+        console.print("[red]import failed: file must contain a JSON array of rules[/red]")
+        raise typer.Exit(code=1)
+    store = _store()
+    try:
+        existing = {r.name for r in store.list_rules()}
+        try:
+            created, skipped = store.import_rules(data, replace=replace)
+        except ValueError as exc:
+            console.print(f"[red]import failed: {exc}[/red]")
+            raise typer.Exit(code=1) from exc
+    finally:
+        store.close()
+    if skipped and not replace:
+        for raw in data:
+            if isinstance(raw, dict) and raw.get("name") in existing:
+                console.print(
+                    f"[yellow]skipped existing rule {raw.get('name')!r} "
+                    "(use --replace to overwrite)[/yellow]"
+                )
+    console.print(f"Imported {created} rules, skipped {skipped}.")

@@ -19,6 +19,21 @@ on-disk source signature changes, and the ``captures`` view reads that table.
 Every query (COUNT(*), search, facets, related, FTS staleness joins) therefore
 runs against indexed table storage instead of re-parsing the JSONL chunks per
 query (~365x faster on COUNT(*) at 5k docs).
+
+IDF threshold pruning
+---------------------
+``search_idf_threshold`` (settings, default 1.0) prunes query terms whose
+BM25 IDF falls below the threshold, so multi-word queries on small/medium
+corpora silently degrade to their high-IDF subset (e.g. ``coastal sediment``
+searched as just ``sediment`` at 20k docs). Pruning is skipped when the
+corpus has fewer than 20 documents or the threshold is <= 0, and a pruned
+query never loses every term (full query is restored rather than returning
+zero results). When terms are dropped, the index logs a warning event
+``bm25f_low_idf_terms_dropped`` (logger ``storage.duckdb_index``) and callers
+that need the exact prune set can use
+:meth:`DuckDbIndex.search_with_diagnostics`, which returns
+``(payload, diagnostics)`` with ``dropped_terms`` / ``kept_terms`` / ``mode``
+/ ``idf_threshold`` (see its docstring for the schema).
 """
 
 from __future__ import annotations
@@ -46,7 +61,7 @@ from awareness.obs.logging import get_logger
 from awareness.obs.metrics import get_metrics
 from awareness.util.lang import append_language_filter, primary_language_sql
 
-logger = get_logger("storage.duckdb")
+logger = get_logger("storage.duckdb_index")
 
 
 def _record_fts_build(mode: str, *, seconds: float, rows: int) -> None:
@@ -413,6 +428,31 @@ def build_search_diagnostics(
     if filters:
         diag["filters"] = filters
     return diag
+
+
+def build_search_idf_diagnostics(
+    *,
+    dropped_terms: list[str],
+    kept_terms: list[str],
+    mode: str,
+    idf_threshold: float | None,
+) -> dict[str, Any]:
+    """Query-shaping diagnostics returned by :meth:`DuckDbIndex.search_with_diagnostics`.
+
+    * ``dropped_terms`` — stemmed query terms pruned below
+      ``search_idf_threshold`` (empty when nothing was pruned or no FTS path)
+    * ``kept_terms`` — stemmed terms that survived pruning
+    * ``mode`` — matching mode used for the payload
+    * ``idf_threshold`` — effective ``search_idf_threshold`` (``None`` when
+      pruning was not evaluated, e.g. tiny corpus, disabled threshold, or
+      prefix/substring/phrase matching)
+    """
+    return {
+        "dropped_terms": list(dropped_terms),
+        "kept_terms": list(kept_terms),
+        "mode": mode,
+        "idf_threshold": idf_threshold,
+    }
 
 
 class DuckDbIndex:
@@ -1454,6 +1494,83 @@ class DuckDbIndex:
         is a hard ceiling on rows materialized in one call (overload guard).
         ``language`` filters by BCP-47 tag (case-insensitive). Primary tags
         (``en``) also match regional subtags (``en-US``, ``en-GB``).
+
+        Low-IDF query terms may be pruned from the BM25 query by
+        ``search_idf_threshold`` (see the module docstring); when that happens
+        a warning (``bm25f_low_idf_terms_dropped``) is logged on
+        ``storage.duckdb_index``. Callers that need the exact prune set can
+        use :meth:`search_with_diagnostics` (payload is identical).
+        """
+        payload, _ = self._search_impl(
+            query,
+            limit=limit,
+            offset=offset,
+            source=source,
+            domain=domain,
+            language=language,
+            start=start,
+            end=end,
+            mode=mode,
+            fields=fields,
+            max_results=max_results,
+        )
+        return payload
+
+    def search_with_diagnostics(
+        self,
+        query: str,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+        source: str | None = None,
+        domain: str | None = None,
+        language: str | None = None,
+        start: Any = None,
+        end: Any = None,
+        mode: str = DEFAULT_SEARCH_MODE,
+        fields: list[str] | tuple[str, ...] | None = None,
+        max_results: int | None = DEFAULT_SEARCH_MAX_RESULTS,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Like :meth:`search` but also returns query-shaping diagnostics.
+
+        Returns ``(payload, diagnostics)`` where ``payload`` is identical to
+        what :meth:`search` returns and ``diagnostics`` (see
+        :func:`build_search_idf_diagnostics`) describes IDF-threshold pruning
+        applied on the ranked FTS path.
+        """
+        return self._search_impl(
+            query,
+            limit=limit,
+            offset=offset,
+            source=source,
+            domain=domain,
+            language=language,
+            start=start,
+            end=end,
+            mode=mode,
+            fields=fields,
+            max_results=max_results,
+        )
+
+    def _search_impl(
+        self,
+        query: str,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+        source: str | None = None,
+        domain: str | None = None,
+        language: str | None = None,
+        start: Any = None,
+        end: Any = None,
+        mode: str = DEFAULT_SEARCH_MODE,
+        fields: list[str] | tuple[str, ...] | None = None,
+        max_results: int | None = DEFAULT_SEARCH_MAX_RESULTS,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Shared implementation for :meth:`search` / :meth:`search_with_diagnostics`.
+
+        Returns ``(payload, idf_diagnostics)``; :meth:`search` discards the
+        diagnostics, :meth:`search_with_diagnostics` surfaces them.
         """
         query = (query or "").strip()
         mode = (mode or DEFAULT_SEARCH_MODE).strip().lower()
@@ -1514,7 +1631,12 @@ class DuckDbIndex:
                 language=language,
                 requested_mode=mode,
             )
-            return empty
+            return empty, build_search_idf_diagnostics(
+                dropped_terms=[],
+                kept_terms=[],
+                mode=mode_label,
+                idf_threshold=None,
+            )
 
         with self._lock, self._connection_context() as conn:
             # Shared range/source/domain/language filters.
@@ -1544,6 +1666,9 @@ class DuckDbIndex:
             rows: list[dict[str, Any]] = []
             used_mode = mode
             requested_mode = mode
+            idf_dropped: list[str] = []
+            idf_kept: list[str] = []
+            idf_threshold_used: float | None = None
             # (kind, base|None, where_sql|None, params) for cheap facet GROUP BY.
             facet_ctx: tuple[str, str | None, str | None, dict[str, Any]] | None = None
 
@@ -1603,17 +1728,21 @@ class DuckDbIndex:
                         if N < _MIN_DOCS_FOR_IDF_PRUNE or threshold <= 0.0:
                             valid_terms = list(stemmed_terms)
                         else:
+                            idf_threshold_used = threshold
                             valid_terms = [st for st in stemmed_terms if term_idfs.get(st, 0.0) >= threshold]
                             if len(valid_terms) < len(stemmed_terms):
                                 dropped = [st for st in stemmed_terms if term_idfs.get(st, 0.0) < threshold]
-                                logger.info(
+                                idf_dropped = list(dropped)
+                                logger.warning(
                                     "bm25f_low_idf_terms_dropped",
                                     dropped=dropped,
                                     threshold=threshold,
+                                    query=query,
                                 )
                             # Never drop every term — fall back to the full query.
                             if not valid_terms:
                                 valid_terms = list(stemmed_terms)
+                        idf_kept = list(valid_terms)
 
                         # Build BM25F SQL using FTS join tables
                         term_placeholders = ", ".join(f"$term_{i}" for i in range(len(valid_terms)))
@@ -1869,7 +1998,12 @@ class DuckDbIndex:
                     language=language,
                     requested_mode=requested_mode,
                 )
-            return payload
+            return payload, build_search_idf_diagnostics(
+                dropped_terms=idf_dropped,
+                kept_terms=idf_kept,
+                mode=used_mode,
+                idf_threshold=idf_threshold_used,
+            )
 
     @staticmethod
     def _rows(conn: duckdb.DuckDBPyConnection, sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:

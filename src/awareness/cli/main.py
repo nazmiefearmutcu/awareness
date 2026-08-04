@@ -3395,6 +3395,12 @@ def _sparkline(values: list[int | float], width: int = 40) -> str:
             hi = min(lo + 1, n - 1)
             frac = pos - lo
             sampled.append(values[lo] * (1.0 - frac) + values[hi] * frac)
+        # Downsampling can erase isolated spikes between lattice points;
+        # pin the true extremes so a real spike never renders flat.
+        argmax = max(range(n), key=lambda k: (values[k], k))
+        argmin = min(range(n), key=lambda k: (values[k], k))
+        sampled[0] = values[argmin] if values[argmin] < sampled[0] else sampled[0]
+        sampled[-1] = values[argmax] if values[argmax] > sampled[-1] else sampled[-1]
     top = max(sampled)
     low = min(sampled)
     if max(values) == min(values) or top == low:
@@ -4205,6 +4211,10 @@ _TUI_ANALYTICS_SPARK_WIDTH = 40
 # and closed by :func:`_close_tui_analytics_index` when the TUI exits.
 # Held in a dict so the cache can be mutated without ``global`` statements.
 _TUI_ANALYTICS_CACHE: dict[str, DuckDbIndex | None] = {"index": None}
+# Per-(term, window) memo for the term view: the three analyses cost ~4.5 s
+# on a 100k-doc corpus, so re-running them every 2 s refresh tick freezes
+# the TUI. The cache is invalidated when the term changes.
+_TUI_TERM_VIEW_CACHE: dict[str, Any] = {}
 
 
 def _tui_analytics_index(settings: Any) -> DuckDbIndex:
@@ -4329,6 +4339,10 @@ def _analytics_term_view(idx: DuckDbIndex, term: str) -> Any:
     from rich.table import Table  # noqa: PLC0415
     from rich.text import Text  # noqa: PLC0415
 
+    cache_key = f"{term.strip().lower()}:{_TUI_ANALYTICS_WINDOW_DAYS}"
+    if cache_key in _TUI_TERM_VIEW_CACHE:
+        return _TUI_TERM_VIEW_CACHE[cache_key]
+
     try:
         from awareness.analytics.engine import TermFrequencyEngine  # noqa: PLC0415
 
@@ -4380,12 +4394,14 @@ def _analytics_term_view(idx: DuckDbIndex, term: str) -> Any:
             row.append(f"{sentiment_scores.get(bucket.ts, 0.0):+.2f}")
         table.add_row(*row)
 
-    return Group(
+    result = Group(
         Text(f"Term: {term!r} — {_TUI_ANALYTICS_WINDOW_DAYS}-day daily buckets", style="bold cyan"),
         Text(f"Spikes: {len(spikes)} detected  |  Sparkline:", style="dim"),
         Text(_sparkline([float(c) for c in counts], width=_TUI_ANALYTICS_SPARK_WIDTH)),
         table,
     )
+    _TUI_TERM_VIEW_CACHE[cache_key] = result
+    return result
 
 
 @app.command(name="tui")
@@ -4790,12 +4806,14 @@ def tui(refresh_rate: float = typer.Option(2.0, "--refresh", "-r", help="Refresh
                         rprint("[bold cyan]=== Analyze Term ===[/bold cyan]\n")
                         term_input = typer.prompt("Term to analyze (empty clears)").strip()
                         analytics_term = term_input or None
+                        _TUI_TERM_VIEW_CACHE.clear()
                         print("\033[H\033[2J\033[3J", end="")
                         live.start()
                         status_msg = ""
                         last_update = 0.0
                     elif key_lower == "esc" and current_view == "analytics":
                         analytics_term = None
+                        _TUI_TERM_VIEW_CACHE.clear()
                         status_msg = "[dim]Term cleared — showing top terms.[/dim]"
                         last_update = 0.0
 

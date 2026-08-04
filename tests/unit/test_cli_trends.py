@@ -69,7 +69,12 @@ def test_trends_chart_table_and_sparkline(tmp_project: Path) -> None:
     assert "Trend:" in result.output
     assert "bitcoin" in result.output
     assert "Count" in result.output
-    assert datetime.now(UTC).strftime("%Y-%m-%d") in result.output
+    # Corpus docs are written within the last 3 hours; the sparkline must
+    # render the busy day as the max block regardless of UTC midnight
+    # rollover (docs may land on the previous calendar day 00:00-03:00 UTC).
+    assert datetime.now(UTC).strftime("%Y-%m-%d") in result.output or (
+        datetime.now(UTC) - timedelta(days=1)
+    ).strftime("%Y-%m-%d") in result.output
     assert "█" in result.output  # sparkline max block for the busy day
     assert "▁" in result.output  # sparkline floor block for empty days
 

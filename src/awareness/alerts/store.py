@@ -7,12 +7,15 @@ are stored as UTC ISO-8601 strings so rows round-trip through any consumer.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from pydantic import ValidationError
 
 from awareness.alerts.models import AlertRule, AlertRuleCreate
 
@@ -25,6 +28,8 @@ CREATE TABLE IF NOT EXISTS rules (
   threshold REAL NOT NULL,
   window_hours REAL NOT NULL,
   webhook_url TEXT,
+  webhooks_json TEXT,
+  webhook_format TEXT NOT NULL DEFAULT 'json',
   cooldown_minutes REAL NOT NULL,
   active INT NOT NULL,
   created_at TEXT NOT NULL,
@@ -47,7 +52,8 @@ CREATE INDEX IF NOT EXISTS idx_firings_fired_at ON firings (fired_at);
 
 _RULE_SELECT_SQL = (
     "SELECT id, name, kind, term, threshold, window_hours, webhook_url, "
-    "cooldown_minutes, active, created_at, updated_at FROM rules"
+    "webhooks_json, webhook_format, cooldown_minutes, active, created_at, "
+    "updated_at FROM rules"
 )
 
 _FIRING_SELECT_SQL = (
@@ -86,7 +92,25 @@ class AlertStore:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Idempotently upgrade pre-existing ``rules`` tables.
+
+        Older databases predate per-rule webhook lists: ``webhooks_json`` and
+        ``webhook_format`` are added via ``ALTER TABLE`` when missing (new
+        databases get them straight from ``_SCHEMA``). Old rows keep their
+        ``webhook_url`` with a NULL ``webhooks_json`` — row mapping preserves
+        it by seeding ``webhooks`` from ``webhook_url``.
+        """
+        cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(rules)")}
+        if "webhooks_json" not in cols:
+            self._conn.execute("ALTER TABLE rules ADD COLUMN webhooks_json TEXT")
+        if "webhook_format" not in cols:
+            self._conn.execute(
+                "ALTER TABLE rules ADD COLUMN webhook_format TEXT NOT NULL DEFAULT 'json'"
+            )
 
     # ── rules ────────────────────────────────────────────────────────────
 
@@ -97,8 +121,9 @@ class AlertStore:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO rules (id, name, kind, term, threshold, window_hours, "
-                "webhook_url, cooldown_minutes, active, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "webhook_url, webhooks_json, webhook_format, cooldown_minutes, "
+                "active, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     rule_id,
                     rule.name,
@@ -107,6 +132,8 @@ class AlertStore:
                     rule.threshold,
                     rule.window_hours,
                     rule.webhook_url,
+                    json.dumps(rule.webhooks),
+                    rule.webhook_format,
                     rule.cooldown_minutes,
                     int(rule.active),
                     _fmt(now),
@@ -158,8 +185,9 @@ class AlertStore:
         with self._lock:
             self._conn.execute(
                 "UPDATE rules SET name = ?, kind = ?, term = ?, threshold = ?, "
-                "window_hours = ?, webhook_url = ?, cooldown_minutes = ?, "
-                "active = ?, updated_at = ? WHERE id = ?",
+                "window_hours = ?, webhook_url = ?, webhooks_json = ?, "
+                "webhook_format = ?, cooldown_minutes = ?, active = ?, "
+                "updated_at = ? WHERE id = ?",
                 (
                     validated.name,
                     validated.kind,
@@ -167,6 +195,8 @@ class AlertStore:
                     validated.threshold,
                     validated.window_hours,
                     validated.webhook_url,
+                    json.dumps(validated.webhooks),
+                    validated.webhook_format,
                     validated.cooldown_minutes,
                     int(validated.active),
                     _fmt(now),
@@ -184,6 +214,53 @@ class AlertStore:
             cur = self._conn.execute("DELETE FROM rules WHERE id = ?", (rule_id,))
             self._conn.commit()
             return cur.rowcount > 0
+
+    # ── import / export ──────────────────────────────────────────────────
+
+    def export_rules(self) -> list[dict[str, Any]]:
+        """All rules as JSON-ready dicts (newest first), including ``webhooks``."""
+        with self._lock:
+            rows = self._conn.execute(
+                _RULE_SELECT_SQL + " ORDER BY created_at DESC, id"
+            ).fetchall()
+        return [self._row_to_rule(r).model_dump(mode="json") for r in rows]
+
+    def import_rules(
+        self, rules: list[dict[str, Any]], replace: bool = False
+    ) -> tuple[int, int]:
+        """Bulk-create *rules*, deduplicated by name.
+
+        Returns ``(created, skipped)``. Rules whose name already exists are
+        skipped unless *replace* is set, in which case the existing rule is
+        deleted first and the imported one created fresh. Raises
+        :class:`ValueError` (with the offending rule name) on invalid input;
+        extra fields such as ``id`` / ``created_at`` from an export dump are
+        ignored.
+        """
+        created = 0
+        skipped = 0
+        for raw in rules:
+            try:
+                payload = AlertRuleCreate.model_validate(raw)
+            except ValidationError as exc:
+                name = raw.get("name") if isinstance(raw, dict) else "<unknown>"
+                raise ValueError(f"invalid rule {name!r}: {exc}") from exc
+            existing = self._get_rule_by_name(payload.name)
+            if existing is not None and not replace:
+                skipped += 1
+                continue
+            if existing is not None:
+                self.delete_rule(existing.id)
+            self.create_rule(payload)
+            created += 1
+        return created, skipped
+
+    def _get_rule_by_name(self, name: str) -> AlertRule | None:
+        with self._lock:
+            row = self._conn.execute(
+                _RULE_SELECT_SQL + " WHERE name = ?", (name,)
+            ).fetchone()
+        return self._row_to_rule(row) if row is not None else None
 
     # ── firings ──────────────────────────────────────────────────────────
 
@@ -268,6 +345,8 @@ class AlertStore:
     # ── row mappers ──────────────────────────────────────────────────────
 
     def _row_to_rule(self, row: sqlite3.Row) -> AlertRule:
+        raw_webhooks = row["webhooks_json"]
+        webhooks: list[str] = json.loads(raw_webhooks) if raw_webhooks else []
         return AlertRule(
             id=row["id"],
             name=row["name"],
@@ -275,7 +354,9 @@ class AlertStore:
             term=row["term"],
             threshold=row["threshold"],
             window_hours=row["window_hours"],
+            webhooks=webhooks,
             webhook_url=row["webhook_url"],
+            webhook_format=row["webhook_format"] or "json",
             cooldown_minutes=row["cooldown_minutes"],
             active=bool(row["active"]),
             created_at=_parse(row["created_at"]),

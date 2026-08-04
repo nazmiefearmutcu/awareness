@@ -23,11 +23,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Body, HTTPException, Query, Response
 from pydantic import ValidationError
 
 from awareness.alerts.engine import AlertEngine
-from awareness.alerts.models import AlertFiring, AlertRuleCreate, AlertStatus
+from awareness.alerts.models import AlertFiring, AlertRule, AlertRuleCreate, AlertStatus
 from awareness.alerts.notify import deliver_webhook
 from awareness.alerts.store import AlertStore
 from awareness.obs.logging import get_logger
@@ -104,6 +104,59 @@ def create_alerts_router(  # noqa: PLR0915 - spec-mandated endpoint surface
 
         return _call(_create)
 
+    @router.get("/rules/export", response_model=list[AlertRule])
+    def export_rules() -> list[dict[str, Any]]:
+        """Download all rules as a JSON array (webhooks included)."""
+
+        def _export() -> list[dict[str, Any]]:
+            _ensure_ready()
+            return store_getter().export_rules()
+
+        return _call(_export)
+
+    @router.post("/rules/import")
+    def import_rules(body: Any = Body()) -> dict[str, int]:  # noqa: B008
+        """Bulk-create rules from a JSON array (or ``{"rules": [...],
+        "replace": bool}``); returns ``{"created": N, "skipped": M}``.
+
+        Rules whose name already exists are skipped unless ``replace`` is set
+        (delete + recreate). Validation failures map to a 400 before any
+        write. Import is pure store I/O — no index required.
+        """
+        if isinstance(body, dict):
+            rules = body.get("rules", [])
+            replace = bool(body.get("replace", False))
+        elif isinstance(body, list):
+            rules = body
+            replace = False
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="import body must be a JSON array of rules "
+                "or {rules: [...], replace: bool}",
+            )
+        if not isinstance(rules, list):
+            raise HTTPException(
+                status_code=400, detail="import body must be a JSON array of rules"
+            )
+        for raw in rules:
+            try:
+                AlertRuleCreate.model_validate(raw)
+            except ValidationError as exc:
+                details = "; ".join(
+                    ".".join(str(part) for part in err["loc"]) + ": " + err["msg"]
+                    for err in exc.errors()
+                )
+                raise HTTPException(
+                    status_code=400, detail=f"bad rule: {details}"
+                ) from exc
+
+        def _import() -> dict[str, int]:
+            created, skipped = store_getter().import_rules(rules, replace)
+            return {"created": created, "skipped": skipped}
+
+        return _call(_import)
+
     @router.get("/rules/{rule_id}")
     def get_rule(rule_id: str) -> dict[str, Any]:
         """Fetch a single alert rule; 404 when unknown."""
@@ -163,9 +216,12 @@ def create_alerts_router(  # noqa: PLR0915 - spec-mandated endpoint surface
         deliveries: list[dict[str, Any]] = []
         for firing in firings:
             rule = store.get_rule(firing.rule_id)
-            url = rule.webhook_url if rule is not None else None
-            if url:
-                delivered = await deliver_webhook(url, firing)
+            if rule is None:
+                continue
+            for url in rule.webhooks:
+                delivered = await deliver_webhook(
+                    url, firing, format=rule.webhook_format
+                )
                 deliveries.append(
                     {"rule_id": firing.rule_id, "webhook_url": url, "delivered": delivered}
                 )

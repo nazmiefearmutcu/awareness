@@ -224,7 +224,12 @@ class GdeltBridge:
                     return None
                 ts = datetime.fromisoformat(str(item.get("ts")))
                 windows.append(
-                    GdeltWindow(term=str(item.get("term")), ts=ts, count=int(item.get("count", 0)))
+                    GdeltWindow(
+                        term=str(item.get("term")),
+                        ts=ts,
+                        count=int(item.get("count", 0)),
+                        truncated=bool(item.get("truncated", False)),
+                    )
                 )
             return windows
         except (OSError, ValueError, TypeError):
@@ -362,6 +367,10 @@ class GdeltBridge:
             note_parts.append("gdelt API unavailable; gdelt_series empty")
         if local_count == 0:
             note_parts.append("no local captures match the term in the window")
+        if gdelt_windows and any(w.truncated for w in gdelt_windows):
+            note_parts.append(
+                "gdelt day(s) hit the 250-record cap; gdelt_series is a floor"
+            )
         if gdelt_windows and (
             self._zero_variance(local_counts) or self._zero_variance(gdelt_counts)
         ):

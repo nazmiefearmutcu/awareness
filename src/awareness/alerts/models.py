@@ -17,16 +17,22 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 RuleKind = Literal["term_count", "term_spike"]
+WebhookFormat = Literal["json", "slack"]
 
 MIN_TERM_LEN = 1
 MAX_TERM_LEN = 200
 
 
 class AlertRule(BaseModel):
-    """A persisted alert rule bound to a term and a firing condition."""
+    """A persisted alert rule bound to a term and a firing condition.
+
+    ``webhooks`` is the canonical list of delivery targets; ``webhook_url`` is
+    kept for backward compatibility and always reflects ``webhooks[0]`` (or
+    ``None`` when the list is empty).
+    """
 
     id: str
     name: str
@@ -34,22 +40,38 @@ class AlertRule(BaseModel):
     term: str
     threshold: float
     window_hours: float
+    webhooks: list[str] = []
     webhook_url: str | None = None
+    webhook_format: WebhookFormat = "json"
     cooldown_minutes: float = 30.0
     active: bool = True
     created_at: datetime
     updated_at: datetime
 
+    @model_validator(mode="after")
+    def _sync_webhook_fields(self) -> AlertRule:
+        if self.webhooks:
+            self.webhook_url = self.webhooks[0]
+        elif self.webhook_url:
+            self.webhooks = [self.webhook_url]
+        return self
+
 
 class AlertRuleCreate(BaseModel):
-    """Input payload for creating an alert rule (no id / timestamps)."""
+    """Input payload for creating an alert rule (no id / timestamps).
+
+    ``webhook_url`` is a deprecated convenience: when only it is given it
+    seeds ``webhooks``; when both are given, ``webhooks`` wins.
+    """
 
     name: str = Field(min_length=1, max_length=200)
     kind: RuleKind
     term: str
     threshold: float = Field(gt=0)
     window_hours: float = Field(24.0, gt=0)
+    webhooks: list[str] = []
     webhook_url: str | None = None
+    webhook_format: WebhookFormat = "json"
     cooldown_minutes: float = Field(30.0, ge=0)
     active: bool = True
 
@@ -65,14 +87,35 @@ class AlertRuleCreate(BaseModel):
             raise ValueError("term must not contain control characters")
         return term
 
+    @field_validator("webhooks")
+    @classmethod
+    def _validate_webhooks(cls, value: Any) -> list[str]:
+        # Lazy import: notify imports models, so module-level would cycle.
+        from awareness.alerts.notify import validate_webhook_url  # noqa: PLC0415
+
+        urls: list[str] = []
+        for raw in value or []:
+            url = str(raw).strip()
+            if not url:
+                raise ValueError("webhook URLs must not be empty")
+            urls.append(validate_webhook_url(url))
+        return urls
+
     @field_validator("webhook_url")
     @classmethod
     def _validate_webhook(cls, value: Any) -> str | None:
         if value is None or not str(value).strip():
             return None
-        from awareness.alerts.notify import validate_webhook_url
+        # Lazy import: notify imports models, so module-level would cycle.
+        from awareness.alerts.notify import validate_webhook_url  # noqa: PLC0415
 
         return validate_webhook_url(str(value).strip())
+
+    @model_validator(mode="after")
+    def _seed_webhooks(self) -> AlertRuleCreate:
+        if not self.webhooks and self.webhook_url:
+            self.webhooks = [self.webhook_url]
+        return self
 
 
 class AlertFiring(BaseModel):
