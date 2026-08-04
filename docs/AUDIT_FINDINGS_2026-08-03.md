@@ -259,3 +259,107 @@ offline degradation), corpusx (topic matrix, quality snapshot), CLI
 entity-network SPA nodes — test-covered (`test_gdeltx_*`,
 `test_corpusx_*`, `test_cli_trends`, `test_cli_xsessions`,
 `test_cli_digest_email`, `test_spa_entity_network`).
+
+---
+
+## Ralph Loop Round 2 (2026-08-04) — iterations 1–6 (post-hoc register)
+
+Comprehensive register of every adversarial finding raised across iterations
+1–6 of the Round-2 Ralph loop (`876dbc6` → `e651d3b`). Supersedes the
+iterations 1–3 register above (its "W12 in progress" note is now resolved:
+the W12 fixes landed in `fbd16a9`). Each RESOLVED claim was verified against
+`git show --stat` / `git show` of the named commit — evidence below cites the
+touched files, not the commit messages alone. Where a claim could not be
+pinned to a diff, it is marked "status unverified" rather than guessed.
+
+### Iteration 1 — `876dbc6` (sentiment + origin, SPA alerts, materialized corpus; W5-A + W7 + W6-C)
+
+#### F-1 … F-6 (W5-A fix-the-fixes audit) — all RESOLVED `876dbc6`
+
+| ID | Finding | Status | Verification |
+|----|---------|--------|-------------|
+| F-1 | Non-loopback bind without `AW_API_KEY` only *warned* | RESOLVED `876dbc6` | `_guard_non_loopback_without_key()` added to `api/server.py` (SystemExit), called from `run()` and lifespan; still present in the current tree (`server.py:1117`) |
+| F-2 | Empty-body mutating requests bypassed the JSON CSRF gate; `Origin` checked against spoofable `Host` | RESOLVED `876dbc6` | empty-body mutators → 415/422; Origin vs configured host (`api/server.py`) |
+| F-3 | `/healthz` disclosed `db_path` / `jsonl_dir` | RESOLVED `876dbc6` | fields removed from the health response |
+| F-4 | JSONL orphan repair non-atomic; gzip boundary truncation (missing EOS) unrepairable | RESOLVED `876dbc6` | atomic `.repair` temp + fsync + `os.replace`; truncated gzip repaired to valid gzip — `test_jsonl_repair_atomic.py` |
+| F-5 | FTS incremental staleness join ran against the view (O(corpus) re-parse) | RESOLVED `876dbc6` | join now hits the indexed materialized table — `test_materialized_corpus.py` |
+| F-6 | Flaky alerts-runner test counted engine calls instead of waiting on ticks | RESOLVED `876dbc6` | `test_alerts_runner.py` waits on ticks |
+
+#### W7 performance recommendations
+
+| Rec | Status | Verification |
+|-----|--------|-------------|
+| Materialize the captures union | RESOLVED `876dbc6` | `captures_materialized` table + unique index on `capture_id` (`storage/duckdb_index.py`, +151 lines); 365× on `COUNT(*)` |
+| Raise the near-dup merge threshold | RESOLVED `876dbc6` | `DEFAULT_NEAR_THRESHOLD` 24 → 32 (dedup F1 0.845 → 0.961, precision stays 1.0); `test_near_threshold_32.py` |
+| Rerank tokenizer LRU cache | PARTIAL — caches added `876dbc6` (maxsize 4096; singleton keyed `(db_path, jsonl_dir, warehouse)`); effectiveness pinned by hit/miss tests in `daacf9b` (W17) | both commits verified in diff |
+| Surface dropped low-IDF terms in search | RESOLVED `daacf9b` | `search_with_diagnostics()` (kept/dropped terms + `idf_threshold`) + WARNING drop event with query field (W17); supersedes the earlier "open" status |
+
+#### W6-C Postgres-parity — D1 … D7
+
+| ID | Finding | Status | Verification |
+|----|---------|--------|-------------|
+| D1 | SQLite first-pass claim under-claims (`[3,3,0,0]` — unlocked SELECT race); claim invariant held, PG claims full batch via `with_for_update(skip_locked=True)` | Verified — behavioral divergence, not a bug | 4-thread claim exercise; workers loop on SQLite |
+| D2 | Process-local RLock → two PG workers can both DLQ the same orphan (no unique key) | RESOLVED `876dbc6` | unique index `uq_dlq_task` + conflict-tolerant `add_dlq` (`storage/state.py`, +83 lines) |
+| D3 | PG engine: default QueuePool(5+10), no `pool_pre_ping` | RESOLVED `876dbc6` | `pool_pre_ping=True`, `pool_size=10` (SQLite pool untouched) |
+| D4 | Tail reconcile `os.kill(pid, 0)` is same-host-only — remote PG would phantom-CANCEL live tails | OPEN (ops note) | gate on host/instance id in `tail_state` if remote PG |
+| D5 | PG `VACUUM` is full-database, not table-scoped | OPEN (ops note) | `VACUUM (ANALYZE)` on hot tables only |
+| D6 | `DuckDbIndex` singleton keyed only by `db_path` — same path + different `jsonl_dir` returned the old instance | RESOLVED `876dbc6` | keyed `(db_path, jsonl_dir, warehouse)` |
+| D7 | `asyncpg`/`psycopg` only in the `postgres` extra; `+asyncpg` in sync `StateDB` works only via greenlet | OPEN (docs note) | use compose-documented `postgresql+psycopg://`; `pip install -e '.[postgres]'` |
+
+### Iteration 2 — `8c53af4` (gdeltx, corpusx, CLI trends / x-sessions / digest email, entity network) + W12
+
+W12 findings (adversarial review of the iteration-2 output) — **all RESOLVED
+in `fbd16a9`**. Verified: the `starttls()` call and the cache-key day-floor
+are both in the `fbd16a9` diff; `8c53af4` shipped the buggy variants (the
+microsecond key and the plain-587 SMTP path), not the fixes.
+
+| ID | Finding | Status | Verification |
+|----|---------|--------|-------------|
+| W12-1 | gdeltx cache key included `utcnow()` microseconds → 6 h TTL never engaged; GDELT API re-hit on every request | RESOLVED `fbd16a9` | `_cache_path` end floored to the day (`gdeltx/engine.py`, +13 lines) |
+| W12-2 | GDELT 250-record cap silent → correlation/gap distortion un-surfaced | RESOLVED `fbd16a9` (field + set) + `daacf9b` (cache persistence + compare note) + `a711ba6` (coverage-gap surfacing) | `GdeltWindow.truncated` field added `fbd16a9` (`models.py` +1); survives cache read + "gdelt_series is a floor" note `daacf9b`; `GapReport.truncated` + `_aggregate` OR `a711ba6` |
+| W12-3 | digest `--email` sent SMTP credentials and body in the clear on port 587 | RESOLVED `fbd16a9` | `server.starttls()` on non-465 ports (`cli/main.py`; verified in diff and current tree `:3513`) |
+
+### Iteration 3 — `fbd16a9` (TUI analytics panel, quality + feeds CLI, benchmark docs) + W16
+
+W16 findings (adversarial review of the iteration-3 output) — fixed in
+`daacf9b` ("fix: W16 findings"; commit message + `gdeltx/engine.py` +11,
+`test_cli_trends.py` touched).
+
+| ID | Finding | Status | Verification |
+|----|---------|--------|-------------|
+| W16-1 | `truncated` flag was dead data: lost on cache read, no comparison note | RESOLVED `daacf9b` | flag persisted through the disk cache + compare note "gdelt day(s) hit the 250-record cap; gdelt_series is a floor" |
+| W16-2 | TUI term view recomputed every tick — 4.5 s freeze at 100k docs | RESOLVED `daacf9b` | memoized per `(term, window)`; cache cleared on term change/esc |
+| W16-3 | `_sparkline` rendered isolated spikes as a flat line under downsampling (`--days > 60`) | RESOLVED `daacf9b` (pins true argmax/argmin); hardened again in `a711ba6` (W21-6: nearest lattice column, NaN-guarded, upsample uncorrupted) | shared `_sparkline` helper |
+| W16-4 | flaky `test_cli_trends` at UTC-midnight rollover | RESOLVED `daacf9b` | test fixed (`tests/unit/test_cli_trends.py`, 7 lines) |
+
+### Iteration 4 — `daacf9b` (IDF diagnostics, alert multi-webhook/Slack + import/export, E2E smoke) + W21
+
+W21 findings (adversarial review of the iteration-4 output) — **all 8
+RESOLVED in `a711ba6`** ("fix: W21 findings"; verified against
+`alerts/runner.py` +16, `alerts/store.py` +15, `gdeltx/engine.py` +31 /
+`models.py` +6, `scripts/e2e_smoke.py` +16).
+
+| ID | Finding | Status | Verification |
+|----|---------|--------|-------------|
+| W21-1 | Smoke test logging pollution (root handler never restored, GDELT noise) — full suite not green in one process | RESOLVED `a711ba6` | root-handler restore + GDELT stub |
+| W21-2 | IDF drop-all fallback lied (`dropped=[]`, `threshold=None`, no warning) | RESOLVED `a711ba6` | honest empty diagnostics, no warning |
+| W21-3 | Alert runner delivered to the *first* `rule.webhooks` entry only | RESOLVED `a711ba6` | delivers to ALL webhooks |
+| W21-4 | `update_rule` did not mirror `webhook_url = webhooks[0]` on write | RESOLVED `a711ba6` | mirror invariant restored on write |
+| W21-5 | `import_rules` wrote incrementally — non-atomic on validation failure | RESOLVED `a711ba6` | validates fully before any write |
+| W21-6 | `_sparkline` extremes at wrong column; NaN; upsample path corruption | RESOLVED `a711ba6` | pins extremes at nearest lattice column, NaN-guarded, upsample uncorrupted |
+| W21-7 | gdeltx truncation absent from `coverage_gap` | RESOLVED `a711ba6` | `GapReport.truncated` + note; `_aggregate` ORs member flags |
+| W21-8 | Index close order in smoke paths | RESOLVED `a711ba6` | close-then-null ordering |
+
+### Iteration 5 — `a711ba6` (GDELT SPA + digest context, dedup token-sketch guard) — W24 audit CLEAN
+
+W24 adversarial audit of the iteration-5 output: **CLEAN across all six areas**
+(dedup token-sketch boundaries, `awareness init` materialization, lifespan
+index warm-up, GDELT SPA/digest, the W21 fixes, regression). No findings;
+three below-threshold notes recorded. Source: `e651d3b` commit message +
+`.ralph/loop-state.md` — no standalone W24 report file exists in `docs/`.
+
+### Iteration 6 — `e651d3b` (saved searches, X simulate/analyze, perf top-3) — W28 audit
+
+**Pending.** The W28 fix-the-fixes audit of the iteration-6 output (W25 perf
+changes + W26 savedsearch + W27 X) is scheduled in `.ralph/loop-state.md`;
+no W28 report exists in `docs/` as of this writing (2026-08-04).

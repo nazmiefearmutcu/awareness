@@ -178,7 +178,7 @@ function setKPI(id, target, opts = {}) {
 }
 
 // ── Router ────────────────────────────────────────────────────
-const ROUTES = ["dashboard", "captures", "work", "jobs", "tail", "analytics", "alerts", "saved", "settings"];
+const ROUTES = ["dashboard", "captures", "work", "jobs", "tail", "analytics", "alerts", "saved", "x", "settings"];
 let currentRoute = "dashboard";
 function navigate(route, { push = true } = {}) {
   if (!ROUTES.includes(route)) route = "dashboard";
@@ -208,6 +208,7 @@ function navigate(route, { push = true } = {}) {
   if (route === "analytics") void initAnalytics();
   if (route === "alerts") void initAlerts();
   if (route === "saved") void initSaved();
+  if (route === "x") void initXView();
   if (route === "settings") void loadSettings();
 }
 window.addEventListener("popstate", (e) => {
@@ -1580,6 +1581,9 @@ async function refreshDashboard() {
 
   // Recent jobs strip
   renderJobStrip($("#jobs-strip"), (status.jobs || []).slice(0, 4));
+
+  // Saved-search widgets (non-blocking; self-guards against rebuilds).
+  void refreshDashSaved();
 
   return { status, dedup };
 }
@@ -3522,6 +3526,374 @@ async function saveAllSettings() {
       btn.classList.toggle("is-dirty", settingsDirty);
     }
   }
+}
+
+// ── X sessions ────────────────────────────────────────────────
+let xViewReady = false;
+
+async function initXView() {
+  if (xViewReady) return;
+  xViewReady = true;
+  $("#x-refresh")?.addEventListener("click", () => void loadXView());
+  $("#x-form")?.addEventListener("submit", createXSession);
+  await loadXView();
+}
+
+async function loadXView() {
+  const body = $("#x-sessions-body");
+  if (!body) return;
+  clear(body);
+  body.appendChild(emptyXRow("loading…"));
+  try {
+    const sessions = await api("/x/sessions");
+    renderXSessionList(sessions || []);
+  } catch (err) {
+    clear(body);
+    body.appendChild(emptyXRow("sessions failed: " + err.message));
+    toast("sessions load failed: " + err.message, "err");
+  }
+}
+
+function emptyXRow(text) {
+  const row = document.createElement("tr");
+  const cell = row.insertCell();
+  cell.colSpan = 6;
+  cell.textContent = text;
+  return row;
+}
+
+function renderXSessionList(sessions) {
+  const body = $("#x-sessions-body");
+  if (!body) return;
+  clear(body);
+  const count = $("#x-sessions-count");
+  if (count) {
+    count.textContent = fmt(sessions.length) + (sessions.length === 1 ? " session" : " sessions");
+  }
+  if (!sessions.length) {
+    body.appendChild(emptyXRow("No sessions yet — create one with the form above."));
+    return;
+  }
+  for (const s of sessions) {
+    const row = body.insertRow();
+    row.insertCell().textContent = s.session_id || "—";
+    row.insertCell().textContent = s.title || "(untitled)";
+    const statusCell = row.insertCell();
+    statusCell.appendChild(el("span", { class: "badge badge-" + (s.status || "unknown"), text: s.status || "—" }));
+    row.insertCell().textContent = s.created_at
+      ? new Date(s.created_at).toISOString().slice(0, 16).replace("T", " ")
+      : "—";
+    row.insertCell().textContent = fmt((s.backfill_tweets || 0) + (s.stream_tweets || 0));
+    const actCell = row.insertCell();
+    const simBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Simulate" });
+    simBtn.addEventListener("click", () => startXSimulate(s.session_id, simBtn));
+    actCell.appendChild(simBtn);
+    const anBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Analyze" });
+    anBtn.addEventListener("click", () => void analyzeXSession(s.session_id, anBtn));
+    actCell.appendChild(anBtn);
+    const twBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Tweets" });
+    twBtn.addEventListener("click", () => void showXSessionTweets(s.session_id, twBtn));
+    actCell.appendChild(twBtn);
+  }
+}
+
+async function createXSession(e) {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type=submit]');
+  if (btn) btn.disabled = true;
+  try {
+    const title = ($("#x-title").value || "").trim();
+    if (!title) { toast("title is required", "err"); return; }
+    const splitList = (v) => String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
+    const body = {
+      title,
+      keywords: splitList($("#x-keywords").value),
+      accounts: splitList($("#x-accounts").value),
+      raw_query: ($("#x-raw-query").value || "").trim() || null,
+      lookback: ($("#x-lookback").value || "").trim() || "2h",
+      language: ($("#x-language").value || "").trim() || null,
+    };
+    const created = await api("/x/sessions", { method: "POST", body: JSON.stringify(body) });
+    toast(`session "${created.title || title}" created`, "ok");
+    e.target.reset();
+  } catch (err) {
+    // api() surfaces the backend 400 detail inside err.message.
+    toast("create failed: " + err.message, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+    void loadXView();
+  }
+}
+
+/** Swap a row's Simulate button for an inline count input (default 20). */
+function startXSimulate(sessionId, btn) {
+  const parent = btn.parentElement;
+  const wrap = el("span", { class: "x-sim-inline" });
+  const input = el("input", {
+    class: "inp x-sim-count",
+    type: "number",
+    min: "1",
+    max: "200",
+    value: "20",
+    "aria-label": "Tweet count to simulate",
+  });
+  const goBtn = el("button", { class: "btn btn-primary", type: "button", text: "Go" });
+  const cancelBtn = el("button", { class: "btn btn-link", type: "button", text: "cancel" });
+  wrap.appendChild(input);
+  wrap.appendChild(goBtn);
+  wrap.appendChild(cancelBtn);
+  const restore = () => parent.replaceChild(btn, wrap);
+  const run = () => {
+    const nTweets = Math.max(1, Math.min(200, parseInt(input.value, 10) || 20));
+    goBtn.disabled = true;
+    void simulateXSession(sessionId, nTweets).finally(restore);
+  };
+  goBtn.addEventListener("click", run);
+  cancelBtn.addEventListener("click", restore);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") run();
+    if (e.key === "Escape") restore();
+  });
+  parent.replaceChild(wrap, btn);
+  input.focus();
+  input.select();
+}
+
+async function simulateXSession(sessionId, nTweets) {
+  try {
+    const res = await api("/x/sessions/" + encodeURIComponent(sessionId) + "/simulate", {
+      method: "POST",
+      body: JSON.stringify({ n_tweets: nTweets }),
+    });
+    const inserted = res && res.inserted != null ? res.inserted : nTweets;
+    toast(`simulated ${fmt(inserted)} tweet${inserted === 1 ? "" : "s"}`, "ok");
+  } catch (err) {
+    toast("simulate failed: " + err.message, "err");
+  } finally {
+    void loadXView();
+  }
+}
+
+async function analyzeXSession(sessionId, btn) {
+  if (btn) btn.disabled = true;
+  const panel = $("#x-analysis");
+  const root = $("#x-an-root");
+  if (panel) panel.hidden = false;
+  if (root) {
+    clear(root);
+    root.appendChild(el("p", { class: "muted", text: "analyzing…" }));
+  }
+  try {
+    const analysis = await api("/x/sessions/" + encodeURIComponent(sessionId) + "/analysis");
+    renderXAnalysis(root, analysis);
+  } catch (err) {
+    if (root) {
+      clear(root);
+      root.appendChild(el("p", { class: "muted", text: "analysis failed: " + err.message }));
+    }
+    toast("analysis failed: " + err.message, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/** Render an X session analysis payload into *root*. DOM via el() only and
+ *  reuses renderBarChart/renderChips, so it is node-executable in tests. */
+function renderXAnalysis(root, analysis) {
+  clear(root);
+  const a = analysis || {};
+  const sent = a.sentiment || {};
+  const chips = el("div", { class: "x-an-sentiment" });
+  chips.appendChild(el("span", { class: "x-an-chip x-an-pos", text: "positive " + fmt(sent.positive) }));
+  chips.appendChild(el("span", { class: "x-an-chip x-an-neg", text: "negative " + fmt(sent.negative) }));
+  chips.appendChild(el("span", { class: "x-an-chip x-an-neu", text: "neutral " + fmt(sent.neutral) }));
+  chips.appendChild(el("span", { class: "x-an-chip x-an-avg", text: "avg score " + Number(sent.avg_score ?? 0).toFixed(2) }));
+  root.appendChild(chips);
+
+  root.appendChild(el("h3", { class: "x-an-sub", text: "Authors" }));
+  const table = el("table", { class: "an-table x-an-table" });
+  const thead = el("thead");
+  const hrow = el("tr");
+  hrow.appendChild(el("th", { text: "Username" }));
+  hrow.appendChild(el("th", { text: "Tweets" }));
+  thead.appendChild(hrow);
+  table.appendChild(thead);
+  const tbody = el("tbody", { class: "x-an-authors-body" });
+  const authors = Array.isArray(a.authors) ? a.authors : [];
+  if (!authors.length) {
+    const row = el("tr");
+    const cell = el("td", { colspan: "2", text: "No authors yet." });
+    row.appendChild(cell);
+    tbody.appendChild(row);
+  } else {
+    for (const au of authors) {
+      const row = el("tr", { class: "x-an-author-row" });
+      row.appendChild(el("td", { text: au.username || "—" }));
+      row.appendChild(el("td", { text: fmt(au.count) }));
+      tbody.appendChild(row);
+    }
+  }
+  table.appendChild(tbody);
+  root.appendChild(table);
+
+  root.appendChild(el("h3", { class: "x-an-sub", text: "Top terms" }));
+  const termsBox = el("div", { class: "an-chips x-an-terms" });
+  renderChips(termsBox, Array.isArray(a.top_terms) ? a.top_terms : [], {
+    key: (x) => x.term,
+    label: (x) => `${x.term} ×${x.count}`,
+  });
+  root.appendChild(termsBox);
+
+  root.appendChild(el("h3", { class: "x-an-sub", text: "Timeline" }));
+  const chartBox = el("div", { class: "x-an-timeline", role: "img", "aria-label": "Tweets per day" });
+  renderBarChart(chartBox, (Array.isArray(a.timeline) ? a.timeline : []).map((p) => ({ ts: p.date, count: p.count })));
+  root.appendChild(chartBox);
+
+  const eng = a.engagement || {};
+  root.appendChild(el("p", {
+    class: "x-an-engagement",
+    text: `${a.tweet_count ?? 0} tweets · ${fmt(eng.total_likes)} likes · ${fmt(eng.total_retweets)} retweets · ${fmt(eng.avg_likes)} avg likes`,
+  }));
+}
+
+async function showXSessionTweets(sessionId, btn) {
+  if (btn) btn.disabled = true;
+  const panel = $("#x-tweets");
+  const list = $("#x-tweets-list");
+  if (panel) panel.hidden = false;
+  if (list) {
+    clear(list);
+    list.appendChild(el("li", { class: "muted-li", text: "loading…" }));
+  }
+  try {
+    const tweets = await api("/x/sessions/" + encodeURIComponent(sessionId) + "/tweets");
+    renderXTweetList(list, tweets || []);
+  } catch (err) {
+    if (list) {
+      clear(list);
+      list.appendChild(el("li", { class: "muted-li", text: "tweets failed: " + err.message }));
+    }
+    toast("tweets failed: " + err.message, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderXTweetList(list, tweets) {
+  clear(list);
+  if (!tweets.length) {
+    list.appendChild(el("li", { class: "muted-li", text: "No tweets yet — run Simulate or a live session." }));
+    return;
+  }
+  for (const t of tweets) {
+    const li = el("li", { class: "x-tweet" });
+    const head = el("div", { class: "x-tweet-head" });
+    head.appendChild(el("strong", { class: "x-tweet-user", text: "@" + (t.username || "?") }));
+    head.appendChild(el("span", { class: "x-tweet-when", text: t.created_at ? new Date(t.created_at).toLocaleString() : "—" }));
+    li.appendChild(head);
+    li.appendChild(el("p", { class: "x-tweet-text", text: truncateText(t.text, 160) }));
+    list.appendChild(li);
+  }
+}
+
+// ── Dashboard saved widgets ───────────────────────────────────
+let dashSavedSig = null;
+let dashSavedTick = 0;
+
+/** Render saved searches as clickable chips on the dashboard band. */
+function renderDashSaved(saved) {
+  const box = $("#dash-saved-chips");
+  if (!box) return;
+  clear(box);
+  const meta = $("#dash-saved-meta");
+  if (meta) {
+    meta.textContent = fmt(saved.length) + (saved.length === 1 ? " saved search" : " saved searches");
+  }
+  if (!saved.length) {
+    box.appendChild(el("span", { class: "muted", text: "No saved searches yet — bookmark a query from Captures with ★ Save." }));
+    return;
+  }
+  for (const s of saved) {
+    const item = el("span", { class: "dash-saved-item" });
+    const chip = el("button", {
+      class: "chip dash-saved-chip",
+      type: "button",
+      title: s.query || "",
+      text: `${s.name || "—"} · ${truncateText(s.query || "", 60)}`,
+    });
+    chip.addEventListener("click", () => void runDashSaved(s));
+    item.appendChild(chip);
+    const runBtn = el("button", {
+      class: "btn btn-ghost dash-saved-run",
+      type: "button",
+      text: "Run",
+      "aria-label": "Run: " + (s.name || ""),
+    });
+    runBtn.addEventListener("click", () => void runDashSaved(s));
+    item.appendChild(runBtn);
+    box.appendChild(item);
+  }
+}
+
+async function runDashSaved(s) {
+  const panel = $("#dash-saved-results");
+  const title = $("#dash-saved-results-title");
+  const list = $("#dash-saved-results-list");
+  if (panel) panel.hidden = false;
+  if (title) title.textContent = s.name || s.query || "Saved search";
+  if (list) {
+    clear(list);
+    list.appendChild(el("li", { class: "muted-li", text: "running…" }));
+  }
+  try {
+    const res = await api("/saved/" + encodeURIComponent(s.id) + "/run");
+    const rows = (res && res.rows) || [];
+    renderDashSavedResults(list, rows);
+    if (panel && !rows.length) toast("no results for this saved search", "err");
+  } catch (err) {
+    if (list) {
+      clear(list);
+      list.appendChild(el("li", { class: "muted-li", text: "run failed: " + err.message }));
+    }
+    toast("run failed: " + err.message, "err");
+  }
+}
+
+/** Compact inline results: title link, domain, date. */
+function renderDashSavedResults(list, rows) {
+  clear(list);
+  if (!rows.length) {
+    list.appendChild(el("li", { class: "muted-li", text: "No matches." }));
+    return;
+  }
+  for (const r of rows) {
+    const li = el("li", { class: "dash-saved-result" });
+    const label = truncateText(r.title || "(untitled)", 120);
+    li.appendChild(r.url
+      ? el("a", { class: "dash-saved-result-title", href: r.url, target: "_blank", rel: "noopener noreferrer", text: label })
+      : el("span", { class: "dash-saved-result-title", text: label }));
+    li.appendChild(el("span", {
+      class: "dash-saved-result-meta",
+      text: `${r.domain || "—"} · ${r.fetch_ts ? ago(r.fetch_ts, true) + " ago" : "—"}`,
+    }));
+    list.appendChild(li);
+  }
+}
+
+/** Refresh the dashboard saved widgets. Rebuilds only when the list
+ *  changed, or every 12th tick (60 s) to keep staleness low. */
+async function refreshDashSaved() {
+  dashSavedTick += 1;
+  let saved;
+  try {
+    saved = await api("/saved");
+  } catch (_) {
+    return; // non-fatal — dashboard KPIs keep rendering
+  }
+  const sig = JSON.stringify((saved || []).map((s) => `${s.id}:${s.name}:${s.updated_at || ""}:${s.query || ""}`));
+  if (sig === dashSavedSig && dashSavedTick % 12 !== 0) return;
+  dashSavedSig = sig;
+  renderDashSaved(saved || []);
 }
 
 // ── Live activity feed (dashboard rail) ───────────────────────

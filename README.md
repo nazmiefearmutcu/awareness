@@ -63,8 +63,8 @@ awareness browse                                 # read captured text in the ter
 ## The workbench
 
 A single-process FastAPI server ships a hand-written vanilla-JS SPA at `/` — no build step, no
-runtime dependencies, no external requests (fonts are self-hosted; it renders fully offline). Six
-sections, keyboard shortcuts `1`–`6`, a `⌘K` command palette, and a light/dark theme that follows
+runtime dependencies, no external requests (fonts are self-hosted; it renders fully offline). Nine
+views, keyboard shortcuts `1`–`9`, a `⌘K` command palette, and a light/dark theme that follows
 your system and remembers your choice.
 
 **Dashboard** — the corpus at a glance, plus deep process telemetry: fetch latency percentiles,
@@ -112,9 +112,11 @@ counts: `/term-frequency`, `/top-terms`, `/spikes`, `/domains`, `/languages`,
 **Alerts** (`/alerts/*`) — a SQLite rule store for keyword and term-spike
 rules (threshold, window, cooldown), with CRUD at `/alerts/rules`, one-shot
 evaluation at `/alerts/check`, and `/alerts/status` + `/alerts/firings` for
-the audit trail. Firings deliver to webhooks with retry; webhook URLs are
-validated against the public-host gate before they are stored **or** called.
-The same engine is drivable from the terminal:
+the audit trail (the SPA Alerts view renders that firing history — last-20
+log and a 24 h count — and can test-run rules). Firings deliver to webhooks
+with retry; webhook URLs are validated against the public-host gate before
+they are stored **or** called. The same engine is drivable from the
+terminal:
 
 ```bash
 awareness alerts list|create|delete|check
@@ -148,11 +150,20 @@ and degrades to empty series with a structured-log warning when offline.
 `/corpus/topic-matrix` and a corpus-quality snapshot at `/corpus/quality`
 (duplicate / near-dup ratios, language rollup, capture rate per day).
 
+**Saved searches** (`/saved/*`) — a SQLite-backed store of named queries
+(CRUD at `/saved`, pin/run at `/saved/{id}/pin` + `/saved/{id}/run`). The
+SPA ships a Saved view with a ★ save control on the search box, and the CLI
+mirrors it as `awareness saved list|add|rm|run`.
+
 **Consumption** (`/consume/*`, `/x/*`) — LLM-ready dataset export (jsonl or
 parquet, deduped, streamed, atomic) at `/consume/export`, a weekly digest as
 JSON or markdown at `/consume/digest[/markdown]`, and the X-scraper bridge
-(`/x/sessions`, `/x/sessions/{id}/tweets`). The digest generator also ships as
-a CLI command — print, write, or email it:
+(`/x/sessions`, `/x/sessions/{id}/tweets`). X sessions can also be exercised
+without a live connection: deterministic, seeded tweet simulation at
+`POST /x/sessions/{id}/simulate` (no network) and aggregated analysis
+(authors, top terms, lexicon sentiment, timeline, engagement) at
+`GET /x/sessions/{id}/analysis`. The digest generator also ships as a CLI
+command — print, write, or email it:
 
 ```bash
 awareness digest --days 7 --markdown --out digest.md    # or --json to stdout
@@ -166,10 +177,14 @@ The newer subsystems also ship terminal equivalents:
 awareness trends "bitcoin" --days 30 --chart --sentiment  # zero-filled series, z-score
                                                           # spike marks, optional sentiment
 awareness x sessions|show|create                          # X-scraper session store
+awareness x simulate <SESSION_ID> --seed 42 --count 100  # deterministic, no network
+awareness x analyze <SESSION_ID>                          # authors, terms, sentiment,
+                                                          # timeline, engagement
 awareness quality [--json]                                # corpus snapshot: sizes, dup ratios,
                                                           # languages, domains (/corpus/quality)
 awareness feeds                                           # feed-health report: fetch outcomes,
                                                           # p95 latency, 0-100 health score
+awareness saved list|add|rm|run                           # named-query store (/saved/*)
 ```
 
 Two opt-in knobs enable the newer runtime behavior: `AW_API_KEY` gates the
@@ -179,13 +194,17 @@ periodic alert evaluation inside the API process (see Configuration below).
 ### Security posture
 
 - **API key auth** — setting `AW_API_KEY` requires `Authorization: Bearer` on
-  the control plane; binding to a non-loopback interface refuses to start
-  without one.
+  the control plane; binding to a non-loopback interface **refuses to start**
+  (`SystemExit`) without one, and the guard runs again at lifespan startup.
 - **CSRF JSON enforcement** — mutating requests with a body must be
   `application/json`; the CORS-safelisted `text/plain` route is rejected.
-- **SSRF gates** — untrusted URLs (seeds, webhooks, redirect hops) pass
+- **SSRF gates** — untrusted URLs (seeds, alert webhooks, redirect hops) pass
   through `is_public_http_url`: no loopback/private/link-local/metadata hosts,
-  no userinfo, and DNS resolutions must be globally routable.
+  no userinfo, and DNS resolutions must be globally routable. Alert webhook
+  URLs are validated on rule create/update **and** re-checked at delivery.
+- **Digest email STARTTLS** — `awareness digest --email` upgrades to
+  STARTTLS on non-465 ports before any SMTP authentication, so credentials
+  and the digest body are never sent in the clear.
 - **Path confinement** — config writes (`data_dir`, `tail_seed_file`, …) must
   resolve inside the project root with no `..` segments, and `data_dir` may
   not point at an existing non-directory.
@@ -373,6 +392,17 @@ pytest -m smoke           # smoke only
 pytest -m integration     # integration only
 ruff check . && mypy src  # lint + types
 ```
+
+The end-to-end smoke harness walks the full stack (init → ingest → query →
+analytics → API → alerts → digest → export) against a throwaway project
+root with no network, and exits non-zero on the first failing stage:
+
+```bash
+.venv/bin/python scripts/e2e_smoke.py                  # temp root
+AW_PROJECT_ROOT=/tmp/aware-root .venv/bin/python scripts/e2e_smoke.py
+```
+
+The same flow runs in-process as `tests/smoke/test_e2e_full_flow.py`.
 
 Architecture notes live in [`docs/architecture.md`](docs/architecture.md); the field-by-field
 record layout in [`docs/data_dictionary.md`](docs/data_dictionary.md); contribution norms in

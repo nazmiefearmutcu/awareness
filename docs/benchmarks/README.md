@@ -12,6 +12,7 @@ fixed seed, so accuracy reproduces exactly and throughput drifts only with hardw
 |---|---|---|
 | [benchmark_report_2026-08-04.md](benchmark_report_2026-08-04.md) | 2026-08-04 | Baseline run on Apple M1 8-core: hashing (xxh3 4,422.9 MB/s), near-dup F1 (default 0.845 vs tuned 0.961 at H≤32), extraction (trafilatura F1 0.960), query (BM25 p50 153.9 ms → 0.5 ms materialized), ingestion (1,399.6 docs/s), recommendations + resolution status per finding |
 | [perf_100k_2026-08-04.md](perf_100k_2026-08-04.md) | 2026-08-04 | 100k-doc probe (health 2.317 s cold, search warm 0.558 s, all analytics <2 s, export 1.496 s), Postgres parity audit of `state.py` (all 15 dialect sites verified), divergence notes with fix status, bench-suite summary (search optimization 4.6×) |
+| [perf_iter6_report.md](perf_iter6_report.md) | 2026-08-04 | W25 top-3 perf fixes (iteration 6): incremental materialize (20k refresh 123 ms → 0.6 ms, ~196×; full-rebuild fallback intact), 3-level dir-mtime signature guard (92 ms walk → 0.22 ms @100k), FTS coalescing (in-window search 13 ms / 0 rebuilds; one coalesced rebuild 195 ms, then warm 45 ms). Verbatim copy of the W25 team report (`/tmp/w25_report.md`), measured against `a711ba6` + savedsearch WIP |
 
 Machine-independent results and per-suite entries live in
 [results.json](results.json) (written by `benchmarks.run_all`); charts live in this

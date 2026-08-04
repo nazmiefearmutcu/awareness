@@ -2696,3 +2696,63 @@ body{
   .saved-save-control input { width: 140px; }
   .saved-when { display: none; }
 }
+
+/* X sessions view */
+.view-x .band { min-width: 0; }
+.x-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.x-sim-inline { display: inline-flex; align-items: center; gap: 6px; }
+.x-sim-inline .inp { width: 64px; }
+.x-table td:first-child { font-family: var(--mono); font-size: 12px; }
+.x-table td:last-child { white-space: nowrap; }
+.x-an-panel .x-an-sub {
+  margin: 14px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.x-an-sentiment { display: flex; flex-wrap: wrap; gap: 6px; }
+.x-an-chip {
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--fg-strong);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.x-an-pos { color: var(--emerald); border-color: var(--emerald); }
+.x-an-neg { color: var(--rose); border-color: var(--rose); }
+.x-an-neu { color: var(--amber); border-color: var(--amber); }
+.x-an-avg { font-family: var(--mono); }
+.x-an-engagement { font-size: 13px; color: var(--fg-mid); margin-top: 12px; }
+.x-tweets-list { margin-top: 4px; }
+.x-tweet {
+  display: block;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.x-tweet-head { display: flex; align-items: baseline; gap: 10px; }
+.x-tweet-user { font-size: 13px; color: var(--fg-strong); }
+.x-tweet-when { font-size: 12px; color: var(--fg-subtle); white-space: nowrap; }
+.x-tweet-text {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg-mid);
+  margin: 2px 0 0;
+}
+
+/* Dashboard saved-search widgets */
+.dash-saved-band .an-chips { margin-top: 0; }
+.dash-saved-item { display: inline-flex; align-items: center; gap: 4px; }
+.dash-saved-results { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.dash-saved-results-title { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
+.dash-saved-result { display: flex; align-items: baseline; gap: 12px; padding: 4px 0; }
+.dash-saved-result-title { color: var(--accent-soft); font-size: 13px; }
+.dash-saved-result-meta { color: var(--fg-subtle); font-size: 12px; white-space: nowrap; }
+.x-an-author-row td { font-size: 13px; }
+.x-an-timeline { min-height: 120px; }
+.dash-saved-chip { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-saved-run { font-size: 12px; padding: 3px 10px; }

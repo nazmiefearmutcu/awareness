@@ -85,10 +85,15 @@
         <span class="nav-label">Saved</span>
         <span class="nav-shortcut">8</span>
       </button>
+      <button class="nav-item" data-route="x">
+        <span class="nav-icon" aria-hidden="true">✕</span>
+        <span class="nav-label">X</span>
+        <span class="nav-shortcut">9</span>
+      </button>
       <button class="nav-item" data-route="settings">
         <span class="nav-icon" aria-hidden="true">⚙</span>
         <span class="nav-label">Settings</span>
-        <span class="nav-shortcut">9</span>
+        <span class="nav-shortcut">10</span>
       </button>
     </nav>
 
@@ -355,6 +360,18 @@
           </div>
         </header>
         <div class="kpi-grid" id="feed-health-kpis" aria-label="Feed health KPIs"></div>
+      </section>
+
+      <section class="band band-compact dash-saved-band" id="dash-saved-band" aria-labelledby="dash-saved-title">
+        <header class="band-head">
+          <h2 id="dash-saved-title" class="band-title">Saved searches</h2>
+          <span class="band-meta" id="dash-saved-meta" aria-live="polite">—</span>
+        </header>
+        <div class="an-chips" id="dash-saved-chips" aria-label="Saved searches"></div>
+        <section class="dash-saved-results" id="dash-saved-results" aria-labelledby="dash-saved-results-title" hidden>
+          <h3 class="dash-saved-results-title" id="dash-saved-results-title">Results</h3>
+          <ol class="caps-list" id="dash-saved-results-list" aria-label="Saved search results" tabindex="0"></ol>
+        </section>
       </section>
 
       <div class="dash-split">
@@ -994,6 +1011,81 @@
           <span class="saved-run-meta" id="saved-run-meta" aria-live="polite">—</span>
         </div>
         <ol class="caps-list" id="saved-run-list" aria-label="Saved search results" tabindex="0"></ol>
+      </section>
+    </section>
+
+    <!-- X SESSIONS -->
+    <section class="view view-x" data-view="x" aria-labelledby="title-x" hidden>
+      <header class="view-head">
+        <div class="view-head-text">
+          <h1 class="page-title" id="title-x">X sessions</h1>
+          <p class="lede">X (Twitter) capture sessions — simulate, analyze, and browse tweets.</p>
+        </div>
+        <button type="button" class="btn btn-ghost" id="x-refresh">Refresh</button>
+      </header>
+
+      <section class="band" aria-labelledby="x-new-title">
+        <div class="band-head">
+          <h2 class="band-title" id="x-new-title">New session</h2>
+        </div>
+        <form class="al-form-grid x-form-grid" id="x-form">
+          <label class="field">
+            <span class="field-label">Title</span>
+            <input id="x-title" type="text" required placeholder="BTC sentiment sweep" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Keywords (comma-separated)</span>
+            <input id="x-keywords" type="text" placeholder="bitcoin, ethereum" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Accounts (optional)</span>
+            <input id="x-accounts" type="text" placeholder="@vitalik, @elonmusk" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Raw query (optional)</span>
+            <input id="x-raw-query" type="text" placeholder="lang:en min_faves:100" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Lookback</span>
+            <input id="x-lookback" type="text" value="2h" placeholder="2h" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">Language (optional)</span>
+            <input id="x-language" type="text" placeholder="en" autocomplete="off" />
+          </label>
+          <div class="al-form-actions">
+            <button type="submit" class="btn btn-primary">Create session</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="band" aria-labelledby="x-sessions-title">
+        <div class="band-head">
+          <h2 class="band-title" id="x-sessions-title">Sessions</h2>
+          <span class="band-meta" id="x-sessions-count">—</span>
+        </div>
+        <div class="an-table-wrap">
+          <table class="an-table x-table" id="x-sessions-table" aria-label="X capture sessions">
+            <thead>
+              <tr><th>ID</th><th>Title</th><th>Status</th><th>Created</th><th>Tweets</th><th></th></tr>
+            </thead>
+            <tbody id="x-sessions-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="band x-an-panel" id="x-analysis" aria-labelledby="x-an-title" hidden>
+        <div class="band-head">
+          <h2 class="band-title" id="x-an-title">Analysis</h2>
+        </div>
+        <div id="x-an-root"></div>
+      </section>
+
+      <section class="band x-tweets-panel" id="x-tweets" aria-labelledby="x-tweets-title" hidden>
+        <div class="band-head">
+          <h2 class="band-title" id="x-tweets-title">Tweets</h2>
+        </div>
+        <ol class="caps-list x-tweets-list" id="x-tweets-list" aria-label="Session tweets" tabindex="0"></ol>
       </section>
     </section>
 

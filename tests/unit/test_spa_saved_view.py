@@ -21,7 +21,7 @@ def test_spa_saved_route_registered() -> None:
     )
     assert '"saved"' in route_line
     # Ordering: saved between alerts and settings (nav order == shortcut order).
-    assert '"alerts", "saved", "settings"' in route_line
+    assert '"alerts", "saved", "x", "settings"' in route_line
     assert "if (route === \"saved\") void initSaved();" in app_js
     # Number shortcuts cover the new 9th route (settings now 9).
     assert "/^[1-9]$/" in app_js
@@ -91,7 +91,7 @@ def test_spa_saved_html_section_and_nav() -> None:
     assert 'data-route="saved"' in html
     assert 'id="saved-list"' in html
     assert 'id="saved-run-list"' in html
-    # Nav ordering: saved after alerts; shortcuts renumbered (settings = 9).
+    # Nav ordering: saved after alerts; shortcuts renumbered (settings = 10).
     alerts_nav = html[html.index('data-route="alerts"'):]
     alerts_nav = alerts_nav[: alerts_nav.index("</button>")]
     assert '<span class="nav-shortcut">7</span>' in alerts_nav
@@ -100,7 +100,7 @@ def test_spa_saved_html_section_and_nav() -> None:
     assert '<span class="nav-shortcut">8</span>' in saved_nav
     settings_nav = html[html.index('data-route="settings"'):]
     settings_nav = settings_nav[: settings_nav.index("</button>")]
-    assert '<span class="nav-shortcut">9</span>' in settings_nav
+    assert '<span class="nav-shortcut">10</span>' in settings_nav
 
 
 def test_spa_saved_styles_present() -> None:

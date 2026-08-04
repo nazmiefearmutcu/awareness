@@ -14,6 +14,7 @@ same DuckDbIndex the API uses.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -254,3 +255,50 @@ def import_rules(
                     "(use --replace to overwrite)[/yellow]"
                 )
     console.print(f"Imported {created} rules, skipped {skipped}.")
+
+
+@app.command(name="history")
+def history(
+    limit: int = typer.Option(
+        50, "--limit", "-l", min=1, max=500, help="Max firings to show"
+    ),
+    since_hours: int | None = typer.Option(
+        None, "--since", min=0, help="Only show firings from the last N hours"
+    ),
+    rule_id: str | None = typer.Option(
+        None, "--rule", help="Only show firings for this rule id"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Output a raw JSON array"),
+) -> None:
+    """Show recent alert firings (newest first)."""
+    since: datetime | None = None
+    if since_hours is not None:
+        since = datetime.now(UTC) - timedelta(hours=since_hours)
+    store = _store()
+    try:
+        # The store filters in SQL by time only; a --rule filter is applied
+        # here, so fetch the max clamp when filtering to keep --limit honest.
+        firings = store.list_firings(limit=500 if rule_id else limit, since=since)
+    finally:
+        store.close()
+    if rule_id:
+        firings = [f for f in firings if f["rule_id"] == rule_id][:limit]
+    if not firings:
+        console.print("No firings recorded.")
+        return
+    if json_out:
+        print(json.dumps(firings, indent=2, ensure_ascii=False, default=str))
+        return
+    table = Table(title="Alert firing history")
+    for col in ("Fired At", "Rule", "Kind", "Term", "Count", "Threshold", "Detail"):
+        table.add_column(col)
+    for f in firings:
+        fired_at = f["fired_at"].astimezone().strftime("%Y-%m-%d %H:%M")
+        detail = f["detail"]
+        if len(detail) > 80:
+            detail = detail[:77] + "..."
+        table.add_row(
+            fired_at, f["rule_name"], f["kind"], f["term"], str(f["count"]),
+            f"{f['threshold']:g}", detail,
+        )
+    console.print(table)

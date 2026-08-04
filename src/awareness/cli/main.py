@@ -60,7 +60,7 @@ from awareness.storage.duckdb_index import DuckDbIndex
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
 from awareness.util.lang import PRIMARY_LANGUAGE_SQL, append_language_filter
-from awareness.util.timeutil import coerce_relative_end, inclusive_end, to_utc
+from awareness.util.timeutil import coerce_relative_end, inclusive_end, to_utc, utcnow
 from awareness.workers.engine import WorkerEngine
 
 app = typer.Typer(no_args_is_help=False, help="Awareness — public text internet awareness engine")
@@ -3799,6 +3799,202 @@ def quality(
     for dom in snapshot.top_domains[:10]:
         domains.add_row(dom.domain, str(dom.count))
     console.print(domains)
+
+
+# ── report ───────────────────────────────────────────────────────────────────
+_FIRING_DETAIL_MAX = 80
+
+
+def _quality_section(snap: Any) -> list[str]:
+    """Corpus-quality bullets for the combined report."""
+    lines = ["## Corpus quality", ""]
+    lines.append(f"- total_captures: {snap.total_captures}")
+    lines.append(f"- empty_text: {snap.empty_text}")
+    lines.append(f"- duplicate_ratio: {snap.duplicate_ratio:.1%}")
+    lines.append(f"- near_duplicate_ratio: {snap.near_duplicate_ratio:.1%}")
+    lines.append(f"- dedup_group_count: {snap.dedup_group_count}")
+    lines.append(f"- avg_length: {snap.avg_length:.0f}")
+    lines.append(f"- capture_rate_per_day: {snap.capture_rate_per_day:.1f}")
+    if snap.top_domains:
+        pairs = ", ".join(f"{d.domain} ({d.count})" for d in snap.top_domains[:10])
+        lines.append(f"- top_domains: {pairs}")
+    if snap.languages:
+        langs = ", ".join(
+            f"{lang} ({count})"
+            for lang, count in sorted(snap.languages.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        lines.append(f"- languages: {langs}")
+    return lines
+
+
+def _md_cell(text: str) -> str:
+    """Escape markdown-table pipe characters in a cell value."""
+    return str(text).replace("|", "\\|")
+
+
+def _firings_section(firings: list[dict[str, Any]], days: int) -> list[str]:
+    """Alert-activity table for the combined report (detail truncated)."""
+    lines = ["## Alert activity", ""]
+    if not firings:
+        lines.append(f"_No alert firings in the last {days} days._")
+        return lines
+    lines.append(f"{len(firings)} alert firing(s) in the last {days} days.")
+    lines.append("")
+    lines.append("| Fired at (UTC) | Rule | Kind | Term | Count | Threshold | Detail |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+    for f in firings:
+        detail = _md_cell(f["detail"])
+        if len(detail) > _FIRING_DETAIL_MAX:
+            detail = detail[:_FIRING_DETAIL_MAX - 3] + "..."
+        lines.append(
+            f"| {_md_cell(f['fired_at'].strftime('%Y-%m-%d %H:%M'))} "
+            f"| {_md_cell(f['rule_name'])} | {_md_cell(f['kind'])} | {_md_cell(f['term'])} "
+            f"| {f['count']} | {f['threshold']:g} | {detail} |"
+        )
+    return lines
+
+
+def _gdelt_section(note: str | None, no_gdelt: bool) -> list[str]:
+    """GDELT-context section: the note, or why it is absent."""
+    lines = ["## GDELT context", ""]
+    if no_gdelt:
+        lines.append("_GDELT context skipped (--no-gdelt)._")
+    elif note is None:
+        lines.append("_No top terms — GDELT context skipped._")
+    else:
+        lines.append(note)
+    return lines
+
+
+def _render_report_markdown(
+    digest_obj: Any,
+    quality_snap: Any,
+    firings: list[dict[str, Any]],
+    gdelt_note: str | None,
+    no_gdelt: bool,
+) -> str:
+    """Combine the digest markdown with quality, alerts and GDELT sections."""
+    from awareness.consume.digest import render_digest_markdown  # noqa: PLC0415
+
+    days = digest_obj.days
+    lines: list[str] = [f"# Awareness report (last {days}d)", ""]
+    lines.append(f"_Generated {digest_obj.generated_at:%Y-%m-%d %H:%M} UTC_")
+    lines.append("")
+    lines.append("## Digest")
+    lines.append("")
+    # The digest renderer starts with its own "# ..." title; reuse the body.
+    digest_body = render_digest_markdown(digest_obj).split("\n", 1)[1].strip()
+    lines.append(digest_body)
+    lines.append("")
+    lines.extend(_quality_section(quality_snap))
+    lines.append("")
+    lines.extend(_firings_section(firings, days))
+    lines.append("")
+    lines.extend(_gdelt_section(gdelt_note, no_gdelt))
+    lines.append("")
+    return "\n".join(lines)
+
+
+@app.command(name="report")
+def report(
+    days: int = typer.Option(
+        7, "--days", min=1, max=365, help="Report window length in days"
+    ),
+    out: str = typer.Option("", "--out", help="Write the report to this file instead of stdout"),
+    json_out: bool = typer.Option(False, "--json", help="Output a raw JSON object"),
+    email_to: str = typer.Option("", "--email", help="Email the report to this address via SMTP"),
+    no_gdelt: bool = typer.Option(False, "--no-gdelt", help="Skip the GDELT context fetch"),
+) -> None:
+    """Combined report: digest + corpus quality + alert activity + GDELT context.
+
+    Builds ONE DuckDB index (same pattern as ``digest``) and computes the
+    digest (with ``include_gdelt=False`` — the report owns GDELT so an offline
+    bridge degrades to a note instead of failing the digest), the corpus
+    quality snapshot, alert firings in the window, and (unless ``--no-gdelt``)
+    a GDELT comparison for the digest's top term. Renders a combined markdown
+    report; ``--out`` writes it to a file, ``--email`` delivers it over SMTP
+    (same machinery as ``digest --email``), ``--json`` dumps one JSON object.
+    An empty corpus yields a report with zeros (exit 0); fatal errors exit 1.
+    """
+    settings = get_settings()
+    idx: DuckDbIndex | None = None
+    try:
+        idx = DuckDbIndex(
+            db_path=settings.duckdb_path(),
+            jsonl_dir=settings.staging_jsonl_dir(),
+            iceberg_warehouse=settings.iceberg_warehouse,
+        )
+        from awareness.consume.digest import generate_digest  # noqa: PLC0415
+        from awareness.corpusx.engine import CorpusXEngine  # noqa: PLC0415
+
+        digest_obj = generate_digest(idx, days=days, include_gdelt=False)
+        quality_snap = CorpusXEngine(idx).quality_snapshot()
+
+        from awareness.alerts.store import AlertStore  # noqa: PLC0415
+
+        assert settings.data_dir is not None
+        store = AlertStore(settings.data_dir / "alerts.db")
+        try:
+            firings = store.list_firings(limit=100, since=utcnow() - timedelta(days=days))
+        finally:
+            store.close()
+
+        gdelt_note: str | None = None
+        if not no_gdelt and digest_obj.top_terms:
+            from awareness.gdeltx.engine import MAX_WINDOW_DAYS, GdeltBridge  # noqa: PLC0415
+
+            try:
+                bridge = GdeltBridge(idx)
+                comparison = bridge.compare_with_local(
+                    digest_obj.top_terms[0].term, window_days=min(days, MAX_WINDOW_DAYS)
+                )
+                gdelt_note = (
+                    f"GDELT: {comparison.term} local {comparison.local_count} "
+                    f"vs external {comparison.gdelt_count} (r={comparison.correlation_r:.2f})"
+                )
+            except Exception as exc:
+                logger.warning("report_gdelt_unavailable", err=str(exc))
+                gdelt_note = "GDELT unavailable"
+    except Exception as exc:
+        rprint(f"[red]report failed:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if idx is not None:
+            idx.close()
+
+    payload = {
+        "generated_at": digest_obj.generated_at.isoformat(),
+        "days": days,
+        "digest": digest_obj.model_dump(mode="json"),
+        "quality": quality_snap.model_dump(mode="json"),
+        "firings": [{**f, "fired_at": f["fired_at"].isoformat()} for f in firings],
+        "gdelt": gdelt_note,
+    }
+    if json_out:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+    text = _render_report_markdown(digest_obj, quality_snap, firings, gdelt_note, no_gdelt)
+    if email_to:
+        # _email_digest already takes (to_addr, subject, body) — reuse it with
+        # the combined markdown as the body; SMTP details fall back to env vars.
+        _email_digest(
+            to_addr=email_to,
+            subject=f"Awareness report — {digest_obj.generated_at:%Y-%m-%d}",
+            body=text,
+            smtp_host="",
+            smtp_port=None,
+            smtp_user="",
+            smtp_password="",
+            from_addr="",
+        )
+        return
+    if out:
+        out_path = Path(out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text, encoding="utf-8")
+        rprint(f"[green]Report written to {out_path}[/green]")
+    else:
+        console.print(text)
 
 
 def summarize_feed_health(snap: dict[str, Any]) -> dict[str, Any]:

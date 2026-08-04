@@ -1128,7 +1128,18 @@ class DuckDbIndex:
                 if not changed:
                     ok = True
                 else:
-                    ok = self._delta_insert_changed_files(conn, changed)
+                    # Same-path rewrite with a smaller file implies row
+                    # removal — the delta path can only add, so force the
+                    # full rebuild rather than leaving stale rows behind.
+                    shrunk = any(
+                        old_files.get(p) is not None
+                        and old_files[p][1] > new_files[p][1]
+                        for p in changed
+                    )
+                    if shrunk:
+                        ok = False
+                    else:
+                        ok = self._delta_insert_changed_files(conn, changed)
         except duckdb.Error:
             ok = False
         finally:
@@ -1217,6 +1228,10 @@ class DuckDbIndex:
     def refresh(self) -> None:
         with self._lock, self._connection_context() as conn:
             sig, guard = self._source_signature()
+            if sig == self._views_signature:
+                # No-op refresh: don't re-arm the FTS coalescing window, or a
+                # periodic caller would defer the FTS rebuild indefinitely.
+                return
             if self._refresh_views(conn, new_sig=sig):
                 self._views_signature = sig
                 self._signature_guard = guard
@@ -1414,13 +1429,18 @@ class DuckDbIndex:
             return False
         t0 = time.perf_counter()
         try:
-            # H-10: content-change detection — overlapping capture_ids whose
-            # content_hash differs (or one side is NULL) are stale.
+            # H-10/W28: stale-row detection — overlapping capture_ids whose
+            # content_hash OR fetch_ts differs (or one side is NULL) are
+            # stale. fetch_ts matters: a same-content re-fetch bumps the
+            # materialized row's fetch_ts (delta path full-rebuilds), and the
+            # FTS index must track it or date-windowed ranked search serves
+            # the old timestamp (silent window misses).
             stale_row = conn.execute(
                 """
                 SELECT COUNT(*) FROM captures_idx i
                 JOIN captures c ON c.capture_id = i.capture_id
                 WHERE (i.content_hash IS NOT DISTINCT FROM c.content_hash) = FALSE
+                   OR (i.fetch_ts IS NOT DISTINCT FROM c.fetch_ts) = FALSE
                 """
             ).fetchone()
             if stale_row is not None and int(stale_row[0]) > 0:

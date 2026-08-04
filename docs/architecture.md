@@ -223,3 +223,48 @@ FastAPI process, still zero extra services.
   `awareness digest --email` (SMTP delivery via `--smtp-*` flags or
   `SMTP_*`/`EMAIL_FROM` env, graceful failure).
 
+### Iteration 3–6 (2026-08-04)
+
+Performance, persistence, and X-surface extensions from the rest of the
+Round-2 loop (`fbd16a9` → `e651d3b`), still one FastAPI process, still zero
+extra services.
+
+- **Incremental materialization + signature guard + FTS coalescing**: the
+  deduped `captures_materialized` refresh is now delta-first — a pure
+  addition batch INSERTs only the changed chunks (verified by a signature
+  diff), falling back to a full rebuild on removal/edits/Iceberg unions,
+  which cut a 20k-doc refresh from 123 ms to 0.6 ms (~196×). A 3-level
+  directory-mtime guard (`_captures_dir_summary`) short-circuits the per-file
+  signature walk when nothing changed (92 ms → 0.22 ms @100k). Because
+  DuckDB FTS has no partial-update API, dirty indexes defer their rebuild
+  inside a 30 s coalescing window (module constant, 0 disables for tests),
+  degrading search to the table-backed prefix/substring path until N batches
+  coalesce into one rebuild. Details in
+  [`docs/benchmarks/perf_iter6_report.md`](benchmarks/perf_iter6_report.md).
+- **Saved-search store**: `awareness/savedsearch/` is a SQLite-backed store
+  of named queries — CRUD + pin + run under `/saved/*`, the `awareness
+  saved list|add|rm|run` CLI group, and a SPA Saved view with a save control
+  on the search box; runs reuse the same search path as ad-hoc queries, so
+  saved results stay byte-identical to typing the query.
+- **X simulation + analysis**: `xscraper/simulate.py` generates deterministic
+  tweets for a session from a `(seed, n_tweets)` pair — seeded RNG, template
+  pool drawn from the sentiment lexicon, no network — stored through the
+  regular `store_tweets` path so PK dedup still applies. `xscraper/analyze.py`
+  aggregates a session into author counts, top terms, per-tweet lexicon
+  sentiment, a per-day timeline, and engagement totals (zeroed dict on empty
+  sessions). Both surface as `POST /x/sessions/{id}/simulate`,
+  `GET /x/sessions/{id}/analysis`, and the `awareness x simulate|analyze`
+  CLI.
+- **Dedup token-sketch guard**: `dedup_near` rows now carry a token-set
+  sketch (`token_hash` + unique-token count) and a band candidate merges only
+  when the sketches agree — count-ratio ≤ `NEAR_DUP_MAX_TOKEN_COUNT_RATIO`
+  (0.5), and exact `token_hash` match when both docs are short
+  (`NEAR_DUP_SHORT_DOC_MAX_TOKENS` = 200). This kills boilerplate-template
+  merges (distinct articles sharing a footer) while genuine near-dups and
+  legacy NULL-sketch rows (Hamming-only) still merge.
+- **IDF diagnostics surface**: `search_with_diagnostics()` returns
+  `kept_terms` / `dropped_terms` / `mode` / `idf_threshold`, and dropping a
+  query term below `search_idf_threshold` (default 1.0) emits a WARNING with
+  the query field — the search API and CLI can explain why a term
+  contributed nothing, instead of silently pruning it.
+
