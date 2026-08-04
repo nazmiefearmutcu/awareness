@@ -115,7 +115,7 @@ class TweetRecord(BaseModel):
     created_at: datetime
     fetched_at: datetime
     url: str
-    source: Literal["backfill", "stream"]
+    source: Literal["backfill", "stream", "simulated"]
     query: str
     lang: str | None = None
     metrics: dict[str, int] = Field(default_factory=dict)

@@ -178,7 +178,7 @@ function setKPI(id, target, opts = {}) {
 }
 
 // ── Router ────────────────────────────────────────────────────
-const ROUTES = ["dashboard", "captures", "work", "jobs", "tail", "analytics", "alerts", "settings"];
+const ROUTES = ["dashboard", "captures", "work", "jobs", "tail", "analytics", "alerts", "saved", "settings"];
 let currentRoute = "dashboard";
 function navigate(route, { push = true } = {}) {
   if (!ROUTES.includes(route)) route = "dashboard";
@@ -207,6 +207,7 @@ function navigate(route, { push = true } = {}) {
   if (route === "tail") startTailPolling();
   if (route === "analytics") void initAnalytics();
   if (route === "alerts") void initAlerts();
+  if (route === "saved") void initSaved();
   if (route === "settings") void loadSettings();
 }
 window.addEventListener("popstate", (e) => {
@@ -2969,6 +2970,158 @@ function renderAlertsFirings(firings) {
   }
 }
 
+// ── Saved searches ────────────────────────────────────────────
+let savedReady = false;
+
+function truncateText(text, max) {
+  const s = String(text || "");
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+async function initSaved() {
+  if (savedReady) return;
+  savedReady = true;
+  $("#sv-refresh")?.addEventListener("click", () => void loadSavedView());
+  await loadSavedView();
+}
+
+async function loadSavedView() {
+  const list = $("#saved-list");
+  if (!list) return;
+  clear(list);
+  list.appendChild(el("p", { class: "muted", text: "loading…" }));
+  try {
+    const saved = await api("/saved");
+    renderSavedList(saved || []);
+  } catch (err) {
+    clear(list);
+    list.appendChild(el("p", { class: "muted", text: "saved searches failed: " + err.message }));
+  }
+}
+
+function renderSavedList(saved) {
+  const list = $("#saved-list");
+  if (!list) return;
+  clear(list);
+  if (!saved.length) {
+    list.appendChild(el("p", { class: "muted", text: "No saved searches yet — bookmark a query from Captures with ★ Save." }));
+    return;
+  }
+  for (const s of saved) {
+    const card = el("article", { class: "saved-card" + (s.pinned ? " is-pinned" : "") });
+
+    const head = el("div", { class: "saved-card-head" });
+    const pin = el("button", {
+      class: "saved-pin",
+      type: "button",
+      "aria-label": (s.pinned ? "Unpin" : "Pin") + ": " + s.name,
+      title: s.pinned ? "Unpin" : "Pin to top",
+      text: s.pinned ? "★" : "☆",
+    });
+    pin.addEventListener("click", () => void toggleSavedPin(s.id, !s.pinned));
+    head.appendChild(pin);
+    head.appendChild(el("strong", { class: "saved-name", text: s.name || "—" }));
+    head.appendChild(el("span", { class: "saved-mode badge", text: s.mode || "auto" }));
+    head.appendChild(el("span", { class: "saved-when", text: s.updated_at ? "ran " + ago(s.updated_at, true) + " ago" : "" }));
+    card.appendChild(head);
+
+    card.appendChild(el("code", { class: "saved-query", title: s.query, text: truncateText(s.query, 120) }));
+
+    const meta = el("div", { class: "saved-card-meta" });
+    meta.appendChild(el("span", { class: "saved-meta-bit", text: "fields: " + (s.fields || "title,text") }));
+    meta.appendChild(el("span", { class: "saved-meta-bit", text: "limit: " + fmt(s.limit) }));
+    card.appendChild(meta);
+
+    const actions = el("div", { class: "saved-actions" });
+    const runBtn = el("button", { class: "btn btn-primary", type: "button", text: "Run" });
+    runBtn.addEventListener("click", () => void runSaved(s));
+    actions.appendChild(runBtn);
+    const editBtn = el("button", { class: "btn btn-ghost", type: "button", text: "Edit" });
+    editBtn.addEventListener("click", () => void editSavedName(s));
+    actions.appendChild(editBtn);
+    const delBtn = el("button", { class: "btn btn-link", type: "button", text: "Delete" });
+    delBtn.addEventListener("click", () => void deleteSaved(s.id, s.name));
+    actions.appendChild(delBtn);
+    card.appendChild(actions);
+
+    list.appendChild(card);
+  }
+}
+
+async function toggleSavedPin(savedId, pinned) {
+  try {
+    await api("/saved/" + encodeURIComponent(savedId) + "/pin", {
+      method: "POST",
+      body: JSON.stringify({ pinned }),
+    });
+    toast(pinned ? "pinned to top" : "unpinned", "ok");
+  } catch (err) {
+    toast("pin failed: " + err.message, "err");
+  } finally {
+    void loadSavedView();
+  }
+}
+
+async function runSaved(s) {
+  const band = $(".sv-run-band");
+  const meta = $("#saved-run-meta");
+  const list = $("#saved-run-list");
+  if (band) band.hidden = false;
+  if (meta) meta.textContent = "running…";
+  if (list) clear(list);
+  try {
+    const res = await api("/saved/" + encodeURIComponent(s.id) + "/run");
+    const rows = (res && res.rows) || [];
+    if (meta) {
+      const modeLabel = formatSearchModeLabel(res.mode, !!res.ranked);
+      meta.textContent =
+        `${fmt(res.total || 0)} match${(res.total || 0) === 1 ? "" : "es"} · ${modeLabel}`;
+    }
+    if (list) {
+      renderCaps(list, rows, { search: String(s.query || ""), ranked: !!res.ranked });
+    }
+    if (band && !rows.length) {
+      if (meta) meta.textContent = "no matches";
+      toast("no results for this saved search", "err");
+    }
+  } catch (err) {
+    if (meta) meta.textContent = "run failed: " + err.message;
+    toast("run failed: " + err.message, "err");
+  } finally {
+    void loadSavedView();
+  }
+}
+
+async function editSavedName(s) {
+  const name = window.prompt("Rename saved search", s.name);
+  if (name == null) return;
+  const trimmed = name.trim();
+  if (!trimmed) { toast("name is required", "err"); return; }
+  try {
+    await api("/saved/" + encodeURIComponent(s.id), {
+      method: "PUT",
+      body: JSON.stringify({ name: trimmed }),
+    });
+    toast("renamed", "ok");
+  } catch (err) {
+    toast("edit failed: " + err.message, "err");
+  } finally {
+    void loadSavedView();
+  }
+}
+
+async function deleteSaved(savedId, name) {
+  if (!window.confirm(`Delete saved search "${name || savedId}"?`)) return;
+  try {
+    await api("/saved/" + encodeURIComponent(savedId), { method: "DELETE" });
+    toast("saved search deleted", "ok");
+  } catch (err) {
+    toast("delete failed: " + err.message, "err");
+  } finally {
+    void loadSavedView();
+  }
+}
+
 // ── Settings ──────────────────────────────────────────────────
 let settingsReady = false;
 let engineSchemaCache = null;
@@ -3625,6 +3778,7 @@ function buildCommands(query = "") {
     { kind: "nav", icon: "▱", label: "Go to Pipeline",  do: () => navigate("jobs") },
     { kind: "nav", icon: "⟳", label: "Go to Tail",      do: () => navigate("tail") },
     { kind: "nav", icon: "△", label: "Go to Alerts",    do: () => navigate("alerts") },
+    { kind: "nav", icon: "★", label: "Go to Saved searches", do: () => navigate("saved") },
     { kind: "nav", icon: "⚙", label: "Go to Settings",  do: () => navigate("settings") },
     { kind: "action", icon: "▶", label: "Start tail",   do: async () => { await api("/tail/start", { method: "POST", body: "{}" }); toast("tail started", "ok"); void refreshDashboard(); } },
     { kind: "action", icon: "■", label: "Pause tail",   do: async () => { await api("/tail/stop", { method: "POST", body: "{}" }); toast("tail paused", "ok"); void refreshDashboard(); } },
@@ -3695,8 +3849,8 @@ document.addEventListener("keydown", (e) => {
       setTimeout(() => $("#caps-search").focus(), 80);
     }
   }
-  // Number shortcuts 1..8 for routes (when not typing)
-  if (/^[1-8]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+  // Number shortcuts 1..9 for routes (when not typing)
+  if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
     const tag = (document.activeElement?.tagName || "").toLowerCase();
     if (tag !== "input" && tag !== "textarea" && tag !== "select") {
       navigate(ROUTES[parseInt(e.key, 10) - 1]);
@@ -3761,6 +3915,51 @@ $("#caps-unique")?.addEventListener("change", () => {
 $("#caps-prev")?.addEventListener("click", () => { caps.offset = Math.max(0, caps.offset - caps.limit); loadCaptures(false); });
 $("#caps-next")?.addEventListener("click", () => { caps.offset += caps.limit; loadCaptures(false); });
 $("#jobs-refresh")?.addEventListener("click", () => loadJobs());
+
+// Saved-search bookmarking from the captures search bar.
+$("#saved-save-btn")?.addEventListener("click", () => {
+  if (!$("#caps-search").value.trim()) { toast("type a query first", "err"); return; }
+  const control = $("#saved-save-control");
+  if (control) control.hidden = false;
+  const name = $("#saved-save-name");
+  if (name) name.focus();
+});
+$("#saved-save-cancel")?.addEventListener("click", () => {
+  const control = $("#saved-save-control");
+  if (control) control.hidden = true;
+  const name = $("#saved-save-name");
+  if (name) name.value = "";
+});
+$("#saved-save-ok")?.addEventListener("click", () => void saveCurrentSearch());
+$("#saved-save-name")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); void saveCurrentSearch(); }
+  if (e.key === "Escape") { $("#saved-save-cancel")?.click(); }
+});
+
+async function saveCurrentSearch() {
+  const name = ($("#saved-save-name").value || "").trim();
+  if (!name) { toast("name is required", "err"); return; }
+  const query = $("#caps-search").value.trim();
+  if (!query) { toast("type a query first", "err"); return; }
+  const body = {
+    name,
+    query,
+    mode: ($("#caps-mode")?.value || "auto").trim().toLowerCase(),
+    fields: "title,text",
+    limit: caps.limit,
+  };
+  const btn = $("#saved-save-ok");
+  if (btn) btn.disabled = true;
+  try {
+    await api("/saved", { method: "POST", body: JSON.stringify(body) });
+    toast(`saved "${name}"`, "ok");
+    $("#saved-save-cancel")?.click();
+  } catch (err) {
+    toast("save failed: " + err.message, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 
 // Work / career search
 $("#work-search-btn")?.addEventListener("click", () => runWorkSearch());

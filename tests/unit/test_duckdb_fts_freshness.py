@@ -3,7 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from awareness.storage.duckdb_index import DuckDbIndex
+
+
+@pytest.fixture(autouse=True)
+def _disable_fts_coalescing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """W25: this test exercises the FTS *rebuild* after a content swap at the
+    same row count — disable the coalescing window so the rebuild happens on
+    the next search instead of being deferred."""
+    monkeypatch.setattr("awareness.storage.duckdb_index._FTS_COALESCE_WINDOW_SECONDS", 0.0)
 
 # Mirror the production 29-field schema (same as test_search_matching.py)
 _FULL_KEYS = (

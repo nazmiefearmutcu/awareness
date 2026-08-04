@@ -19,11 +19,11 @@ def test_spa_alerts_route_registered() -> None:
         line for line in app_js.splitlines() if line.startswith("const ROUTES")
     )
     assert '"alerts"' in route_line
-    # Ordering: alerts between analytics and settings (nav order == shortcut order).
-    assert '"analytics", "alerts", "settings"' in route_line
+    # Ordering: alerts between analytics and saved (nav order == shortcut order).
+    assert '"analytics", "alerts", "saved", "settings"' in route_line
     assert "if (route === \"alerts\") void initAlerts();" in app_js
-    # Number shortcuts cover the new 7th route (settings now 8).
-    assert "/^[1-8]$/" in app_js
+    # Number shortcuts cover the new 9th route (settings now 9).
+    assert "/^[1-9]$/" in app_js
 
 
 def test_spa_alerts_view_marks_lazy_load() -> None:
@@ -75,13 +75,13 @@ def test_spa_alerts_html_section_and_nav() -> None:
     assert 'id="title-alerts"' in html
     assert 'data-route="alerts"' in html
     assert "Alerts" in html
-    # Shortcuts renumbered: alerts = 7, settings = 8.
+    # Shortcuts renumbered: alerts = 7, saved = 8, settings = 9.
     alerts_nav = html[html.index('data-route="alerts"'):]
     alerts_nav = alerts_nav[: alerts_nav.index("</button>")]
     assert '<span class="nav-shortcut">7</span>' in alerts_nav
     settings_nav = html[html.index('data-route="settings"'):]
     settings_nav = settings_nav[: settings_nav.index("</button>")]
-    assert '<span class="nav-shortcut">8</span>' in settings_nav
+    assert '<span class="nav-shortcut">9</span>' in settings_nav
 
 
 def test_spa_alerts_static_markup() -> None:

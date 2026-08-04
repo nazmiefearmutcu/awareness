@@ -275,6 +275,16 @@ DEFAULT_SEARCH_MAX_RESULTS = 200
 # exact metadata mtime fingerprint.
 _REMOTE_SIGNATURE_BUCKET_SECONDS = 300
 
+# W25: FTS inverted-index rebuild coalescing window (seconds). After a write
+# batch refreshes the views, the FTS index is stale but the materialized
+# ``captures`` table already serves the new rows — so searches inside this
+# window fall back to the table-backed prefix/substring path instead of paying
+# a full ``PRAGMA create_fts_index`` (~7.5s @100k) on the first post-write
+# search. The first search after the window elapses rebuilds once; later write
+# batches inside the window reset it, coalescing N batches into ONE rebuild.
+# Set to 0.0 to disable (tests pinning immediate rebuilds do exactly that).
+_FTS_COALESCE_WINDOW_SECONDS = 30.0
+
 
 def _collapse_key(row: dict[str, Any]) -> str:
     """Key used to fold near/exact-duplicate search hits into one result.
@@ -501,6 +511,19 @@ class DuckDbIndex:
         # this, every query paid a full view-refresh (~150ms over a few JSONL
         # chunks); steady-state queries are now bound by the query itself.
         self._views_signature: tuple[Any, ...] | None = None
+        # W25: dir-mtime guard cached together with the signature it was
+        # computed from. Both are committed only on a successful refresh so a
+        # failed refresh (M-02) never short-circuits the retry.
+        self._signature_guard: tuple[Any, ...] | None = None
+        # Observability / tests: how the corpus was materialized.
+        self._materialize_full_builds: int = 0
+        self._materialize_delta_applies: int = 0
+        # W25: FTS coalescing — monotonic timestamp of the last successful
+        # views refresh; searches inside ``_fts_coalesce_window`` defer the
+        # inverted-index rebuild and use the prefix/substring fallback.
+        self._fts_dirty_since: float | None = None
+        self._fts_coalesce_window: float = _FTS_COALESCE_WINDOW_SECONDS
+        self._fts_coalesced_skips: int = 0
         # M-01: staging view build state — "ok" | "ok_empty" |
         # "fallback_ignore_errors" | "fallback_per_file" | "failed". Surfaced in
         # health_snapshot so a corrupt chunk is visible even when queries work.
@@ -649,8 +672,66 @@ class DuckDbIndex:
                 globs.append(str(d / "*.jsonl.gz"))
         return globs
 
-    def _source_signature(self) -> tuple[Any, ...]:
-        """Cheap fingerprint of the on-disk corpus (JSONL chunks + Iceberg metadata).
+    def _captures_dir_summary(self) -> tuple[Any, ...]:
+        """Cheap directory-mtime fingerprint of the JSONL partition tree.
+
+        The writer only commits chunks via atomic rename inside
+        ``captures/YYYY/MM/DD/`` (jsonl.py), which bumps that day dir's mtime;
+        adding/removing a chunk bumps it too. So a (root, year, month, day)
+        dir-mtime walk detects every add/remove/rename the per-file signature
+        cares about without stat-ing the JSONL files themselves (~95 stats at
+        100k docs vs ~1,081 file stats). The iceberg metadata dir mtime is
+        included for the same reason.
+        """
+        captures_root = self._jsonl_dir / "captures"
+        out: list[tuple[Any, ...]] = []
+        try:
+            if captures_root.is_dir():
+                out.append(("R", captures_root.stat().st_mtime_ns))
+                for year in sorted(captures_root.iterdir()):
+                    if not year.is_dir():
+                        continue
+                    out.append(("Y", year.name, year.stat().st_mtime_ns))
+                    for month in sorted(year.iterdir()):
+                        if not month.is_dir():
+                            continue
+                        out.append(("M", year.name, month.name, month.stat().st_mtime_ns))
+                        for day in sorted(month.iterdir()):
+                            if not day.is_dir():
+                                continue
+                            out.append(("D", year.name, month.name, day.name, day.stat().st_mtime_ns))
+        except OSError:
+            pass
+        wh = self._iceberg_warehouse
+        if wh and not str(wh).startswith(("s3://", "s3a://", "gs://", "gcs://")):
+            meta_dir = Path(wh).resolve() / "awareness" / "captures" / "metadata"
+            try:
+                if meta_dir.is_dir():
+                    out.append(("I", meta_dir.stat().st_mtime_ns))
+            except OSError:
+                pass
+        return tuple(out)
+
+    def _source_signature(self) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+        """Fingerprint of the on-disk corpus, guarded by a cheap dir-mtime check.
+
+        Returns ``(signature, guard)``. When the guard is unchanged since the
+        last committed signature, the previous signature is returned without
+        the per-file walk (~92ms @100k — 16% of a warm search). Callers commit
+        BOTH together, so a failed refresh never caches a guard without its
+        matching signature (the M-02 retry stays intact).
+        """
+        guard = self._captures_dir_summary()
+        if (
+            self._views_signature is not None
+            and self._signature_guard is not None
+            and guard == self._signature_guard
+        ):
+            return self._views_signature, self._signature_guard
+        return self._walk_source_signature(), guard
+
+    def _walk_source_signature(self) -> tuple[Any, ...]:
+        """Per-file fingerprint of the on-disk corpus (JSONL chunks + Iceberg metadata).
 
         Per-file path + mtime_ns + size so content replacement at the same
         path (or same row count) still invalidates views and FTS. Iceberg
@@ -698,20 +779,33 @@ class DuckDbIndex:
     def _refresh_views_if_stale(self, conn: duckdb.DuckDBPyConnection) -> None:
         """Rebuild views only when the source-file signature changed.
 
-        On a failed refresh (M-02) the signature is left untouched so the next
-        call retries instead of caching a broken view state.
+        On a failed refresh (M-02) neither the signature nor its dir-mtime
+        guard is committed, so the next call retries instead of caching a
+        broken view state. A successful refresh marks FTS dirty so the
+        coalescing window (W25) can defer the inverted-index rebuild.
         """
-        sig = self._source_signature()
+        sig, guard = self._source_signature()
         if sig != self._views_signature:
-            if self._refresh_views(conn):
+            if self._refresh_views(conn, new_sig=sig):
                 self._views_signature = sig
+                self._signature_guard = guard
+                self._fts_dirty_since = time.monotonic()
 
-    def _refresh_views(self, conn: duckdb.DuckDBPyConnection) -> bool:
+    def _refresh_views(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        new_sig: tuple[Any, ...] | None = None,
+    ) -> bool:
         """(Re)build the staging/iceberg views + captures_materialized; True on success.
 
         The deduped union is materialized into a real table
         (``captures_materialized``) so every query runs against indexed table
         storage instead of re-parsing JSONL chunks per query.
+
+        *new_sig* is the freshly computed source signature; when available it
+        lets :meth:`_materialize_captures` take the incremental delta path for
+        pure-additions instead of a full-table rebuild (W25).
 
         M-01: a single corrupt JSONL chunk must not brick every query — the
         staging view falls back to tolerant reads (ignore_errors) and then to
@@ -890,7 +984,13 @@ class DuckDbIndex:
             # captures view below reads the table so queries never re-parse
             # JSONL. from_union=True covers the iceberg union branch (dedup
             # across staging + iceberg rows), False the staging-only branch.
-            if not self._materialize_captures(conn, from_union=iceberg_ok, row_number_proj=row_number_proj):
+            if not self._materialize_captures(
+                conn,
+                from_union=iceberg_ok,
+                row_number_proj=row_number_proj,
+                prev_sig=self._views_signature,
+                new_sig=new_sig,
+            ):
                 # M-02: the union/materialize step failed (e.g. iceberg
                 # projection drift). Leave a staging-only fallback captures
                 # view so queries still work, and return False so the caller
@@ -917,6 +1017,8 @@ class DuckDbIndex:
         *,
         from_union: bool,
         row_number_proj: str | None = None,
+        prev_sig: tuple[Any, ...] | None = None,
+        new_sig: tuple[Any, ...] | None = None,
     ) -> bool:
         """(Re)build ``captures_materialized`` and the ``captures`` view over it.
 
@@ -933,8 +1035,25 @@ class DuckDbIndex:
         branch, dedup across staging + Iceberg); ``from_union=False``
         materializes from ``staging_captures_raw`` (staging-only, including
         the M-01 corrupt-chunk fallbacks and the empty-corpus case).
+
+        W25 incremental path: when the previous signature (``prev_sig``) and
+        the freshly walked one (``new_sig``) are both known, a pure-addition
+        batch is delta-INSERTed into the existing table instead of a
+        full ``CREATE OR REPLACE TABLE`` (~2.4s @100k → ~50ms). Any ambiguity
+        — chunk removal, overlapping capture_id with changed content, Iceberg
+        union, NULL capture_ids — falls back to the full rebuild below.
         """
         try:
+            if (
+                not from_union
+                and row_number_proj is not None
+                and prev_sig is not None
+                and new_sig is not None
+                and self._main_table_exists(conn, "captures_materialized")
+                and self._try_delta_materialize(conn, prev_sig=prev_sig, new_sig=new_sig)
+            ):
+                return True
+            self._materialize_full_builds += 1
             if from_union:
                 conn.execute(
                     """
@@ -970,10 +1089,138 @@ class DuckDbIndex:
             logger.warning("duckdb_captures_materialize_failed", err=str(exc))
             return False
 
+    def _try_delta_materialize(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        *,
+        prev_sig: tuple[Any, ...],
+        new_sig: tuple[Any, ...],
+    ) -> bool:
+        """Incrementally append a pure-addition batch into ``captures_materialized``.
+
+        W25: instead of ``CREATE OR REPLACE TABLE`` over the whole corpus on
+        every write batch (~2.4s @100k), diff the old/new per-file
+        signatures and only scan the changed files:
+
+        * any REMOVED chunk → ``False`` (deletions need a tombstone the
+          materialized table does not keep — full rebuild required);
+        * any changed/new file whose rows overlap existing capture_ids with
+          a different ``content_hash``/``fetch_ts``/``title``/``text``, or any
+          NULL capture_id row → ``False`` (the ROW_NUMBER dedup could pick a
+          different winner than the row already in the table — full rebuild);
+        * otherwise the batch is PURE ADDITION: INSERT only the deduped new
+          rows (identical ROW_NUMBER semantics to the full path), scanning
+          just the changed files.
+
+        ``captures_materialized`` must already exist with the canonical
+        29-column projection (checked by the caller). Returns True on
+        success; False on any ambiguity/error so the caller falls back to
+        the full rebuild. The temporary delta view is dropped afterwards so
+        the persisted DuckDB file stays free of scratch views.
+        """
+        ok = False
+        try:
+            old_files = {str(p): (int(m), int(s)) for p, m, s in prev_sig[0]}
+            new_files = {str(p): (int(m), int(s)) for p, m, s in new_sig[0]}
+            removed = any(p not in new_files for p in old_files)
+            if not removed:
+                changed = [p for p in new_files if old_files.get(p) != new_files[p]]
+                if not changed:
+                    ok = True
+                else:
+                    ok = self._delta_insert_changed_files(conn, changed)
+        except duckdb.Error:
+            ok = False
+        finally:
+            try:
+                conn.execute("DROP VIEW IF EXISTS staging_captures_delta")
+            except duckdb.Error:
+                pass
+        return ok
+
+    def _delta_insert_changed_files(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        changed: list[str],
+    ) -> bool:
+        """Insert the deduped new rows from *changed* chunk paths.
+
+        Scans only the changed files (bounded by the write batch, not the
+        corpus), applies the canonical projection + ROW_NUMBER dedup (the
+        same semantics as the full rebuild), and rejects the delta — by
+        returning False — when any row overlaps an existing capture_id with
+        different content or carries a NULL capture_id.
+        """
+        glob_list = ", ".join(f"'{g}'" for g in changed)
+        try:
+            conn.execute(  # nosemgrep
+                f"""
+                CREATE OR REPLACE VIEW staging_captures_delta AS
+                SELECT *
+                FROM read_json_auto([{glob_list}], union_by_name=true, ignore_errors=true);
+                """  # noqa: S608
+            )
+        except duckdb.Error:
+            return False
+        present = {str(r[0]) for r in conn.execute("DESCRIBE staging_captures_delta").fetchall()}
+        delta_proj = _staging_projection(present)
+        null_row = conn.execute(
+            "SELECT COUNT(*) FROM staging_captures_delta WHERE capture_id IS NULL"
+        ).fetchone()
+        if null_row is not None and int(null_row[0]) > 0:
+            return False
+        conflict = conn.execute(  # nosemgrep
+            f"""
+            SELECT COUNT(*) FROM (
+              SELECT s.capture_id
+              FROM (
+                SELECT {delta_proj}
+                FROM staging_captures_delta
+              ) s
+              JOIN captures_materialized m ON m.capture_id = s.capture_id
+              WHERE (m.content_hash IS NOT DISTINCT FROM s.content_hash) = FALSE
+                 OR (m.fetch_ts IS NOT DISTINCT FROM s.fetch_ts) = FALSE
+                 OR (m.title IS NOT DISTINCT FROM s.title) = FALSE
+                 OR (m.text IS NOT DISTINCT FROM s.text) = FALSE
+            ) c
+            """  # noqa: S608
+        ).fetchone()
+        if conflict is not None and int(conflict[0]) > 0:
+            return False
+        conn.execute(  # nosemgrep
+            f"""
+            INSERT INTO captures_materialized
+            SELECT * EXCLUDE (rn) FROM (
+                SELECT
+                  {delta_proj},
+                  ROW_NUMBER() OVER (
+                    PARTITION BY capture_id ORDER BY fetch_ts DESC, capture_id ASC
+                  ) AS rn
+                FROM staging_captures_delta
+            ) WHERE rn = 1
+              AND capture_id NOT IN (
+                SELECT capture_id FROM captures_materialized WHERE capture_id IS NOT NULL
+              );
+            """  # noqa: S608
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS captures_materialized_capture_id "
+            "ON captures_materialized (capture_id)"
+        )
+        conn.execute("CREATE OR REPLACE VIEW captures AS SELECT * FROM captures_materialized;")
+        # Backwards-compat alias.
+        conn.execute("CREATE OR REPLACE VIEW staging_captures AS SELECT * FROM captures;")
+        self._materialize_delta_applies += 1
+        logger.info("duckdb_captures_materialized_delta", added=len(changed))
+        return True
+
     def refresh(self) -> None:
         with self._lock, self._connection_context() as conn:
-            if self._refresh_views(conn):
-                self._views_signature = self._source_signature()
+            sig, guard = self._source_signature()
+            if self._refresh_views(conn, new_sig=sig):
+                self._views_signature = sig
+                self._signature_guard = guard
+                self._fts_dirty_since = time.monotonic()
 
     def execute(self, sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         with self._lock, self._connection_context() as conn:
@@ -1107,6 +1354,8 @@ class DuckDbIndex:
     def _mark_fts_ready(self, count: int) -> None:
         self._fts_built_for_count = count
         self._fts_built_signature = self._views_signature
+        # FTS is now current — no longer dirty, so no coalescing deferral.
+        self._fts_dirty_since = None
         # captures_idx content changed → drop stale BM25F length cache.
         self._bm25_avg_lengths = None
         self._bm25_avg_lengths_signature = None
@@ -1280,6 +1529,15 @@ class DuckDbIndex:
           delta into ``captures_idx`` then recreate the FTS index (no full
           rematerialize from JSONL).
 
+        W25 coalescing: after a write batch the FTS index is stale but the
+        materialized ``captures`` table already serves the new rows. When a
+        *previously built* index exists and the corpus changed within the
+        ``_fts_coalesce_window``, the expensive inverted-index rebuild is
+        deferred and False is returned so the caller uses the prefix/substring
+        fallback — the next write batch resets the window, coalescing N
+        batches into one rebuild. The first search after the window elapses
+        pays exactly one rebuild; subsequent searches are warm.
+
         Returns True if FTS is ready to use.
         """
         if not self._fts_available:
@@ -1287,18 +1545,32 @@ class DuckDbIndex:
         # Fast path: the source files are unchanged since we last built the
         # index, so skip the COUNT(*) probe (which scans the JSON-backed view).
         if self._fts_built_signature is not None and self._fts_built_signature == self._views_signature:
+            self._fts_dirty_since = None
             return True
+        # W25: a previously built index is stale for the new corpus — defer the
+        # rebuild while we are inside the coalescing window. Never defers for a
+        # never-built index (cold path must restore/build immediately).
+        if (
+            self._fts_built_signature is not None
+            and self._fts_dirty_since is not None
+            and self._fts_coalesce_window > 0
+            and (time.monotonic() - self._fts_dirty_since) < self._fts_coalesce_window
+        ):
+            self._fts_coalesced_skips += 1
+            logger.info(
+                "duckdb_fts_coalesced",
+                window_seconds=round(self._fts_coalesce_window, 3),
+            )
+            return False
         # Process-restart / cold open: reuse on-disk FTS if fingerprint matches.
         if self._try_restore_persisted_fts(conn):
             return True
-        # Current corpus size.
+        # Current corpus size (0 on any query error → no FTS to build).
         try:
             row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
-            if not row:
-                return False
-            count = int(row[0])
+            count = int(row[0]) if row else 0
         except duckdb.Error:
-            return False
+            count = 0
         if count == 0:
             return False
         # Pure growth: delta-INSERT then rebuild inverted index only.

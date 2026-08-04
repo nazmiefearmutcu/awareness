@@ -53,7 +53,6 @@ from awareness.dedup.engine import DEFAULT_NEAR_THRESHOLD
 from awareness.obs.logging import configure_logging, get_logger
 from awareness.obs.metrics import get_metrics
 from awareness.planner.planner import Planner
-from awareness.savedsearch.store import SavedSearchStore
 from awareness.schemas.doc import SourceKind
 from awareness.schemas.jobs import BackfillRequest
 from awareness.storage.duckdb_index import DuckDbIndex
@@ -73,7 +72,6 @@ dedup_app = typer.Typer(no_args_is_help=True, help="Deduplication inspection & c
 dlq_app = typer.Typer(no_args_is_help=True, help="Dead-letter queue: inspect failed tasks")
 alerts_app = typer.Typer(no_args_is_help=True, help="Alert rules: keyword/spike thresholds + webhooks")
 x_app = typer.Typer(no_args_is_help=True, help="X scraper sessions: create, list, inspect")
-saved_app = typer.Typer(no_args_is_help=True, help="Saved searches: bookmark queries, list, re-run")
 
 app.add_typer(backfill_app, name="backfill")
 app.add_typer(tail_app, name="tail")
@@ -84,7 +82,6 @@ app.add_typer(dedup_app, name="dedup")
 app.add_typer(dlq_app, name="dlq")
 app.add_typer(alerts_app, name="alerts")
 app.add_typer(x_app, name="x")
-app.add_typer(saved_app, name="saved")
 
 # Wire the alert-rule CLI (created by the alerts feature team) into the app.
 from awareness.alerts import cli as _alerts_cli  # noqa: E402
@@ -121,151 +118,6 @@ def alerts_run_once() -> None:
         )
     else:
         console.print("No alert firings.")
-
-
-# ── saved searches ────────────────────────────────────────────────────────
-def _saved_store() -> SavedSearchStore:
-    """SavedSearchStore at ``<data_dir>/saved_searches.db``."""
-    settings = get_settings()
-    assert settings.data_dir is not None
-    return SavedSearchStore(settings.data_dir / "saved_searches.db")
-
-
-@saved_app.command(name="list")
-def saved_list() -> None:
-    """List all saved searches (pinned first, then most recently run)."""
-    store = _saved_store()
-    try:
-        saved = store.list()
-    finally:
-        store.close()
-    if not saved:
-        console.print("No saved searches.")
-        return
-    table = Table(title="Saved searches")
-    for col in ("ID", "Name", "Query", "Mode", "Fields", "Limit", "Pinned", "Updated"):
-        table.add_column(col)
-    for s in saved:
-        table.add_row(
-            s.id,
-            s.name,
-            s.query,
-            s.mode,
-            s.fields,
-            str(s.limit),
-            "yes" if s.pinned else "no",
-            s.updated_at.isoformat(timespec="minutes"),
-        )
-    console.print(table)
-
-
-@saved_app.command(name="add")
-def saved_add(
-    name: str = typer.Argument(..., help="Name for the saved search"),
-    query: str = typer.Argument(..., help="Search query to bookmark"),
-    mode: str = typer.Option(
-        "auto", "--mode", "-m", help="Match mode: auto | fts | prefix | substring"
-    ),
-    fields: str = typer.Option(
-        "title,text", "--fields", "-f", help="Comma-list of columns to match"
-    ),
-    limit: int = typer.Option(10, "--limit", "-l", help="Results per run"),
-) -> None:
-    """Save a search for later re-runs."""
-    store = _saved_store()
-    try:
-        try:
-            saved = store.create(name=name, query=query, mode=mode, fields=fields, limit=limit)
-        except ValueError as exc:
-            console.print(f"[red]invalid saved search: {exc}[/red]")
-            raise typer.Exit(code=2) from exc
-    finally:
-        store.close()
-    console.print(
-        f"Saved search [bold cyan]{saved.name}[/bold cyan] ({saved.id}) "
-        f"mode={saved.mode} limit={saved.limit}"
-    )
-
-
-@saved_app.command(name="rm")
-def saved_rm(saved_id: str = typer.Argument(..., help="Saved search id to delete")) -> None:
-    """Delete a saved search by id."""
-    store = _saved_store()
-    try:
-        deleted = store.delete(saved_id)
-    finally:
-        store.close()
-    if not deleted:
-        console.print(f"[yellow]No saved search with id {saved_id}[/yellow]")
-        raise typer.Exit(code=2)
-    console.print(f"Deleted saved search {saved_id}")
-
-
-@saved_app.command(name="run")
-def saved_run(
-    saved_id: str = typer.Argument(..., help="Saved search id to run"),
-    limit: int = typer.Option(0, "--limit", "-l", help="Results per page (0 = saved limit)"),
-) -> None:
-    """Run a saved search against the corpus and print results (rich table).
-
-    Mirrors the non-interactive ``search`` output; bumps the saved search's
-    ``updated_at`` as a last-run marker.
-    """
-    settings = get_settings()
-    store = _saved_store()
-    idx = DuckDbIndex(
-        db_path=settings.duckdb_path(),
-        jsonl_dir=settings.staging_jsonl_dir(),
-        iceberg_warehouse=settings.iceberg_warehouse,
-    )
-    try:
-        saved = store.get(saved_id)
-        if saved is None:
-            console.print(f"[yellow]No saved search with id {saved_id}[/yellow]")
-            raise typer.Exit(code=2)
-        res_limit = limit if limit > 0 else saved.limit
-        fields = [f.strip().lower() for f in saved.fields.split(",") if f.strip()]
-        try:
-            res = idx.search(
-                saved.query,
-                limit=res_limit,
-                offset=0,
-                mode=saved.mode,
-                fields=fields,
-            )
-        except RuntimeError as exc:
-            console.print(f"[yellow]index not ready: {exc}[/yellow]")
-            raise typer.Exit(code=2) from exc
-        store.touch(saved.id)
-    finally:
-        idx.close()
-        store.close()
-
-    total = res["total"]
-    rows = res["rows"]
-    ranked = res["ranked"]
-    used_mode = res.get("mode", saved.mode)
-    rprint(
-        f"[bold cyan]Saved search:[/bold cyan] '{saved.name}' — '{saved.query}' "
-        f"(Found {total} documents, showing top {len(rows)}, "
-        f"Mode: {used_mode}, Ranked: {ranked})"
-    )
-    rprint("-" * 80)
-    if total == 0:
-        rprint(f"[yellow]No documents matched query '{saved.query}'.[/yellow]")
-        return
-    for r in rows:
-        title = r["title"] or "No Title"
-        score_str = f" [score: {r['score']:.4f}]" if r["score"] is not None else ""
-        highlighted_title = highlight_tokens(title, saved.query)
-        rprint(f"[bold white]• {highlighted_title}[/bold white]{score_str}")
-        rprint(
-            f"  [dim]Domain: {r['domain'] or 'N/A'} | Captured: {r['fetch_ts']} | Source: {r['source_type'] or 'N/A'}[/dim]"
-        )
-        if r.get("snippet"):
-            highlighted_snippet = highlight_tokens(r["snippet"], saved.query)
-            rprint(f'  [italic]"{highlighted_snippet}"[/italic]')
-        rprint()
 
 logger = get_logger("cli")
 console = Console(theme=banner.AWARENESS_THEME)
@@ -4024,91 +3876,6 @@ def x_create(  # noqa: PLR0917 - spec-mandated option surface
     session = asyncio.run(_x_with_store(lambda store: store.create_session(request, query)))
     rprint(f"[green]session created[/green] id={session.session_id} status={session.status}")
     rprint(f"query: {session.query}")
-
-
-@x_app.command(name="simulate")
-def x_simulate(
-    session_id: str = typer.Argument(..., help="Session id to simulate tweets for"),
-    count: int = typer.Option(20, "--count", min=1, max=200, help="Number of tweets to generate"),
-    seed: int | None = typer.Option(None, "--seed", help="RNG seed for deterministic output"),
-) -> None:
-    """Generate simulated tweets for a session (deterministic per seed)."""
-    from awareness.xscraper.simulate import simulate_session  # noqa: PLC0415
-
-    async def _sim(store):
-        inserted = await simulate_session(store, session_id, n_tweets=count, seed=seed)
-        session = await store.get_session(session_id)
-        return inserted, session
-
-    try:
-        inserted, session = asyncio.run(_x_with_store(_sim))
-    except KeyError:
-        rprint(f"[red]session {session_id!r} not found[/red]")
-        raise typer.Exit(code=2) from None
-    total = session.backfill_tweets + session.stream_tweets
-    rprint(f"[green]simulated {inserted} tweets[/green] for session {session_id}")
-    rprint(f"total tweets: {total}")
-
-
-@x_app.command(name="analyze")
-def x_analyze(
-    session_id: str = typer.Argument(..., help="Session id to analyze"),
-) -> None:
-    """Analyze captured tweets for a session (authors, terms, sentiment)."""
-    from awareness.xscraper.analyze import analyze_session  # noqa: PLC0415
-
-    async def _ana(store):
-        return await analyze_session(store, session_id)
-
-    try:
-        analysis = asyncio.run(_x_with_store(_ana))
-    except KeyError:
-        rprint(f"[red]session {session_id!r} not found[/red]")
-        raise typer.Exit(code=2) from None
-
-    console.print(
-        f"[bold cyan]Analysis[/bold cyan] {session_id} — "
-        f"{analysis['tweet_count']} tweets"
-    )
-    sentiment = analysis["sentiment"]
-    sentiment_table = Table(title=f"Sentiment ({analysis['tweet_count']} tweets)")
-    sentiment_table.add_column("Class")
-    sentiment_table.add_column("Count", justify="right")
-    sentiment_table.add_row("positive", str(sentiment["positive"]))
-    sentiment_table.add_row("negative", str(sentiment["negative"]))
-    sentiment_table.add_row("neutral", str(sentiment["neutral"]))
-    sentiment_table.add_row("avg score", f"{sentiment['avg_score']:.4f}")
-    console.print(sentiment_table)
-
-    authors_table = Table(title="Top authors")
-    authors_table.add_column("Username", style=banner.C_HI)
-    authors_table.add_column("Count", justify="right")
-    for author in analysis["authors"]:
-        authors_table.add_row(f"@{author['username']}", str(author["count"]))
-    console.print(authors_table)
-
-    terms_table = Table(title="Top terms")
-    terms_table.add_column("Term", style=banner.C_HI)
-    terms_table.add_column("Count", justify="right")
-    for term in analysis["top_terms"]:
-        terms_table.add_row(term["term"], str(term["count"]))
-    console.print(terms_table)
-
-    timeline_table = Table(title="Timeline")
-    timeline_table.add_column("Date", style=banner.C_DIM)
-    timeline_table.add_column("Count", justify="right")
-    for day in analysis["timeline"]:
-        timeline_table.add_row(day["date"], str(day["count"]))
-    console.print(timeline_table)
-
-    engagement = analysis["engagement"]
-    engagement_table = Table(title="Engagement")
-    engagement_table.add_column("Metric")
-    engagement_table.add_column("Value", justify="right")
-    engagement_table.add_row("total likes", f"{engagement['total_likes']:,}")
-    engagement_table.add_row("total retweets", f"{engagement['total_retweets']:,}")
-    engagement_table.add_row("avg likes", f"{engagement['avg_likes']:.2f}")
-    console.print(engagement_table)
 
 
 @app.command()

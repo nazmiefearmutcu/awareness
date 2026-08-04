@@ -11,7 +11,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from awareness.storage.duckdb_index import DuckDbIndex
+
+
+@pytest.fixture(autouse=True)
+def _disable_fts_coalescing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """W25: these tests pin the immediate-rebuild FTS behavior (the H-10
+    content-change check must force a full rebuild on the next search). The
+    coalescing window would defer the rebuild — disable it (window 0)."""
+    monkeypatch.setattr("awareness.storage.duckdb_index._FTS_COALESCE_WINDOW_SECONDS", 0.0)
 
 _FULL_KEYS = (
     "doc_id", "capture_id", "parent_doc_or_dup_group", "source_type",

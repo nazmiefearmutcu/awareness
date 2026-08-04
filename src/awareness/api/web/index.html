@@ -80,10 +80,15 @@
         <span class="nav-label">Alerts</span>
         <span class="nav-shortcut">7</span>
       </button>
+      <button class="nav-item" data-route="saved">
+        <span class="nav-icon" aria-hidden="true">★</span>
+        <span class="nav-label">Saved</span>
+        <span class="nav-shortcut">8</span>
+      </button>
       <button class="nav-item" data-route="settings">
         <span class="nav-icon" aria-hidden="true">⚙</span>
         <span class="nav-label">Settings</span>
-        <span class="nav-shortcut">8</span>
+        <span class="nav-shortcut">9</span>
       </button>
     </nav>
 
@@ -396,6 +401,12 @@
         <span class="searchbar-icon" aria-hidden="true">⌕</span>
         <input id="caps-search" type="search" placeholder="Search title or text…" aria-label="Search captures" />
         <kbd class="kbd-inline">/</kbd>
+        <span class="saved-save-control" id="saved-save-control" hidden>
+          <input id="saved-save-name" type="text" placeholder="Name this search…" aria-label="Name for saved search" autocomplete="off" />
+          <button type="button" class="btn btn-ghost" id="saved-save-ok">Save</button>
+          <button type="button" class="btn btn-link" id="saved-save-cancel">Cancel</button>
+        </span>
+        <button type="button" class="btn btn-ghost saved-save-btn" id="saved-save-btn" title="Bookmark the current query">★ Save</button>
       </div>
       <div class="caps-facets" id="caps-facets" hidden aria-label="Matching domains, sources, and languages"></div>
 
@@ -962,6 +973,27 @@
             <tbody id="al-firings-body"></tbody>
           </table>
         </div>
+      </section>
+    </section>
+
+    <!-- SAVED SEARCHES -->
+    <section class="view view-saved" data-view="saved" aria-labelledby="title-saved" hidden>
+      <header class="view-head">
+        <div class="view-head-text">
+          <h1 class="page-title" id="title-saved">Saved searches</h1>
+          <p class="lede">Bookmarked queries — one click to re-run against the corpus.</p>
+        </div>
+        <button type="button" class="btn btn-ghost" id="sv-refresh">Refresh</button>
+      </header>
+
+      <div class="saved-list" id="saved-list" aria-label="Saved searches"></div>
+
+      <section class="band sv-run-band" aria-labelledby="sv-run-title" hidden>
+        <div class="band-head">
+          <h2 class="band-title" id="sv-run-title">Results</h2>
+          <span class="saved-run-meta" id="saved-run-meta" aria-live="polite">—</span>
+        </div>
+        <ol class="caps-list" id="saved-run-list" aria-label="Saved search results" tabindex="0"></ol>
       </section>
     </section>
 

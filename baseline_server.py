@@ -344,7 +344,7 @@ def query_captures_list(
     }
 
 
-def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
+def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(level=settings.log_level, json=settings.log_json, log_dir=settings.log_dir)
 
@@ -410,7 +410,6 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
                     _alert_store_instance.close()
                 except Exception as exc:
                     logger.warning("alerts_store_close_failed", error=str(exc))
-            _close_saved_store()
             _close_index()
             # Drain process-wide pooled httpx clients so sockets/TLS sessions
             # do not leak across uvicorn reloads / process exit.
@@ -1014,8 +1013,6 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
     from awareness.entities.router import create_entities_router
     from awareness.gdeltx.router import create_gdeltx_router
     from awareness.origin.router import create_origin_router
-    from awareness.savedsearch.router import create_savedsearch_router  # noqa: PLC0415
-    from awareness.savedsearch.store import SavedSearchStore  # noqa: PLC0415
     from awareness.sentiment.router import create_sentiment_router
     from awareness.sourceintel.router import router as sourceintel_router
 
@@ -1038,27 +1035,7 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
             _alert_store_instance = AlertStore(settings.data_dir / "alerts.db")
         return _alert_store_instance
 
-    # Process-wide SavedSearchStore: one SQLite connection for the app lifetime,
-    # closed on shutdown (same pattern as the AlertStore above).
-    _saved_store_instance: SavedSearchStore | None = None
-
-    def _saved_store() -> SavedSearchStore:
-        nonlocal _saved_store_instance
-        if _saved_store_instance is None:
-            _saved_store_instance = SavedSearchStore(
-                settings.data_dir / "saved_searches.db"
-            )
-        return _saved_store_instance
-
-    def _close_saved_store() -> None:
-        if _saved_store_instance is not None:
-            try:
-                _saved_store_instance.close()
-            except Exception as exc:
-                logger.warning("saved_store_close_failed", error=str(exc))
-
     app.include_router(create_alerts_router(_get_index, _alert_store))
-    app.include_router(create_savedsearch_router(_saved_store, _get_index))
     wire(app)
 
     # ── static dashboard ─────────────────────────────────────────────────

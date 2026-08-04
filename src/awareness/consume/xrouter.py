@@ -10,6 +10,8 @@ Endpoints:
     GET  /x/sessions/{id}       — one session
     GET  /x/sessions/{id}/tweets — tweets for a session
     POST /x/sessions            — create a session from a SearchRequest dict
+    POST /x/sessions/{id}/simulate — generate simulated tweets (clamped 1..200)
+    GET  /x/sessions/{id}/analysis — aggregated analysis of captured tweets
 """
 
 from __future__ import annotations
@@ -34,6 +36,8 @@ from awareness.consume.xbridge import (
 from awareness.consume.xbridge import (
     list_sessions as bridge_list_sessions,
 )
+from awareness.xscraper.analyze import analyze_session
+from awareness.xscraper.simulate import simulate_session
 from awareness.xscraper.store import SessionStore
 
 router = APIRouter(prefix="/x", tags=["x"])
@@ -134,3 +138,34 @@ async def create_x_session(body: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(400, f"invalid search request: {exc}") from exc
     return session.model_dump(mode="json")
+
+
+@router.post("/sessions/{session_id}/simulate")
+async def simulate_x_session(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Generate simulated tweets for a session (deterministic per seed).
+
+    Body: ``{"n_tweets": 20}`` — clamped to ``1..200``. Returns the number of
+    newly inserted rows plus the session's total tweet count.
+    """
+    store = await _get_store()
+    session = await bridge_get_session(store, session_id)
+    if session is None:
+        raise HTTPException(404, f"session {session_id!r} not found")
+    raw = body.get("n_tweets", 20)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise HTTPException(400, "n_tweets must be an integer")
+    n_tweets = max(1, min(int(raw), 200))
+    inserted = await simulate_session(store, session_id, n_tweets=n_tweets)
+    updated = await bridge_get_session(store, session_id)
+    total = (updated.backfill_tweets + updated.stream_tweets) if updated is not None else 0
+    return {"session_id": session_id, "inserted": inserted, "total": total}
+
+
+@router.get("/sessions/{session_id}/analysis")
+async def analyze_x_session(session_id: str) -> dict[str, Any]:
+    """Return aggregated analysis for a session's captured tweets."""
+    store = await _get_store()
+    session = await bridge_get_session(store, session_id)
+    if session is None:
+        raise HTTPException(404, f"session {session_id!r} not found")
+    return await analyze_session(store, session_id)

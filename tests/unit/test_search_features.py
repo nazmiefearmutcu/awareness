@@ -27,6 +27,14 @@ _FULL_KEYS = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _disable_fts_coalescing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """W25: FTS-memoization tests write between searches and assert the
+    post-rebuild state (avg-length memo re-keyed to the new signature).
+    The coalescing window would defer that rebuild — disable it (window 0)."""
+    monkeypatch.setattr("awareness.storage.duckdb_index._FTS_COALESCE_WINDOW_SECONDS", 0.0)
+
+
 def _write_doc(root: Path, idx: int, *, title: str, text: str, domain: str = "example.com") -> None:
     day = root / "captures" / "2026" / "06" / "01"
     day.mkdir(parents=True, exist_ok=True)
