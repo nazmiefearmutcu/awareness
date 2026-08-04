@@ -105,11 +105,17 @@ class AlertRunner:
         firings = await asyncio.to_thread(engine.evaluate_rules)
         store = getattr(engine, "_store", None)
         for firing in firings:
-            url: str | None = None
-            if store is not None:
-                rule = store.get_rule(firing.rule_id)
-                url = rule.webhook_url if rule is not None else None
-            if url:
+            if store is None:
+                continue
+            rule = store.get_rule(firing.rule_id)
+            if rule is None:
+                continue
+            # Deliver to EVERY configured webhook (the legacy single
+            # webhook_url is only a fallback when the list is empty).
+            webhooks = list(rule.webhooks)
+            if not webhooks and rule.webhook_url:
+                webhooks = [rule.webhook_url]
+            for url in webhooks:
                 await deliver_webhook(url, firing)
         return firings
 

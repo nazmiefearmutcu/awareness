@@ -62,7 +62,10 @@ def test_engine_two_near_dups_share_parent(tmp_path: Path) -> None:
     db.init()
     eng = DedupEngine(db, near_threshold=24)
 
-    base = " ".join(["the quick brown fox jumps over the lazy dog"] * 50)
+    # W19 content-diversity guard: short docs (<=200 unique tokens) only
+    # merge on exact token-set agreement, so the near-dup base must be
+    # vocabulary-rich (>200 unique tokens) for the long-doc path.
+    base = " ".join(f"climate report token number {i} from the regional desk" for i in range(230))
     near_b = base + " extra trailing words to nudge the simhash a bit"
     near_c = base + " more different trailing phrase for second near dup"
 
@@ -98,7 +101,10 @@ def test_related_near_dup_children_share_union_find_parent(tmp_path: Path) -> No
     db.init()
     eng = DedupEngine(db, near_threshold=24)
 
-    base = " ".join(["the quick brown fox jumps over the lazy dog"] * 50)
+    # W19 content-diversity guard: short docs (<=200 unique tokens) only
+    # merge on exact token-set agreement, so the near-dup base must be
+    # vocabulary-rich (>200 unique tokens) for the long-doc path.
+    base = " ".join(f"climate report token number {i} from the regional desk" for i in range(230))
     near_b = base + " extra trailing words to nudge the simhash a bit"
     near_c = base + " more different trailing phrase for second near dup"
 
@@ -157,7 +163,7 @@ def test_related_near_dup_children_share_union_find_parent(tmp_path: Path) -> No
         assert c.capture_id not in ids_from_c
 
         # Search collapse: all three share union-find root → one unique hit.
-        res = idx.search("quick brown fox", mode="substring")
+        res = idx.search("climate report token", mode="substring")
         assert res["total"] == 1
         assert len(res["rows"]) == 1
         assert res["rows"][0]["parent_doc_or_dup_group"] == root

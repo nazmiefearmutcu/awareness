@@ -328,7 +328,9 @@ def stage_analytics(root: Path) -> dict[str, Any]:
 
 
 def _build_app():
-    server._State.index = None
+    # _close_index() BOTH closes the index and clears the singleton — it must
+    # run first; nulling _State.index beforehand would make it a no-op and
+    # leak an open connection in DuckDbIndex._instances.
     server._close_index()
     return server.create_app()
 
@@ -405,7 +407,17 @@ def stage_alerts(root: Path) -> dict[str, Any]:
 def stage_digest(root: Path) -> dict[str, Any]:
     """generate_digest totals > 0 and the markdown mentions the corpus term."""
     idx = _open_index()
-    digest = generate_digest(idx, days=7)
+    # The harness must never depend on the live GDELT API: stub the bridge so
+    # the digest's optional GDELT context degrades to "unavailable" and the
+    # stage stays deterministic offline.
+    from awareness.gdeltx.engine import GdeltBridge  # noqa: PLC0415
+
+    _original_gdelt_query = GdeltBridge.gdelt_query
+    GdeltBridge.gdelt_query = lambda self, term, start, end, granularity="day": []
+    try:
+        digest = generate_digest(idx, days=7)
+    finally:
+        GdeltBridge.gdelt_query = _original_gdelt_query
     _check(int(digest.total_captures) > 0, "digest total_captures == 0")
     md = render_digest_markdown(digest)
     _check(CORPUS_TERM in md.lower(), f"digest markdown missing corpus term {CORPUS_TERM!r}")

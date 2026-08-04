@@ -180,6 +180,11 @@ class AlertStore:
             raise ValueError(f"unknown rule fields: {sorted(unknown)}")
         merged = {k: v for k, v in existing.model_dump().items() if k in allowed}
         merged.update(patch)
+        # The legacy ``webhook_url`` mirror column must follow the canonical
+        # ``webhooks`` list: a patched list (even an empty one, which clears
+        # the mirror) wins over the stale value from the existing row.
+        if "webhooks" in patch:
+            merged["webhook_url"] = patch["webhooks"][0] if patch["webhooks"] else None
         validated = AlertRuleCreate(**merged)
         now = _utcnow()
         with self._lock:
@@ -237,14 +242,18 @@ class AlertStore:
         extra fields such as ``id`` / ``created_at`` from an export dump are
         ignored.
         """
-        created = 0
-        skipped = 0
+        # Validate EVERY entry before ANY write so a bad rule mid-list cannot
+        # leave a partial import behind (all-or-nothing semantics).
+        payloads: list[AlertRuleCreate] = []
         for raw in rules:
             try:
-                payload = AlertRuleCreate.model_validate(raw)
+                payloads.append(AlertRuleCreate.model_validate(raw))
             except ValidationError as exc:
                 name = raw.get("name") if isinstance(raw, dict) else "<unknown>"
                 raise ValueError(f"invalid rule {name!r}: {exc}") from exc
+        created = 0
+        skipped = 0
+        for payload in payloads:
             existing = self._get_rule_by_name(payload.name)
             if existing is not None and not replace:
                 skipped += 1

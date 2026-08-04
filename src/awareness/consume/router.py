@@ -124,20 +124,30 @@ async def export_dataset(body: ExportRequest) -> dict[str, Any]:
 
 @router.get("/digest")
 async def digest_json(days: int = Query(default=7)) -> Digest:
-    """JSON digest for the last *days* of captures (bounded to 1..365)."""
+    """JSON digest for the last *days* of captures (bounded to 1..365).
+
+    GDELT context is skipped here (``include_gdelt=False``): the bridge can
+    take seconds against the live GDELT API, so the dashboard endpoint stays
+    fast and offline-safe. The CLI ``awareness digest`` command uses the
+    ``include_gdelt=True`` default for interactive reports.
+    """
     if not (1 <= days <= MAX_DIGEST_DAYS):
         raise HTTPException(400, f"days must be in [1, {MAX_DIGEST_DAYS}]")
     index = _require_index()
-    return await asyncio.to_thread(generate_digest, index, days=days)
+    return await asyncio.to_thread(generate_digest, index, days=days, include_gdelt=False)
 
 
 @router.get("/digest/markdown")
 async def digest_markdown(days: int = Query(default=7)) -> PlainTextResponse:
-    """Markdown render of the digest (text/markdown)."""
+    """Markdown render of the digest (text/markdown).
+
+    Like ``/consume/digest``, GDELT context is skipped to keep the endpoint
+    snappy and offline-safe; the CLI enables it via the default.
+    """
     if not (1 <= days <= MAX_DIGEST_DAYS):
         raise HTTPException(400, f"days must be in [1, {MAX_DIGEST_DAYS}]")
     index = _require_index()
-    digest = await asyncio.to_thread(generate_digest, index, days=days)
+    digest = await asyncio.to_thread(generate_digest, index, days=days, include_gdelt=False)
     return PlainTextResponse(render_digest_markdown(digest), media_type="text/markdown")
 
 

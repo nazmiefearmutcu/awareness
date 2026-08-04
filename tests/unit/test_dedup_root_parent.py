@@ -48,7 +48,10 @@ def test_exact_dup_parent_is_uf_root(tmp_path: Path) -> None:
     db.init()
     eng = DedupEngine(db, near_threshold=24)
 
-    base = " ".join(["the quick brown fox jumps over the lazy dog"] * 50)
+    # W19 content-diversity guard: short docs (<=200 unique tokens) only
+    # merge on exact token-set agreement, so the near-dup base must be
+    # vocabulary-rich (>200 unique tokens) for the long-doc path.
+    base = " ".join(f"climate report token number {i} from the regional desk" for i in range(230))
     near = base + " extra trailing words to nudge the simhash a bit"
 
     x = _make_cap("https://orig.test/doc", base, observed_str="2024-01-01T00:00:00+00:00")
@@ -78,7 +81,10 @@ def test_revision_parent_is_uf_root(tmp_path: Path) -> None:
     db.init()
     eng = DedupEngine(db, near_threshold=24)
 
-    base = " ".join(["the quick brown fox jumps over the lazy dog"] * 50)
+    # W19 content-diversity guard: short docs (<=200 unique tokens) only
+    # merge on exact token-set agreement, so the near-dup base must be
+    # vocabulary-rich (>200 unique tokens) for the long-doc path.
+    base = " ".join(f"climate report token number {i} from the regional desk" for i in range(230))
     near = base + " extra trailing words to nudge the simhash a bit"
 
     x = _make_cap("https://orig.test/doc", base, observed_str="2024-01-01T00:00:00+00:00")

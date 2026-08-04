@@ -9,6 +9,11 @@ Design principles (per spec):
   NEW still land for provenance.
 - ``parent_doc_or_dup_group`` is set so downstream queries can fold captures
   into canonical docs (``WHERE doc_id = parent_doc_or_dup_group``).
+- W19 content-diversity guard: a band candidate only merges when its stored
+  token-set sketch agrees with the new doc's within bounds (see
+  :data:`NEAR_DUP_MAX_TOKEN_COUNT_RATIO` / :data:`NEAR_DUP_SHORT_DOC_MAX_TOKENS`),
+  so distinct articles sharing template/boilerplate text cannot collapse
+  into one dup group.
 - Decision space:
     * NEW            — first time we see this content_hash
     * REVISION       — same canonical URL re-fetched, same content
@@ -24,10 +29,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+import xxhash
+
 from awareness.obs.logging import get_logger
 from awareness.schemas.doc import DocCapture
 from awareness.storage.state import StateDB
-from awareness.util.hashing import hamming64, hamming128, simhash128
+from awareness.util.hashing import hamming64, hamming128, normalize_for_hash, simhash128
 
 logger = get_logger("dedup")
 
@@ -56,6 +63,71 @@ TIGHT_NEAR_STORE_THRESHOLD = 12
 
 # Low 64-bit mask used to compare legacy 64-bit candidate signatures (M-23).
 _MASK64 = (1 << 64) - 1
+
+# W19 boilerplate foot-gun: the simhash near-dup band lookup is a *retrieval*
+# step, but merging on Hamming ≤ DEFAULT_NEAR_THRESHOLD alone lets DISTINCT
+# articles that share template/boilerplate text (a repeated filler sentence)
+# collapse into ONE parent_doc_or_dup_group → search collapse returns 1 row
+# instead of N, and export dedupe folds them. Reproduced with 4 distinct
+# climate docs sharing a footer: Hamming 15-24, all merged into one cluster.
+#
+# The content-diversity guard gates the merge using the token-set sketch
+# (``token_hash`` = xxh3_64 of the sorted unique tokens, ``token_count`` =
+# unique-token count) stored on the candidate's dedup_near rows:
+#   * both sketches known:
+#       - |count_a - count_b| / max(count_a, count_b) must be ≤
+#         NEAR_DUP_MAX_TOKEN_COUNT_RATIO (true near-dups of one article have
+#         near-identical vocabularies; boilerplate-only overlaps do not);
+#       - when BOTH docs are 'short' (≤ NEAR_DUP_SHORT_DOC_MAX_TOKENS unique
+#         tokens) the token_hash must match exactly — boilerplate dominates
+#         short docs, so a genuine near-dup of a short doc is a near-identical
+#         copy, while distinct short articles sharing a filler sentence have
+#         different token sets by construction.
+#   * legacy rows (NULL sketch) → 'unknown' → merge by Hamming only (old
+#     behavior).
+# Long docs skip the exact-match requirement: boilerplate is a small fraction
+# of a large article, so Hamming ≤ threshold + the count-ratio bound is
+# sufficient there (rephrased long articles still merge).
+NEAR_DUP_MAX_TOKEN_COUNT_RATIO = 0.5
+NEAR_DUP_SHORT_DOC_MAX_TOKENS = 200
+
+
+def token_set_fingerprint(text: str | None) -> tuple[int | None, int | None]:
+    """Return the W19 token-set sketch ``(token_hash, token_count)`` for *text*.
+
+    ``token_hash`` is xxh3_64 (converted to a signed 64-bit int for the BIGINT
+    columns) over the sorted unique tokens of the normalized text; NULL when
+    the text tokenizes to nothing. Used by the content-diversity guard at
+    index write time and compared against the candidate's stored sketch at
+    merge time.
+    """
+    tokens = normalize_for_hash(text or "").split()
+    if not tokens:
+        return None, None
+    uniq = sorted(set(tokens))
+    raw = xxhash.xxh3_64_intdigest(" ".join(uniq))
+    if raw >= (1 << 63):
+        raw -= 1 << 64
+    return raw, len(uniq)
+
+
+def _content_guard_allows_merge(
+    cap_tokens: tuple[int | None, int | None],
+    cand_token_hash: int | None,
+    cand_token_count: int | None,
+) -> bool:
+    """W19 content-diversity gate: may ``cap`` merge into ``candidate``'s cluster?"""
+    if cand_token_hash is None or cand_token_count is None:
+        return True  # legacy/unknown sketch → old behavior
+    cap_hash, cap_count = cap_tokens
+    if cap_hash is None or cap_count is None:
+        return True  # new doc has no token set — nothing to compare
+    ratio = abs(cap_count - cand_token_count) / max(cap_count, cand_token_count)
+    if ratio > NEAR_DUP_MAX_TOKEN_COUNT_RATIO:
+        return False
+    if cap_count <= NEAR_DUP_SHORT_DOC_MAX_TOKENS and cand_token_count <= NEAR_DUP_SHORT_DOC_MAX_TOKENS:
+        return cap_hash == cand_token_hash
+    return True
 
 
 class DedupDecision(str, Enum):
@@ -137,10 +209,15 @@ class DedupEngine:
         # detection signature is computed from the document text (the durable
         # ``near_dup_hash`` stays a 64-bit provenance fingerprint).
         sig = simhash128(cap.text) if cap.text else 0
+        cap_tokens = token_set_fingerprint(cap.text)
+        cap_token_hash, cap_token_count = cap_tokens
         if sig > 0:
             best_doc: str | None = None
             best_dist: int = 129
-            for other_doc_id, other_sig in self._state.find_near_dup_candidates(sig):
+            best_cand_sketch: tuple[int | None, int | None] = (None, None)
+            for other_doc_id, other_sig, cand_token_hash, cand_token_count in (
+                self._state.find_near_dup_candidate_rows(sig)
+            ):
                 if other_doc_id == cap.doc_id:
                     continue
                 # M-23: legacy 64-bit candidates (sig_hex NULL rows) carry only
@@ -154,10 +231,17 @@ class DedupEngine:
                 if dist < best_dist:
                     best_dist = dist
                     best_doc = other_doc_id
-            if best_doc is not None and best_dist <= self._near_threshold:
+                    best_cand_sketch = (cand_token_hash, cand_token_count)
+            if (
+                best_doc is not None
+                and best_dist <= self._near_threshold
+                and _content_guard_allows_merge(cap_tokens, *best_cand_sketch)
+            ):
                 root = self._state.uf_union(cap.doc_id, best_doc)
                 cap.parent_doc_or_dup_group = root
-                self._state.add_near_dup_index(cap.doc_id, sig)
+                self._state.add_near_dup_index(
+                    cap.doc_id, sig, token_hash=cap_token_hash, token_count=cap_token_count
+                )
                 return DedupOutcome(
                     decision=DedupDecision.NEAR_DUP,
                     dup_group=root,
@@ -167,7 +251,9 @@ class DedupEngine:
 
         # Step 3: brand new canonical doc.
         if sig > 0:
-            self._state.add_near_dup_index(cap.doc_id, sig)
+            self._state.add_near_dup_index(
+                cap.doc_id, sig, token_hash=cap_token_hash, token_count=cap_token_count
+            )
         root = self._state.uf_union(cap.doc_id, cap.doc_id)
         cap.parent_doc_or_dup_group = root
         return DedupOutcome(decision=DedupDecision.NEW, dup_group=root, reason="new_content")

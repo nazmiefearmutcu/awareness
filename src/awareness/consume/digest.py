@@ -15,6 +15,7 @@ recent N captures by timestamp, tie-broken by ``capture_id``) so a very hot
 from __future__ import annotations
 
 import itertools
+import logging
 import re
 from collections import Counter
 from collections.abc import Iterable
@@ -125,6 +126,7 @@ class Digest(BaseModel):
     top_entities: list[_TermCount] = Field(default_factory=list)
     sample_titles: list[str] = Field(default_factory=list)
     languages: list[_TermCount] = Field(default_factory=list)
+    gdelt_note: str | None = None
 
 
 def _tokenize(text: str) -> Iterable[str]:
@@ -177,16 +179,58 @@ def _count_terms(sample: list[dict[str, Any]]) -> tuple[Counter[str], Counter[st
     return term_counts, bigram_counts
 
 
+def _gdelt_summary(index: DuckDbIndex, days: int, term: str) -> str | None:
+    """Best-effort one-line GDELT context for *term* (None on any failure).
+
+    The GDELT bridge is imported lazily so this module stays importable
+    without httpx/numpy. The digest window is clamped to the bridge's own
+    ``MAX_WINDOW_DAYS`` cap. Any failure (import error, network, validation)
+    degrades to ``None`` — GDELT context must never fail the digest.
+
+    The bridge's own ``gdeltx.engine`` logger is silenced for the call: this
+    is background enrichment, the digest reports GDELT availability itself
+    (``gdelt_note``), and the engine's warnings can destabilize callers that
+    mix CLI output with logging (see the CLI digest tests).
+    """
+    engine_logger = logging.getLogger("gdeltx.engine")
+    prev_level = engine_logger.level
+    engine_logger.setLevel(logging.CRITICAL)
+    try:
+        from awareness.gdeltx.engine import MAX_WINDOW_DAYS, GdeltBridge  # noqa: PLC0415
+
+        bridge = GdeltBridge(index)
+        comparison = bridge.compare_with_local(term, window_days=min(days, MAX_WINDOW_DAYS))
+    except Exception as exc:  # best-effort; never fail the digest
+        logger.debug("digest_gdelt_unavailable", term=term, err=str(exc))
+        return None
+    finally:
+        engine_logger.setLevel(prev_level)
+    return (
+        f"GDELT: {comparison.term} local {comparison.local_count} "
+        f"vs external {comparison.gdelt_count} (r={comparison.correlation_r:.2f})"
+    )
+
+
 def generate_digest(
     index: DuckDbIndex,
     days: int = 7,
     title: str | None = None,
+    *,
+    include_gdelt: bool = True,
 ) -> Digest:
     """Compute a digest over the last *days* of captures.
 
     The current window is ``[now - days, now]``; the previous window is the
     equal-length period immediately before it. ``growth_rate`` is
     ``this / previous - 1`` and ``None`` when there is no previous data.
+
+    When *include_gdelt* is true (default) and the window has top terms, the
+    digest carries a one-line ``gdelt_note`` comparing local volume with
+    external GDELT volume for the top term. The bridge call is best-effort:
+    GDELT being offline (or unavailable) only clears the note — the digest
+    itself never fails and never blocks on the bridge beyond its own
+    internal 10s timeout. Callers that must stay offline/snappy (the API
+    digest endpoint) pass ``include_gdelt=False``.
 
     An empty corpus yields a digest with zeros and empty lists (never raises).
     """
@@ -248,6 +292,8 @@ def generate_digest(
         sample_titles=sample_titles,
         languages=languages,
     )
+    if include_gdelt and digest.top_terms:
+        digest.gdelt_note = _gdelt_summary(index, bounded_days, digest.top_terms[0].term)
     logger.info(
         "digest_generated",
         title=digest.title,
@@ -255,6 +301,7 @@ def generate_digest(
         total_captures=total,
         previous_captures=previous,
         growth_rate=growth,
+        gdelt_note=digest.gdelt_note,
     )
     return digest
 
@@ -319,6 +366,9 @@ def _growth_note(digest: Digest) -> list[str]:
         )
     else:
         lines.append(f"Capture volume was flat versus the previous {digest.days}-day window.")
+    if digest.gdelt_note:
+        lines.append("")
+        lines.append(digest.gdelt_note)
     return lines
 
 

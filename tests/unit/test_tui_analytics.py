@@ -69,9 +69,15 @@ def _write_doc(
 
 
 def _corpus(tmp_project: Path) -> None:
-    """Tiny corpus: 'bitcoin' dominant; 'market'/'rally' also above min_count."""
+    """Tiny corpus: 'bitcoin' dominant; 'market'/'rally' also above min_count.
+
+    Doc timestamps are anchored to noon UTC: the spike assertion needs all
+    three bitcoin docs in ONE day bucket, and now-1h/now-2h would straddle
+    the midnight UTC boundary whenever the suite runs between 00:00-02:00
+    UTC (docs split across days → no 3-count day → no spike mark).
+    """
     root = tmp_project / "data" / "jsonl"
-    now = datetime.now(UTC)
+    now = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
     _write_doc(
         root, 1, ts=now - timedelta(hours=2),
         title="Bitcoin hits record", text="market rally bitcoin surge",

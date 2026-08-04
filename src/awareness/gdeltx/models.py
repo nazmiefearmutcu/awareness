@@ -51,7 +51,9 @@ class GapReport(BaseModel):
     ``ratio`` is ``local_count / gdelt_count`` (``0.0`` when GDELT reported
     nothing); ``gap`` is True when GDELT says the story is big (high
     ``gdelt_count``) while local capture is near-zero (``ratio < 0.1``) —
-    the "you are missing this story" signal.
+    the "you are missing this story" signal. ``truncated`` is True when any
+    day in the window hit GDELT's 250-record cap (the counts are then a
+    floor), and ``note`` carries the human-readable reason when set.
     """
 
     term: str
@@ -59,6 +61,8 @@ class GapReport(BaseModel):
     gdelt_count: int
     ratio: float
     gap: bool
+    truncated: bool = False
+    note: str | None = None
 
 
 # ── request models ───────────────────────────────────────────────────────────

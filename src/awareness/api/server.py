@@ -225,6 +225,20 @@ def _get_index() -> DuckDbIndex:
         return _State.index
 
 
+def _warmup_index() -> None:
+    """Warm the search index at startup (W19).
+
+    Runs health_snapshot() so the FIRST /healthz probe reports index_ready=True
+    instead of a lazy cold-start False (health_snapshot connects + refreshes
+    views). Acceptable one-time cost at startup; failure only warns — the
+    index rebuilds lazily on the next request.
+    """
+    try:
+        _get_index().health_snapshot()
+    except Exception as exc:
+        logger.warning("index_warmup_failed", error=str(exc))
+
+
 def _close_index() -> None:
     """Close and clear the process-wide DuckDbIndex under the index lock.
 
@@ -352,6 +366,10 @@ def create_app() -> FastAPI:
         _State.state = state
         _State.planner = Planner(state)
         _State.tail = TailEngine(state, _State.planner)
+
+        # W19: warm the search index so the first /healthz probe reports
+        # index_ready=True instead of a lazy cold-start False.
+        _warmup_index()
 
         reaper = None
         if settings.reaper_enabled:

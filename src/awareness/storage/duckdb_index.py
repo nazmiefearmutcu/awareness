@@ -1730,7 +1730,15 @@ class DuckDbIndex:
                         else:
                             idf_threshold_used = threshold
                             valid_terms = [st for st in stemmed_terms if term_idfs.get(st, 0.0) >= threshold]
-                            if len(valid_terms) < len(stemmed_terms):
+                            if not valid_terms:
+                                # Never drop every term — fall back to the full
+                                # query and report NO pruning: the fallback is
+                                # not a drop, so neither the diagnostics nor
+                                # the operator warning may claim one.
+                                valid_terms = list(stemmed_terms)
+                                idf_dropped = []
+                                idf_threshold_used = None
+                            elif len(valid_terms) < len(stemmed_terms):
                                 dropped = [st for st in stemmed_terms if term_idfs.get(st, 0.0) < threshold]
                                 idf_dropped = list(dropped)
                                 logger.warning(
@@ -1739,9 +1747,6 @@ class DuckDbIndex:
                                     threshold=threshold,
                                     query=query,
                                 )
-                            # Never drop every term — fall back to the full query.
-                            if not valid_terms:
-                                valid_terms = list(stemmed_terms)
                         idf_kept = list(valid_terms)
 
                         # Build BM25F SQL using FTS join tables

@@ -113,7 +113,12 @@ class AlertRuleCreate(BaseModel):
 
     @model_validator(mode="after")
     def _seed_webhooks(self) -> AlertRuleCreate:
-        if not self.webhooks and self.webhook_url:
+        # Keep the deprecated mirror column in sync with the canonical list:
+        # a non-empty ``webhooks`` always wins (``webhook_url`` reflects
+        # ``webhooks[0]``), and an empty list clears the mirror.
+        if self.webhooks:
+            self.webhook_url = self.webhooks[0]
+        elif self.webhook_url:
             self.webhooks = [self.webhook_url]
         return self
 

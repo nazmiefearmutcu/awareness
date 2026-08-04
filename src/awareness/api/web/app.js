@@ -2597,6 +2597,58 @@ async function analyzeTerm() {
   } catch (err) { toast("analytics failed: " + err.message, "err"); }
 }
 
+// ── GDELT comparison band ────────────────────────────────────
+// Reuses the term-frequency band's term + window inputs; the bridge clamps
+// window_days to its own 60-day API cap (the term-frequency select goes to 90).
+
+/** One-line stats for the GDELT comparison. Pure — no DOM. */
+function gdeltStatsText(comparison) {
+  const rRaw = comparison.correlation_r;
+  const rText = rRaw == null || !Number.isFinite(Number(rRaw)) ? "—" : Number(rRaw).toFixed(2);
+  const parts = [
+    "local " + (comparison.local_count ?? 0),
+    "GDELT " + (comparison.gdelt_count ?? 0),
+    "r " + rText,
+  ];
+  const note = String(comparison.note || "").trim();
+  if (note) parts.push(note);
+  return parts.join(" · ");
+}
+
+/** Render the compare payload: two side-by-side bar charts + stats line.
+ *  When GDELT returned no series (API unavailable) the external chart is
+ *  replaced by a dim notice and the backend note is shown verbatim. */
+function renderGdeltComparison(comparison) {
+  const localBox = $("#an-gdelt-local");
+  const extBox = $("#an-gdelt-ext");
+  const stats = $("#an-gdelt-stats");
+  if (!localBox || !extBox || !stats) return;
+  renderBarChart(localBox, comparison.local_series || []);
+  const extSeries = comparison.gdelt_series || [];
+  extBox.textContent = "";
+  if (extSeries.length) {
+    renderBarChart(extBox, extSeries, { color: "var(--gdelt, #c9a227)" });
+  } else {
+    extBox.appendChild(el("span", { class: "an-gdelt-offline", text: "GDELT unavailable" }));
+  }
+  stats.textContent = "";
+  stats.appendChild(document.createTextNode(gdeltStatsText(comparison)));
+}
+
+async function compareWithGdelt() {
+  const term = ($("#an-term-input").value || "").trim();
+  if (!term) { toast("enter a term first", "err"); return; }
+  const windowDays = Number($("#an-term-window").value) || 14;
+  const gdeltDays = Math.min(windowDays, 60); // /gdelt/compare caps at 60
+  const btn = $("#an-gdelt-go");
+  if (btn) btn.disabled = true;
+  try {
+    const comparison = await api(`/gdelt/compare?term=${encodeURIComponent(term)}&window_days=${gdeltDays}`);
+    renderGdeltComparison(comparison);
+  } catch (err) { toast("gdelt compare failed: " + err.message, "err"); }
+  finally { if (btn) btn.disabled = false; }
+}
+
 async function loadCoOccurring() {
   const term = ($("#an-co-input").value || "").trim();
   if (!term) { toast("enter a term first", "err"); return; }
@@ -2613,6 +2665,8 @@ async function initAnalytics() {
   const coBtn = $("#an-co-go");
   goBtn.addEventListener("click", analyzeTerm);
   $("#an-term-input").addEventListener("keydown", (e) => { if (e.key === "Enter") analyzeTerm(); });
+  const gdeltBtn = $("#an-gdelt-go");
+  if (gdeltBtn) gdeltBtn.addEventListener("click", compareWithGdelt);
   coBtn.addEventListener("click", loadCoOccurring);
   $("#an-co-input").addEventListener("keydown", (e) => { if (e.key === "Enter") loadCoOccurring(); });
   const netBtn = $("#an-entity-build");

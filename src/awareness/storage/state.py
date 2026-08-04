@@ -50,23 +50,28 @@ def _utcnow() -> datetime:
 
 
 def _verify_dedup_schema(inspector: Any) -> None:
-    """Raise if the dedup_near table exists but lacks the sig_hex column.
+    """Raise if the dedup_near table exists but lacks a required column.
 
-    The migration in init() adds sig_hex to legacy tables; if that ALTER
+    The migration in init() adds sig_hex (and the W19 token-set sketch
+    columns token_hash/token_count) to legacy tables; if those ALTERs
     silently failed (locked/partial/read-only DB), surface it loudly here
-    instead of deferring to a confusing 'no such column: sig_hex' on every
+    instead of deferring to a confusing 'no such column: ...' on every
     later dedup write.
     """
     try:
         cols = [c["name"] for c in inspector.get_columns("dedup_near")]
     except Exception:
         cols = []
-    if cols and "sig_hex" not in cols:
-        raise RuntimeError(
-            "dedup_near.sig_hex is missing after migration — the DB may be "
-            "read-only, locked, or partially migrated; near-dup indexing "
-            "would fail. Fix or recreate the state DB."
-        )
+    if cols:
+        missing = [c for c in ("sig_hex", "token_hash", "token_count") if c not in cols]
+        if missing:
+            raise RuntimeError(
+                "dedup_near is missing column(s) "
+                + ", ".join(missing)
+                + " after migration — the DB may be read-only, locked, or "
+                "partially migrated; near-dup indexing would fail. Fix or "
+                "recreate the state DB."
+            )
 
 
 class Base(DeclarativeBase):
@@ -141,6 +146,14 @@ class DedupNearRow(Base):
     ``sig_hex`` holds the full 128-bit signature (32 hex chars); the legacy
     ``near_dup_hash`` int column is retained, nullable, for backward
     compatibility with indexes written before the 128-bit upgrade.
+
+    ``token_hash`` / ``token_count`` are the W19 token-set sketch: a 64-bit
+    xxh3 hash (stored signed) over the sorted unique tokens of the
+    normalized text plus the unique-token count. Written by the dedup engine
+    at index time and read back by the content-diversity guard so two
+    DISTINCT articles sharing only template/boilerplate text do not merge
+    into one dup group. Legacy rows (NULL sketch) are treated as 'unknown'
+    and merge by Hamming distance alone (old behavior).
     """
 
     __tablename__ = "dedup_near"
@@ -148,6 +161,8 @@ class DedupNearRow(Base):
     doc_id: Mapped[str] = mapped_column(String, index=True)
     sig_hex: Mapped[str | None] = mapped_column(String, nullable=True)
     near_dup_hash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # legacy 64-bit signed
+    token_hash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # W19 token-set sketch
+    token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)  # W19 unique-token count
     seg: Mapped[int] = mapped_column(Integer, index=True)
     seg_value: Mapped[int] = mapped_column(Integer, index=True)
     __table_args__ = (UniqueConstraint("doc_id", "seg", name="uq_dedup_near"),)
@@ -353,6 +368,14 @@ class StateDB:
                     if near_cols and "sig_hex" not in near_cols:
                         with self._engine.begin() as conn:
                             conn.execute(text("ALTER TABLE dedup_near ADD COLUMN sig_hex VARCHAR"))
+                    # W19: token-set sketch columns for the content-diversity
+                    # guard (mirror the sig_hex pattern; NULL rows = legacy).
+                    if near_cols and "token_hash" not in near_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE dedup_near ADD COLUMN token_hash BIGINT"))
+                    if near_cols and "token_count" not in near_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE dedup_near ADD COLUMN token_count INTEGER"))
                     try:
                         tail_cols = [c["name"] for c in inspector.get_columns("tail_state")]
                     except Exception:
@@ -420,6 +443,15 @@ class StateDB:
                     if near_cols and "sig_hex" not in near_cols:
                         with self._engine.begin() as conn:
                             conn.execute(text("ALTER TABLE dedup_near ADD COLUMN sig_hex VARCHAR"))
+                    # W19: mirror the SQLite branch — the token-set sketch columns
+                    # must exist on Postgres too or the content-diversity guard's
+                    # SELECT fails on legacy DBs.
+                    if near_cols and "token_hash" not in near_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE dedup_near ADD COLUMN token_hash BIGINT"))
+                    if near_cols and "token_count" not in near_cols:
+                        with self._engine.begin() as conn:
+                            conn.execute(text("ALTER TABLE dedup_near ADD COLUMN token_count INTEGER"))
                     # W6C-bug1: mirror the SQLite branch — legacy Postgres DLQs
                     # must carry the uq_dlq_task unique index for add_dlq()'s
                     # ON CONFLICT (task_id) DO NOTHING to dedupe concurrent
@@ -1153,11 +1185,22 @@ class StateDB:
             "for an unpersisted row"
         )
 
-    def add_near_dup_index(self, doc_id: str, simhash_unsigned: int) -> None:
+    def add_near_dup_index(
+        self,
+        doc_id: str,
+        simhash_unsigned: int,
+        *,
+        token_hash: int | None = None,
+        token_count: int | None = None,
+    ) -> None:
         """Insert band rows for a 128-bit signature (one per data band).
 
         All bands for the doc are upserted in ONE transaction / commit (M-21) —
         previously each band committed separately (32 commits per doc).
+
+        ``token_hash`` / ``token_count`` are the W19 token-set sketch used by
+        the content-diversity guard; None stores NULL (legacy rows, treated as
+        'unknown' → merge by Hamming alone).
         """
         if simhash_unsigned <= 0:
             return
@@ -1177,7 +1220,10 @@ class StateDB:
         for _attempt in range(3):
             with self.session() as s:
                 try:
-                    self._upsert_band_rows(s, doc_id, sig_hex, legacy_hash, bands)
+                    self._upsert_band_rows(
+                        s, doc_id, sig_hex, legacy_hash, bands,
+                        token_hash=token_hash, token_count=token_count,
+                    )
                     s.commit()
                     return
                 except IntegrityError:
@@ -1188,7 +1234,10 @@ class StateDB:
                     continue
         # Persistent conflict (3 tries) — last resort: merge rows one commit.
         with self.session() as s:
-            self._upsert_band_rows(s, doc_id, sig_hex, legacy_hash, bands, ignore_existing=True)
+            self._upsert_band_rows(
+                s, doc_id, sig_hex, legacy_hash, bands, ignore_existing=True,
+                token_hash=token_hash, token_count=token_count,
+            )
             s.commit()
 
     @staticmethod
@@ -1200,6 +1249,8 @@ class StateDB:
         bands: list[int],
         *,
         ignore_existing: bool = False,
+        token_hash: int | None = None,
+        token_count: int | None = None,
     ) -> None:
         """Upsert ``(seg, seg_value)`` band rows for ``doc_id`` in one pass.
 
@@ -1222,6 +1273,8 @@ class StateDB:
                         doc_id=doc_id,
                         sig_hex=sig_hex,
                         near_dup_hash=legacy_hash,
+                        token_hash=token_hash,
+                        token_count=token_count,
                         seg=seg,
                         seg_value=value,
                     )
@@ -1229,6 +1282,8 @@ class StateDB:
             else:
                 row.sig_hex = sig_hex
                 row.near_dup_hash = legacy_hash
+                row.token_hash = token_hash
+                row.token_count = token_count
                 row.seg_value = value
 
     def find_near_dup_candidates(self, simhash_unsigned: int) -> list[tuple[str, int]]:
@@ -1240,23 +1295,46 @@ class StateDB:
         against the query's low 64 bits (M-23). Garbage ``sig_hex`` values
         decode to ``None`` and are skipped (L-04).
         """
-        out: dict[str, int] = {}
+        return [
+            (did, sig)
+            for did, sig, _token_hash, _token_count in self.find_near_dup_candidate_rows(
+                simhash_unsigned
+            )
+        ]
+
+    def find_near_dup_candidate_rows(
+        self, simhash_unsigned: int
+    ) -> list[tuple[str, int, int | None, int | None]]:
+        """Band lookup that also returns the stored W19 token-set sketch.
+
+        Returns ``(doc_id, signature_int, token_hash, token_count)``. The
+        sketch columns are NULL for legacy/unknown rows — the engine's
+        content-diversity guard treats those as 'unknown' and allows the
+        merge by Hamming distance alone.
+        """
+        out: dict[str, tuple[int, int | None, int | None]] = {}
         with self.session() as s:
             for seg in range(_NEAR_DUP_DATA_BANDS):
                 value = (simhash_unsigned >> (NEAR_DUP_SEG_BITS * seg)) & _NEAR_DUP_SEG_MASK
                 stmt = (
-                    select(DedupNearRow.doc_id, DedupNearRow.sig_hex, DedupNearRow.near_dup_hash)
+                    select(
+                        DedupNearRow.doc_id,
+                        DedupNearRow.sig_hex,
+                        DedupNearRow.near_dup_hash,
+                        DedupNearRow.token_hash,
+                        DedupNearRow.token_count,
+                    )
                     .where(DedupNearRow.seg == seg, DedupNearRow.seg_value == value)
                     .limit(NEAR_DUP_CANDIDATE_LIMIT)
                 )
-                for did, sig_hex, legacy in s.execute(stmt).all():
+                for did, sig_hex, legacy, token_hash, token_count in s.execute(stmt).all():
                     if sig_hex:
                         parsed = sig128_from_hex(sig_hex)
                         if parsed is not None:
-                            out[did] = parsed
+                            out[did] = (parsed, token_hash, token_count)
                     elif legacy is not None:
-                        out[did] = legacy & 0xFFFFFFFFFFFFFFFF
-        return list(out.items())
+                        out[did] = (legacy & 0xFFFFFFFFFFFFFFFF, token_hash, token_count)
+        return [(did, sig, th, tc) for did, (sig, th, tc) in out.items()]
 
     def uf_find(self, doc_id: str) -> str:
         """Find the canonical root of ``doc_id``'s near-dup cluster.

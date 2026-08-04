@@ -89,17 +89,23 @@ def test_hamming_32_pair_merged_at_default(tmp_path: Path, monkeypatch) -> None:
     sig_b = sig_a ^ ((1 << 32) - 1)
     assert hamming128(sig_a, sig_b) == 32
 
-    monkeypatch.setattr(
-        "awareness.dedup.engine.simhash128",
-        lambda text: sig_a if "alpha" in text else sig_b,
-    )
+    # W19 content-diversity guard: a short-doc merge requires exact token-set
+    # agreement, so the two docs must share their token set (same words,
+    # reordered) while the monkeypatched simhash still yields Hamming 32.
+    calls = {"n": 0}
+
+    def fake_simhash(text: str) -> int:
+        calls["n"] += 1
+        return sig_a if calls["n"] == 1 else sig_b
+
+    monkeypatch.setattr("awareness.dedup.engine.simhash128", fake_simhash)
     db = _state(tmp_path)
     eng = DedupEngine(db)
     a = _make_cap("https://a.test/1", "alpha body")
     out_a = eng.evaluate(a)
     assert out_a.decision == DedupDecision.NEW
 
-    b = _make_cap("https://b.test/2", "beta body", observed_str="2024-01-02T00:00:00+00:00")
+    b = _make_cap("https://b.test/2", "body alpha", observed_str="2024-01-02T00:00:00+00:00")
     out_b = eng.evaluate(b)
     assert out_b.decision == DedupDecision.NEAR_DUP
     assert out_b.hamming == 32

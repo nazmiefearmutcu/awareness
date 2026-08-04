@@ -182,14 +182,30 @@ class GdeltBridge:
 
     @staticmethod
     def _aggregate(windows: list[GdeltWindow], granularity: str) -> list[GdeltWindow]:
-        """Re-bucket per-day windows to week/month; day passes through."""
+        """Re-bucket per-day windows to week/month; day passes through.
+
+        A bucket inherits ``truncated=True`` when ANY of its member days hit
+        the 250-record cap, so aggregation never silently drops the flag.
+        """
         if granularity == "day":
             return windows
         buckets: Counter[datetime] = Counter()
+        truncated_buckets: set[datetime] = set()
         for window in windows:
-            buckets[GdeltBridge._floor_bucket(window.ts, granularity)] += window.count
+            bucket = GdeltBridge._floor_bucket(window.ts, granularity)
+            buckets[bucket] += window.count
+            if window.truncated:
+                truncated_buckets.add(bucket)
         term = windows[0].term
-        return [GdeltWindow(term=term, ts=bucket, count=buckets[bucket]) for bucket in sorted(buckets)]
+        return [
+            GdeltWindow(
+                term=term,
+                ts=bucket,
+                count=buckets[bucket],
+                truncated=bucket in truncated_buckets,
+            )
+            for bucket in sorted(buckets)
+        ]
 
     # ── disk cache ───────────────────────────────────────────────────────
 
@@ -413,8 +429,13 @@ class GdeltBridge:
             local_count = sum(
                 window.count for window in self._local_daily_counts(term, start_dt, end_dt)
             )
-            gdelt_count = sum(window.count for window in self.gdelt_query(term, start_dt, end_dt))
+            gdelt_windows = self.gdelt_query(term, start_dt, end_dt)
+            gdelt_count = sum(window.count for window in gdelt_windows)
+            truncated = any(window.truncated for window in gdelt_windows)
             ratio = (local_count / gdelt_count) if gdelt_count > 0 else 0.0
+            note: str | None = None
+            if truncated:
+                note = "gdelt day(s) hit the 250-record cap; counts are a floor"
             reports.append(
                 GapReport(
                     term=term,
@@ -422,6 +443,8 @@ class GdeltBridge:
                     gdelt_count=gdelt_count,
                     ratio=round(ratio, 4),
                     gap=gdelt_count >= GAP_MIN_GDELT_COUNT and ratio < GAP_RATIO_THRESHOLD,
+                    truncated=truncated,
+                    note=note,
                 )
             )
         reports.sort(key=lambda report: (not report.gap, -report.gdelt_count, report.term))

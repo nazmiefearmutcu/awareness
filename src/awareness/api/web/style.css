@@ -2463,6 +2463,27 @@ body{
   font-size: 13px;
 }
 
+/* GDELT comparison band: two side-by-side mini charts + stats line */
+.an-gdelt-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 10px;
+}
+.an-gdelt-charts .an-chart { margin-top: 0; }
+.an-gdelt-offline {
+  color: var(--fg-soft);
+  font-size: 12px;
+  font-style: italic;
+  opacity: 0.6;
+}
+.an-gdelt-stats {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--fg-soft);
+  line-height: 1.5;
+}
+
 /* Entity network band (concentric root + ring layout) */
 .an-network {
   position: relative;

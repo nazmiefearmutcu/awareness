@@ -8,6 +8,7 @@ pytest asserts. Marked ``smoke`` per pyproject.toml.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import pytest
 
 from awareness.api import server
 from awareness.config import reset_settings
+from awareness.obs import logging as obs_logging
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "e2e_smoke.py"
 
@@ -30,9 +32,18 @@ def _load_smoke_module():
     return module
 
 
-def test_e2e_full_flow(tmp_path: Path) -> None:
+def test_e2e_full_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_smoke_module()
     saved_env = os.environ.copy()
+    saved_logging = obs_logging._CONFIGURED
+    # The harness must never depend on the live GDELT API.
+    import awareness.gdeltx.engine as gdeltx_engine  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        gdeltx_engine.GdeltBridge,
+        "gdelt_query",
+        lambda self, term, start, end, granularity="day": [],
+    )
     try:
         results = module.run_e2e_flow(tmp_path)
     finally:
@@ -41,8 +52,25 @@ def test_e2e_full_flow(tmp_path: Path) -> None:
         os.environ.clear()
         os.environ.update(saved_env)
         reset_settings()
-        server._State.index = None
+        # _close_index() FIRST: it both closes the DuckDbIndex and clears
+        # the singleton — nulling _State.index beforehand would make it a
+        # no-op and leak an open connection in DuckDbIndex._instances.
         server._close_index()
+        # Restore logging: the init stage's configure_logging() binds a
+        # StreamHandler to Click's ephemeral capture stream, which is closed
+        # after CliRunner.invoke — any later WARNING would print
+        # "--- Logging error ---" garbage into the suite. Drop every root
+        # handler and reconfigure from a clean slate with safe values.
+        root = logging.getLogger()
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+        obs_logging._CONFIGURED = None
+        if saved_logging is not None:
+            obs_logging.configure_logging(
+                level=saved_logging[0], json=saved_logging[1], log_dir=None
+            )
+        else:
+            obs_logging.configure_logging(level="WARNING", json=False, log_dir=None)
 
     # ── 1. init: exit 0 (CliRunner inside stage), data tree exists ──────
     init = results["init"]

@@ -497,6 +497,22 @@ def init(
             rprint("[green]Iceberg table ready[/green]")
         except Exception as exc:
             rprint(f"[yellow]Iceberg init skipped:[/yellow] {exc}")
+    # Materialize the DuckDB search-index file so init leaves a complete
+    # storage layout (the file previously only appeared on the first query).
+    # An empty corpus is fine — health_snapshot() builds the views and a
+    # 0-row captures table; failure (e.g. offline extension install) only
+    # warns and never fails init.
+    try:
+        idx = DuckDbIndex(
+            db_path=settings.duckdb_path(),
+            jsonl_dir=settings.staging_jsonl_dir(),
+            iceberg_warehouse=settings.iceberg_warehouse,
+        )
+        idx.health_snapshot()
+        idx.close()
+        rprint(f"[green]DuckDB index:[/green] {settings.duckdb_path()}")
+    except Exception as exc:
+        rprint(f"[yellow]DuckDB index init skipped:[/yellow] {exc}")
     rprint(f"[green]State DB:[/green] {state.url}")
     rprint(f"[green]Data dir:[/green] {settings.data_dir}")
 
@@ -3377,16 +3393,18 @@ def _sparkline(values: list[int | float], width: int = 40) -> str:
 
     *width* is clamped to ``[_SPARK_MIN_WIDTH, _SPARK_MAX_WIDTH]`` characters:
     shorter series are linearly upsampled, longer ones downsampled, so the
-    sparkline stays readable for any window length.
+    sparkline stays readable for any window length. Non-finite values
+    (NaN / inf) are dropped before rendering.
     """
-    n = len(values)
+    finite = [value for value in values if math.isfinite(float(value))]
+    n = len(finite)
     if n == 0:
         return ""
     width = min(max(width, _SPARK_MIN_WIDTH), _SPARK_MAX_WIDTH)
     if width == 1:
         return _SPARK_BLOCKS[0]
     if n == width:
-        sampled = list(values)
+        sampled = list(finite)
     else:
         sampled = []
         for i in range(width):
@@ -3394,16 +3412,25 @@ def _sparkline(values: list[int | float], width: int = 40) -> str:
             lo = int(pos)
             hi = min(lo + 1, n - 1)
             frac = pos - lo
-            sampled.append(values[lo] * (1.0 - frac) + values[hi] * frac)
-        # Downsampling can erase isolated spikes between lattice points;
-        # pin the true extremes so a real spike never renders flat.
-        argmax = max(range(n), key=lambda k: (values[k], k))
-        argmin = min(range(n), key=lambda k: (values[k], k))
-        sampled[0] = values[argmin] if values[argmin] < sampled[0] else sampled[0]
-        sampled[-1] = values[argmax] if values[argmax] > sampled[-1] else sampled[-1]
+            sampled.append(finite[lo] * (1.0 - frac) + finite[hi] * frac)
+        # Downsampling can erase isolated spikes between lattice points; pin
+        # the true extremes into the lattice column nearest their source
+        # index. Upsampling never pins — every sampled column is an exact
+        # interpolation and the endpoints are already correct, so pinning
+        # would just smear the true peak into the last column.
+        if n > width:
+            argmax = max(range(n), key=lambda k: (finite[k], k))
+            argmin = min(range(n), key=lambda k: (finite[k], k))
+            i_max = round(argmax * (width - 1) / (n - 1))
+            i_min = round(argmin * (width - 1) / (n - 1))
+            sampled[i_max] = max(sampled[i_max], finite[argmax])
+            sampled[i_min] = min(sampled[i_min], finite[argmin])
     top = max(sampled)
     low = min(sampled)
-    if max(values) == min(values) or top == low:
+    # Flat series: interpolation of identical values can drift by an ulp
+    # (5.0 vs 5.000000000000001), which would blow up the scale — check the
+    # original values exactly.
+    if max(finite) == min(finite) or top == low:
         return _SPARK_BLOCKS[0] * width
     scale = 7.0 / (top - low)
     out = []

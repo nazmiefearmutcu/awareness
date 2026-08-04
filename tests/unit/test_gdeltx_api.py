@@ -126,7 +126,7 @@ def test_gaps_with_three_terms(monkeypatch, tmp_path: Path) -> None:
     assert res.status_code == 200
     data = res.json()
     assert len(data) == 3
-    assert set(data[0]) == {"term", "local_count", "gdelt_count", "ratio", "gap"}
+    assert set(data[0]) == {"term", "local_count", "gdelt_count", "ratio", "gap", "truncated", "note"}
     by_term = {row["term"]: row for row in data}
     assert by_term["alpha"]["gap"] is True
     assert by_term["alpha"]["gdelt_count"] == 100
