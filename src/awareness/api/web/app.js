@@ -2783,6 +2783,7 @@ async function initAlerts() {
   if (alertsReady) return;
   alertsReady = true;
   $("#al-refresh")?.addEventListener("click", () => void loadAlertsView());
+  $("#al-firings-refresh")?.addEventListener("click", () => void loadFiringsLog());
   $("#al-form")?.addEventListener("submit", createAlertRule);
   await loadAlertsView();
 }
@@ -2792,7 +2793,7 @@ async function loadAlertsView() {
     const [rules, status, firings] = await Promise.all([
       api("/alerts/rules"),
       api("/alerts/status"),
-      api("/alerts/firings?limit=20"),
+      api("/alerts/firings?limit=50"),
     ]);
     renderAlertsRules(rules || []);
     updateAlertsStatus(status || {});
@@ -2826,6 +2827,7 @@ function renderAlertsRules(rules) {
   }
   for (const r of rules) {
     const row = body.insertRow();
+    row.dataset.ruleId = r.id;
     row.insertCell().textContent = r.name || "—";
     row.insertCell().textContent = r.kind || "—";
     row.insertCell().textContent = r.term || "—";
@@ -2952,6 +2954,80 @@ async function createAlertRule(e) {
   }
 }
 
+/**
+ * Firing detail fields for the expandable panel. Pure — no DOM, so the
+ * expansion data logic is unit-testable. Full (untruncated) detail text and
+ * local/UTC forms of fired_at are rendered as text nodes only.
+ */
+function firingDetailFields(f) {
+  const t = f && f.fired_at ? new Date(f.fired_at) : null;
+  const ok = t && !Number.isNaN(t.getTime());
+  return {
+    detail: (f && f.detail) || "—",
+    ruleId: (f && f.rule_id) || "—",
+    count: f && f.count != null ? f.count : null,
+    threshold: f && f.threshold != null ? f.threshold : null,
+    local: ok ? t.toLocaleString() : "—",
+    utc: ok ? t.toISOString() : "—",
+  };
+}
+
+/** Detail row shown below a firing row once expanded (independent per row). */
+function buildFiringDetailRow(f) {
+  const fields = firingDetailFields(f);
+  const row = el("tr", { class: "al-firing-detail-row", hidden: true });
+  const cell = el("td", { class: "al-firing-detail-cell", colspan: 6 });
+  const panel = el("div", { class: "al-firing-detail" });
+  panel.appendChild(el("p", { class: "al-firing-detail-text", text: fields.detail }));
+  const meta = el("dl", { class: "al-firing-detail-meta" });
+  meta.appendChild(el("dt", { text: "rule_id" }));
+  meta.appendChild(el("dd", { text: fields.ruleId }));
+  meta.appendChild(el("dt", { text: "count vs threshold" }));
+  meta.appendChild(el("dd", { text: `${fmt(fields.count)} vs ${fmt(fields.threshold)}` }));
+  meta.appendChild(el("dt", { text: "fired_at (local)" }));
+  meta.appendChild(el("dd", { text: fields.local }));
+  meta.appendChild(el("dt", { text: "fired_at (UTC)" }));
+  meta.appendChild(el("dd", { text: fields.utc }));
+  const viewBtn = el("button", {
+    type: "button",
+    class: "btn btn-link al-firing-view-rule",
+    text: "View rule",
+  });
+  viewBtn.addEventListener("click", () => focusAlertRule(f.rule_id));
+  panel.appendChild(viewBtn);
+  cell.appendChild(panel);
+  row.appendChild(cell);
+  return row;
+}
+
+/** Highlight the rule row for ruleId in the rules table and scroll it into view. */
+function focusAlertRule(ruleId) {
+  const rows = $$("#al-rules-body tr");
+  const target = rows.find((r) => r.dataset.ruleId === ruleId);
+  if (!target) {
+    toast("rule not found: " + ruleId, "err");
+    return;
+  }
+  for (const r of rows) r.classList.remove("is-focused");
+  target.classList.add("is-focused");
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+/** Re-fetch just the firings log (50 newest); wired to the log's Refresh button. */
+async function loadFiringsLog() {
+  try {
+    const firings = await api("/alerts/firings?limit=50");
+    renderAlertsFirings(firings || []);
+  } catch (err) {
+    toast("firings refresh failed: " + err.message, "err");
+  }
+}
+
+/**
+ * Firings log table. Each row toggles its own detail row (rows are independent
+ * — any number may be open at once). All detail values, including the full
+ * untruncated detail text, are set via el()/textContent, never an HTML string.
+ */
 function renderAlertsFirings(firings) {
   const body = $("#al-firings-body");
   if (!body) return;
@@ -2964,13 +3040,34 @@ function renderAlertsFirings(firings) {
     return;
   }
   for (const f of firings) {
-    const row = body.insertRow();
+    const row = el("tr", {
+      class: "al-firing-row",
+      tabindex: "0",
+      "aria-expanded": "false",
+      dataset: { ruleId: f.rule_id || "" },
+    });
     row.insertCell().textContent = f.fired_at ? new Date(f.fired_at).toLocaleString() : "—";
     row.insertCell().textContent = f.rule_name || f.rule_id || "—";
     row.insertCell().textContent = f.term || "—";
     row.insertCell().textContent = fmt(f.count);
     row.insertCell().textContent = fmt(f.threshold);
     row.insertCell().textContent = f.detail || "—";
+    const detailRow = buildFiringDetailRow(f);
+    const toggle = () => {
+      const open = detailRow.hidden;
+      detailRow.hidden = !open;
+      row.classList.toggle("is-open", open);
+      row.setAttribute("aria-expanded", String(open));
+    };
+    row.addEventListener("click", toggle);
+    row.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        toggle();
+      }
+    });
+    body.appendChild(row);
+    body.appendChild(detailRow);
   }
 }
 
@@ -4221,11 +4318,16 @@ document.addEventListener("keydown", (e) => {
       setTimeout(() => $("#caps-search").focus(), 80);
     }
   }
-  // Number shortcuts 1..9 for routes (when not typing)
+  // Number shortcuts 1..9 for routes, 0 for the 10th (when not typing)
   if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
     const tag = (document.activeElement?.tagName || "").toLowerCase();
     if (tag !== "input" && tag !== "textarea" && tag !== "select") {
       navigate(ROUTES[parseInt(e.key, 10) - 1]);
+    }
+  } else if (e.key === "0" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    const tag = (document.activeElement?.tagName || "").toLowerCase();
+    if (tag !== "input" && tag !== "textarea" && tag !== "select") {
+      navigate(ROUTES[9]);
     }
   }
   // Esc: close any overlay

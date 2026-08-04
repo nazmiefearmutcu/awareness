@@ -3972,6 +3972,11 @@ def report(
     }
     if json_out:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
+        if out or email_to:
+            rprint(
+                "[yellow]--json: printed to stdout; "
+                "--out/--email ignored for JSON mode[/yellow]"
+            )
         return
     text = _render_report_markdown(digest_obj, quality_snap, firings, gdelt_note, no_gdelt)
     if email_to:
@@ -3987,11 +3992,18 @@ def report(
             smtp_password="",
             from_addr="",
         )
+        if out:
+            rprint(
+                "[yellow]--email: markdown emailed; "
+                "--out ignored when --email is set[/yellow]"
+            )
         return
     if out:
         out_path = Path(out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(text, encoding="utf-8")
+        tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+        tmp_path.write_text(text, encoding="utf-8")
+        tmp_path.replace(out_path)
         rprint(f"[green]Report written to {out_path}[/green]")
     else:
         console.print(text)
@@ -4046,7 +4058,10 @@ def summarize_feed_health(snap: dict[str, Any]) -> dict[str, Any]:
     non200_rate = (100.0 * non200 / attempts) if attempts else None
     score: int | None = None
     if attempts > 0:
-        score = round(min(100.0, max(0.0, 100.0 - 10.0 * error_rate - 5.0 * non200_rate)))
+        raw_score = min(100.0, max(0.0, 100.0 - 10.0 * error_rate - 5.0 * non200_rate))
+        # Half-up (floor(x + 0.5)) to match the SPA's Math.round; Python's
+        # round() is half-even and diverges at exact halves (62.5 → 62 vs 63).
+        score = math.floor(raw_score + 0.5)
     return {
         "attempts": int(attempts),
         "ok": int(ok),
@@ -4246,6 +4261,30 @@ def x_simulate(
     rprint(f"total tweets: {total}")
 
 
+@x_app.command(name="export")
+def x_export(
+    session_id: str = typer.Argument(..., help="Session id to export"),
+    out: str = typer.Option("", "--out", help="Output CSV path (default: {data_dir}/x_export_<id>.csv)"),
+    limit: int = typer.Option(500, "--limit", min=1, max=500, help="Max tweets to export"),
+) -> None:
+    """Export a session's tweets to a CSV file."""
+    from awareness.xscraper.analyze import export_tweets_csv  # noqa: PLC0415
+
+    settings = get_settings()
+    assert settings.data_dir is not None
+    out_path = Path(out) if out else settings.data_dir / f"x_export_{session_id}.csv"
+
+    async def _export(store):
+        return await export_tweets_csv(store, session_id, out_path, limit=limit)
+
+    try:
+        count = asyncio.run(_x_with_store(_export))
+    except KeyError:
+        rprint(f"[red]session {session_id!r} not found[/red]")
+        raise typer.Exit(code=2) from None
+    rprint(f"Wrote {count} rows to {out_path}")
+
+
 @x_app.command(name="analyze")
 def x_analyze(
     session_id: str = typer.Argument(..., help="Session id to analyze"),
@@ -4275,6 +4314,15 @@ def x_analyze(
     sentiment_table.add_row("neutral", str(sentiment["neutral"]))
     sentiment_table.add_row("avg score", f"{sentiment['avg_score']:.4f}")
     console.print(sentiment_table)
+
+    trend = analysis["sentiment_trend"]
+    if trend:
+        trend_values = [float(day["avg_score"]) for day in trend]
+        console.print(
+            f"[dim]Sentiment trend (daily avg score, {trend[0]['date']}..{trend[-1]['date']}, "
+            f"min {min(trend_values):.2f}, max {max(trend_values):.2f}):[/dim] "
+            + _sparkline(trend_values)
+        )
 
     authors_table = Table(title="Top authors")
     authors_table.add_column("Username", style=banner.C_HI)

@@ -12,6 +12,9 @@ LocalFixtureAdapter (no network):
     6. alerts     — create term_count rule → POST /alerts/check → firings
     7. digest     — generate_digest + render_digest_markdown
     8. export     — export_llm_dataset (dedupe fold keeps one row per doc)
+    9. saved      — POST /saved → GET /saved → GET /saved/{id}/run → DELETE
+    10. x          — POST /x/sessions → simulate → analysis → tweets
+    11. report    — CLI ``report --json`` + ``alerts history --json``
 
 Usage:
     AW_PROJECT_ROOT=/tmp/aware-root .venv/bin/python scripts/e2e_smoke.py
@@ -26,6 +29,7 @@ removed at the end. The stage functions are importable so the pytest wrapper
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -443,6 +447,103 @@ def stage_export(root: Path) -> dict[str, Any]:
     return {"count": result.count, "total": total, "files": [f.name for f in files]}
 
 
+# ── 9. saved ────────────────────────────────────────────────────────────
+
+
+def stage_saved(root: Path) -> dict[str, Any]:
+    """Saved-search CRUD via the API: create / list / run / delete."""
+    app = _build_app()
+    with TestClient(app) as client:
+        payload = {"name": "smoke saved climate", "query": CORPUS_TERM}
+        r = client.post("/saved", json=payload)
+        _check(r.status_code == 201, f"POST /saved -> {r.status_code}: {r.text[:300]}")
+        saved_id = r.json().get("id")
+        _check(saved_id, "POST /saved response missing id")
+
+        r = client.get("/saved")
+        _check(r.status_code == 200, f"GET /saved -> {r.status_code}")
+        _check(
+            any(s.get("id") == saved_id for s in r.json()),
+            f"GET /saved does not contain created search {saved_id}",
+        )
+
+        r = client.get(f"/saved/{saved_id}/run")
+        _check(
+            r.status_code == 200,
+            f"GET /saved/{saved_id}/run -> {r.status_code}: {r.text[:300]}",
+        )
+        run_total = int(r.json().get("total", 0))
+        _check(run_total > 0, f"saved run for {CORPUS_TERM!r} returned total == 0")
+
+        r = client.delete(f"/saved/{saved_id}")
+        _check(r.status_code == 204, f"DELETE /saved/{saved_id} -> {r.status_code}")
+    return {"saved_id": saved_id, "run_total": run_total}
+
+
+# ── 10. x ───────────────────────────────────────────────────────────────
+
+
+def stage_x(root: Path) -> dict[str, Any]:
+    """X scraper session lifecycle via the API: create / simulate / analyze /
+    tweets. The aiosqlite store is opened lazily and closed by the TestClient
+    lifespan shutdown hook wired in ``consume.router.wire``."""
+    app = _build_app()
+    with TestClient(app) as client:
+        payload = {"title": "smoke climate watch", "keywords": [CORPUS_TERM]}
+        r = client.post("/x/sessions", json=payload)
+        _check(r.status_code == 200, f"POST /x/sessions -> {r.status_code}: {r.text[:300]}")
+        session_id = r.json().get("session_id")
+        _check(session_id, "POST /x/sessions response missing session_id")
+
+        r = client.post(f"/x/sessions/{session_id}/simulate", json={"n_tweets": 10})
+        _check(r.status_code == 200, f"POST /x/sessions/{session_id}/simulate -> {r.status_code}")
+        inserted = int(r.json().get("inserted", 0))
+        _check(inserted == 10, f"simulate inserted {inserted} != 10")
+
+        r = client.get(f"/x/sessions/{session_id}/analysis")
+        _check(r.status_code == 200, f"GET /x/sessions/{session_id}/analysis -> {r.status_code}")
+        analysis = r.json()
+        tweet_count = int(analysis.get("tweet_count", 0))
+        _check(tweet_count == 10, f"analysis tweet_count {tweet_count} != 10")
+        _check(
+            any(CORPUS_TERM in t.get("term", "").lower() for t in analysis.get("top_terms") or []),
+            f"analysis top_terms missing corpus term {CORPUS_TERM!r}",
+        )
+        sentiment = analysis.get("sentiment") or {}
+        sentiment_sum = sum(int(sentiment.get(k, 0)) for k in ("positive", "negative", "neutral"))
+        _check(sentiment_sum == 10, f"analysis sentiment counts {sentiment} do not sum to 10")
+
+        r = client.get(f"/x/sessions/{session_id}/tweets")
+        _check(r.status_code == 200, f"GET /x/sessions/{session_id}/tweets -> {r.status_code}")
+        tweets_count = int(r.json().get("count", 0))
+        _check(tweets_count == 10, f"GET /x/sessions/{session_id}/tweets count {tweets_count} != 10")
+    return {"session_id": session_id, "inserted": inserted, "tweet_count": tweet_count}
+
+
+# ── 11. report ──────────────────────────────────────────────────────────
+
+
+def stage_report(root: Path) -> dict[str, Any]:
+    """CLI ``report --days 7 --no-gdelt --json`` (digest + quality keys) and
+    ``alerts history --json``; both read settings from the flow's env."""
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["report", "--days", "7", "--no-gdelt", "--json"])
+    if result.exit_code != 0:
+        raise SmokeError(f"report exited {result.exit_code}: {result.output[-500:]}")
+    payload = json.loads(result.output)
+    _check(
+        "digest" in payload and "quality" in payload,
+        "report JSON missing digest/quality keys",
+    )
+    total_captures = int(payload["digest"].get("total_captures", 0))
+    _check(total_captures > 0, "report digest total_captures == 0")
+
+    result = runner.invoke(cli_app, ["alerts", "history", "--json"])
+    if result.exit_code != 0:
+        raise SmokeError(f"alerts history exited {result.exit_code}: {result.output[-500:]}")
+    return {"total_captures": total_captures, "firings": payload.get("firings")}
+
+
 # ── orchestrator ────────────────────────────────────────────────────────
 
 
@@ -460,6 +561,9 @@ def run_e2e_flow(project_root: Path) -> dict[str, Any]:
     results["alerts"] = stage_alerts(project_root)
     results["digest"] = stage_digest(project_root)
     results["export"] = stage_export(project_root)
+    results["saved"] = stage_saved(project_root)
+    results["x"] = stage_x(project_root)
+    results["report"] = stage_report(project_root)
     return results
 
 

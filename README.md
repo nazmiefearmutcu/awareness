@@ -63,9 +63,9 @@ awareness browse                                 # read captured text in the ter
 ## The workbench
 
 A single-process FastAPI server ships a hand-written vanilla-JS SPA at `/` — no build step, no
-runtime dependencies, no external requests (fonts are self-hosted; it renders fully offline). Nine
-views, keyboard shortcuts `1`–`9`, a `⌘K` command palette, and a light/dark theme that follows
-your system and remembers your choice.
+runtime dependencies, no external requests (fonts are self-hosted; it renders fully offline). Ten
+views, keyboard shortcuts `1`–`9` (and `0` for the tenth), a `⌘K` command palette,
+and a light/dark theme that follows your system and remembers your choice.
 
 **Dashboard** — the corpus at a glance, plus deep process telemetry: fetch latency percentiles,
 robots-cache hit rate, dedup fold ratio, Iceberg row counts, staging lag, per-source health.
@@ -99,7 +99,7 @@ status underneath.
 
 ## Feature surface
 
-Beyond the six workbench views, the API exposes the corpus through feature
+Beyond the ten workbench views, the API exposes the corpus through feature
 subsystems — small, dependency-free modules under `src/awareness/`, all served
 by the same single process:
 

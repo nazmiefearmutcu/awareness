@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import csv
+import io
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -91,6 +94,51 @@ async def test_unknown_session_returns_404(api_app: FastAPI) -> None:
         assert r.status_code == 404
         r = await client.get("/x/sessions/does-not-exist/analysis")
         assert r.status_code == 404
+        r = await client.get("/x/sessions/does-not-exist/tweets.csv")
+        assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_tweets_csv_export_endpoint(api_app: FastAPI) -> None:
+    async with _client(api_app) as client:
+        r = await client.post("/x/sessions", json={"keywords": ["bitcoin"]})
+        assert r.status_code == 200, r.text
+        session_id = r.json()["session_id"]
+
+        r = await client.post(f"/x/sessions/{session_id}/simulate", json={"n_tweets": 5})
+        assert r.status_code == 200, r.text
+
+        r = await client.get(f"/x/sessions/{session_id}/tweets.csv")
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("text/csv")
+        assert r.headers["content-disposition"] == (
+            f'attachment; filename="session-{session_id}-tweets.csv"'
+        )
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert rows[0] == [
+            "tweet_id", "created_at", "username", "text", "likes", "retweets", "lang", "source",
+        ]
+        assert len(rows) == 6  # header + 5 tweets
+
+        r = await client.get(f"/x/sessions/{session_id}/tweets.csv", params={"limit": 2})
+        assert r.status_code == 200, r.text
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert len(rows) == 3  # header + 2 tweets
+
+
+@pytest.mark.asyncio
+async def test_tweets_csv_empty_session_has_header_only(api_app: FastAPI) -> None:
+    async with _client(api_app) as client:
+        r = await client.post("/x/sessions", json={"keywords": ["ai"]})
+        assert r.status_code == 200, r.text
+        session_id = r.json()["session_id"]
+
+        r = await client.get(f"/x/sessions/{session_id}/tweets.csv")
+        assert r.status_code == 200, r.text
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert rows == [[
+            "tweet_id", "created_at", "username", "text", "likes", "retweets", "lang", "source",
+        ]]
 
 
 @pytest.mark.asyncio

@@ -32,6 +32,24 @@ def _load_smoke_module():
     return module
 
 
+def _assert_extra_stages(results: dict) -> None:
+    """Assertions for the stages added on top of the original eight (9-11)."""
+    # ── 9. saved: create 201, listed, run total > 0, delete 204 ──────────
+    saved = results["saved"]
+    assert saved["saved_id"]
+    assert saved["run_total"] > 0
+
+    # ── 10. x: session created, 10 simulated tweets, analysis + tweets ───
+    x = results["x"]
+    assert x["session_id"]
+    assert x["inserted"] == 10
+    assert x["tweet_count"] == 10
+
+    # ── 11. report: CLI JSON digest + quality, total_captures > 0 ────────
+    report = results["report"]
+    assert report["total_captures"] > 0
+
+
 def test_e2e_full_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_smoke_module()
     saved_env = os.environ.copy()
@@ -115,3 +133,6 @@ def test_e2e_full_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     export = results["export"]
     assert export["count"] == min(100, export["total"])
     assert len(export["files"]) > 0
+
+    # ── 9-11. saved / x / report stages (see helper) ─────────────────────
+    _assert_extra_stages(results)

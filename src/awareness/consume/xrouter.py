@@ -9,6 +9,7 @@ Endpoints:
     GET  /x/sessions            — list sessions (newest first)
     GET  /x/sessions/{id}       — one session
     GET  /x/sessions/{id}/tweets — tweets for a session
+    GET  /x/sessions/{id}/tweets.csv — tweets for a session as an attached CSV
     POST /x/sessions            — create a session from a SearchRequest dict
     POST /x/sessions/{id}/simulate — generate simulated tweets (clamped 1..200)
     GET  /x/sessions/{id}/analysis — aggregated analysis of captured tweets
@@ -17,10 +18,12 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import ValidationError
 
 from awareness.config import get_settings
@@ -125,6 +128,42 @@ async def list_x_session_tweets(
         "tweets": [t.model_dump(mode="json") for t in tweets],
         "count": len(tweets),
     }
+
+
+@router.get("/sessions/{session_id}/tweets.csv")
+async def export_x_session_tweets_csv(
+    session_id: str,
+    limit: int = Query(default=500, ge=1, le=500),
+) -> Response:
+    """Export a session's tweets as an attached CSV file (404 when unknown)."""
+    store = await _get_store()
+    session = await bridge_get_session(store, session_id)
+    if session is None:
+        raise HTTPException(404, f"session {session_id!r} not found")
+    tweets = await bridge_list_tweets(store, session_id, limit=limit)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        ["tweet_id", "created_at", "username", "text", "likes", "retweets", "lang", "source"]
+    )
+    for tweet in tweets:
+        writer.writerow(
+            [
+                tweet.tweet_id,
+                tweet.created_at.isoformat(),
+                tweet.username,
+                tweet.text,
+                tweet.metrics.get("likes", 0),
+                tweet.metrics.get("retweets", 0),
+                tweet.lang or "",
+                tweet.source,
+            ]
+        )
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="session-{session_id}-tweets.csv"'},
+    )
 
 
 @router.post("/sessions")

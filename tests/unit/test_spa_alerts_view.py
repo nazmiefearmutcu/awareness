@@ -43,7 +43,9 @@ def test_spa_alerts_crud_endpoints() -> None:
     assert 'method: "DELETE"' in alerts
     assert 'api("/alerts/check", { method: "POST", body: "{}" })' in alerts
     assert 'api("/alerts/status")' in alerts
-    assert 'api("/alerts/firings?limit=20")' in alerts
+    # Firing log loads the 50 newest (bumped from 20; backend clamps 1..500).
+    assert 'api("/alerts/firings?limit=50")' in alerts
+    assert "firings?limit=20" not in alerts
 
 
 def test_spa_alerts_handlers_exist() -> None:

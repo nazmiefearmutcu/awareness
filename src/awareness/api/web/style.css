@@ -2623,6 +2623,18 @@ body{
 .al-test-body { font-size: 13px; color: var(--fg-mid); line-height: 1.5; }
 .al-test-count { color: var(--fg-strong); }
 .al-test-last { color: var(--accent-soft); }
+.al-firing-row { cursor: pointer; }
+.al-firing-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.al-firing-row:hover, .al-firing-row.is-open { background: var(--surface-hi); }
+.al-firing-detail-row { display: none; }
+.al-firing-detail-row:not([hidden]) { display: table-row; }
+.al-firing-detail-cell { background: var(--surface); }
+.al-firing-detail-text { margin: 0 0 8px; white-space: pre-wrap; word-break: break-word; }
+.al-firing-detail-meta { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin: 0 0 10px; font-size: 12px; }
+.al-firing-detail-meta dt { color: var(--fg-soft); }
+.al-firing-detail-meta dd { margin: 0; }
+.al-firing-view-rule { padding: 0; }
+.al-table tr.is-focused { background: var(--surface-hi); box-shadow: inset 2px 0 0 var(--accent); }
 .al-test-del { color: var(--fg-dim); }
 .al-del-btn { color: var(--rose, #ff6178); }
 .al-del-btn:hover { text-decoration: underline; }

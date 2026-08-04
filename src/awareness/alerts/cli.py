@@ -287,7 +287,16 @@ def history(
         console.print("No firings recorded.")
         return
     if json_out:
-        print(json.dumps(firings, indent=2, ensure_ascii=False, default=str))
+        from datetime import datetime as _dt  # noqa: PLC0415
+
+        print(
+            json.dumps(
+                firings,
+                indent=2,
+                ensure_ascii=False,
+                default=lambda o: o.isoformat() if isinstance(o, _dt) else str(o),
+            )
+        )
         return
     table = Table(title="Alert firing history")
     for col in ("Fired At", "Rule", "Kind", "Term", "Count", "Threshold", "Detail"):
