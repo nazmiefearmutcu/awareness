@@ -50,6 +50,28 @@ def _assert_extra_stages(results: dict) -> None:
     assert report["total_captures"] > 0
 
 
+def _assert_new_stages(results: dict) -> None:
+    """Assertions for the awareness stages added on top of the original eleven (12-14)."""
+    # ── 12. topicx: lifecycle phase + non-empty counts, list endpoints ────
+    topicx = results["topicx"]
+    assert topicx["phase"] in {"EMERGING", "EXPANDING", "PEAKING", "DECLINING", "DORMANT"}
+    assert topicx["counts"] >= 1
+    assert isinstance(topicx["emerging"], int) and topicx["emerging"] >= 0
+    assert isinstance(topicx["impact"], int) and topicx["impact"] >= 0
+
+    # ── 13. qualityx: history series (first point > 0) + current snapshot ─
+    qualityx = results["qualityx"]
+    assert qualityx["history_points"] >= 1
+    assert qualityx["first_total"] > 0
+    assert qualityx["total_captures"] > 0
+
+    # ── 14. briefing: saved file exists + parses, stdout parses as JSON ──
+    briefing = results["briefing"]
+    assert Path(briefing["saved_path"]).exists()
+    assert isinstance(briefing["movers"], int) and briefing["movers"] >= 0
+    assert isinstance(briefing["top_terms"], int) and briefing["top_terms"] >= 0
+
+
 def test_e2e_full_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_smoke_module()
     saved_env = os.environ.copy()
@@ -136,3 +158,6 @@ def test_e2e_full_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     # ── 9-11. saved / x / report stages (see helper) ─────────────────────
     _assert_extra_stages(results)
+
+    # ── 12-14. topicx / qualityx / briefing stages (see helper) ──────────
+    _assert_new_stages(results)

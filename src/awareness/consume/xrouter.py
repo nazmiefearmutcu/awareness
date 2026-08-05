@@ -10,6 +10,7 @@ Endpoints:
     GET  /x/sessions/{id}       — one session
     GET  /x/sessions/{id}/tweets — tweets for a session
     GET  /x/sessions/{id}/tweets.csv — tweets for a session as an attached CSV
+    GET  /x/sessions/{id}/timeline.csv — per-day sentiment timeline as an attached CSV
     POST /x/sessions            — create a session from a SearchRequest dict
     POST /x/sessions/{id}/simulate — generate simulated tweets (clamped 1..200)
     GET  /x/sessions/{id}/analysis — aggregated analysis of captured tweets
@@ -39,7 +40,7 @@ from awareness.consume.xbridge import (
 from awareness.consume.xbridge import (
     list_sessions as bridge_list_sessions,
 )
-from awareness.xscraper.analyze import analyze_session
+from awareness.xscraper.analyze import analyze_session, session_timeline
 from awareness.xscraper.simulate import simulate_session
 from awareness.xscraper.store import SessionStore
 
@@ -163,6 +164,44 @@ async def export_x_session_tweets_csv(
         content=buffer.getvalue(),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="session-{session_id}-tweets.csv"'},
+    )
+
+
+@router.get("/sessions/{session_id}/timeline.csv")
+async def export_x_session_timeline_csv(
+    session_id: str,
+    limit: int = Query(default=500, ge=1, le=500),
+) -> Response:
+    """Export a session's per-day sentiment timeline as an attached CSV file.
+
+    Rows (date, tweet_count, pos, neg, neutral, avg_score) use the same
+    scoring as the analysis endpoint (via :func:`session_timeline`); 404 when
+    the session is unknown.
+    """
+    store = await _get_store()
+    session = await bridge_get_session(store, session_id)
+    if session is None:
+        raise HTTPException(404, f"session {session_id!r} not found")
+    days = await session_timeline(store, session_id, limit=limit)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["date", "tweet_count", "pos", "neg", "neutral", "avg_score"])
+    for date in sorted(days):
+        day = days[date]
+        writer.writerow(
+            [
+                date,
+                len(day["scores"]),
+                day["positive"],
+                day["negative"],
+                day["neutral"],
+                round(sum(day["scores"]) / len(day["scores"]), 4),
+            ]
+        )
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="session-{session_id}-timeline.csv"'},
     )
 
 

@@ -2710,6 +2710,9 @@ body{
 .al-test-del { color: var(--fg-dim); }
 .al-del-btn { color: var(--rose, #ff6178); }
 .al-del-btn:hover { text-decoration: underline; }
+
+/* Alert trend mini-chart (firings per day, last 14 days) */
+.al-trend .an-chart { min-height: 110px; }
 @media (max-width: 760px) {
   .al-status-strip { grid-template-columns: 1fr 1fr; }
   .al-form-grid { grid-template-columns: 1fr; }
@@ -2840,3 +2843,41 @@ body{
 .x-an-timeline { min-height: 120px; }
 .dash-saved-chip { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dash-saved-run { font-size: 12px; padding: 3px 10px; }
+
+/* Dashboard "Today at a glance" band: alert activity + emerging topics */
+.dash-glance-alerts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.dash-glance-kpi {
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-width: 0;
+}
+.dash-glance-kpi-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.dash-glance-kpi-value {
+  display: block;
+  font-family: var(--mono);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--fg-strong);
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dash-glance-kpi-term { font-size: 13px; }
+.dash-glance-band .an-chips { margin-top: 12px; }

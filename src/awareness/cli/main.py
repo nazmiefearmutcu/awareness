@@ -4391,14 +4391,20 @@ def _save_briefing(payload: dict[str, Any], settings: Any, name: str) -> Path:
     partial briefing.
     """
     assert settings.data_dir is not None
+    if name and not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise typer.BadParameter("briefing name may only contain letters, digits, _ and -")
     briefings_dir = settings.data_dir / "briefings"
     briefings_dir.mkdir(parents=True, exist_ok=True)
     date_part = str(payload["generated_at"])[:10]
     stem = f"{date_part}-{name}" if name else date_part
     out_path = briefings_dir / f"{stem}.json"
     tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp_path.replace(out_path)
+    try:
+        tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(out_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return out_path
 
 
@@ -4420,12 +4426,14 @@ def _list_saved_briefings(settings: Any) -> None:
     table.add_column("terms", justify="right")
     for path in files:
         terms = "—"
+        size_kb = "—"
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             terms = str(len(data.get("top_terms") or []))
+            size_kb = f"{path.stat().st_size / 1024:.1f}"
         except Exception:
-            terms = "—"
-        table.add_row(path.stem, f"{path.stat().st_size / 1024:.1f}", terms)
+            pass  # unparseable or vanished file — show dashes, don't crash
+        table.add_row(path.stem, size_kb, terms)
     console.print(table)
 
 
@@ -4789,6 +4797,21 @@ async def _x_with_store(op):
         await store.close()
 
 
+def _sentiment_distribution(sentiment: dict[str, Any]) -> str | None:
+    """One-line pos/neg/neutral distribution with block bars (None when empty)."""
+    total = sentiment["positive"] + sentiment["negative"] + sentiment["neutral"]
+    if not total:
+        return None
+    pos_pct = round(100 * sentiment["positive"] / total)
+    neg_pct = round(100 * sentiment["negative"] / total)
+    neu_pct = round(100 * sentiment["neutral"] / total)
+    return (
+        f"pos {pos_pct}% {_block_bar(sentiment['positive'], total, width=10)} "
+        f"neg {neg_pct}% {_block_bar(sentiment['negative'], total, width=10)} "
+        f"neutral {neu_pct}% {_block_bar(sentiment['neutral'], total, width=10)}"
+    )
+
+
 @x_app.command(name="sessions")
 def x_sessions(
     limit: int = typer.Option(50, "--limit", min=1, max=500, help="Max sessions to list"),
@@ -4942,6 +4965,30 @@ def x_export(
     rprint(f"Wrote {count} rows to {out_path}")
 
 
+@x_app.command(name="timeline")
+def x_timeline(
+    session_id: str = typer.Argument(..., help="Session id to export the timeline for"),
+    out: str = typer.Option("", "--out", help="Output CSV path (default: {data_dir}/x_timeline_<id>.csv)"),
+    limit: int = typer.Option(500, "--limit", min=1, max=500, help="Max tweets to include"),
+) -> None:
+    """Export a session's per-day sentiment timeline to a CSV file."""
+    from awareness.xscraper.analyze import export_timeline_csv  # noqa: PLC0415
+
+    settings = get_settings()
+    assert settings.data_dir is not None
+    out_path = Path(out) if out else settings.data_dir / f"x_timeline_{session_id}.csv"
+
+    async def _export(store):
+        return await export_timeline_csv(store, session_id, out_path, limit=limit)
+
+    try:
+        count = asyncio.run(_x_with_store(_export))
+    except KeyError:
+        rprint(f"[red]session {session_id!r} not found[/red]")
+        raise typer.Exit(code=2) from None
+    rprint(f"Wrote {count} day-rows to {out_path}")
+
+
 @x_app.command(name="analyze")
 def x_analyze(
     session_id: str = typer.Argument(..., help="Session id to analyze"),
@@ -4971,6 +5018,10 @@ def x_analyze(
     sentiment_table.add_row("neutral", str(sentiment["neutral"]))
     sentiment_table.add_row("avg score", f"{sentiment['avg_score']:.4f}")
     console.print(sentiment_table)
+
+    distribution = _sentiment_distribution(sentiment)
+    if distribution:
+        console.print(distribution)
 
     trend = analysis["sentiment_trend"]
     if trend:

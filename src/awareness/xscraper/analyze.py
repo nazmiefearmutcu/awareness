@@ -5,7 +5,11 @@ dict with author counts, top terms, per-tweet sentiment (reusing the
 :mod:`awareness.sentiment.lexicon` word sets), a per-day sentiment trend and
 timeline, and engagement totals. An empty session yields a fully zeroed dict —
 never an exception. ``export_tweets_csv`` writes a session's tweets out as
-UTF-8 CSV.
+UTF-8 CSV, and ``export_timeline_csv`` writes a per-day sentiment timeline.
+
+The per-tweet scoring (``_score_tweet``/``_classify``) and day bucketing
+(``_bucket_day``/``session_timeline``) are shared by the analysis aggregation
+and the timeline export, so the two surfaces can never disagree.
 """
 
 from __future__ import annotations
@@ -62,6 +66,31 @@ def _score_tweet(text: str) -> tuple[int, int]:
     return pos, neg
 
 
+def _classify(pos: int, neg: int) -> str:
+    """Bucket ``(pos, neg)`` hit counts into a sentiment class."""
+    if pos > neg:
+        return "positive"
+    if neg > pos:
+        return "negative"
+    return "neutral"
+
+
+def _bucket_day(day: dict[str, Any], text: str) -> tuple[str, float]:
+    """Classify one tweet's text and fold it into a per-day bucket.
+
+    *day* carries ``positive``/``negative``/``neutral`` counts and a
+    ``scores`` list; the class count is bumped and the continuous score
+    appended. Returns the tweet's ``(label, score)`` so callers can keep
+    their own aggregate counters in lockstep.
+    """
+    pos, neg = _score_tweet(text)
+    label = _classify(pos, neg)
+    day[label] += 1
+    score = (pos - neg) / (pos + neg + 1e-9)
+    day["scores"].append(score)
+    return label, score
+
+
 async def analyze_session(store: SessionStore, session_id: str) -> dict[str, Any]:
     """Aggregate analytics for a session's captured tweets.
 
@@ -86,19 +115,10 @@ async def analyze_session(store: SessionStore, session_id: str) -> dict[str, Any
         authors[tweet.username] += 1
         terms.update(token for token in _tokenize(tweet.text) if token not in _STOPWORDS)
         date = tweet.created_at.strftime("%Y-%m-%d")
-        pos, neg = _score_tweet(tweet.text)
-        day = trend.setdefault(date, {"pos": 0, "neg": 0, "scores": []})
-        if pos > neg:
-            sentiment["positive"] += 1
-            day["pos"] += 1
-        elif neg > pos:
-            sentiment["negative"] += 1
-            day["neg"] += 1
-        else:
-            sentiment["neutral"] += 1
-        score = (pos - neg) / (pos + neg + 1e-9)
+        day = trend.setdefault(date, {"positive": 0, "negative": 0, "neutral": 0, "scores": []})
+        label, score = _bucket_day(day, tweet.text)
+        sentiment[label] += 1
         scores.append(score)
-        day["scores"].append(score)
         timeline[date] += 1
         likes.append(tweet.metrics.get("likes", 0))
         total_retweets += tweet.metrics.get("retweets", 0)
@@ -118,8 +138,8 @@ async def analyze_session(store: SessionStore, session_id: str) -> dict[str, Any
         "sentiment_trend": [
             {
                 "date": date,
-                "pos": day["pos"],
-                "neg": day["neg"],
+                "pos": day["positive"],
+                "neg": day["negative"],
                 "avg_score": round(sum(day["scores"]) / len(day["scores"]), 4) if day["scores"] else 0.0,
             }
             for date, day in sorted(trend.items())
@@ -134,6 +154,52 @@ async def analyze_session(store: SessionStore, session_id: str) -> dict[str, Any
             "avg_likes": round(sum(likes) / len(likes), 2) if likes else 0.0,
         },
     }
+
+
+async def session_timeline(
+    store: SessionStore,
+    session_id: str,
+    limit: int = 500,
+) -> dict[str, dict[str, Any]]:
+    """Return per-day sentiment buckets for a session's most recent tweets.
+
+    Buckets are keyed by ``YYYY-MM-DD`` and carry ``positive``/``negative``/
+    ``neutral`` counts plus a ``scores`` list, folded with the same per-tweet
+    scoring as :func:`analyze_session` (the shared ``_bucket_day`` helper).
+    Raises :class:`KeyError` for an unknown session; an empty session yields
+    an empty dict.
+    """
+    session = await store.get_session(session_id)
+    if session is None:
+        raise KeyError(f"session {session_id!r} not found")
+    tweets = await store.list_tweets(session_id, limit=limit)
+    days: dict[str, dict[str, Any]] = {}
+    for tweet in tweets:
+        date = tweet.created_at.strftime("%Y-%m-%d")
+        day = days.setdefault(date, {"positive": 0, "negative": 0, "neutral": 0, "scores": []})
+        _bucket_day(day, tweet.text)
+    return days
+
+
+def _write_csv_atomic(destination: Path, header: list[str], rows: list[list[Any]]) -> None:
+    """Write *header* + *rows* to *destination* via a sibling ``.tmp`` file.
+
+    The ``.tmp`` file is atomically renamed over the destination on success
+    and removed on failure, so an interrupted write never leaves a
+    half-written file behind.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = destination.with_name(destination.name + ".tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(header)
+            writer.writerows(rows)
+        os.replace(tmp_path, destination)
+    except Exception:
+        # Never leave a half-written .tmp behind on failure.
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 async def export_tweets_csv(
@@ -154,31 +220,51 @@ async def export_tweets_csv(
     if session is None:
         raise KeyError(f"session {session_id!r} not found")
     tweets = await store.list_tweets(session_id, limit=limit)
-    destination = Path(out_path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = destination.with_name(destination.name + ".tmp")
-    try:
-        with tmp_path.open("w", encoding="utf-8", newline="") as fh:
-            writer = csv.writer(fh)
-            writer.writerow(
-                ["tweet_id", "created_at", "username", "text", "likes", "retweets", "lang", "source"]
-            )
-            for tweet in tweets:
-                writer.writerow(
-                    [
-                        tweet.tweet_id,
-                        tweet.created_at.isoformat(),
-                        tweet.username,
-                        tweet.text,
-                        tweet.metrics.get("likes", 0),
-                        tweet.metrics.get("retweets", 0),
-                        tweet.lang or "",
-                        tweet.source,
-                    ]
-                )
-        os.replace(tmp_path, destination)
-    except Exception:
-        # W1 finding 5: never leave a half-written .tmp behind on failure.
-        tmp_path.unlink(missing_ok=True)
-        raise
+    header = ["tweet_id", "created_at", "username", "text", "likes", "retweets", "lang", "source"]
+    rows = [
+        [
+            tweet.tweet_id,
+            tweet.created_at.isoformat(),
+            tweet.username,
+            tweet.text,
+            tweet.metrics.get("likes", 0),
+            tweet.metrics.get("retweets", 0),
+            tweet.lang or "",
+            tweet.source,
+        ]
+        for tweet in tweets
+    ]
+    _write_csv_atomic(Path(out_path), header, rows)
     return len(tweets)
+
+
+async def export_timeline_csv(
+    store: SessionStore,
+    session_id: str,
+    out_path: str | Path,
+    limit: int = 500,
+) -> int:
+    """Write a session's per-day sentiment timeline to *out_path*; return day count.
+
+    Rows carry (date, tweet_count, pos, neg, neutral, avg_score) derived from
+    the SAME per-tweet scoring as :func:`analyze_session` (shared
+    :func:`session_timeline` bucketing), so per-day counts sum to the
+    analysis's aggregate sentiment. Written atomically via a sibling ``.tmp``
+    path like :func:`export_tweets_csv`. Raises :class:`KeyError` for an
+    unknown session; an empty session writes a header-only file and returns 0.
+    """
+    days = await session_timeline(store, session_id, limit=limit)
+    header = ["date", "tweet_count", "pos", "neg", "neutral", "avg_score"]
+    rows = [
+        [
+            date,
+            len(day["scores"]),
+            day["positive"],
+            day["negative"],
+            day["neutral"],
+            round(sum(day["scores"]) / len(day["scores"]), 4),
+        ]
+        for date, day in sorted(days.items())
+    ]
+    _write_csv_atomic(Path(out_path), header, rows)
+    return len(days)

@@ -96,6 +96,8 @@ async def test_unknown_session_returns_404(api_app: FastAPI) -> None:
         assert r.status_code == 404
         r = await client.get("/x/sessions/does-not-exist/tweets.csv")
         assert r.status_code == 404
+        r = await client.get("/x/sessions/does-not-exist/timeline.csv")
+        assert r.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -138,6 +140,56 @@ async def test_tweets_csv_empty_session_has_header_only(api_app: FastAPI) -> Non
         rows = list(csv.reader(io.StringIO(r.text)))
         assert rows == [[
             "tweet_id", "created_at", "username", "text", "likes", "retweets", "lang", "source",
+        ]]
+
+
+@pytest.mark.asyncio
+async def test_timeline_csv_export_endpoint(api_app: FastAPI) -> None:
+    async with _client(api_app) as client:
+        r = await client.post("/x/sessions", json={"keywords": ["bitcoin"]})
+        assert r.status_code == 200, r.text
+        session_id = r.json()["session_id"]
+
+        r = await client.post(f"/x/sessions/{session_id}/simulate", json={"n_tweets": 5})
+        assert r.status_code == 200, r.text
+
+        r = await client.get(f"/x/sessions/{session_id}/timeline.csv")
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("text/csv")
+        assert r.headers["content-disposition"] == (
+            f'attachment; filename="session-{session_id}-timeline.csv"'
+        )
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert rows[0] == [
+            "date", "tweet_count", "pos", "neg", "neutral", "avg_score",
+        ]
+        assert sum(int(row[1]) for row in rows[1:]) == 5
+
+        r = await client.get(f"/x/sessions/{session_id}/analysis")
+        assert r.status_code == 200, r.text
+        analysis = r.json()
+        assert sum(int(row[2]) for row in rows[1:]) == analysis["sentiment"]["positive"]
+        assert sum(int(row[3]) for row in rows[1:]) == analysis["sentiment"]["negative"]
+        assert sum(int(row[4]) for row in rows[1:]) == analysis["sentiment"]["neutral"]
+
+        r = await client.get(f"/x/sessions/{session_id}/timeline.csv", params={"limit": 2})
+        assert r.status_code == 200, r.text
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert sum(int(row[1]) for row in rows[1:]) == 2
+
+
+@pytest.mark.asyncio
+async def test_timeline_csv_empty_session_has_header_only(api_app: FastAPI) -> None:
+    async with _client(api_app) as client:
+        r = await client.post("/x/sessions", json={"keywords": ["ai"]})
+        assert r.status_code == 200, r.text
+        session_id = r.json()["session_id"]
+
+        r = await client.get(f"/x/sessions/{session_id}/timeline.csv")
+        assert r.status_code == 200, r.text
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert rows == [[
+            "date", "tweet_count", "pos", "neg", "neutral", "avg_score",
         ]]
 
 

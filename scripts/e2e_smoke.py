@@ -15,6 +15,9 @@ LocalFixtureAdapter (no network):
     9. saved      — POST /saved → GET /saved → GET /saved/{id}/run → DELETE
     10. x          — POST /x/sessions → simulate → analysis → tweets
     11. report    — CLI ``report --json`` + ``alerts history --json``
+    12. topicx    — /topicx/lifecycle (phase + counts) / emerging / impact
+    13. qualityx  — /qualityx/history + /qualityx/current via the API
+    14. briefing  — CLI ``briefing --save`` + ``briefing --json``
 
 Usage:
     AW_PROJECT_ROOT=/tmp/aware-root .venv/bin/python scripts/e2e_smoke.py
@@ -66,6 +69,11 @@ from awareness.workers.engine import WorkerEngine
 
 CORPUS_TERM = "climate"
 ABSENT_TERM = "zzzqzx"
+
+# Topicx lifecycle phases asserted by stage_topicx. STABLE is deliberately
+# excluded: the fixture corpus is too fresh (all climate docs within 12h of
+# now) to ever classify as STABLE, so the assertion is deterministic.
+_TOPICX_PHASES = frozenset({"EMERGING", "EXPANDING", "PEAKING", "DECLINING", "DORMANT"})
 
 FIXTURE_DOCS: list[dict[str, Any]] = [
     {
@@ -173,11 +181,16 @@ FIXTURE_DOCS: list[dict[str, Any]] = [
     },
 ]
 
-# fetch_ts spread backwards from now so every stage sees the corpus inside
-# its rolling window: alerts (window_hours), digest (7d), sentiment (14d).
+# fetch_ts anchored so every stage sees the corpus inside its rolling
+# window: alerts (window_hours=72), digest (7d), sentiment (14d). Doc 6 sits
+# at exactly 6 days back (= end - 6d of the /qualityx/history?days=7
+# window) so the FIRST history point has total > 0; the climate docs stay
+# within 12h of now so /topicx/lifecycle classifies deterministically
+# (EMERGING or EXPANDING, never the excluded STABLE phase).
+_FETCH_OFFSETS_HOURS = (0, 26, 3, 6, 8, 144, 12, 30)
 _now = datetime.now(UTC)
 for _i, _doc in enumerate(FIXTURE_DOCS):
-    _doc["fetch_ts"] = (_now - timedelta(hours=6 * _i)).isoformat()
+    _doc["fetch_ts"] = (_now - timedelta(hours=_FETCH_OFFSETS_HOURS[_i])).isoformat()
 
 # Environment leaks from `tail start` / `start` that must not leak across
 # runs (mirrors tests/conftest.py's tmp_project fixture).
@@ -544,6 +557,110 @@ def stage_report(root: Path) -> dict[str, Any]:
     return {"total_captures": total_captures, "firings": payload.get("firings")}
 
 
+# ── 12. topicx ─────────────────────────────────────────────────────────
+
+
+def stage_topicx(root: Path) -> dict[str, Any]:
+    """Topic lifecycle / emerging / source-impact via the API TestClient."""
+    app = _build_app()
+    with TestClient(app) as client:
+        r = client.get("/topicx/lifecycle", params={"term": CORPUS_TERM, "window_days": 7})
+        _check(
+            r.status_code == 200,
+            f"/topicx/lifecycle -> {r.status_code}: {r.text[:300]}",
+        )
+        body = r.json()
+        _check(
+            body.get("phase") in _TOPICX_PHASES,
+            f"/topicx/lifecycle unexpected phase {body.get('phase')!r} "
+            f"(expected one of {sorted(_TOPICX_PHASES)})",
+        )
+        counts = body.get("counts") or []
+        _check(len(counts) > 0, f"/topicx/lifecycle counts empty for {CORPUS_TERM!r}")
+
+        r = client.get("/topicx/emerging", params={"limit": 5})
+        _check(r.status_code == 200, f"/topicx/emerging -> {r.status_code}: {r.text[:300]}")
+        emerging = r.json()
+        _check(isinstance(emerging, list), "/topicx/emerging did not return a list")
+
+        r = client.get("/topicx/impact", params={"limit": 5})
+        _check(r.status_code == 200, f"/topicx/impact -> {r.status_code}: {r.text[:300]}")
+        impact = r.json()
+        _check(isinstance(impact, list), "/topicx/impact did not return a list")
+    return {
+        "phase": body["phase"],
+        "counts": len(counts),
+        "emerging": len(emerging),
+        "impact": len(impact),
+    }
+
+
+# ── 13. qualityx ───────────────────────────────────────────────────────
+
+
+def stage_qualityx(root: Path) -> dict[str, Any]:
+    """Corpus-quality time series + current snapshot via the API TestClient."""
+    app = _build_app()
+    with TestClient(app) as client:
+        r = client.get("/qualityx/history", params={"days": 7})
+        _check(r.status_code == 200, f"/qualityx/history -> {r.status_code}: {r.text[:300]}")
+        points = (r.json().get("points") or [])
+        _check(len(points) >= 1, "/qualityx/history returned no points")
+        _check(
+            int(points[0].get("total", 0)) > 0,
+            f"/qualityx/history first point total == 0: {points[0]}",
+        )
+
+        r = client.get("/qualityx/current")
+        _check(r.status_code == 200, f"/qualityx/current -> {r.status_code}: {r.text[:300]}")
+        current = r.json()
+        total_captures = int(current.get("total_captures", 0))
+        _check(total_captures > 0, "/qualityx/current total_captures == 0")
+    return {
+        "history_points": len(points),
+        "first_total": int(points[0]["total"]),
+        "total_captures": total_captures,
+    }
+
+
+# ── 14. briefing ──────────────────────────────────────────────────────
+
+
+def stage_briefing(root: Path) -> dict[str, Any]:
+    """CLI ``briefing``: --save persists JSON under {data_dir}/briefings/ and
+    --json prints a parseable object; both read settings from the flow's env
+    (mirrors stage_report)."""
+    runner = CliRunner()
+    settings = _get_settings()
+    _check(settings.data_dir is not None, "settings.data_dir is None")
+    briefings_dir = settings.data_dir / "briefings"
+    expected_path = briefings_dir / f"{datetime.now(UTC):%Y-%m-%d}.json"
+
+    result = runner.invoke(cli_app, ["briefing", "--days", "3", "--no-gdelt", "--save"])
+    if result.exit_code != 0:
+        raise SmokeError(f"briefing --save exited {result.exit_code}: {result.output[-500:]}")
+    _check(expected_path.exists(), f"briefing --save file not written: {expected_path}")
+    saved = json.loads(expected_path.read_text(encoding="utf-8"))
+    _check(
+        "movers" in saved and "top_terms" in saved,
+        "saved briefing missing movers/top_terms keys",
+    )
+
+    result = runner.invoke(cli_app, ["briefing", "--days", "3", "--no-gdelt", "--json"])
+    if result.exit_code != 0:
+        raise SmokeError(f"briefing --json exited {result.exit_code}: {result.output[-500:]}")
+    payload = json.loads(result.output)
+    _check(
+        "movers" in payload and "top_terms" in payload,
+        "briefing --json missing movers/top_terms keys",
+    )
+    return {
+        "saved_path": str(expected_path),
+        "movers": len(payload["movers"]),
+        "top_terms": len(payload["top_terms"]),
+    }
+
+
 # ── orchestrator ────────────────────────────────────────────────────────
 
 
@@ -564,6 +681,9 @@ def run_e2e_flow(project_root: Path) -> dict[str, Any]:
     results["saved"] = stage_saved(project_root)
     results["x"] = stage_x(project_root)
     results["report"] = stage_report(project_root)
+    results["topicx"] = stage_topicx(project_root)
+    results["qualityx"] = stage_qualityx(project_root)
+    results["briefing"] = stage_briefing(project_root)
     return results
 
 

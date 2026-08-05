@@ -1586,6 +1586,8 @@ async function refreshDashboard() {
   void refreshDashSaved();
   // Corpus-quality history band (same cadence guard).
   void refreshDashQuality();
+  // Today at a glance band (same cadence guard).
+  void refreshDashGlance();
 
   return { status, dedup };
 }
@@ -2555,7 +2557,7 @@ function renderBarChart(el, points, { color = "var(--accent, #0e9b8d)", maxBars 
     const col = document.createElement("div");
     const h = Math.max(2, Math.round((p.count / max) * 110));
     col.style.cssText = `width:14px;height:${h}px;background:${color};border-radius:2px 2px 0 0;flex:0 0 auto;`;
-    col.title = `${p.ts ? p.ts.slice(0, 10) : "?"} — ${p.count}`;
+    col.title = `${p.ts ? p.ts.slice(0, 10) : "?"} — ${p.count}${p.unit || ""}`;
     wrap.appendChild(col);
   }
   el.appendChild(wrap);
@@ -2916,6 +2918,7 @@ async function loadAlertsView() {
     renderAlertsRules(rules || []);
     updateAlertsStatus(status || {});
     renderAlertsFirings(firings || []);
+    renderAlertTrend(alertTrendDaily(firings || []));
   } catch (err) {
     toast("alerts load failed: " + err.message, "err");
   }
@@ -3136,6 +3139,7 @@ async function loadFiringsLog() {
   try {
     const firings = await api("/alerts/firings?limit=50");
     renderAlertsFirings(firings || []);
+    renderAlertTrend(alertTrendDaily(firings || []));
   } catch (err) {
     toast("firings refresh failed: " + err.message, "err");
   }
@@ -3187,6 +3191,35 @@ function renderAlertsFirings(firings) {
     body.appendChild(row);
     body.appendChild(detailRow);
   }
+}
+
+/** Daily firing counts for the trailing `days` days (zero-filled).
+ *  Pure — no DOM. Buckets are UTC calendar days ending today. */
+function alertTrendDaily(firings, days = 14) {
+  const now = new Date();
+  const buckets = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(now.getDate() - i);
+    buckets.push({ ts: isoDay(d), count: 0 });
+  }
+  const byDay = new Map(buckets.map((b) => [b.ts, b]));
+  for (const f of firings || []) {
+    const t = f && f.fired_at ? new Date(f.fired_at) : null;
+    if (!t || Number.isNaN(t.getTime())) continue;
+    const bucket = byDay.get(isoDay(t));
+    if (bucket) bucket.count += 1;
+  }
+  return buckets;
+}
+
+/** Render the alert trend mini-chart: firings per day, last 14 days. */
+function renderAlertTrend(daily) {
+  const box = $("#al-trend-chart");
+  const meta = $("#al-trend-meta");
+  if (!box) return;
+  if (meta) meta.textContent = `last ${daily.length} days`;
+  renderBarChart(box, daily, { color: "#d97757" });
 }
 
 // ── Saved searches ────────────────────────────────────────────
@@ -4040,7 +4073,7 @@ function renderQualityHistory(data) {
   if (!dupBox || !domBox || !body) return;
   const points = (data && data.points) || [];
   if (meta) meta.textContent = data && data.days ? `${data.days}d window` : "—";
-  renderBarChart(dupBox, points.map((p) => ({ ts: p.ts, count: Math.round((p.duplicate_ratio || 0) * 100) })), { color: "#d97757" });
+  renderBarChart(dupBox, points.map((p) => ({ ts: p.ts, count: Math.round((p.duplicate_ratio || 0) * 100), unit: "%" })), { color: "#d97757" });
   renderBarChart(domBox, points.map((p) => ({ ts: p.ts, count: p.new_domains || 0 })));
   body.textContent = "";
   if (!points.length) {
@@ -4171,6 +4204,85 @@ async function refreshDashSaved() {
   if (sig === dashSavedSig && dashSavedTick % 12 !== 0) return;
   dashSavedSig = sig;
   renderDashSaved(saved || []);
+}
+
+// ── Today at a glance band (dashboard) ────────────────────────
+let dashGlanceSig = null;
+let dashGlanceTick = 0;
+
+/** Last-24h firing count + most-fired rule. Pure — no DOM. */
+function alertActivity(firings) {
+  const out = { firings24h: 0, topRule: null, topCount: 0 };
+  const cutoff = Date.now() - 24 * 3600 * 1000;
+  const counts = new Map();
+  for (const f of firings || []) {
+    const t = f && f.fired_at ? new Date(f.fired_at).getTime() : NaN;
+    if (!Number.isFinite(t)) continue;
+    if (t < cutoff) continue;
+    out.firings24h += 1;
+    const rule = f.rule_name || f.rule_id || "unknown";
+    const n = (counts.get(rule) || 0) + 1;
+    counts.set(rule, n);
+    if (n > out.topCount) { out.topCount = n; out.topRule = rule; }
+  }
+  return out;
+}
+
+/** Render the "Today at a glance" band: last-24h alert activity + emerging
+ *  topic chips that deep-link into the Analytics lifecycle band. */
+function renderDashGlance(data) {
+  const box = $("#dash-glance-alerts");
+  const chips = $("#dash-glance-topics");
+  const meta = $("#dash-glance-meta");
+  if (!box || !chips) return;
+  const act = alertActivity((data && data.firings) || []);
+  if (meta) meta.textContent = act.topRule ? `top rule: ${act.topRule}` : "no firings in 24h";
+  clear(box);
+  box.appendChild(
+    el("div", { class: "dash-glance-kpi" },
+      el("div", { class: "dash-glance-kpi-label", text: "Firings (24h)" }),
+      el("div", { class: "dash-glance-kpi-value", text: fmt(act.firings24h) })
+    )
+  );
+  box.appendChild(
+    el("div", { class: "dash-glance-kpi" },
+      el("div", { class: "dash-glance-kpi-label", text: "Top rule" }),
+      el("div", { class: "dash-glance-kpi-value dash-glance-kpi-term", text: act.topRule || "—" })
+    )
+  );
+  renderChips(chips, (data && data.topics) || [], {
+    key: (x) => x.term,
+    label: (x) => `${x.term} ×${x.count}`,
+    title: (x) => `first ${String(x.first_seen || "").slice(0, 10)} · ${x.domains_covered} domains`,
+    onPick: (x) => {
+      $("#an-term-input").value = x.term;
+      navigate("analytics");
+      void loadLifecycle();
+    },
+  });
+}
+
+/** Refresh the dashboard glance band. Rebuilds only when the payload
+ *  changed, or every 12th tick (60 s) to keep staleness low. */
+async function refreshDashGlance() {
+  dashGlanceTick += 1;
+  let firings, topics;
+  try {
+    [firings, topics] = await Promise.all([
+      api("/alerts/firings?limit=50"),
+      api("/topicx/emerging?limit=6"),
+    ]);
+  } catch (_) {
+    return; // non-fatal — dashboard KPIs keep rendering
+  }
+  const data = { firings: firings || [], topics: topics || [] };
+  const sig = JSON.stringify([
+    (firings || []).map((f) => `${f.fired_at || ""}:${f.rule_name || f.rule_id || ""}`),
+    (topics || []).map((x) => `${x.term}:${x.count || 0}`),
+  ]);
+  if (sig === dashGlanceSig && dashGlanceTick % 12 !== 0) return;
+  dashGlanceSig = sig;
+  renderDashGlance(data);
 }
 
 // ── Live activity feed (dashboard rail) ───────────────────────
