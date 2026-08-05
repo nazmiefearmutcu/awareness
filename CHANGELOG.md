@@ -65,6 +65,50 @@ R3-W1 adversarial sweep (6 findings) is fully resolved in this release; see
 - Flaky `test_tui_analytics` key test now reads its source file directly
   instead of `inspect.getsource` (R3-W1-6).
 
+### Ralph Loop Round 3 — iterations 2-3 (`83f84e2`, `1bdbced`)
+
+SPA lifecycle/quality views, briefing email + save, X timeline export, E2E
+14 stages, and the final 100k-doc benchmark. R3-W6 (2 findings) and R3-W10
+(CLEAN + 4 nits) are fully resolved in these commits; see
+[`docs/AUDIT_FINDINGS_2026-08-03.md`](docs/AUDIT_FINDINGS_2026-08-03.md).
+
+- **SPA lifecycle band** — topic phase badge, stats, chart, emerging-topic
+  chips click-to-analyze, and a source-impact table; **quality history
+  band** on the dashboard (dup-% + new-domains charts, per-day table,
+  12-tick refresh guard) (`83f84e2`).
+- **SPA alert-trend mini-chart** — 14-day zero-filled firing trend in the
+  alerts view (pure function, node-tested); **"Today at a glance" band**
+  with 24 h alert KPIs + emerging-topic deep links (`1bdbced`).
+- **`awareness briefing --email`** — reuses the digest SMTP machinery
+  (STARTTLS, env fallbacks, markdown body); **`--save` / `--list-saved`** —
+  atomic `{data_dir}/briefings/YYYY-MM-DD[-name].json`, cron-friendly
+  `--save --json` (`83f84e2`).
+- **X timeline CSV** — shared scoring core (analyze + timeline provably
+  agree), `export_timeline_csv` (per-day pos/neg/neutral/avg),
+  `awareness x timeline` CLI, `GET /x/sessions/{id}/timeline.csv`, and a
+  sentiment-distribution bar in `x analyze` (`1bdbced`).
+- **E2E stages 12–14** — topicx lifecycle/emerging/impact, qualityx
+  history/current, briefing `--save/--json`; 14/14 stages PASS (`1bdbced`).
+
+**Fixes (R3-W6, 2 findings):** qualityx history bucket aggregates now
+computed directly in DuckDB (`GROUP BY`, no 200k-row cap — old days were
+silently zeroed past the cap) with the explicit `c.` alias restored (the
+alias-less `fetch_ts` inside `EXISTS` was an always-true bug); briefing
+sentiment skips the empty last-day bucket (no more fake "▼ sentiment
+crash").
+
+**Fixes (R3-W10, CLEAN + 4 nits):** `_save_briefing` name validated
+`[A-Za-z0-9_-]` with `.tmp` cleaned on failure; `_list_saved_briefings`
+TOCTOU closed (stat inside try); dup-ratio tooltip shows its '%' unit;
+qualityx GROUP BY scale-verified at 1M rows (linear 1.3 s, no fabricated
+zero days at 260k, no O(n²) EXISTS).
+
+**Performance (final 100k benchmark):** at `1bdbced`, every warm op ≤ 1.7 s
+under a contended host (load 41–75); domain_rank **×31.6** vs Round 1,
+term_frequency ×2.1, detect_spikes ×2.0, export 10k rows in 1.319 s; FTS
+delta maintenance search-wall 5.57 s (FTS-internal 0.466 s) —
+[`docs/benchmarks/perf_final_round3.md`](docs/benchmarks/perf_final_round3.md).
+
 ---
 
 ## [0.2.0] — 2026-08-04

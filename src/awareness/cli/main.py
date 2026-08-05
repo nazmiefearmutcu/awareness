@@ -3719,6 +3719,199 @@ def _bucket_label(granularity: str) -> str:
     return "week of" if granularity == "week" else "month of"
 
 
+# ── lifecycle ───────────────────────────────────────────────────────────────
+
+# Phase badge colors mirror the SPA's ``phaseClass`` styles (style.css
+# ``.an-life-badge.is-*``): EMERGING emerald, EXPANDING blue, PEAKING amber,
+# DECLINING red, DORMANT/STABLE gray.
+_LIFECYCLE_PHASE_STYLES: dict[str, str] = {
+    "EMERGING": "bold #3ad29b",
+    "EXPANDING": "bold #5ab0ff",
+    "PEAKING": "bold #f5a623",
+    "DECLINING": "bold #ff6178",
+    "DORMANT": "dim",
+    "STABLE": "dim",
+}
+
+_MAX_LIFECYCLE_TERM_LEN = 80
+_MAX_LIFECYCLE_COMPARE_TERMS = 10
+
+
+def _validate_lifecycle_term(term: str) -> str:
+    """Strip + validate a lifecycle term; :class:`typer.BadParameter` on bad input.
+
+    Mirrors ``TopicEngine._validate_term`` (empty / length caps) and tightens
+    it for the CLI: at most 80 characters and no control characters.
+    """
+    cleaned = (term or "").strip()
+    if not cleaned:
+        raise typer.BadParameter("term must not be empty")
+    if len(cleaned) > _MAX_LIFECYCLE_TERM_LEN:
+        raise typer.BadParameter(f"term must be at most {_MAX_LIFECYCLE_TERM_LEN} characters")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in cleaned):
+        raise typer.BadParameter("term must not contain control characters")
+    return cleaned
+
+
+def _lifecycle_phase_badge(phase: str) -> str:
+    """Rich-styled phase badge (colors match the SPA phaseClass styles)."""
+    style = _LIFECYCLE_PHASE_STYLES.get(phase, "dim")
+    return f"[{style}]{escape(phase)}[/]"
+
+
+def _lifecycle_stats_line(lc: Any) -> str:
+    """One-line stats strip, mirroring the SPA's ``lifecycleStatsText``."""
+    peak_date = lc.peak_date.strftime("%Y-%m-%d") if lc.peak_date else "—"
+    first = lc.first_seen.strftime("%Y-%m-%d") if lc.first_seen else "—"
+    last = lc.last_seen.strftime("%Y-%m-%d") if lc.last_seen else "—"
+    return (
+        f"slope 7d [bold]{lc.slope_7d:+.3f}[/bold] · "
+        f"peak [bold]{lc.peak_count:,}[/bold] on {peak_date} · "
+        f"first {first} · last {last}"
+    )
+
+
+def _render_lifecycle(lc: Any, *, days: int, chart: bool) -> None:
+    """Phase badge + stats strip + daily counts table (optional sparkline)."""
+    console.print(
+        f"[bold cyan]{escape(lc.term)}[/bold cyan] — {_lifecycle_phase_badge(lc.phase)}"
+    )
+    console.print(_lifecycle_stats_line(lc))
+    table = Table(title=f"Daily counts (last {days} days)")
+    table.add_column("Date", style=banner.C_HI)
+    table.add_column("Count", justify="right")
+    for bucket in lc.counts:
+        table.add_row(bucket.ts.strftime("%Y-%m-%d"), str(bucket.count))
+    console.print(table)
+    if chart:
+        console.print(
+            "[dim]Sparkline (per day, window max = "
+            f"{max((b.count for b in lc.counts), default=0)}):[/dim] "
+            + _sparkline([float(b.count) for b in lc.counts])
+        )
+
+
+def _render_compare(rows: list[Any]) -> None:
+    """Side-by-side lifecycle table for ``--compare``."""
+    table = Table(title="Lifecycle comparison")
+    table.add_column("term", style=banner.C_HI)
+    table.add_column("phase")
+    table.add_column("slope_7d", justify="right")
+    table.add_column("peak", justify="right")
+    table.add_column("first_seen")
+    for lc in rows:
+        table.add_row(
+            escape(lc.term),
+            _lifecycle_phase_badge(lc.phase),
+            f"{lc.slope_7d:+.3f}",
+            str(lc.peak_count),
+            lc.first_seen.strftime("%Y-%m-%d") if lc.first_seen else "—",
+        )
+    console.print(table)
+
+
+def _render_emerging(rows: list[Any]) -> None:
+    """Corpus-wide emerging terms table for ``--emerging``."""
+    table = Table(title="Emerging terms (first seen within 3 days)")
+    table.add_column("term", style=banner.C_HI)
+    table.add_column("count", justify="right")
+    table.add_column("first_seen")
+    table.add_column("domains", justify="right")
+    for topic in rows:
+        table.add_row(
+            escape(topic.term),
+            str(topic.count),
+            topic.first_seen.strftime("%Y-%m-%d"),
+            str(topic.domains_covered),
+        )
+    console.print(table)
+
+
+@app.command(name="lifecycle")
+def lifecycle(  # noqa: PLR0917 (7 params: TERM + window/chart/json/mode flags)
+    term: str = typer.Argument(
+        "",
+        metavar="TERM",
+        help="Term to analyse (ignored by --compare / --emerging)",
+    ),
+    days: int = typer.Option(
+        30, "--days", min=1, max=365, help="Window length in days"
+    ),
+    chart: bool = typer.Option(False, "--chart", help="Append a sparkline of the daily counts"),
+    json_out: bool = typer.Option(False, "--json", help="Output the lifecycle payload as JSON"),
+    compare: str = typer.Option(
+        "",
+        "--compare",
+        help="Comma-separated terms to compare lifecycles for (overrides TERM)",
+    ),
+    emerging: bool = typer.Option(
+        False, "--emerging", help="List corpus-wide emerging topics instead"
+    ),
+    limit: int = typer.Option(
+        20, "--limit", min=1, max=500, help="Max rows for --emerging"
+    ),
+) -> None:
+    """Topic lifecycle: phase badge, daily counts, slope and peak stats.
+
+    Renders the TopicEngine lifecycle for TERM over the trailing --days
+    window: a color-coded phase badge (EMERGING / EXPANDING / PEAKING /
+    DECLINING / DORMANT / STABLE — same colors as the dashboard), a one-line
+    stats strip (slope_7d, peak, first/last seen) and a per-day counts table
+    with an optional --chart sparkline. --compare prints a side-by-side table
+    for up to 10 comma-separated terms (and wins over TERM); --emerging lists
+    corpus-wide terms first seen in the window, ranked by volume. A term with
+    no captures prints a clean "no captures" message and exits 0.
+    """
+    settings = get_settings()
+    idx = DuckDbIndex(
+        db_path=settings.duckdb_path(),
+        jsonl_dir=settings.staging_jsonl_dir(),
+        iceberg_warehouse=settings.iceberg_warehouse,
+    )
+    from awareness.topicx.engine import TopicEngine  # noqa: PLC0415
+
+    try:
+        engine = TopicEngine(idx)
+        compare_terms = [t.strip() for t in (compare or "").split(",") if t.strip()]
+        if compare_terms:
+            if len(compare_terms) > _MAX_LIFECYCLE_COMPARE_TERMS:
+                raise typer.BadParameter(
+                    f"at most {_MAX_LIFECYCLE_COMPARE_TERMS} terms are supported"
+                )
+            for raw in compare_terms:
+                _validate_lifecycle_term(raw)
+            if term and not json_out:
+                rprint(f"[dim]--compare given; ignoring TERM {term!r}[/dim]")
+            _render_compare(engine.compare_lifecycles(compare_terms, window_days=days))
+            return
+        if emerging:
+            _render_emerging(engine.top_emerging(window_days=days, limit=limit))
+            return
+        cleaned = _validate_lifecycle_term(term)
+        lc = engine.lifecycle(cleaned, window_days=days)
+        if not lc.counts or sum(b.count for b in lc.counts) == 0:
+            if json_out:
+                print(
+                    json.dumps(
+                        {
+                            "message": "no captures for term",
+                            "term": lc.term,
+                            "window_days": days,
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                rprint(f"[yellow]No captures for {lc.term!r} in the last {days} days.[/yellow]")
+            return
+        if json_out:
+            print(json.dumps(lc.model_dump(mode="json"), indent=2, default=str))
+            return
+        _render_lifecycle(lc, days=days, chart=chart)
+    finally:
+        idx.close()
+
+
 def _block_bar(count: int, max_count: int, width: int = 20) -> str:
     """Block-character bar scaled to *max_count* (empty when *count* is 0)."""
     if max_count <= 0 or count <= 0:
@@ -4391,8 +4584,10 @@ def _save_briefing(payload: dict[str, Any], settings: Any, name: str) -> Path:
     partial briefing.
     """
     assert settings.data_dir is not None
-    if name and not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-        raise typer.BadParameter("briefing name may only contain letters, digits, _ and -")
+    if name and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+        raise typer.BadParameter(
+            "briefing name may only contain letters, digits, _ and - (max 64 chars)"
+        )
     briefings_dir = settings.data_dir / "briefings"
     briefings_dir.mkdir(parents=True, exist_ok=True)
     date_part = str(payload["generated_at"])[:10]
@@ -4403,7 +4598,12 @@ def _save_briefing(payload: dict[str, Any], settings: Any, name: str) -> Path:
         tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp_path.replace(out_path)
     except Exception:
-        tmp_path.unlink(missing_ok=True)
+        # W14-F2: suppress OSError from cleanup so it can never mask the
+        # original failure (e.g. ENAMETOOLONG on an over-long name).
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
     return out_path
 
@@ -4962,6 +5162,9 @@ def x_export(
     except KeyError:
         rprint(f"[red]session {session_id!r} not found[/red]")
         raise typer.Exit(code=2) from None
+    except OSError as exc:
+        rprint(f"[red]cannot write {out_path}: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
     rprint(f"Wrote {count} rows to {out_path}")
 
 
@@ -4986,6 +5189,11 @@ def x_timeline(
     except KeyError:
         rprint(f"[red]session {session_id!r} not found[/red]")
         raise typer.Exit(code=2) from None
+    except OSError as exc:
+        # W14-F1: write failures (dir destination, read-only parent, ENOSPC)
+        # must be friendly, not a raw traceback.
+        rprint(f"[red]cannot write {out_path}: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
     rprint(f"Wrote {count} day-rows to {out_path}")
 
 

@@ -431,3 +431,38 @@ CliRunner capture), applied to `briefing` / `report` too.
 W6 ("fix-the-fixes — adversarial review of the R3-ITER1 code: topicx,
 qualityx, FTS delta, briefing, W1 fixes") as the scheduled next step.
 Status will be updated here when the report lands.
+
+---
+
+## Ralph Loop Round 3 — iterations 2-3 (2026-08-05)
+
+Iteration 2 = `83f84e2` ("feat: SPA lifecycle/quality views, briefing
+email+save; fix: R3-W6"), iteration 3 = `1bdbced` ("feat: SPA alert trend +
+glance band, X timeline CSV; E2E 14 stages; fix: W10 nits"). Every RESOLVED
+claim below was verified against `git show --stat` of the cited commit
+(touched files cited, not the commit message alone).
+
+### R3-W6 (adversarial review of iteration 1) — 2 findings, RESOLVED in `83f84e2`
+
+| ID | Area | Finding | Status | Verification |
+|----|------|---------|--------|-------------|
+| R3-W6-1 | qualityx | `history()` bucket aggregates computed in Python over a **200k-row cap** — days past the cap were silently zeroed into fabricated empty buckets; the alias-less `fetch_ts` inside the `EXISTS` subquery resolved to `o` (always-true) instead of `c` | RESOLVED `83f84e2` | aggregates moved into DuckDB `GROUP BY` (no row cap); explicit `c.` alias restored (`src/awareness/qualityx/engine.py`, −/+42 lines in the commit diff) |
+| R3-W6-2 | briefing | empty last-day sentiment bucket (avg_score 0.0 by construction) rendered a fake "▼ sentiment crash" | RESOLVED `83f84e2` | empty buckets skipped in the sentiment mover (`src/awareness/cli/main.py`, +245 lines in the diff) |
+
+### R3-W10 (adversarial review of iteration 2) — CLEAN, 4 sub-threshold nits, RESOLVED in `1bdbced`
+
+**CLEAN** (0 findings ≥ 80 confidence); 4 sub-threshold nits fixed:
+
+| ID | Area | Nit | Status | Verification |
+|----|------|-----|--------|-------------|
+| R3-W10-1 | briefing save | `_save_briefing` accepted arbitrary names; `.tmp` left behind on write failure | RESOLVED `1bdbced` | name validated `[A-Za-z0-9_-]`; `.tmp` cleaned on the failure path (`src/awareness/cli/main.py`, +59 lines in the diff) |
+| R3-W10-2 | briefing list | `_list_saved_briefings` stat outside try — TOCTOU on the saved dir | RESOLVED `1bdbced` | stat moved inside the try block (`src/awareness/cli/main.py`) |
+| R3-W10-3 | SPA | dup-ratio bar tooltip missing its unit | RESOLVED `1bdbced` | tooltip now shows '%' (`src/awareness/api/web/app.js`, +116 lines in the diff) |
+| R3-W10-4 | qualityx | scale verification missing for the W6 GROUP BY rewrite | RESOLVED `1bdbced` | verified at 1M rows: GROUP BY linear (1.3 s), no fabricated zero days at 260k, no O(n²) EXISTS (decorrelated hash semi-joins) — noted in the commit message, code unchanged |
+
+### R3-W14 (fix-the-fixes review of iteration 3) — **in progress**
+
+**In progress.** As of this writing (2026-08-05) `.ralph/loop-state.md`
+opens Round 3 / Iteration 4 with W14 ("fix-the-fixes — adversarial review
+of the R3-ITER3 code: SPA trend/glance, X timeline, E2E 14, W10 nits") as
+the scheduled next step. Status will be updated here when the report lands.

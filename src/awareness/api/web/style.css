@@ -2881,3 +2881,15 @@ body{
 }
 .dash-glance-kpi-term { font-size: 13px; }
 .dash-glance-band .an-chips { margin-top: 12px; }
+
+/* Dashboard saved-briefings band: date chips + collapsible viewer */
+.dash-briefings-band .an-chips { margin-top: 0; }
+.dash-briefings-chip { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-briefings-viewer { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.dash-briefings-viewer-summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--accent-soft); }
+.dash-briefings-viewer-meta { color: var(--fg-subtle); font-size: 12px; margin: 6px 0 10px; }
+.dash-briefings-sub { font-size: 12px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.04em; margin: 12px 0 6px; }
+.dash-briefings-mover { display: flex; align-items: baseline; gap: 12px; padding: 4px 0; }
+.dash-briefings-mover-term { color: var(--accent-soft); font-size: 13px; }
+.dash-briefings-mover-meta { color: var(--fg-subtle); font-size: 12px; white-space: nowrap; }
+.dash-briefings-domain { color: var(--fg-mid); font-size: 13px; padding: 3px 0; }

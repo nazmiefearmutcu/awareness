@@ -1588,6 +1588,8 @@ async function refreshDashboard() {
   void refreshDashQuality();
   // Today at a glance band (same cadence guard).
   void refreshDashGlance();
+  // Saved briefings band (same cadence guard).
+  void refreshDashBriefings();
 
   return { status, dedup };
 }
@@ -4283,6 +4285,123 @@ async function refreshDashGlance() {
   if (sig === dashGlanceSig && dashGlanceTick % 12 !== 0) return;
   dashGlanceSig = sig;
   renderDashGlance(data);
+}
+
+// ── Saved briefings band (dashboard) ─────────────────────────
+let dashBriefingsSig = null;
+let dashBriefingsTick = 0;
+
+/** Render the saved-briefings file list as clickable date chips. */
+function renderDashBriefings(items) {
+  const box = $("#dash-briefings-list");
+  if (!box) return;
+  clear(box);
+  const meta = $("#dash-briefings-meta");
+  if (meta) {
+    meta.textContent = fmt(items.length) + (items.length === 1 ? " saved briefing" : " saved briefings");
+  }
+  if (!items.length) {
+    box.appendChild(el("span", { class: "muted", text: "No saved briefings yet — run `awareness briefing --save` to persist one." }));
+    return;
+  }
+  for (const b of items) {
+    const label = b.date + (b.name ? " · " + b.name : "");
+    const chip = el("button", {
+      class: "chip dash-briefings-chip",
+      type: "button",
+      title: b.path || "",
+      text: b.movers_count != null ? `${label} · ${b.movers_count} movers` : label,
+    });
+    chip.addEventListener("click", () => void openDashBriefing(b.date));
+    box.appendChild(chip);
+  }
+}
+
+/** Open the collapsible viewer for one saved briefing and load it. */
+async function openDashBriefing(date) {
+  const viewer = $("#dash-briefings-viewer");
+  if (viewer) viewer.open = true;
+  const meta = $("#dash-briefings-viewer-meta");
+  if (meta) meta.textContent = "loading " + date + "…";
+  try {
+    const res = await api("/briefings/" + encodeURIComponent(date));
+    renderDashBriefingDetail(res);
+  } catch (err) {
+    if (meta) meta.textContent = "load failed: " + err.message;
+    toast("briefing load failed: " + err.message, "err");
+  }
+}
+
+/** Render movers, top-term chips and new domains from one briefing. */
+function renderDashBriefingDetail(res) {
+  const b = (res && res.briefing) || {};
+  const content = (res && res.content) || {};
+  const meta = $("#dash-briefings-viewer-meta");
+  if (meta) meta.textContent = b.generated_at ? `generated ${b.generated_at}` : "generated —";
+
+  const movers = $("#dash-briefings-movers");
+  if (movers) {
+    clear(movers);
+    const list = Array.isArray(content.movers) ? content.movers : [];
+    if (!list.length) {
+      movers.appendChild(el("li", { class: "muted-li", text: "No movers in this briefing." }));
+    } else {
+      for (const m of list) {
+        const li = el("li", { class: "dash-briefings-mover" });
+        li.appendChild(el("span", { class: "dash-briefings-mover-term", text: m.term || "?" }));
+        li.appendChild(el("span", {
+          class: "dash-briefings-mover-meta",
+          text: `count ${m.count != null ? m.count : "—"} · z ${m.zscore != null ? Number(m.zscore).toFixed(1) : "—"}`,
+        }));
+        movers.appendChild(li);
+      }
+    }
+  }
+
+  // Top-term chips reuse renderChips; picking one deep-links into the
+  // Analytics lifecycle band like the glance band's chips do.
+  renderChips($("#dash-briefings-terms"), Array.isArray(content.top_terms) ? content.top_terms : [], {
+    key: (x) => (x && x.term) || x,
+    label: (x) => (x && x.term ? `${x.term} ×${x.count}` : String(x)),
+    onPick: (x) => {
+      const term = (x && x.term) || x;
+      $("#an-term-input").value = term;
+      navigate("analytics");
+      void loadLifecycle();
+    },
+  });
+
+  const domains = $("#dash-briefings-domains");
+  if (domains) {
+    clear(domains);
+    const list = Array.isArray(content.new_domains) ? content.new_domains : [];
+    if (!list.length) {
+      domains.appendChild(el("li", { class: "muted-li", text: "No new domains in this briefing." }));
+    } else {
+      for (const d of list) {
+        domains.appendChild(el("li", {
+          class: "dash-briefings-domain",
+          text: `${d.domain || "?"} (${d.count != null ? d.count : "?"})`,
+        }));
+      }
+    }
+  }
+}
+
+/** Refresh the saved-briefings band. Rebuilds only when the file list
+ *  changed, or every 12th tick (60 s) to keep staleness low. */
+async function refreshDashBriefings() {
+  dashBriefingsTick += 1;
+  let items;
+  try {
+    items = await api("/briefings");
+  } catch (_) {
+    return; // non-fatal — dashboard KPIs keep rendering
+  }
+  const sig = JSON.stringify((items || []).map((b) => `${b.date}:${b.name || ""}:${b.movers_count ?? ""}:${b.size_bytes || ""}`));
+  if (sig === dashBriefingsSig && dashBriefingsTick % 12 !== 0) return;
+  dashBriefingsSig = sig;
+  renderDashBriefings(items || []);
 }
 
 // ── Live activity feed (dashboard rail) ───────────────────────

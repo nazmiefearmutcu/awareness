@@ -1085,6 +1085,7 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
     from awareness.alerts.router import create_alerts_router
     from awareness.alerts.store import AlertStore
     from awareness.analytics.router import create_analytics_router
+    from awareness.briefings.router import create_briefings_router  # noqa: PLC0415
     from awareness.consume.router import wire
     from awareness.corpusx.router import create_corpusx_router
     from awareness.entities.router import create_entities_router
@@ -1098,6 +1099,9 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
     from awareness.topicx.router import create_topicx_router
 
     app.include_router(create_analytics_router(_get_index))
+    # Saved briefings: filesystem-backed (settings.data_dir / "briefings"),
+    # resolved lazily per request so CLI-written files appear without restart.
+    app.include_router(create_briefings_router(lambda: get_settings().data_dir / "briefings"))
     app.include_router(create_corpusx_router(_get_index))
     app.include_router(create_entities_router(_get_index))
     app.include_router(sourceintel_router)
