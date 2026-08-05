@@ -4,6 +4,69 @@ All notable changes to Awareness are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## Unreleased / [0.2.1] — 2026-08-04
+
+Round 3, iteration 1 (`a84a2ab`) — topic lifecycle and quality time-series
+subsystems, GDELT cache and FTS maintenance fixes, and the briefing CLI. The
+R3-W1 adversarial sweep (6 findings) is fully resolved in this release; see
+[`docs/AUDIT_FINDINGS_2026-08-03.md`](docs/AUDIT_FINDINGS_2026-08-03.md).
+
+### Features
+
+- **Topic lifecycle** (`/topicx/*`) — per-term lifecycle phases
+  (EMERGING / EXPANDING / PEAKING / DECLINING / DORMANT / STABLE from a
+  7-day slope + peak, strict precedence), emerging-topics corpus scan,
+  replication-weighted source impact, and per-domain topic dominance:
+  `/topicx/lifecycle`, `/topicx/emerging`, `/topicx/impact`,
+  `/topicx/dominance`.
+- **Quality time series** (`/qualityx/*`) — per-day duplicate / near-dup
+  ratios, new domains (first-ever capture via `MIN(fetch_ts)`), and capture
+  rate, zero-filled over calendar buckets: `/qualityx/history` +
+  `/qualityx/current`, plus `awareness quality --history [DAYS]` with a
+  sparkline.
+- **`awareness briefing`** — one-morning read: z-score movers, top terms,
+  new domains, sentiment shift, alert activity, and GDELT coverage gaps
+  (`--days/--top/--emerging/--json/--no-gdelt`).
+- **`awareness gdelt-gaps`** — the coverage-gap report standalone
+  (`--terms a,b --days N --json`).
+
+### Performance
+
+- **GDELT cache day-range keys** — the disk cache key is now
+  `floor_to_day(start)` + `floor_to_day(end)` instead of the raw timestamps
+  or `window_days`, so identical ranges share one cache entry (the
+  cache-bypass where different `window_days` re-hit the GDELT API is closed).
+- **FTS delta append fast path** — pure-addition batches INSERT into the
+  FTS index instead of rebuilding the whole inverted index; edits/removals
+  still full-rebuild (rare). At 20k corpus + 1k delta: FTS-internal delta
+  rebuild **0.137 s vs 2.243 s full build (~16×)** —
+  [`docs/benchmarks/perf_iter9_report.md`](docs/benchmarks/perf_iter9_report.md).
+
+### Bug fixes
+
+- `HEAD /healthz` no longer 405s — the HEAD alias is actually registered
+  (R3-W1-1).
+- Rate limiter moved **after** auth + CSRF — blocked cross-origin traffic
+  no longer burns the operator's rate-limit budget (R3-W1-2).
+- Origin loopback allow-list extended to `[::1]` and `0.0.0.0` binds
+  (R3-W1-3).
+- `tail.news_floor_kept` discovery label bucketed to low cardinality —
+  no metric-cardinality explosion (R3-W1-4).
+- `export_tweets_csv` cleans up its `.tmp` file on write failure
+  (R3-W1-5).
+- GDELT CLI error paths drop `logger.warning` (stale-handler stream
+  corruption under CliRunner capture) — briefing/report hardened too.
+
+### Testing
+
+- Suite grew ~107 tests (topicx engine/API, qualityx engine/API, FTS delta
+  append, FTS shard append, GDELT cache buckets, briefing + gdelt-gaps +
+  quality-history CLI); full suite green (~1,700+).
+- Flaky `test_tui_analytics` key test now reads its source file directly
+  instead of `inspect.getsource` (R3-W1-6).
+
+---
+
 ## [0.2.0] — 2026-08-04
 
 Delivered by the **Ralph Loop Round 2** (iterations 1–8, commits

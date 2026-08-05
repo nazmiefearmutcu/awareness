@@ -3470,13 +3470,15 @@ def _email_digest(
     smtp_user: str,
     smtp_password: str,
     from_addr: str,
+    delivery_label: str = "Digest",
 ) -> None:
     """Deliver *body* (plain text) to *to_addr* over SMTP (stdlib only).
 
     Explicit --smtp-* flags win; anything unset falls back to the
     SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / EMAIL_FROM env
     vars. Connection / auth / send failures print a rich red error and
-    exit with code 1.
+    exit with code 1. *delivery_label* names the artifact in the success
+    message ("Digest emailed to …" by default; briefing passes "Briefing").
     """
     host = smtp_host or os.environ.get("SMTP_HOST", "")
     if not host:
@@ -3515,7 +3517,7 @@ def _email_digest(
         if user:
             server.login(user, password)
         server.send_message(msg)
-        rprint(f"[green]Digest emailed to {to_addr}[/green]")
+        rprint(f"[green]{delivery_label} emailed to {to_addr}[/green]")
     except Exception as exc:  # connection / auth / send failures
         rprint(f"[red]Email delivery failed:[/red] {escape(str(exc))}")
         raise typer.Exit(code=1) from exc
@@ -4219,6 +4221,11 @@ def _briefing_sentiment(
         if len(buckets) < 2:
             continue
         last = buckets[-1]
+        # W6-F2: an empty last bucket has avg_score 0.0 by construction —
+        # comparing it would fabricate a sentiment crash. No last-day avg
+        # exists when there are no docs; skip.
+        if last.doc_count == 0:
+            continue
         priors = [b for b in buckets[:-1] if b.doc_count > 0]
         if not priors:
             continue
@@ -4300,6 +4307,126 @@ def _briefing_gdelt_gaps(
         ],
         None,
     )
+
+
+def _render_briefing_markdown(payload: dict[str, Any], *, emerging: int) -> str:  # noqa: PLR0912
+    """Plain-text markdown variant of the briefing payload (the email body).
+
+    The briefing command builds one ``payload`` dict (JSON or rich render
+    both come from it); this renderer mirrors ``_render_briefing_text`` in
+    markdown so the emailed copy carries the same sections.
+    """
+    date_part = str(payload["generated_at"])[:10]
+    lines = [
+        f"# Awareness briefing — {date_part}",
+        f"corpus: {payload['total_captures']} captures (last {payload['days']}d)",
+        "",
+        "## Movers",
+    ]
+    movers = payload["movers"][:emerging]
+    if movers:
+        lines.extend(
+            f"- {m['term']} — count {m['count']} (z={m['zscore']:.1f})" for m in movers
+        )
+    else:
+        lines.append("- no spikes in the window")
+    lines.append("")
+    lines.append("## Top terms")
+    top_terms = payload["top_terms"]
+    if top_terms:
+        lines.extend(f"- {t['term']} ({t['count']})" for t in top_terms)
+    else:
+        lines.append("- no terms in the window")
+    lines.append("")
+    lines.append("## New domains")
+    new_domains = payload["new_domains"][:emerging]
+    if new_domains:
+        lines.extend(f"- {d['domain']} ({d['count']})" for d in new_domains)
+    else:
+        lines.append("- no new domains in the window")
+    lines.append("")
+    lines.append("## Sentiment shift")
+    sentiment = payload["sentiment"]
+    if sentiment:
+        lines.extend(
+            f"- {s['term']}: last-day {s['last_day_avg']:+.2f} vs prior "
+            f"{s['prior_avg']:+.2f} {s['arrow']} ({s['delta']:+.2f})"
+            for s in sentiment
+        )
+    else:
+        lines.append("- insufficient sentiment data")
+    lines.append("")
+    lines.append("## Alerts (last 24h)")
+    firings = payload["alerts"]["recent"]
+    if firings:
+        lines.append(f"- {payload['alerts']['count']} firing(s)")
+        lines.extend(
+            f"- • {f['rule_name']} — {f['term']} ({f['count']:g} vs {f['threshold']:g})"
+            for f in firings
+        )
+    else:
+        lines.append("- no alert firings")
+    lines.append("")
+    lines.append("## GDELT gaps")
+    gdelt = payload["gdelt_gaps"]
+    if gdelt["note"]:
+        lines.append(f"- {gdelt['note']}")
+    elif gdelt["gaps"]:
+        lines.extend(
+            f"- {g['term']}: local {g['local_count']} vs gdelt {g['gdelt_count']} "
+            f"(ratio {g['ratio']:.3f})"
+            for g in gdelt["gaps"]
+        )
+    else:
+        lines.append("- no coverage gaps")
+    return "\n".join(lines) + "\n"
+
+
+def _save_briefing(payload: dict[str, Any], settings: Any, name: str) -> Path:
+    """Atomically persist the briefing JSON to ``{data_dir}/briefings/{date}[-{name}].json``.
+
+    *name* appends an optional suffix to the stem (``--save weekly`` →
+    ``2026-08-05-weekly.json``); an empty name writes the plain daily file.
+    Mirrors the ``report --out`` tmp+replace dance so a crash never leaves a
+    partial briefing.
+    """
+    assert settings.data_dir is not None
+    briefings_dir = settings.data_dir / "briefings"
+    briefings_dir.mkdir(parents=True, exist_ok=True)
+    date_part = str(payload["generated_at"])[:10]
+    stem = f"{date_part}-{name}" if name else date_part
+    out_path = briefings_dir / f"{stem}.json"
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(out_path)
+    return out_path
+
+
+def _list_saved_briefings(settings: Any) -> None:
+    """Table of saved briefing files, newest first (date, size KB, terms count).
+
+    The terms column parses each file's JSON and shows ``top_terms`` length;
+    unparseable files show a dash.
+    """
+    assert settings.data_dir is not None
+    briefings_dir = settings.data_dir / "briefings"
+    files = sorted(briefings_dir.glob("*.json"), reverse=True) if briefings_dir.exists() else []
+    if not files:
+        rprint("[yellow]no saved briefings yet[/yellow]")
+        return
+    table = Table(title="Saved briefings")
+    table.add_column("date")
+    table.add_column("size KB", justify="right")
+    table.add_column("terms", justify="right")
+    for path in files:
+        terms = "—"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            terms = str(len(data.get("top_terms") or []))
+        except Exception:
+            terms = "—"
+        table.add_row(path.stem, f"{path.stat().st_size / 1024:.1f}", terms)
+    console.print(table)
 
 
 def _render_briefing_bullets(title: str, items: list[str], empty: str) -> None:
@@ -4384,7 +4511,12 @@ def _render_briefing_text(
 
 
 @app.command(name="briefing")
-def briefing(
+def briefing(  # noqa: PLR0912, PLR0917 (14 params incl. SMTP delivery + save/list flags)
+    save_name: str = typer.Argument(
+        "",
+        metavar="[NAME]",
+        help="Optional saved-briefing suffix; only meaningful with --save",
+    ),
     days: int = typer.Option(
         1, "--days", min=1, max=365, help="Briefing window length in days"
     ),
@@ -4394,6 +4526,34 @@ def briefing(
     ),
     json_out: bool = typer.Option(False, "--json", help="Output a raw JSON object"),
     no_gdelt: bool = typer.Option(False, "--no-gdelt", help="Skip the GDELT gaps fetch"),
+    email_to: str = typer.Option(
+        "", "--email", help="Email the briefing to this address via SMTP"
+    ),
+    smtp_host: str = typer.Option(
+        "", "--smtp-host", help="SMTP server host (default: $SMTP_HOST)"
+    ),
+    smtp_port: int | None = typer.Option(
+        None, "--smtp-port", min=1, max=65535,
+        help="SMTP server port (default: $SMTP_PORT or 587)",
+    ),
+    smtp_user: str = typer.Option(
+        "", "--smtp-user", help="SMTP login user (default: $SMTP_USER)"
+    ),
+    smtp_password: str = typer.Option(
+        "", "--smtp-password", help="SMTP login password (default: $SMTP_PASSWORD)"
+    ),
+    from_addr: str = typer.Option(
+        "", "--from", help="From address (default: $EMAIL_FROM)"
+    ),
+    save: bool = typer.Option(
+        False,
+        "--save",
+        help="Save the briefing JSON to {data_dir}/briefings/YYYY-MM-DD.json "
+        "([NAME] appends a suffix)",
+    ),
+    list_saved: bool = typer.Option(
+        False, "--list-saved", help="List saved briefing files (no corpus work)"
+    ),
 ) -> None:
     """Daily morning briefing: movers, top terms, new domains, sentiment, alerts, GDELT gaps.
 
@@ -4401,10 +4561,17 @@ def briefing(
     that spiked in the window (z-scores), top terms by count, domains first
     seen within the window, a last-day-vs-prior sentiment shift for the top
     terms, alert firings in the last 24h, and GDELT coverage gaps (unless
-    ``--no-gdelt``). ``--json`` dumps a single JSON object; an empty corpus
-    prints a clean "no corpus yet" message and exits 0.
+    ``--no-gdelt``). ``--json`` dumps a single JSON object; ``--email``
+    delivers a plain-text markdown copy over SMTP (same machinery as
+    ``digest --email``, SMTP_SSL on 465, STARTTLS otherwise, env fallbacks);
+    ``--save`` persists the JSON under ``{data_dir}/briefings/`` for cron
+    tooling; ``--list-saved`` prints the saved files newest-first. An empty
+    corpus prints a clean "no corpus yet" message and exits 0.
     """
     settings = get_settings()
+    if list_saved:
+        _list_saved_briefings(settings)
+        return
     idx: DuckDbIndex | None = None
     try:
         idx = DuckDbIndex(
@@ -4454,30 +4621,54 @@ def briefing(
         if idx is not None:
             idx.close()
 
+    payload = {
+        "generated_at": now.isoformat(),
+        "days": days,
+        "window_start": window_start.isoformat(),
+        "window_end": now.isoformat(),
+        "total_captures": total_captures,
+        "movers": movers,
+        "top_terms": [{"term": t.term, "count": t.count} for t in top_terms],
+        "new_domains": new_domains,
+        "sentiment": sentiment,
+        "alerts": {
+            "count": len(firings),
+            "recent": [
+                {**f, "fired_at": f["fired_at"].isoformat()} for f in firings[:5]
+            ],
+        },
+        "gdelt_gaps": {"skipped": no_gdelt, "note": gdelt_note, "gaps": gdelt_gaps},
+    }
+    if save:
+        saved_path = _save_briefing(payload, settings, save_name)
+        if json_out:
+            # Keep stdout a pure JSON object for `briefing --save --json` cron
+            # consumers; the confirmation goes to stderr.
+            rprint(f"[green]Briefing saved to {saved_path}[/green]", file=sys.stderr)
+        else:
+            rprint(f"[green]Briefing saved to {saved_path}[/green]")
     if json_out:
-        print(
-            json.dumps(
-                {
-                    "generated_at": now.isoformat(),
-                    "days": days,
-                    "window_start": window_start.isoformat(),
-                    "window_end": now.isoformat(),
-                    "total_captures": total_captures,
-                    "movers": movers,
-                    "top_terms": [{"term": t.term, "count": t.count} for t in top_terms],
-                    "new_domains": new_domains,
-                    "sentiment": sentiment,
-                    "alerts": {
-                        "count": len(firings),
-                        "recent": [
-                            {**f, "fired_at": f["fired_at"].isoformat()} for f in firings[:5]
-                        ],
-                    },
-                    "gdelt_gaps": {"skipped": no_gdelt, "note": gdelt_note, "gaps": gdelt_gaps},
-                },
-                indent=2,
-                ensure_ascii=False,
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        if email_to:
+            rprint(
+                "[yellow]--json: printed to stdout; "
+                "--email ignored for JSON mode[/yellow]",
+                file=sys.stderr,
             )
+        return
+    if email_to:
+        # The rich tables don't travel well in an email — reuse _email_digest
+        # with a plain-text markdown variant built from the same payload.
+        _email_digest(
+            to_addr=email_to,
+            subject=f"Awareness briefing — {now:%Y-%m-%d}",
+            body=_render_briefing_markdown(payload, emerging=emerging),
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_user=smtp_user,
+            smtp_password=smtp_password,
+            from_addr=from_addr,
+            delivery_label="Briefing",
         )
         return
     _render_briefing_text(

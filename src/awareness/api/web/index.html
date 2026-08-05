@@ -362,6 +362,23 @@
         <div class="kpi-grid" id="feed-health-kpis" aria-label="Feed health KPIs"></div>
       </section>
 
+      <section class="band band-compact" id="dash-quality-band" aria-labelledby="dash-quality-title">
+        <header class="band-head">
+          <h2 id="dash-quality-title" class="band-title">Quality history</h2>
+          <span class="band-meta" id="dash-quality-meta" aria-live="polite">—</span>
+        </header>
+        <div class="dash-quality-grid" id="dash-quality-grid">
+          <div class="an-chart" id="dash-quality-dup" role="img" aria-label="Duplicate ratio per day">—</div>
+          <div class="an-chart" id="dash-quality-domains" role="img" aria-label="New domains per day">—</div>
+        </div>
+        <div class="an-table-wrap">
+          <table class="an-table" id="dash-quality-table" aria-label="Corpus quality history">
+            <thead><tr><th>Date</th><th>Total</th><th>Dup%</th><th>Near-dup%</th><th>New domains</th></tr></thead>
+            <tbody id="dash-quality-body"></tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="band band-compact dash-saved-band" id="dash-saved-band" aria-labelledby="dash-saved-title">
         <header class="band-head">
           <h2 id="dash-saved-title" class="band-title">Saved searches</h2>
@@ -828,6 +845,27 @@
           <div class="an-chart" id="an-gdelt-ext" role="img" aria-label="GDELT term counts per day">—</div>
         </div>
         <p class="an-gdelt-stats" id="an-gdelt-stats">—</p>
+      </section>
+
+      <section class="band" aria-labelledby="an-life-title">
+        <div class="band-head">
+          <h2 class="band-title" id="an-life-title">Topic lifecycle</h2>
+          <div class="band-tools">
+            <button class="btn" id="an-life-go" type="button">Lifecycle</button>
+          </div>
+        </div>
+        <div class="an-life-phase" id="an-life-phase" aria-live="polite">—</div>
+        <p class="an-life-stats" id="an-life-stats">—</p>
+        <div class="an-chart" id="an-life-chart" role="img" aria-label="Term lifecycle counts per day">—</div>
+        <h3 class="an-life-subhead">Emerging topics</h3>
+        <div class="an-chips" id="an-emerging-chips" aria-label="Emerging topics">—</div>
+        <h3 class="an-life-subhead">Source impact</h3>
+        <div class="an-table-wrap">
+          <table class="an-table" id="an-impact-table" aria-label="Source impact">
+            <thead><tr><th>Domain</th><th>Impact</th><th>Captures</th><th>Edges</th><th>Avg lead</th></tr></thead>
+            <tbody id="an-impact-body"></tbody>
+          </table>
+        </div>
       </section>
 
       <section class="band" aria-labelledby="an-top-title">

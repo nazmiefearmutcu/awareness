@@ -109,7 +109,9 @@ def test_briefing_sections(tmp_project: Path) -> None:
     assert "spike.news" in out  # domain first seen inside the window
     assert "Sentiment shift" in out
     assert "▲" in out  # bitcoin: positive today vs mixed prior days
-    assert "▼" in out
+    # W6-F2: a term with ZERO captures on the last day must be skipped, not
+    # reported as a fabricated sentiment crash (▼ would be a lie).
+    assert "▼" not in out
     assert "Alerts (last 24h)" in out
     assert "GDELT gaps" in out
     assert "no coverage gaps" in out

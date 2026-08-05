@@ -2508,6 +2508,78 @@ body{
   line-height: 1.5;
 }
 
+/* Topic lifecycle band: phase badge + stats + subheads */
+.an-life-phase {
+  margin-top: 10px;
+  min-height: 22px;
+}
+.an-life-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.an-life-badge.is-emerging {
+  color: var(--emerald, #3ad29b);
+  border-color: var(--emerald, #3ad29b);
+  animation: an-emerging-pulse 1.6s ease-in-out infinite;
+}
+.an-life-badge.is-expanding {
+  color: var(--blue, #5ab0ff);
+  border-color: var(--blue, #5ab0ff);
+}
+.an-life-badge.is-peaking {
+  color: var(--amber, #f5a623);
+  border-color: var(--amber, #f5a623);
+}
+.an-life-badge.is-declining {
+  color: var(--red, #ff6178);
+  border-color: var(--red, #ff6178);
+}
+.an-life-badge.is-dormant,
+.an-life-badge.is-stable {
+  color: var(--fg-dim);
+  border-color: var(--border-strong);
+}
+@keyframes an-emerging-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(58, 210, 155, 0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(58, 210, 155, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .an-life-badge.is-emerging { animation: none; }
+}
+.an-life-stats {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--fg-soft);
+  line-height: 1.5;
+  font-family: var(--mono);
+}
+.an-life-subhead {
+  margin: 14px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-mid);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Quality history band (dashboard): two mini charts + table */
+.dash-quality-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.dash-quality-grid .an-chart { margin-top: 10px; }
+.dash-quality-grid .an-chart:first-child { margin-top: 0; }
+@media (max-width: 720px) {
+  .dash-quality-grid { grid-template-columns: 1fr; }
+  .dash-quality-grid .an-chart:first-child { margin-top: 10px; }
+}
+
 /* Entity network band (concentric root + ring layout) */
 .an-network {
   position: relative;

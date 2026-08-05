@@ -394,3 +394,40 @@ iteration-8 commit itself carries no audit-fix header. The W36
 fix-the-fixes audit of the iteration-8 output (W33 X sentiment trend +
 CSV export, W34 firing-detail UX, W35 E2E stage expansion) is scheduled
 next. Status will be updated here when the report lands.
+
+---
+
+## Ralph Loop Round 3 (2026-08-04) — iteration 1
+
+Iteration 1 = `a84a2ab` ("feat: topicx + qualityx subsystems, GDELT cache
+buckets, FTS delta, briefing CLI; fix: R3-W1"), five workstreams:
+`topicx/` (topic lifecycle phases, emerging topics, source impact, topic
+dominance), `qualityx/` (per-day quality time series), GDELT cache day-range
+keys, FTS delta append fast path, and the `awareness briefing` /
+`awareness gdelt-gaps` CLI. Every RESOLVED claim below was verified against
+`git show --stat a84a2ab` (touched files cited, not the commit message
+alone).
+
+### R3-W1 findings (W38 security-sweep follow-up) — all RESOLVED in `a84a2ab`
+
+| ID | Area | Finding | Status | Verification |
+|----|------|---------|--------|-------------|
+| R3-W1-1 | API | `HEAD /healthz` returned 405 — the HEAD alias was claimed exempt but never registered | RESOLVED `a84a2ab` | HEAD handler actually registered in `src/awareness/api/server.py` (+32 lines in the diff) |
+| R3-W1-2 | API | Rate limiter ran **before** auth + CSRF — blocked cross-origin traffic burned the operator's rate-limit budget | RESOLVED `a84a2ab` | limiter moved after auth + CSRF (`api/server.py`), so rejected requests never consume budget |
+| R3-W1-3 | API | Origin loopback allow-list missed `::1` and `0.0.0.0` binds — legitimate loopback-Origin requests from those aliases were rejected | RESOLVED `a84a2ab` | loopback aliases extended to `[::1]` and `0.0.0.0` binds (`api/server.py`) |
+| R3-W1-4 | Observability | `tail.news_floor_kept` discovery label was high-cardinality (raw floor value) — metric cardinality explosion | RESOLVED `a84a2ab` | label bucketed to a low-cardinality class (`src/awareness/sources/tail_recrawl.py`, +6 lines) |
+| R3-W1-5 | Export | `export_tweets_csv` left a `.tmp` file behind on write failure | RESOLVED `a84a2ab` | `.tmp` unlinked on the failure path (`src/awareness/xscraper/analyze.py`, +39 lines) |
+| R3-W1-6 | Tests | Flaky `test_tui_analytics` — key test read its own source via `inspect.getsource`, which broke under source-mangling environments | RESOLVED `a84a2ab` | test reads the source file directly instead (`tests/unit/test_tui_analytics.py`, +6 lines) |
+
+**R3-W1 verdict:** 6/6 RESOLVED in `a84a2ab` (each finding's file appears in
+the commit diff). Related hardening in the same commit: GDELT CLI error
+paths drop `logger.warning` (stale-handler stream corruption under
+CliRunner capture), applied to `briefing` / `report` too.
+
+### R3-W6 (adversarial review of `a84a2ab`) — **pending**
+
+**Pending.** No R3-W6 report exists in `docs/` as of this writing
+(2026-08-04). `.ralph/loop-state.md` opens Round 3 / Iteration 2 with
+W6 ("fix-the-fixes — adversarial review of the R3-ITER1 code: topicx,
+qualityx, FTS delta, briefing, W1 fixes") as the scheduled next step.
+Status will be updated here when the report lands.

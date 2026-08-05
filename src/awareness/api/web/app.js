@@ -1584,6 +1584,8 @@ async function refreshDashboard() {
 
   // Saved-search widgets (non-blocking; self-guards against rebuilds).
   void refreshDashSaved();
+  // Corpus-quality history band (same cadence guard).
+  void refreshDashQuality();
 
   return { status, dedup };
 }
@@ -2559,13 +2561,19 @@ function renderBarChart(el, points, { color = "var(--accent, #0e9b8d)", maxBars 
   el.appendChild(wrap);
 }
 
-/** Render clickable chips. */
-function renderChips(el, items, { key = (x) => x, label = (x) => x } = {}) {
+/** Render clickable chips. `title` adds a hover tooltip; `onPick` overrides
+ *  the default pick (fill the term input + analyze). Pure DOM — no HTML. */
+function renderChips(el, items, { key = (x) => x, label = (x) => x, title = null, onPick = null } = {}) {
   el.textContent = "";
   if (!items || !items.length) { el.textContent = "—"; return; }
   for (const it of items) {
-    const chip = el("button", { class: "chip", type: "button" }, label(it));
+    const chip = el("button", {
+      class: "chip",
+      type: "button",
+      title: title ? title(it) : undefined,
+    }, label(it));
     chip.addEventListener("click", () => {
+      if (onPick) { onPick(it); return; }
       $("#an-term-input").value = key(it);
       void analyzeTerm();
     });
@@ -2672,6 +2680,8 @@ async function initAnalytics() {
   $("#an-term-input").addEventListener("keydown", (e) => { if (e.key === "Enter") analyzeTerm(); });
   const gdeltBtn = $("#an-gdelt-go");
   if (gdeltBtn) gdeltBtn.addEventListener("click", compareWithGdelt);
+  const lifeBtn = $("#an-life-go");
+  if (lifeBtn) lifeBtn.addEventListener("click", loadLifecycle);
   coBtn.addEventListener("click", loadCoOccurring);
   $("#an-co-input").addEventListener("keydown", (e) => { if (e.key === "Enter") loadCoOccurring(); });
   const netBtn = $("#an-entity-build");
@@ -2711,6 +2721,9 @@ async function initAnalytics() {
     }
   }
   if ($("#an-term-input").value) void analyzeTerm();
+  // Term-independent band data: emerging chips + source impact mini-table.
+  void loadEmerging();
+  void loadImpact();
 }
 
 // ── Entity network ────────────────────────────────────────────
@@ -2774,6 +2787,111 @@ async function buildEntityNetwork(rootEntity) {
     container.appendChild(rootChip);
     for (const chip of ring) container.appendChild(chip);
   } catch (err) { toast("entity network failed: " + err.message, "err"); }
+}
+
+// ── Topic lifecycle band ──────────────────────────────────────
+// Reuses the term-frequency band's term + window inputs; window_days is
+// passed through unchanged (/topicx/lifecycle accepts 1..365).
+
+const PHASE_CLASSES = {
+  EMERGING: "is-emerging",
+  EXPANDING: "is-expanding",
+  PEAKING: "is-peaking",
+  DECLINING: "is-declining",
+  DORMANT: "is-dormant",
+  STABLE: "is-stable",
+};
+
+/** Color-coded badge class for a lifecycle phase. Pure — no DOM. */
+function phaseClass(phase) {
+  return PHASE_CLASSES[String(phase || "").toUpperCase()] || "is-dormant";
+}
+
+/** One-line stats for a lifecycle payload. Pure — no DOM. */
+function lifecycleStatsText(lifecycle) {
+  const slope = lifecycle.slope_7d;
+  const slopeText = slope == null || !Number.isFinite(Number(slope)) ? "—" : Number(slope).toFixed(3);
+  const peakDate = lifecycle.peak_date ? String(lifecycle.peak_date).slice(0, 10) : null;
+  const first = lifecycle.first_seen ? String(lifecycle.first_seen).slice(0, 10) : "—";
+  const last = lifecycle.last_seen ? String(lifecycle.last_seen).slice(0, 10) : "—";
+  const parts = [
+    "slope 7d " + slopeText,
+    "peak " + fmt(lifecycle.peak_count) + (peakDate ? " on " + peakDate : ""),
+    "first " + first,
+    "last " + last,
+  ];
+  return parts.join(" · ");
+}
+
+/** Render the lifecycle payload: phase badge + stats line + counts chart. */
+function renderLifecycle(lifecycle) {
+  const phase = $("#an-life-phase");
+  const stats = $("#an-life-stats");
+  const chart = $("#an-life-chart");
+  if (!phase || !stats || !chart) return;
+  phase.textContent = "";
+  phase.appendChild(el("span", {
+    class: "an-life-badge " + phaseClass(lifecycle.phase),
+    text: lifecycle.phase || "—",
+  }));
+  stats.textContent = "";
+  stats.appendChild(document.createTextNode(lifecycleStatsText(lifecycle)));
+  renderBarChart(chart, lifecycle.counts || []);
+}
+
+async function loadLifecycle() {
+  const term = ($("#an-term-input").value || "").trim();
+  if (!term) { toast("enter a term first", "err"); return; }
+  const windowDays = Number($("#an-term-window").value) || 14;
+  const btn = $("#an-life-go");
+  if (btn) btn.disabled = true;
+  try {
+    const lifecycle = await api(`/topicx/lifecycle?term=${encodeURIComponent(term)}&window_days=${windowDays}`);
+    renderLifecycle(lifecycle);
+  } catch (err) { toast("lifecycle failed: " + err.message, "err"); }
+  finally { if (btn) btn.disabled = false; }
+}
+
+/** Corpus-wide terms first seen in the trailing 7 days, as clickable chips.
+ *  Picking a chip fills the term input and runs the lifecycle query. */
+async function loadEmerging() {
+  try {
+    const emerging = await api("/topicx/emerging?limit=12");
+    renderChips($("#an-emerging-chips"), emerging || [], {
+      key: (x) => x.term,
+      label: (x) => `${x.term} ×${x.count}`,
+      title: (x) => `first ${String(x.first_seen || "").slice(0, 10)} · ${x.domains_covered} domains`,
+      onPick: (x) => {
+        $("#an-term-input").value = x.term;
+        void loadLifecycle();
+      },
+    });
+  } catch (err) { console.error("emerging", err); }
+}
+
+/** Origin-domain impact mini-table: how much a domain's output gets copied. */
+async function loadImpact() {
+  const body = $("#an-impact-body");
+  if (!body) return;
+  try {
+    const impacts = await api("/topicx/impact?limit=10");
+    body.textContent = "";
+    if (!impacts || !impacts.length) {
+      const row = body.insertRow();
+      const cell = row.insertCell();
+      cell.colSpan = 5;
+      cell.textContent = "—";
+    } else {
+      for (const d of impacts) {
+        const row = body.insertRow();
+        row.insertCell().textContent = d.domain;
+        row.insertCell().textContent = Number(d.impact_score).toFixed(3);
+        row.insertCell().textContent = d.captures;
+        row.insertCell().textContent = d.replica_edges;
+        row.insertCell().textContent = d.avg_lead_minutes != null ? Math.round(d.avg_lead_minutes) + "m" : "—";
+      }
+    }
+  } catch (err) { console.error("impact", err); }
 }
 
 // ── Alerts ────────────────────────────────────────────────────
@@ -3891,6 +4009,68 @@ function renderXTweetList(list, tweets) {
     li.appendChild(el("p", { class: "x-tweet-text", text: truncateText(t.text, 160) }));
     list.appendChild(li);
   }
+}
+
+// ── Quality history band (dashboard) ──────────────────────────
+let dashQualitySig = null;
+let dashQualityTick = 0;
+
+/** Table rows for the quality history: [date, total, dup%, nearDup%, newDomains].
+ *  Ratios are ×100 as percents. Pure — no DOM. */
+function qualityHistoryRows(points) {
+  return (points || []).map((p) => {
+    const pct = (v) => (v == null ? "—" : (v * 100).toFixed(1) + "%");
+    return [
+      String(p.ts || "").slice(0, 10),
+      p.total != null ? p.total : "—",
+      pct(p.duplicate_ratio),
+      pct(p.near_duplicate_ratio),
+      p.new_domains != null ? p.new_domains : "—",
+    ];
+  });
+}
+
+/** Render the quality history payload: dup-ratio chart, new-domains chart,
+ *  and the date/total/dup% table. */
+function renderQualityHistory(data) {
+  const dupBox = $("#dash-quality-dup");
+  const domBox = $("#dash-quality-domains");
+  const body = $("#dash-quality-body");
+  const meta = $("#dash-quality-meta");
+  if (!dupBox || !domBox || !body) return;
+  const points = (data && data.points) || [];
+  if (meta) meta.textContent = data && data.days ? `${data.days}d window` : "—";
+  renderBarChart(dupBox, points.map((p) => ({ ts: p.ts, count: Math.round((p.duplicate_ratio || 0) * 100) })), { color: "#d97757" });
+  renderBarChart(domBox, points.map((p) => ({ ts: p.ts, count: p.new_domains || 0 })));
+  body.textContent = "";
+  if (!points.length) {
+    const row = body.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 5;
+    cell.textContent = "—";
+    return;
+  }
+  for (const r of qualityHistoryRows(points)) {
+    const row = body.insertRow();
+    for (const v of r) row.insertCell().textContent = v;
+  }
+}
+
+/** Refresh the dashboard quality band. Rebuilds only when the series
+ *  changed, or every 12th tick (60 s) to keep staleness low. */
+async function refreshDashQuality() {
+  dashQualityTick += 1;
+  let data;
+  try {
+    data = await api("/qualityx/history?days=30");
+  } catch (_) {
+    return; // non-fatal — dashboard KPIs keep rendering
+  }
+  const points = (data && data.points) || [];
+  const sig = JSON.stringify(points.map((p) => `${p.ts}:${p.total}:${p.duplicate_ratio}:${p.near_duplicate_ratio}:${p.new_domains}`));
+  if (sig === dashQualitySig && dashQualityTick % 12 !== 0) return;
+  dashQualitySig = sig;
+  renderQualityHistory(data);
 }
 
 // ── Dashboard saved widgets ───────────────────────────────────

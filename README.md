@@ -154,6 +154,18 @@ and degrades to empty series with a structured-log warning when offline.
 `/corpus/topic-matrix` and a corpus-quality snapshot at `/corpus/quality`
 (duplicate / near-dup ratios, language rollup, capture rate per day).
 
+**Topic lifecycle** (`/topicx/*`) — term-level topic intelligence over the
+corpus: lifecycle phase classification (EMERGING / EXPANDING / PEAKING /
+DECLINING / DORMANT from a 7-day slope + peak), an emerging-topics corpus
+scan, source-impact scoring (replication-weighted), and per-domain topic
+dominance — `/topicx/lifecycle`, `/topicx/emerging`, `/topicx/impact`,
+`/topicx/dominance`.
+
+**Quality time series** (`/qualityx/*`) — corpus-quality trends instead of a
+single snapshot: per-day duplicate / near-dup ratios, new domains (first-ever
+capture), and capture rate, zero-filled over calendar buckets — the full
+history at `/qualityx/history` and today at `/qualityx/current`.
+
 **Saved searches** (`/saved/*`) — a SQLite-backed store of named queries
 (CRUD at `/saved`, pin/run at `/saved/{id}/pin` + `/saved/{id}/run`). The
 SPA ships a Saved view with a ★ save control on the search box, and the CLI
@@ -189,6 +201,12 @@ awareness x analyze <SESSION_ID>                          # authors, terms, sent
 awareness x export <SESSION_ID> --out tweets.csv          # session tweets → CSV
 awareness quality [--json]                                # corpus snapshot: sizes, dup ratios,
                                                           # languages, domains (/corpus/quality)
+awareness quality --history [DAYS] [--json]               # per-day quality series with sparkline
+                                                          # (default window 30d; /qualityx/*)
+awareness briefing [--days N --top N --emerging N]        # movers (z-score spikes), top terms,
+                         [--json] [--no-gdelt]            # new domains, sentiment shift, alert
+                                                          # activity, GDELT gaps — one read
+awareness gdelt-gaps [--terms a,b --days N] [--json]      # coverage-gap report standalone
 awareness feeds                                           # feed-health report: fetch outcomes,
                                                           # p95 latency, 0-100 health score
 awareness saved list|add|rm|run                           # named-query store (/saved/*)
@@ -339,11 +357,13 @@ trade. Awareness picks the other corner on purpose: identical precision at **3.3
 64× less memory**, and because dedup only ever sets a *grouping hint* and never drops a row, lower
 recall costs a little less folding — never data. Full numbers and the other three benchmarks
 (xxh3 hashing, trafilatura extraction quality, the search/ingest speedups shipped while measuring)
-are in [`docs/benchmarks/`](docs/benchmarks/). Two dated reports add the M1-baseline run
+are in [`docs/benchmarks/`](docs/benchmarks/). Three dated reports add the M1-baseline run
 ([`benchmark_report_2026-08-04.md`](docs/benchmarks/benchmark_report_2026-08-04.md) — per-finding
-resolution status, including the 365× materialized-corpus fix) and the 100k-doc / Postgres-parity
+resolution status, including the 365× materialized-corpus fix), the 100k-doc / Postgres-parity
 probe ([`perf_100k_2026-08-04.md`](docs/benchmarks/perf_100k_2026-08-04.md) — steady-state analytics
-≤2 s at 100k docs).
+≤2 s at 100k docs), and the Round-3 FTS delta-append probe
+([`perf_iter9_report.md`](docs/benchmarks/perf_iter9_report.md) — delta rebuild ~16× faster than
+a full build on pure-addition batches).
 
 ---
 

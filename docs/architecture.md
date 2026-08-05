@@ -300,3 +300,41 @@ extra services.
   audit, recorded in
   [`AUDIT_FINDINGS_2026-08-03.md`](AUDIT_FINDINGS_2026-08-03.md).
 
+### Round 3 (2026-08-04)
+
+Round-3 iteration 1 (`a84a2ab`): topic lifecycle + quality time-series
+subsystems, GDELT cache-key and FTS maintenance fixes, and the briefing CLI —
+still one FastAPI process, still zero extra services.
+
+- **Topic lifecycle** (`awareness/topicx/`): classifies terms into
+  EMERGING / EXPANDING / PEAKING / DECLINING / DORMANT / STABLE from the
+  trailing-7-day polyfit slope and the daily peak, with a strict precedence
+  (**PEAKING → EXPANDING → EMERGING → DECLINING → DORMANT → STABLE**, first
+  match wins) — EMERGING additionally requires a first mention within 3 days
+  and a material floor, and EXPANDING requires activity on ≥ 2 distinct days
+  so a single-day burst stays EMERGING. Emergence is a corpus scan
+  (first-seen within the 3-day window), source impact is replication-weighted,
+  and dominance is the per-domain share of a term's captures — exposed at
+  `/topicx/lifecycle`, `/topicx/emerging`, `/topicx/impact`,
+  `/topicx/dominance`.
+- **Quality time series** (`awareness/qualityx/`): a per-day version of the
+  corpus-quality snapshot — duplicate / near-dup ratios are computed per
+  calendar day bucket, new domains count domains whose **first-ever** capture
+  (`MIN(fetch_ts)` over the whole corpus) falls inside the bucket, and the
+  series is zero-filled so an empty day renders as a real zero, never a gap.
+  `QualityTimeEngine.history()` reads straight from the corpus (works on old
+  data, no precomputed store), served at `/qualityx/history` + `/qualityx/current`
+  and printed as a sparkline table by `awareness quality --history`.
+- **GDELT cache day-range keys**: the disk cache key is now the *day range*
+  — `floor_to_day(start)` and `floor_to_day(end)` — never the raw timestamps
+  or the caller's `window_days`, so identical ranges share one cache entry
+  and the previous cache-bypass (same range requested with different
+  `window_days` re-hit the GDELT API) is closed.
+- **FTS delta append fast path**: pure-addition batches INSERT into the FTS
+  index (`captures_idx`) instead of rebuilding the whole inverted index —
+  edits and removals still fall back to the full rebuild (rare by design),
+  and the incremental path reuses the W28 stale-content guards. Measured at
+  20k corpus + 1k delta: FTS-internal delta rebuild **0.137 s vs 2.243 s
+  full build (~16×)**; see
+  [`docs/benchmarks/perf_iter9_report.md`](benchmarks/perf_iter9_report.md).
+

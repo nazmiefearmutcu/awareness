@@ -5,9 +5,9 @@
 
 * ``history`` — per-bucket corpus-quality aggregates computed **from the
   corpus itself** (the ``captures`` view), so it works on old corpus data.
-  Every scan is bounded: the window is clamped to 1..365 days and each
-  doc-level scan reads at most :data:`_MAX_SCAN_ROWS` rows (newest first)
-  inside the window.
+  Every scan is bounded by the window clamp (1..365 days); the bucket
+  aggregates are computed directly in DuckDB (GROUP BY) so no doc-level
+  row cap can truncate old days into fabricated empty buckets.
 * ``current`` — the point-in-time snapshot, delegated straight to
   :class:`~awareness.corpusx.engine.CorpusXEngine.quality_snapshot`.
 
@@ -34,17 +34,8 @@ from awareness.util.timeutil import floor_to_day
 
 _MIN_DAYS = 1
 _MAX_DAYS = 365
-_MAX_SCAN_ROWS = 200_000
 
 _GRANULARITIES = ("day", "week", "month")
-
-# Scan fragment: the doc-level scans are windowed to the newest rows, so a
-# multi-million-row corpus cannot blow up memory or latency. Every bucket
-# metric derives from this bounded, ordered projection of the window.
-_SCAN_SOURCE = (
-    "SELECT {cols} FROM captures WHERE fetch_ts >= $start "
-    "ORDER BY fetch_ts DESC LIMIT $max_rows"
-)
 
 
 def _bucket_expr(granularity: str, col: str = "fetch_ts") -> str:
@@ -134,13 +125,12 @@ class QualityTimeEngine:
                     [
                         f"SELECT {bucket_key} AS day, count(*) AS total,",
                         "avg(length(COALESCE(text, ''))) AS avg_length",
-                        "FROM (",
-                        _SCAN_SOURCE.format(cols="fetch_ts, text"),
-                        ") c",
+                        "FROM captures",
+                        "WHERE fetch_ts >= $start",
                         "GROUP BY day",
                     ]
                 ),
-                {"start": start, "max_rows": _MAX_SCAN_ROWS},
+                {"start": start},
             )
             for row in agg_rows:
                 day = row["day"]
@@ -154,10 +144,9 @@ class QualityTimeEngine:
                 " ".join(
                     [
                         f"SELECT {bucket_key_c} AS day, count(*) AS n",
-                        "FROM (",
-                        _SCAN_SOURCE.format(cols="fetch_ts, capture_id, content_hash"),
-                        ") c",
-                        "WHERE c.content_hash IS NOT NULL",
+                        "FROM captures c",
+                        "WHERE c.fetch_ts >= $start",
+                        "AND c.content_hash IS NOT NULL",
                         "AND TRIM(CAST(c.content_hash AS VARCHAR)) != ''",
                         "AND EXISTS (",
                         "SELECT 1 FROM captures o",
@@ -169,7 +158,7 @@ class QualityTimeEngine:
                         "GROUP BY day",
                     ]
                 ),
-                {"start": start, "max_rows": _MAX_SCAN_ROWS},
+                {"start": start},
             )
             for row in dup_rows:
                 day_dups[row["day"]] = int(row["n"])
@@ -179,12 +168,9 @@ class QualityTimeEngine:
                 " ".join(
                     [
                         f"SELECT {bucket_key_c} AS day, count(*) AS n",
-                        "FROM (",
-                        _SCAN_SOURCE.format(
-                            cols="fetch_ts, capture_id, doc_id, parent_doc_or_dup_group"
-                        ),
-                        ") c",
-                        "WHERE c.parent_doc_or_dup_group IS NOT NULL",
+                        "FROM captures c",
+                        "WHERE c.fetch_ts >= $start",
+                        "AND c.parent_doc_or_dup_group IS NOT NULL",
                         "AND TRIM(CAST(c.parent_doc_or_dup_group AS VARCHAR)) != ''",
                         "AND c.parent_doc_or_dup_group != c.doc_id",
                         "AND EXISTS (",
@@ -197,7 +183,7 @@ class QualityTimeEngine:
                         "GROUP BY day",
                     ]
                 ),
-                {"start": start, "max_rows": _MAX_SCAN_ROWS},
+                {"start": start},
             )
             for row in near_rows:
                 day_near_dups[row["day"]] = int(row["n"])

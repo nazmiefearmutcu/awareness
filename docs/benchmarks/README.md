@@ -14,11 +14,13 @@ fixed seed, so accuracy reproduces exactly and throughput drifts only with hardw
 | [perf_100k_2026-08-04.md](perf_100k_2026-08-04.md) | 2026-08-04 | 100k-doc probe (health 2.317 s cold, search warm 0.558 s, all analytics <2 s, export 1.496 s), Postgres parity audit of `state.py` (all 15 dialect sites verified), divergence notes with fix status, bench-suite summary (search optimization 4.6×) |
 | [perf_iter5_report.md](perf_iter5_report.md) | 2026-08-04 | Iter-5 materialized-corpus follow-up probe at 100k docs (`daacf9b`): every warm analytics op ≤ 1.2 s, `COUNT(*)` 0.7 ms, domain_rank 16.4× / story_origins 15.4× / export 3× vs the pre-materialization baseline; hotspot decomposition (full-table rebuild 2.4 s/write, FTS rebuild 7.5 s, per-query 92 ms signature walk) with the top-3 recommendations that iteration 6 (W25) then implemented — see perf_iter6_report.md for the resolution numbers |
 | [perf_iter6_report.md](perf_iter6_report.md) | 2026-08-04 | W25 top-3 perf fixes (iteration 6): incremental materialize (20k refresh 123 ms → 0.6 ms, ~196×; full-rebuild fallback intact), 3-level dir-mtime signature guard (92 ms walk → 0.22 ms @100k), FTS coalescing (in-window search 13 ms / 0 rebuilds; one coalesced rebuild 195 ms, then warm 45 ms). Verbatim copy of the W25 team report (`/tmp/w25_report.md`), measured against `a711ba6` + savedsearch WIP |
+| [perf_iter9_report.md](perf_iter9_report.md) | 2026-08-04 | Round 3 iteration 1 (`a84a2ab`): FTS delta-append fast path probe (`/tmp/r3w2perf.py`, 20k + 1k corpus) — FTS-internal delta rebuild **0.137 s vs 2.243 s full build (~16×)** for a pure-addition batch; warm search 130.78 ms; edit batch still full-rebuilds (2.952 s) with no stale text |
 
-> No iteration-7/8 performance report exists yet: iterations 7–8 (`e4b1417`,
+> No iteration-7/8 performance report exists: iterations 7–8 (`e4b1417`,
 > `7d46372`) shipped SPA/export/E2E work with no perf probe, so the index
-> ends at `perf_iter6_report.md`. A `/tmp/awprobe2` scan found only the
-> iter-5 probe (archived above) — no newer report to add.
+> jumps from `perf_iter6_report.md` to the Round-3 `perf_iter9_report.md`.
+> A `/tmp/awprobe2` scan found only the iter-5 probe (archived above) — no
+> newer report to add.
 
 Machine-independent results and per-suite entries live in
 [results.json](results.json) (written by `benchmarks.run_all`); charts live in this
