@@ -395,6 +395,11 @@ fix-the-fixes audit of the iteration-8 output (W33 X sentiment trend +
 CSV export, W34 firing-detail UX, W35 E2E stage expansion) is scheduled
 next. Status will be updated here when the report lands.
 
+*(2026-08-05 supersession note: the Round-3 loop renumbered its audits
+(R3-W1 … R3-W26); W36 as numbered here was never reported — no W36 report
+exists in `docs/`, and the Round-3 register below is the authoritative
+record from `a84a2ab` onward.)*
+
 ---
 
 ## Ralph Loop Round 3 (2026-08-04) — iteration 1
@@ -490,9 +495,66 @@ alone).
 the `git show` diff of `src/awareness/cli/main.py`. Suite green (1731+);
 wheel builds.
 
-### R3-W18 (fix-the-fixes review of iteration 4) — **in progress**
+### R3-W18 (fix-the-fixes review of iteration 4) — RESOLVED in `5687763`
+
+**Resolved.** W18 completed during iteration 5 (`5687763`): **7 findings,
+all RESOLVED** — see "Ralph Loop Round 3 — iterations 5-7 (2026-08-05)"
+below for the per-finding register with diff-level verification.
+
+---
+
+## Ralph Loop Round 3 — iterations 5-7 (2026-08-05)
+
+Iteration 5 = `5687763` ("feat: alert rule test area, crossx X-news view,
+briefing enrichment; fix: W18") — W19 (alert test area + briefing
+enrichment), W20 (crossx), W21 (docs). Iteration 6 = `07351ba` ("feat:
+operations docs + test history, qualityx granularity, E2E 16 stages; fix:
+W22") — W23 (ops docs + test history), W24 (qualityx granularity), W25
+(E2E stages 15-16). Every RESOLVED claim below was verified against
+`git show` of the cited commit (diff lines cited, not the commit message
+alone).
+
+### R3-W18 (adversarial review of iteration 4) — 7 findings, RESOLVED in `5687763`
+
+| ID | Area | Finding | Status | Verification |
+|----|------|---------|--------|-------------|
+| R3-W18-1 | SPA briefings | named-briefing chips passed only the date — every `YYYY-MM-DD-<name>` file 404'd in the viewer | RESOLVED `5687763` | click passes the full stem (`slug = b.date + "-" + b.name`; inline `W18-F1` comment in `src/awareness/api/web/app.js`) |
+| R3-W18-2 | briefings API | list TOCTOU: `path.stat()` outside the try — a file vanishing between glob and stat 500'd the whole list | RESOLVED `5687763` | stat moved inside the try; vanished files list with `size_bytes: null`; `SavedBriefing.size_bytes` nullable (inline `W18-F2` in `src/awareness/briefings/router.py`) |
+| R3-W18-3 | lifecycle CLI | no-captures message interpolated the raw term — Rich markup injection | RESOLVED `5687763` | term passed through `escape()` (`src/awareness/cli/main.py`; later hardened again by R3-W22-1) |
+| R3-W18-4 | lifecycle CLI | `--compare` / `--emerging` ignored `--json` | RESOLVED `5687763` | both now honor `--json` (`if json_out:` branches in the `src/awareness/cli/main.py` diff) |
+| R3-W18-5 | briefings API | stray non-conforming `*.json` files (e.g. `notes.json`) listed — their chips 400'd on click | RESOLVED `5687763` | non-conforming files filtered out of the list (inline `W18-L6` in `src/awareness/briefings/router.py`) |
+| R3-W18-6 | briefings API | symlink trust-model undocumented | RESOLVED `5687763` | trust model documented in the router module docstring (operator-controlled `{data_dir}`; follow-symlinks is by design) |
+| R3-W18-7 | CLI | W14 OSError paths lacked regression tests | RESOLVED `5687763` | `tests/unit/test_cli_x_timeline.py` +17 (x timeline / export `--out` directory targets) |
+
+**R3-W18 verdict:** 7/7 RESOLVED in `5687763`.
+
+### R3-W22 (adversarial review of iteration 5) — 7 findings, RESOLVED in `07351ba`
+
+| ID | Area | Finding | Status | Verification |
+|----|------|---------|--------|-------------|
+| R3-W22-1 | lifecycle CLI | the W18-3 escape was defeatable: `escape()` + `!r` — the repr backslash-escaped the escape, so `[red]`-style markup still injected | RESOLVED `07351ba` | `escape(repr(term))` (repr inside escape, not the reverse) + regression test with a `[red]` term (`src/awareness/cli/main.py` diff) |
+| R3-W22-2 | crossx | correlation unmasked — one shared non-zero day inflated r to ±1.0 | RESOLVED `07351ba` | r masked to overlapping-data days, `_MIN_OVERLAP_DAYS = 3`; a sparse overlap reports 0.0 with a note (`src/awareness/crossx/engine.py`) |
+| R3-W22-3 | crossx | convergence decided on one-sided data — X silence read as bearish alignment | RESOLVED `07351ba` | convergence requires data on BOTH sides; one-sided silence → `neutral` (inline `W22-F2` comment, `src/awareness/crossx/engine.py`) |
+| R3-W22-4 | crossx | out-of-window X sessions produced a misleading all-zero series | RESOLVED `07351ba` | note "x session tweets predate the window — news side only" + `x_sentiment: None`; only genuinely empty sessions keep the zeroed series (`src/awareness/crossx/engine.py`) |
+| R3-W22-5 | briefing | `top_rule.firings` was the length of a capped 100-row history list, not the real firing count | RESOLVED `07351ba` | `count_firings_since(ts, rule_id=…)` — uncapped per-rule SQL COUNT (`src/awareness/alerts/store.py`, +18) |
+| R3-W22-6 | alert test | test endpoint lacked bodyless-CSRF and rate-limit treatment; the report omitted `active` / `required` | RESOLVED `07351ba` | `_is_csrf_bodyless()` matches `/alerts/rules/{id}/test`; `/alerts/rules/` added to `_RATE_LIMITED_PREFIXES` (`src/awareness/api/server.py`); report gains `active` + `required` (spike: 3× baseline or absolute floor) (`src/awareness/alerts/engine.py`) |
+| R3-W22-7 | crossx tests | correlation tests used constant ±1 series — zero variance, r undefined | RESOLVED `07351ba` | tests reworked with variance-bearing series (`tests/unit/test_crossx_engine.py`) |
+
+**R3-W22 verdict:** 7/7 RESOLVED in `07351ba`.
+
+### R3-W26 — **in progress** (iteration 7 landed in the working tree, uncommitted)
 
 **In progress.** As of this writing (2026-08-05) `.ralph/loop-state.md`
-opens Round 3 / Iteration 5 with W18 ("fix-the-fixes — adversarial review
-of the R3-ITER4 code: briefings API/SPA, lifecycle CLI, W14 fixes") as the
-scheduled next step. Status will be updated here when the report lands.
+opens Round 3 / Iteration 7 with W26 ("fix-the-fixes — adversarial review
+of the R3-ITER6 code: ops docs, test history, qualityx granularity, W22
+fixes") as the scheduled step, alongside the W27 (SPA X↔News convergence
+alert badge + dashboard quality trend mini-card) and W28 (CLI `alerts`
+weekly summary + a quality record store for cron) features. **No W26
+report exists in `docs/` and no iteration-7 commit has landed** — HEAD is
+still `07351ba`. The working tree does carry uncommitted iteration-7 WIP
+(`qualityx/store.py` + `quality --record/--recorded` in `cli/main.py`,
+`alerts weekly` in `alerts/cli.py`, the `x-conv-badge` + dashboard quality
+mini-card in the SPA, and `test_spa_convergence_badge.py` /
+`test_spa_quality_minicard.py`), so nothing in this register can be pinned
+to a commit yet. Status will be updated here when the iteration-7 commit
+and the W26 report land.

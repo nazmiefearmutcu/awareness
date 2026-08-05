@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import typer
 from rich.console import Console
@@ -31,10 +31,33 @@ from awareness.obs.logging import get_logger
 from awareness.storage.duckdb_index import DuckDbIndex
 
 app = typer.Typer(
-    no_args_is_help=True, help="Alert rules: create, list, delete, check, export, import"
+    no_args_is_help=True, help="Alert rules: create, list, delete, check, export, import, weekly"
 )
 console = Console()
 logger = get_logger("alerts.cli")
+
+_SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+_WEEKDAY_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _week_sparkline(counts: list[int]) -> str:
+    """One block char per weekday count (min-max scaled, 8 levels).
+
+    Local mirror of ``cli.main._sparkline`` for exactly seven values —
+    this module cannot import it at module level without a circular import
+    (``cli.main`` wires the alerts subcommand from here).
+    """
+    values = [float(c) for c in counts]
+    low = min(values)
+    top = max(values)
+    if not values or low == top:
+        return _SPARK_BLOCKS[0] * len(values)
+    scale = 7.0 / (top - low)
+    out = []
+    for value in values:
+        idx = round((value - low) * scale)
+        out.append(_SPARK_BLOCKS[min(max(idx, 0), 7)])
+    return "".join(out)
 
 
 def _store() -> AlertStore:
@@ -311,3 +334,121 @@ def history(
             f"{f['threshold']:g}", detail,
         )
     console.print(table)
+
+
+@app.command(name="weekly")
+def weekly(
+    json_out: bool = typer.Option(False, "--json", help="Output the summary as raw JSON"),
+) -> None:
+    """7-day alert summary: firings per rule + weekday distribution.
+
+    Covers the last 7 days (UTC): total firings, an exact per-rule count
+    (via SQL, so it survives the 500-row list clamp), each rule's last
+    firing, the top rule, and a Monday..Sunday distribution rendered as a
+    block sparkline. An empty week prints a clean message (exit 0).
+    """
+    since = datetime.now(UTC) - timedelta(days=7)
+    store = _store()
+    try:
+        total = store.count_firings_since(since)
+        rules = store.list_rules()
+        # The list powers the weekday distribution and last-fired per rule.
+        firings = store.list_firings(limit=500, since=since)
+        # Per-rule counts are exact SQL aggregates; rule_ids span configured
+        # rules plus any firing whose rule was deleted since (folded in with
+        # the firing-row name/term snapshot).
+        rule_ids = sorted({r.id for r in rules} | {f["rule_id"] for f in firings})
+        counts = {rid: store.count_firings_since(since, rid) for rid in rule_ids}
+    finally:
+        store.close()
+
+    by_name: dict[str, str] = {r.id: r.name for r in rules}
+    by_term: dict[str, str] = {r.id: r.term for r in rules}
+    by_weekday = [0] * 7
+    last_fired: dict[str, datetime] = {}
+    for f in firings:
+        by_weekday[f["fired_at"].weekday()] += 1
+        if f["rule_id"] not in last_fired or f["fired_at"] > last_fired[f["rule_id"]]:
+            last_fired[f["rule_id"]] = f["fired_at"]
+        by_name.setdefault(f["rule_id"], f["rule_name"])
+        by_term.setdefault(f["rule_id"], f["term"])
+
+    fired: list[dict[str, Any]] = [
+        {
+            "rule_id": rid,
+            "rule_name": by_name.get(rid, rid),
+            "term": by_term.get(rid, ""),
+            "count": counts[rid],
+            "last_fired": last_fired.get(rid),
+        }
+        for rid in rule_ids
+        if counts[rid] > 0
+    ]
+    fired.sort(key=lambda row: (-row["count"], row["rule_name"]))
+    top = fired[0] if fired else None
+
+    if not fired:
+        console.print("No alert firings in the last 7 days.")
+        return
+    if json_out:
+        print(
+            json.dumps(
+                {
+                    "window_days": 7,
+                    "since": since.isoformat(),
+                    "total_firings": total,
+                    "rules": [
+                        {
+                            "rule_id": row["rule_id"],
+                            "rule_name": row["rule_name"],
+                            "term": row["term"],
+                            "count": row["count"],
+                            "last_fired": row["last_fired"].isoformat()
+                            if row["last_fired"] is not None
+                            else None,
+                        }
+                        for row in fired
+                    ],
+                    "top_rule": {
+                        "rule_id": top["rule_id"],
+                        "rule_name": top["rule_name"],
+                        "count": top["count"],
+                    }
+                    if top is not None
+                    else None,
+                    "rules_fired": len(fired),
+                    "rules_total": len(rule_ids),
+                    "by_weekday": {
+                        label: by_weekday[i] for i, label in enumerate(_WEEKDAY_LABELS)
+                    },
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+
+    console.print(
+        f"[bold]{total}[/bold] firing(s) in the last 7 days · "
+        f"[bold]{len(fired)}/{len(rule_ids)}[/bold] rules fired"
+        + (f" · top: [bold cyan]{top['rule_name']}[/bold cyan] ({top['count']})" if top else "")
+    )
+    table = Table(title=f"Firings per rule (since {since:%Y-%m-%d})")
+    for col in ("Rule", "Term", "Count", "Last Fired"):
+        table.add_column(col)
+    for row in fired:
+        table.add_row(
+            row["rule_name"],
+            row["term"],
+            str(row["count"]),
+            row["last_fired"].astimezone().strftime("%Y-%m-%d %H:%M")
+            if row["last_fired"] is not None
+            else "-",
+        )
+    console.print(table)
+    console.print(
+        "[dim]weekday firings (Mon-Sun):[/dim] "
+        + _week_sparkline(by_weekday)
+        + "  "
+        + " ".join(str(c) for c in by_weekday)
+    )

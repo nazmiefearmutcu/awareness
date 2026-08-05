@@ -3948,6 +3948,96 @@ def _ratio_verdict(ratio: float) -> str:
     return f"[{style}]{pct:.1f}%[/{style}]"
 
 
+def _quality_history_path() -> Path:
+    """Append-only JSONL of operator-recorded quality snapshots."""
+    settings = get_settings()
+    assert settings.data_dir is not None
+    return settings.data_dir / "quality_history.jsonl"
+
+
+def _record_quality(idx: DuckDbIndex, json_out: bool) -> None:
+    """Persist the corpus quality snapshot to ``quality_history.jsonl``.
+
+    The cron hook: appends one JSON line (never rewrites history), prints a
+    one-line confirmation so cron logs stay short, and never fails on an
+    empty corpus (the zeroed snapshot is recorded as-is).
+    """
+    from awareness.corpusx.engine import CorpusXEngine  # noqa: PLC0415
+    from awareness.qualityx.store import QualityStore  # noqa: PLC0415
+
+    snapshot = CorpusXEngine(idx).quality_snapshot().model_dump(mode="json")
+    rec = QualityStore(_quality_history_path()).record(snapshot)
+    if json_out:
+        print(json.dumps(rec, indent=2, default=str))
+    else:
+        rprint(
+            f"[green]Recorded quality snapshot:[/green] "
+            f"{_quality_history_path()} "
+            f"(total={rec['total']}, dup={rec['duplicate_ratio'] * 100.0:.1f}%)"
+        )
+
+
+def _print_recorded_quality(
+    records: list[Any], *, skipped: int, json_out: bool
+) -> None:
+    """Render recorded quality snapshots (JSONL) as a table or JSON array.
+
+    Torn/unparseable lines were already dropped by the store; *skipped*
+    counts them so the operator sees the file had garbage, not a silent hole.
+    """
+    if json_out:
+        from datetime import datetime as _dt  # noqa: PLC0415
+
+        print(
+            json.dumps(
+                records,
+                indent=2,
+                default=lambda o: o.isoformat() if isinstance(o, _dt) else str(o),
+            )
+        )
+        return
+    table = Table(title="Recorded quality snapshots")
+    table.add_column("ts", style=banner.C_HI)
+    table.add_column("total", justify="right")
+    table.add_column("dup%", justify="right")
+    table.add_column("near-dup%", justify="right")
+    table.add_column("avg_len", justify="right")
+    table.add_column("cap/day", justify="right")
+    table.add_column("dup_groups", justify="right")
+    for rec in records:
+        ts = rec.get("ts")
+        # Stored ts values are UTC; render them as-is so the table lines up
+        # with the JSONL regardless of the operator's timezone.
+        ts_str = ts.strftime("%Y-%m-%d %H:%M") if isinstance(ts, datetime) else str(ts)
+        table.add_row(
+            ts_str,
+            f"{rec.get('total', 0):,}",
+            f"{float(rec.get('duplicate_ratio', 0.0)) * 100.0:.1f}",
+            f"{float(rec.get('near_duplicate_ratio', 0.0)) * 100.0:.1f}",
+            f"{float(rec.get('avg_length', 0.0)):.0f}",
+            f"{float(rec.get('capture_rate', 0.0)):.1f}",
+            str(rec.get("dedup_groups", 0)),
+        )
+    console.print(table)
+    if skipped:
+        console.print(f"[dim]skipped {skipped} unparseable line(s)[/dim]")
+
+
+def _show_recorded_quality(recorded: int, json_out: bool) -> None:
+    """Print recorded quality snapshots from the last *recorded* days.
+
+    Reads back the JSONL written by ``quality --record``; unparseable lines
+    (a torn final line from a crash mid-append) are dropped with a note.
+    """
+    from awareness.qualityx.store import QualityStore  # noqa: PLC0415
+
+    records, skipped = QualityStore(_quality_history_path()).list(days=recorded)
+    if not records:
+        rprint(f"[yellow]no recorded quality snapshots in the last {recorded} days[/yellow]")
+        return
+    _print_recorded_quality(records, skipped=skipped, json_out=json_out)
+
+
 def _print_quality_history(
     points: list[Any], *, days: int, json_out: bool, granularity: str = "day"
 ) -> None:
@@ -3992,7 +4082,7 @@ def _print_quality_history(
 
 
 @app.command(name="quality")
-def quality(
+def quality(  # noqa: PLR0917 - spec-mandated option surface (record/recorded cron hooks)
     json_out: bool = typer.Option(
         False, "--json", help="Output the raw quality snapshot as JSON instead of a table"
     ),
@@ -4012,6 +4102,18 @@ def quality(
         click_type=click.Choice(["day", "week", "month"]),
         help="History bucket size (day | week | month); only used with --history",
     ),
+    record: bool = typer.Option(
+        False,
+        "--record",
+        help="Persist the snapshot to <data_dir>/quality_history.jsonl (append-only) and exit",
+    ),
+    recorded: int | None = typer.Option(
+        None,
+        "--recorded",
+        min=1,
+        max=365,
+        help="Print recorded snapshots from the last N days instead of the live snapshot",
+    ),
 ) -> None:
     """Corpus quality report: sizes, duplicate ratios, languages, domains.
 
@@ -4021,8 +4123,10 @@ def quality(
     directly from the corpus (works on old data); DAYS defaults to 30 when
     the flag is given without a value, buckets are ``--granularity`` (day |
     week | month, default day) with a dup-ratio and capture-rate sparkline
-    (add ``--json`` for the raw points). An empty corpus prints a clean
-    "empty corpus" message.
+    (add ``--json`` for the raw points). ``--record`` (the cron hook) appends
+    the snapshot to ``quality_history.jsonl``; ``--recorded N`` prints those
+    recorded points (torn lines from a crash mid-write are skipped, never
+    fatal). An empty corpus prints a clean "empty corpus" message.
     """
     settings = get_settings()
     idx = DuckDbIndex(
@@ -4034,6 +4138,12 @@ def quality(
     from awareness.qualityx.engine import QualityTimeEngine  # noqa: PLC0415
 
     try:
+        if record:
+            _record_quality(idx, json_out)
+            return
+        if recorded is not None:
+            _show_recorded_quality(recorded, json_out)
+            return
         if history:
             window = days or 30
             points = QualityTimeEngine(idx).history(days=window, granularity=granularity)

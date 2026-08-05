@@ -89,14 +89,15 @@ def test_operations_documented_commands_help_smoke() -> None:
         assert result.exit_code == 0, f"`awareness {chain} --help` failed: {result.output}"
 
 
-def test_quality_record_is_documented_as_missing() -> None:
-    # The CLI's `quality` command only offers --json/--history (no --record);
-    # the operations doc must state that reality instead of inventing a flag.
+def test_quality_record_is_registered() -> None:
+    # The cron hook `awareness quality --record` exists (appends a snapshot
+    # to <data_dir>/quality_history.jsonl); the operations doc's "does not
+    # exist" note predates it and is now stale.
     quality_body = _slice_command(
         MAIN_PY, '@app.command(name="quality")', '@app.command(name="report")'
     )
-    assert '"--record"' not in quality_body
-    assert "does not exist" in DOCS
+    assert '"--record"' in quality_body
+    assert '"--recorded"' in quality_body
     assert "quality --record" in DOCS
     assert "briefing --save" in DOCS  # the daily snapshot hook is briefing, not quality
 

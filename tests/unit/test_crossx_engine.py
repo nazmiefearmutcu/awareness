@@ -407,3 +407,41 @@ async def test_empty_corpus_returns_zeroed_view(tmp_path: Path) -> None:
     assert view.news_avg_score == 0.0
     assert view.correlation_r == 0.0
     assert view.convergence == "neutral"
+
+
+# ── W26-F1: correlation must not fabricate signal from non-overlapping data ──
+
+
+async def test_correlation_zero_for_disjoint_days(tmp_path: Path) -> None:
+    """News on days {2,4}, X on days {3,5}: zero temporal overlap -> r=0."""
+    days_news = [2, 4]
+    days_x = [3, 5]
+    news_texts = ["bitcoin surges", "bitcoin rallies"]
+    x_texts = ["bitcoin crashes", "bitcoin slumps"]
+    _news_docs(tmp_path / "jsonl", news_texts, days_news)
+    store = await _create_store(tmp_path)
+    session_id = await _session_on_days(store, x_texts, days_x)
+    await store.close()
+    engine = CrossXEngine(_index(tmp_path), x_store_path=tmp_path / "xscraper.sqlite")
+
+    view = await engine.combined_view("bitcoin", session_id, window_days=14)
+
+    assert view.correlation_r == 0.0
+
+
+async def test_correlation_zero_for_single_shared_day(tmp_path: Path) -> None:
+    """News {2,4}, X {2,5}: one shared day + one-sided days -> r=0 (below
+    the shared-day minimum)."""
+    days_news = [2, 4]
+    days_x = [2, 5]
+    news_texts = ["bitcoin surges", "bitcoin rallies"]
+    x_texts = ["bitcoin crashes", "bitcoin slumps"]
+    _news_docs(tmp_path / "jsonl", news_texts, days_news)
+    store = await _create_store(tmp_path)
+    session_id = await _session_on_days(store, x_texts, days_x)
+    await store.close()
+    engine = CrossXEngine(_index(tmp_path), x_store_path=tmp_path / "xscraper.sqlite")
+
+    view = await engine.combined_view("bitcoin", session_id, window_days=14)
+
+    assert view.correlation_r == 0.0

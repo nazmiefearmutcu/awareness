@@ -83,17 +83,18 @@ _MIN_OVERLAP_DAYS = 3
 
 
 def _correlation_r(news: list[float], x: list[float]) -> float:
-    """Pearson correlation over days where at least one series has data.
+    """Pearson correlation over days where BOTH series have data.
 
-    Zero-filled days (both sides silent) would otherwise inflate r to ±1.0
-    from a single shared day — the mask excludes them, and a sparse overlap
-    (< :data:`_MIN_OVERLAP_DAYS` data days) is reported as 0.0.
+    Zero-filled days would inflate r to ±1.0 from a single shared day; days
+    where only ONE side has data must also be excluded (padding them with
+    zeros fabricates correlation between series that never co-occurred —
+    W26-F1). :data:`_MIN_OVERLAP_DAYS` counts shared-data days only.
     """
     a = np.asarray(news, dtype=np.float64)
     b = np.asarray(x, dtype=np.float64)
     if a.size < 2 or b.size < 2:
         return 0.0
-    mask = (a != 0.0) | (b != 0.0)
+    mask = (a != 0.0) & (b != 0.0)
     if int(mask.sum()) < _MIN_OVERLAP_DAYS:
         return 0.0
     a_m, b_m = a[mask], b[mask]

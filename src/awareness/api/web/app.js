@@ -3205,9 +3205,15 @@ function renderTestHistory(container) {
   for (const e of list) {
     const row = container.insertRow();
     row.className = "al-history-row" + (e.fired ? " is-fired" : "");
-    row.insertCell().textContent = e.at
-      ? new Date(e.at).toISOString().slice(0, 19).replace("T", " ")
-      : "—";
+    // W26-F3: a parseable-but-corrupt 'at' must not crash the whole panel.
+    let ts = "—";
+    if (e.at) {
+      const d = new Date(e.at);
+      if (!Number.isNaN(d.getTime())) {
+        ts = d.toISOString().slice(0, 19).replace("T", " ");
+      }
+    }
+    row.insertCell().textContent = ts;
     row.insertCell().textContent = e.rule_name || e.rule_id || "—";
     row.insertCell().textContent = e.term || "—";
     const resultCell = row.insertCell();
@@ -4288,6 +4294,32 @@ async function loadCrossView() {
   }
 }
 
+/** Badge class for a convergence verdict: aligned bullish → green, aligned
+ *  bearish → red, divergence → amber, anything else → gray. Pure — no DOM. */
+function convergenceClass(conv) {
+  const c = String(conv || "").toLowerCase().trim();
+  if (c === "aligned bullish") return "is-aligned-bullish";
+  if (c === "aligned bearish") return "is-aligned-bearish";
+  if (c === "divergence") return "is-divergence";
+  return "is-neutral";
+}
+
+/** Human label for a convergence verdict, always one of the four known
+ *  values (unknown input falls back to "neutral"). Pure — no DOM. */
+function convergenceLabel(conv) {
+  const c = String(conv || "").toLowerCase().trim();
+  if (c === "aligned bullish") return "aligned bullish";
+  if (c === "aligned bearish") return "aligned bearish";
+  if (c === "divergence") return "divergence";
+  return "neutral";
+}
+
+/** r == 0 with real sentiment on both sides means the two feeds barely
+ *  overlap — surface a dim hint. Pure — no DOM. */
+function lowOverlap(r, xAvg, newsAvg) {
+  return Number(r) === 0 && Number(xAvg) !== 0 && Number(newsAvg) !== 0;
+}
+
 /** Render a /crossx/view payload: phase badge, two sentiment charts, r + verdict. */
 function renderCrossView(root, view) {
   clear(root);
@@ -4315,10 +4347,23 @@ function renderCrossView(root, view) {
   charts.appendChild(xBox);
   root.appendChild(charts);
   const foot = el("p", { class: "x-cross-foot" });
-  foot.appendChild(el("strong", {
-    text: "r " + (v.correlation_r != null ? Number(v.correlation_r).toFixed(2) : "—"),
-  }));
-  foot.appendChild(document.createTextNode(" · " + (v.convergence || "neutral")));
+  const rText = v.correlation_r != null ? Number(v.correlation_r).toFixed(2) : "—";
+  foot.appendChild(el("strong", { text: "r " + rText }));
+  foot.appendChild(document.createTextNode(" · "));
+  const conv = v.convergence || "neutral";
+  const convFns = typeof convergenceClass === "function" && typeof convergenceLabel === "function";
+  const badge = el("span", {
+    class: "x-conv-badge " + (convFns ? convergenceClass(conv) : "is-neutral"),
+    text: convFns ? convergenceLabel(conv) : conv,
+  });
+  const note = String(v.note || "").trim();
+  const tip = "r " + rText + (note ? " · " + note : "");
+  if (typeof badge.setAttribute === "function") badge.setAttribute("title", tip);
+  foot.appendChild(badge);
+  if (typeof lowOverlap === "function" && lowOverlap(v.correlation_r, v.x_avg_score, v.news_avg_score)) {
+    foot.appendChild(document.createTextNode(" · "));
+    foot.appendChild(el("span", { class: "x-conv-hint", text: "low overlap" }));
+  }
   root.appendChild(foot);
 }
 
@@ -4326,6 +4371,11 @@ function renderCrossView(root, view) {
 let dashQualitySig = null;
 let dashQualityTick = 0;
 let dashQualityGranularity = "day";
+
+/** Ratio → "12.3%" (or "—" for null). Shared by the mini-card KPI stats. */
+function qualityPct(v) {
+  return v == null ? "—" : (v * 100).toFixed(1) + "%";
+}
 
 /** Table rows for the quality history: [date, total, dup%, nearDup%, newDomains].
  *  Ratios are ×100 as percents. Pure — no DOM. */
@@ -4340,6 +4390,40 @@ function qualityHistoryRows(points) {
       p.new_domains != null ? p.new_domains : "—",
     ];
   });
+}
+
+/** Last quality point, or null for an empty/null series. Pure — no DOM. */
+function latestQualityPoint(points) {
+  const list = Array.isArray(points) ? points : [];
+  return list.length ? list[list.length - 1] : null;
+}
+
+/** Formatted strings for the latest-point mini-card KPI stats. Pure. */
+function qualityMiniStats(point) {
+  const p = point || {};
+  return {
+    total: p.total != null ? String(p.total) : "—",
+    dupPct: qualityPct(p.duplicate_ratio),
+    nearDupPct: qualityPct(p.near_duplicate_ratio),
+    captureRate: qualityPct(p.capture_rate),
+  };
+}
+
+/** Latest-point mini-card: 3–4 small KPIs + a 14-point dup-ratio sparkline. */
+function renderQualityMini(points) {
+  const stats = qualityMiniStats(latestQualityPoint(points));
+  const set = (id, v) => {
+    const node = $(id);
+    if (node) node.textContent = v;
+  };
+  set("#qmini-total", stats.total);
+  set("#qmini-dup", stats.dupPct);
+  set("#qmini-near", stats.nearDupPct);
+  set("#qmini-capture", stats.captureRate);
+  const spark = $("#dash-quality-mini-spark");
+  if (!spark) return;
+  const recent = (Array.isArray(points) ? points : []).slice(-14);
+  renderBarChart(spark, recent.map((p) => ({ ts: p.ts, count: Math.round((p.duplicate_ratio || 0) * 100), unit: "%" })), { color: "#d97757" });
 }
 
 /** Render the quality history payload: dup-ratio chart, new-domains chart,
@@ -4366,6 +4450,7 @@ function renderQualityHistory(data) {
     const row = body.insertRow();
     for (const v of r) row.insertCell().textContent = v;
   }
+  renderQualityMini(points);
 }
 
 /** Refresh the dashboard quality band. Rebuilds only when the series

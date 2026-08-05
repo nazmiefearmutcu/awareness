@@ -121,26 +121,52 @@ AW_ALERTS_AUTOSTART=1 awareness-api
 - The runner lives and dies with the API process — keep the API running
   (`awareness service install` installs it as a macOS Launch Agent).
 
-## Quality recording (daily snapshot hook)
+## Quality recording (daily cron hook)
 
-Reality check: **`awareness quality --record` does not exist.** The
-`quality` command (`@app.command(name="quality")` in `cli/main.py`) only
-offers `--json` (raw snapshot), `--history [DAYS]` (per-day series), and the
-plain table. So the daily snapshot hook is **`briefing --save`** (see
-"Daily briefing" above): every morning it persists a JSON object that
-includes the alert summary plus the briefing window's terms/domains — the
-closest thing to a persisted daily record the CLI ships.
+`awareness quality --record` persists the current corpus-quality snapshot
+(sizes, duplicate / near-dup ratios, languages, domains) as one JSON
+object, appended to `<data_dir>/quality_history.jsonl` — an append-only
+JSONL store chosen so a crash mid-write can never corrupt history (a torn
+final line is skipped on read, every earlier line stays intact). The
+snapshot comes from `CorpusXEngine.quality_snapshot()`; an empty corpus
+prints `empty corpus` and writes nothing (exit 0). Read the recorded
+series back with `awareness quality --recorded N` (last N days, table or
+`--json`); the per-day history served by `/qualityx/history` is computed
+directly from the corpus, so a missing or empty store never blocks reads.
 
-For on-demand corpus-quality snapshots (e.g. from a different cron line or
-an operator shell):
+Crontab line (06:30 daily, UTC; adjust for your TZ):
 
-```bash
-AW_PROJECT_ROOT=/path/to/awareness /path/to/awareness/.venv/bin/awareness quality --json
+```cron
+30 6 * * * cd /path/to/awareness && AW_PROJECT_ROOT=/path/to/awareness /path/to/awareness/.venv/bin/awareness quality --record >> /var/log/awareness-quality.log 2>&1
 ```
 
-`awareness report --json` also embeds a full `quality` snapshot in its
-payload. If you want `quality --record`, it has to be added to the CLI —
-until then `briefing --save` is the cron-friendly daily hook.
+Notes:
+
+- `quality --record` prints a one-line confirmation (`Recorded quality
+  snapshot: <path> (total=…, dup=…%)`); add `--json` to emit the record
+  as JSON on stdout instead.
+- The **daily briefing hook stays `briefing --save`** (see "Daily
+  briefing" above): every morning it persists the full briefing JSON
+  (movers, terms, sentiment, alert summary) under `data/briefings/`.
+  `quality --record` is the *quality-series* complement — the recorded
+  snapshots back a persisted quality trend, while the briefing is the
+  operator-facing morning read.
+- `awareness report --json` still embeds a live `quality` snapshot in its
+  payload; on-demand snapshots remain `awareness quality --json`.
+
+## Weekly alert summary (cron)
+
+`awareness alerts weekly` prints a 7-day (UTC) alert summary — total
+firings, exact per-rule counts (SQL, so they survive the 500-row list
+clamp), each rule's last firing, the top rule, and a Mon..Sun distribution
+as a block sparkline; `--json` emits the raw payload (`window_days`,
+`since`, `total_firings`, `rules`, `top_rule`, `rules_fired` /
+`rules_total`) for scripting. An empty week prints `No alert firings in
+the last 7 days.` and exits 0. Crontab line (09:00 every Monday):
+
+```cron
+0 9 * * 1 cd /path/to/awareness && AW_PROJECT_ROOT=/path/to/awareness /path/to/awareness/.venv/bin/awareness alerts weekly --json >> /var/log/awareness-alerts-weekly.log 2>&1
+```
 
 ## macOS launchd example (daily briefing)
 

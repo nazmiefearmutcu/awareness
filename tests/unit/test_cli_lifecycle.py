@@ -171,3 +171,13 @@ def test_lifecycle_emerging_table(tmp_project: Path) -> None:
     assert "alphaflare" in result.output
     assert "betawave" in result.output
     assert "deltadrip" not in result.output  # below the 3-doc floor
+
+
+def test_no_captures_message_escapes_markup(tmp_project: Path) -> None:
+    """W22-F1/W26-F2: a markup-laden term renders literally, no Rich styling."""
+    _corpus(tmp_project)
+    result = runner.invoke(app, ["lifecycle", "zz[red]QQ[/red]ww", "--days", "7"])
+    assert result.exit_code == 0, result.output
+    assert "No captures for" in result.output
+    assert "[red]" in result.output  # literal brackets survive
+    assert "[/red]" in result.output

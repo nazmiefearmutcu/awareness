@@ -315,3 +315,30 @@ async def test_csrf_delete_bodyless_allowed_same_origin() -> None:
             "/saved/nonexistent-id", headers={"Origin": "https://evil.example"}
         )
         assert r.status_code == 403
+
+
+async def test_alert_rule_test_bodyless_passes_csrf() -> None:
+    """W22-F5/W26-F2: bodyless POST /alerts/rules/{id}/test must not 415
+    (the route takes no body; the suffix matcher relaxes content-type)."""
+    app = server.create_app()
+    async with _make_client(app) as client:
+        # Unknown rule: bodyless call must reach the route (404), not 415.
+        r = await client.post(
+            "/alerts/rules/nonexistent/test",
+            content=b"",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert r.status_code in (404, 200, 503)
+
+
+async def test_alert_rule_test_rate_limited() -> None:
+    """W22-F5: /alerts/rules/ prefix is rate-limited (25 rapid calls -> 429)."""
+    from awareness.api import server as srv
+
+    app = server.create_app()
+    async with _make_client(app) as client:
+        statuses = []
+        for _ in range(28):
+            r = await client.post("/alerts/rules/x/test")
+            statuses.append(r.status_code)
+        assert statuses.count(429) >= 5, statuses

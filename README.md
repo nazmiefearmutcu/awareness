@@ -115,16 +115,27 @@ rules (threshold, window, cooldown), with CRUD at `/alerts/rules` (plus
 instances), one-shot evaluation at `/alerts/check`, and `/alerts/status` +
 `/alerts/firings` for the audit trail (the SPA Alerts view renders that
 firing history — last-50 log and a 24 h count — with expandable firing
-detail, and can test-run rules). Firings deliver to **all** configured
-webhooks with retry; payloads are plain JSON or Slack-style
-(`hooks.slack.com` auto-detected or forced per rule), and every webhook URL
-is validated against the public-host gate before it is stored **or** called.
-A periodic runner (`AW_ALERTS_AUTOSTART=1`) evaluates rules inside the API
-process. The same engine is drivable from the terminal:
+detail). A per-rule **test area** at `POST /alerts/rules/{id}/test`
+evaluates ONE rule ignoring cooldown **without persisting any firing** —
+inactive rules included — and returns `fired`, `count` vs `threshold`,
+`suppressed_by_cooldown`, `active`, and the effective `required` count
+(spike rules: 3× the rolling baseline or the absolute floor); the SPA
+renders a Test button + result panel per rule, and test runs are kept in
+a sessionStorage history panel (cap 20, clearable). Firings deliver to
+**all** configured webhooks with retry; payloads are plain JSON or
+Slack-style (`hooks.slack.com` auto-detected or forced per rule), and
+every webhook URL is validated against the public-host gate before it is
+stored **or** called. A periodic runner (`AW_ALERTS_AUTOSTART=1`)
+evaluates rules inside the API process. The same engine is drivable from
+the terminal:
 
 ```bash
-awareness alerts list|create|delete|check|export|import|history|run-once
+awareness alerts list|create|delete|check|export|import|history|run-once|weekly
 ```
+
+`awareness alerts weekly [--json]` prints a 7-day (UTC) alert summary —
+exact per-rule counts, last firing per rule, top rule, and a Mon..Sun
+distribution sparkline — the cron-friendly weekly alert recap.
 
 **Entities** (`/entities/*`) — dependency-free heuristic NER
 (ORG/PERSON/PLACE/TICKER) aggregated over the corpus: `/top`, `/co-occurring`,
@@ -164,7 +175,24 @@ dominance — `/topicx/lifecycle`, `/topicx/emerging`, `/topicx/impact`,
 **Quality time series** (`/qualityx/*`) — corpus-quality trends instead of a
 single snapshot: per-day duplicate / near-dup ratios, new domains (first-ever
 capture), and capture rate, zero-filled over calendar buckets — the full
-history at `/qualityx/history` and today at `/qualityx/current`.
+history at `/qualityx/history` and today at `/qualityx/current`. The SPA
+dashboard quality band carries a latest-point **mini-card** (total, dup-%,
+near-dup-%, capture rate KPIs + a 14-bucket dup-ratio sparkline) next to the
+per-day table.
+
+**Cross-view** (`/crossx/*`) — aligns a term's news lifecycle phase and
+daily news sentiment with X-session sentiment into one aligned, zero-filled
+series pair at `GET /crossx/view`, reporting the Pearson correlation and a
+convergence verdict (aligned bullish / aligned bearish / divergence /
+neutral). The correlation is masked to overlapping-data days (≥ 3 required;
+a sparse overlap reports 0.0 with a note instead of inflating r from one
+shared day) and convergence requires data on **both** sides — one-sided
+silence reads neutral, and out-of-window X sessions return `x_sentiment:
+None` with a note rather than a misleading zeroed series. The SPA X view
+renders the X-news band: phase badge, dual sentiment charts, r, and a
+color-coded convergence badge (green aligned-bullish / red aligned-bearish
+/ amber divergence / gray neutral) with a tooltip carrying r + the
+out-of-window note.
 
 **Saved searches** (`/saved/*`) — a SQLite-backed store of named queries
 (CRUD at `/saved`, pin/run at `/saved/{id}/pin` + `/saved/{id}/run`). The
@@ -213,6 +241,9 @@ awareness quality [--json]                                # corpus snapshot: siz
                                                           # languages, domains (/corpus/quality)
 awareness quality --history [DAYS] [--json]               # per-day quality series with sparkline
                                                           # (default window 30d; /qualityx/*)
+awareness quality --record                               # append snapshot to
+                                                          # data/quality_history.jsonl (cron hook)
+awareness quality --recorded 30 [--json]                  # print recorded snapshots (last N days)
 awareness briefing [--days N --top N --emerging N]        # movers (z-score spikes), top terms,
                          [--json] [--no-gdelt]            # new domains, sentiment shift, alert
                                                           # activity, GDELT gaps — one read
@@ -425,7 +456,9 @@ data/
 
 For the analytics-grade environment (Postgres + Redpanda + MinIO + ClickHouse), the same binary
 points at `ops/compose/docker-compose.yml` via env vars — no code change. See
-[`docs/runbook.md`](docs/runbook.md).
+[`docs/runbook.md`](docs/runbook.md). For scheduled automation — cron and
+macOS launchd recipes for the daily briefing, weekly digest email, alert
+runner, quality snapshot, and retention — see [`docs/operations.md`](docs/operations.md).
 
 ---
 

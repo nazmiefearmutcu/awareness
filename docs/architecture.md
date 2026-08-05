@@ -367,3 +367,75 @@ The final 100k-doc benchmark (`3c65ce7`) confirmed every warm operation
 ≤ 1.7 s under a contended host (load 41–75) — see
 [`docs/benchmarks/perf_final_round3.md`](benchmarks/perf_final_round3.md).
 
+### Round 3 — iterations 5-7 (2026-08-05)
+
+Round-3 iterations 5 (`5687763`) and 6 (`07351ba`): the alert rule test
+area, the crossx news↔X cross-view, briefing enrichment, ops docs, SPA
+alert-test history, and qualityx granularity — still one FastAPI process,
+still zero extra services. Iteration 7 (W26 fix-the-fixes audit; W27 SPA
+convergence badge + quality mini-card; W28 CLI `alerts` weekly summary +
+quality record store) was landing in the working tree at this writing
+(pre-commit — nothing to pin to a commit yet), so the iteration-7 items
+below are marked as working-tree WIP.
+
+- **Alert rule test area**: `POST /alerts/rules/{id}/test` evaluates ONE
+  rule in test mode — the cooldown gate is bypassed and the firing is
+  **never persisted** (`_evaluate_rule(..., persist=False)`), so probing
+  the current condition cannot pollute the firing history; inactive rules
+  are still evaluated (the report's `active` field makes that explicit),
+  and the report carries the effective `required` count (for spike rules:
+  3× the rolling baseline or the absolute floor, whichever is higher). The
+  endpoint is treated as a bodyless CSRF path (Origin-gated, no
+  content-type requirement) and shares the `/alerts/rules/` rate-limit
+  prefix. The SPA Alerts view renders a per-rule Test button + result
+  panel (fired / cooldown / count vs threshold / inactive tag), with test
+  runs kept in a sessionStorage history panel (cap 20, clearable).
+- **Cross-view** (`awareness/crossx/`, `GET /crossx/view`): combines a
+  term's news lifecycle phase and daily news sentiment with X-session
+  sentiment into aligned, zero-filled daily series. The Pearson
+  correlation is **masked to overlapping-data days and requires ≥ 3 of
+  them** — a single shared day no longer inflates r to ±1.0, and a sparse
+  overlap is reported as 0.0 with a note. The convergence verdict (aligned
+  bullish / aligned bearish / divergence / neutral) requires data on
+  **both** sides; one-sided silence reads neutral. X sessions whose tweets
+  predate the window return a note + `x_sentiment: None` instead of a
+  misleading all-zero series (only genuinely empty sessions keep the
+  zeroed series). The SPA X view's X-news band renders the phase badge,
+  dual sentiment charts, and r + verdict.
+- **Briefing enrichment**: `alerts_summary` now carries
+  `rules_active`/`rules_total` and a `top_rule` entry whose `firings`
+  count is the uncapped per-rule SQL COUNT (`count_firings_since(ts,
+  rule_id=…)`), not the length of a capped history list.
+- **Qualityx granularity**: `awareness quality --history --granularity
+  day|week|month` (UTC Monday / 1st bucket alignment, cross-bucket dup
+  scoping, `new_domains` at the chosen granularity) with dual dup-ratio +
+  capture-rate sparklines; the SPA dashboard quality band gained a
+  granularity select.
+- **Ops docs + test history** (`07351ba`): `docs/operations.md` documents
+  the cron/launchd recipes and is contract-tested against the CLI
+  (`tests/unit/test_docs_operations.py` verifies every documented command
+  is registered); the SPA alert Test-button history lives in
+  sessionStorage.
+
+#### Iteration-7 WIP (working tree, pre-commit)
+
+Landing uncommitted at this writing — see the audit register for status:
+
+- **Quality record store** (`awareness/qualityx/store.py`): an
+  append-only JSONL store at `<data_dir>/quality_history.jsonl` for
+  operator-recorded snapshots. `awareness quality --record` appends the
+  live snapshot (the cron hook) and `--recorded N` reads it back; a torn
+  final line from a crash mid-write is skipped on read, and the store is
+  a *cache* — `/qualityx/history` still computes per-day series directly
+  from the corpus, so an empty store never blocks history reads.
+- **`awareness alerts weekly [--json]`**: 7-day (UTC) alert summary with
+  exact per-rule SQL counts, last-firing per rule, top rule, and a
+  Mon..Sun distribution sparkline.
+- **SPA convergence badge**: the crossx X-news band footer renders the
+  verdict as a color-coded badge (green/red/amber/gray) with an r + note
+  tooltip (`convergenceClass`/`convergenceLabel` pure helpers, title via
+  `setAttribute` — never innerHTML).
+- **SPA quality mini-card**: the dashboard quality band gained a
+  latest-point mini-card (total / dup-% / near-dup-% / capture-rate KPIs
+  + 14-bucket dup-ratio sparkline).
+

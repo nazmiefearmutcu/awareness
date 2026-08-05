@@ -142,6 +142,103 @@ under a contended host (load 41–75); term_frequency ×2.1 and domain_rank
 FTS build 24.1 s, delta first-search 5.57 s) with top-3 recommendations —
 [`docs/benchmarks/perf_final_round3.md`](docs/benchmarks/perf_final_round3.md).
 
+### Ralph Loop Round 3 — iterations 5-6 (`5687763`, `07351ba`)
+
+The alert rule test area, the crossx news↔X cross-view, briefing
+enrichment, ops docs, SPA test history, and qualityx granularity. R3-W18
+(7 findings) and R3-W22 (7 findings) are fully resolved in these commits;
+see [`docs/AUDIT_FINDINGS_2026-08-03.md`](docs/AUDIT_FINDINGS_2026-08-03.md).
+Iteration 7 (W26/W27/W28 — SPA convergence badge, quality mini-card,
+`alerts` weekly summary, `quality --record` store) had not shipped at
+this writing.
+
+- **Alert rule test area** — `POST /alerts/rules/{id}/test` evaluates one
+  rule ignoring cooldown, **never persists firings**, and reports
+  `fired`, `count` vs `threshold`, `suppressed_by_cooldown`, `active`,
+  and the effective `required` (spike rules: 3× baseline or absolute
+  floor); inactive rules are still evaluated (`5687763`). The SPA Alerts
+  view gained a per-rule Test button + result panel, with test runs kept
+  in a sessionStorage history panel (cap 20, clearable) (`07351ba`). The
+  endpoint is bodyless-CSRF and rate-limited under `/alerts/rules/`
+  (W22-6).
+- **Cross-view** (`/crossx/view`, `5687763`) — aligns news lifecycle +
+  daily news sentiment with X-session sentiment (aligned zero-filled
+  series, Pearson r) and a convergence verdict (aligned
+  bullish/bearish/divergence/neutral). Correlation is masked to
+  overlapping-data days (≥ 3; sparse overlap → 0.0 + note) and convergence
+  requires data on both sides — one-sided silence reads neutral;
+  out-of-window X sessions return `x_sentiment: None` with a note instead
+  of a misleading zeroed series (W22-2/3/4, `07351ba`). The SPA X view
+  gained the X-news band: phase badge + dual sentiment charts + r +
+  verdict.
+- **Briefing enrichment** — `alerts_summary` gains `rules_active` /
+  `rules_total` and a `top_rule` entry with the uncapped per-rule firing
+  count (`count_firings_since(rule_id=…)`, SQL COUNT — not a capped list
+  length; W22-5) (`5687763`, `07351ba`).
+- **Ops docs** — `docs/operations.md`: cron/launchd recipes (briefing,
+  digest email, alert runner, quality snapshot, retention) and SMTP env
+  vars, contract-tested so every documented command is verified to exist
+  (`07351ba`).
+- **Qualityx granularity** — `awareness quality --history --granularity
+  day|week|month` (UTC-aligned buckets, cross-bucket dup scoping) with
+  dual dup-ratio + capture-rate sparklines; the SPA dashboard quality
+  band gained a granularity select (`07351ba`).
+- **E2E stages 15–16** — crossx view (reusing the stage-X session) and
+  alert rule test with no-persist verification; 16/16 PASS (`07351ba`).
+
+**Fixes (R3-W18, 7 findings):** named-briefing chips pass the full stem
+(no more 404 on every named file); briefings-list TOCTOU closed (vanished
+files list with null size — `size_bytes` nullable); lifecycle no-captures
+message escapes the term; `lifecycle --compare/--emerging` honor `--json`;
+stray non-conforming `*.json` files filtered from the saved-briefings
+list; symlink trust model documented in the router; W14 OSError paths got
+regression tests.
+
+**Fixes (R3-W22, 7 findings):** the lifecycle escape is now
+`escape(repr(...))` (the earlier `escape()` + `!r` order was defeatable —
+`[red]`-style markup could still inject; regression test with a `[red]`
+term included); crossx correlation masked to ≥ 3 overlapping-data days
+(sparse overlap no longer inflates r to ±1.0 from one shared day);
+convergence requires data on both sides (one-sided silence → neutral);
+out-of-window X sessions return `None` + note, not an all-zero series;
+briefing `top_rule.firings` uncapped (per-rule SQL COUNT); alert test
+endpoint bodyless-CSRF + rate-limited with `active`/`required` in the
+report; crossx correlation tests reworked with variance-bearing series
+(constant ±1 series are zero-variance → r undefined).
+
+**Testing:** suite grew ~330 tests across the two iterations (alert test
+area 316, crossx engine 385 + API 190, SPA test history 326, qualityx
+granularity 231, SPA alert test area 207, SPA crossx view 274, docs
+operations 199); full suite green (1804+).
+
+### Ralph Loop Round 3 — iteration 7 (working tree, pre-commit)
+
+Landing in the working tree at this writing (HEAD still `07351ba`; the
+W26 fix-the-fixes audit and the iteration-7 commit had not landed — see
+[`docs/AUDIT_FINDINGS_2026-08-03.md`](docs/AUDIT_FINDINGS_2026-08-03.md)
+for the register status):
+
+- **`awareness quality --record` / `--recorded`** — the cron hook:
+  `--record` appends the corpus-quality snapshot as one JSON object to
+  `<data_dir>/quality_history.jsonl` (append-only; a crash mid-write
+  never corrupts history — a torn final line is skipped on read);
+  `--recorded N` prints the recorded snapshots from the last N days
+  (`src/awareness/qualityx/store.py`).
+- **`awareness alerts weekly [--json]`** — 7-day (UTC) alert summary:
+  total firings, exact per-rule SQL counts (survives the 500-row list
+  clamp), last firing per rule, top rule, and a Mon..Sun distribution
+  sparkline.
+- **SPA convergence badge** — the crossx X-news band's footer verdict is
+  now a color-coded badge (green aligned-bullish / red aligned-bearish /
+  amber divergence / gray neutral) with an r + note tooltip.
+- **SPA quality mini-card** — the dashboard quality band gained a
+  latest-point mini-card: total / dup-% / near-dup-% / capture-rate KPIs
+  plus a 14-bucket dup-ratio sparkline.
+
+`docs/operations.md` already documents the two new cron hooks (daily
+`quality --record` + weekly `alerts weekly`), enforced by the docs
+contract test.
+
 ---
 
 ## [0.2.0] — 2026-08-04
