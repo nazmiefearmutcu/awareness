@@ -60,7 +60,7 @@ from awareness.storage.duckdb_index import DuckDbIndex
 from awareness.storage.state import StateDB
 from awareness.tail.engine import TailEngine
 from awareness.util.lang import PRIMARY_LANGUAGE_SQL, append_language_filter
-from awareness.util.timeutil import coerce_relative_end, inclusive_end, to_utc, utcnow
+from awareness.util.timeutil import coerce_relative_end, floor_to_day, inclusive_end, to_utc, utcnow
 from awareness.workers.engine import WorkerEngine
 
 app = typer.Typer(no_args_is_help=False, help="Awareness — public text internet awareness engine")
@@ -3735,17 +3735,64 @@ def _ratio_verdict(ratio: float) -> str:
     return f"[{style}]{pct:.1f}%[/{style}]"
 
 
+def _print_quality_history(
+    points: list[Any], *, days: int, json_out: bool
+) -> None:
+    """Render per-day quality points as a Rich table (or JSON) plus a dup-ratio
+    sparkline; an all-empty series prints a clean "empty corpus" message."""
+    if json_out:
+        print(json.dumps([p.model_dump(mode="json") for p in points], indent=2, default=str))
+        return
+    if all(p.total == 0 for p in points):
+        rprint("[yellow]empty corpus[/yellow]")
+        return
+    table = Table(title=f"Quality history (last {days} days)")
+    table.add_column("Date", style=banner.C_HI)
+    table.add_column("total", justify="right")
+    table.add_column("dup%", justify="right")
+    table.add_column("near-dup%", justify="right")
+    table.add_column("avg_len", justify="right")
+    table.add_column("new_domains", justify="right")
+    for p in points:
+        table.add_row(
+            p.ts.isoformat(),
+            f"{p.total:,}",
+            f"{p.duplicate_ratio * 100.0:.1f}",
+            f"{p.near_duplicate_ratio * 100.0:.1f}",
+            f"{p.avg_length:.0f}",
+            str(p.new_domains),
+        )
+    console.print(table)
+    console.print(
+        "[dim]dup-ratio sparkline (per day):[/dim] "
+        + _sparkline([p.duplicate_ratio * 100.0 for p in points])
+    )
+
+
 @app.command(name="quality")
 def quality(
     json_out: bool = typer.Option(
         False, "--json", help="Output the raw quality snapshot as JSON instead of a table"
+    ),
+    history: bool = typer.Option(
+        False,
+        "--history",
+        help="Print per-bucket corpus-quality history instead of the snapshot",
+    ),
+    days: int | None = typer.Argument(
+        None,
+        metavar="DAYS",
+        help="History window in days (1..365, default 30); only used with --history",
     ),
 ) -> None:
     """Corpus quality report: sizes, duplicate ratios, languages, domains.
 
     Builds the same DuckDB index as ``digest`` and prints
     ``CorpusXEngine.quality_snapshot()`` as a Rich table (or raw JSON with
-    ``--json``). An empty corpus prints a clean "empty corpus" message.
+    ``--json``). ``--history`` prints a per-day quality series computed
+    directly from the corpus (works on old data); DAYS defaults to 30 when
+    the flag is given without a value (add ``--json`` for the raw points).
+    An empty corpus prints a clean "empty corpus" message.
     """
     settings = get_settings()
     idx = DuckDbIndex(
@@ -3754,8 +3801,14 @@ def quality(
         iceberg_warehouse=settings.iceberg_warehouse,
     )
     from awareness.corpusx.engine import CorpusXEngine  # noqa: PLC0415
+    from awareness.qualityx.engine import QualityTimeEngine  # noqa: PLC0415
 
     try:
+        if history:
+            window = days or 30
+            points = QualityTimeEngine(idx).history(days=window)
+            _print_quality_history(points, days=window, json_out=json_out)
+            return
         snapshot = CorpusXEngine(idx).quality_snapshot()
     finally:
         idx.close()
@@ -3952,8 +4005,9 @@ def report(
                     f"GDELT: {comparison.term} local {comparison.local_count} "
                     f"vs external {comparison.gdelt_count} (r={comparison.correlation_r:.2f})"
                 )
-            except Exception as exc:
-                logger.warning("report_gdelt_unavailable", err=str(exc))
+            except Exception:
+                # No logger.warning: under CliRunner capture a stale handler
+                # can corrupt the output stream; the note below is sufficient.
                 gdelt_note = "GDELT unavailable"
     except Exception as exc:
         rprint(f"[red]report failed:[/red] {escape(str(exc))}")
@@ -4115,6 +4169,415 @@ def feeds(
         style = "green" if score >= 80 else ("yellow" if score >= 50 else "red")
         table.add_row("health score", f"[{style}]{score}[/{style}]")
     console.print(table)
+
+# ── briefing + gdelt-gaps ────────────────────────────────────────────────────
+
+_BRIEFING_EMPTY_MSG = "no corpus yet — start tail or run a backfill"
+_GDELT_UNAVAILABLE_MSG = "GDELT unavailable (offline or rate-limited)"
+_BRIEFING_SPIKE_BASELINE_DAYS = 14  # movers need a baseline longer than the window
+_BRIEFING_SENTIMENT_EPSILON = 0.05  # |delta| below this renders as a flat dash
+_BRIEFING_MOVER_TERMS = 5  # terms scanned for spikes
+_BRIEFING_SENTIMENT_TERMS = 3  # terms scored for the sentiment shift
+_BRIEFING_GAP_TERMS = 10  # terms sent to the GDELT bridge
+_BRIEFING_ALERT_HOURS = 24
+
+
+def _briefing_movers(
+    engine: Any,
+    top_terms: list[Any],
+    days: int,
+    window_start: datetime,
+    window_end: datetime,
+) -> list[dict[str, Any]]:
+    """Terms that spiked inside the briefing window, ranked by z-score."""
+    movers: list[dict[str, Any]] = []
+    spike_day_floor = floor_to_day(window_start)
+    for term in [t.term for t in top_terms[:_BRIEFING_MOVER_TERMS]]:
+        for spike in engine.detect_spikes(
+            term, window_days=max(days, _BRIEFING_SPIKE_BASELINE_DAYS)
+        ):
+            if spike_day_floor <= spike.bucket <= window_end:
+                movers.append(
+                    {
+                        "term": term,
+                        "count": spike.count,
+                        "zscore": round(spike.zscore, 2),
+                        "bucket": spike.bucket.isoformat(),
+                    }
+                )
+    movers.sort(key=lambda m: (-m["zscore"], m["term"]))
+    return movers
+
+
+def _briefing_sentiment(
+    engine: Any, top_terms: list[Any], days: int
+) -> list[dict[str, Any]]:
+    """Last-day avg vs prior-days avg sentiment for the top terms."""
+    out: list[dict[str, Any]] = []
+    for term in [t.term for t in top_terms[:_BRIEFING_SENTIMENT_TERMS]]:
+        buckets = engine.term_sentiment_over_time(term, window_days=days)
+        if len(buckets) < 2:
+            continue
+        last = buckets[-1]
+        priors = [b for b in buckets[:-1] if b.doc_count > 0]
+        if not priors:
+            continue
+        prior_avg = sum(b.avg_score for b in priors) / len(priors)
+        delta = last.avg_score - prior_avg
+        if delta >= _BRIEFING_SENTIMENT_EPSILON:
+            direction = "up"
+        elif delta <= -_BRIEFING_SENTIMENT_EPSILON:
+            direction = "down"
+        else:
+            direction = "flat"
+        out.append(
+            {
+                "term": term,
+                "last_day_avg": last.avg_score,
+                "prior_avg": round(prior_avg, 4),
+                "delta": round(delta, 4),
+                "direction": direction,
+                "arrow": "▲" if direction == "up" else ("▼" if direction == "down" else "—"),
+                "last_day_docs": last.doc_count,
+            }
+        )
+    return out
+
+
+def _briefing_alerts(settings: Any, now: datetime) -> list[dict[str, Any]]:
+    """Alert firings in the last 24h (empty when no alerts.db or on errors)."""
+    assert settings.data_dir is not None
+    alerts_path = settings.data_dir / "alerts.db"
+    if not alerts_path.exists():
+        return []
+    from awareness.alerts.store import AlertStore  # noqa: PLC0415
+
+    try:
+        store = AlertStore(alerts_path)
+        try:
+            return store.list_firings(
+                limit=100, since=now - timedelta(hours=_BRIEFING_ALERT_HOURS)
+            )
+        finally:
+            store.close()
+    except Exception as exc:
+        logger.warning("briefing_alerts_unavailable", err=str(exc))
+        return []
+
+
+def _briefing_gdelt_gaps(
+    idx: DuckDbIndex,
+    top_terms: list[Any],
+    days: int,
+    no_gdelt: bool,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Coverage gaps for the top terms; a note when the bridge is unavailable."""
+    if no_gdelt or not top_terms:
+        return [], None
+    from awareness.gdeltx.engine import GdeltBridge  # noqa: PLC0415
+
+    try:
+        bridge = GdeltBridge(idx)
+        reports = bridge.coverage_gap(
+            [t.term for t in top_terms[:_BRIEFING_GAP_TERMS]], window_days=min(days, 7)
+        )
+    except Exception:
+        # No logger.warning (stale-handler stream corruption under capture).
+        return [], "GDELT unavailable"
+    return (
+        [
+            {
+                "term": r.term,
+                "local_count": r.local_count,
+                "gdelt_count": r.gdelt_count,
+                "ratio": r.ratio,
+                "gap": r.gap,
+                "truncated": r.truncated,
+                "note": r.note,
+            }
+            for r in reports
+            if r.gap
+        ],
+        None,
+    )
+
+
+def _render_briefing_bullets(title: str, items: list[str], empty: str) -> None:
+    """One briefing section: a bold header followed by bullet lines."""
+    console.print(f"[bold cyan]{title}[/bold cyan]")
+    if items:
+        for item in items:
+            console.print(f"  {item}")
+    else:
+        console.print(f"  [dim]{empty}[/dim]")
+    console.print()
+
+
+def _render_briefing_text(
+    *,
+    total_captures: int,
+    now: datetime,
+    days: int,
+    emerging: int,
+    movers: list[dict[str, Any]],
+    top_terms: list[Any],
+    new_domains: list[dict[str, Any]],
+    sentiment: list[dict[str, Any]],
+    firings: list[dict[str, Any]],
+    gdelt_gaps: list[dict[str, Any]],
+    gdelt_note: str | None,
+) -> None:
+    """Render the briefing as a compact rich layout (headers + lists/tables)."""
+    console.print(f"[bold]Awareness briefing[/bold] — {now:%Y-%m-%d %H:%M} UTC (last {days}d)")
+    console.print(f"[dim]corpus: {total_captures} captures[/dim]")
+    console.print()
+    _render_briefing_bullets(
+        "Yesterday's movers",
+        [f"{m['term']} — count {m['count']} (z={m['zscore']:.1f})" for m in movers[:emerging]],
+        "no spikes in the window",
+    )
+    console.print("[bold cyan]Top terms[/bold cyan]")
+    if top_terms:
+        table = Table(show_header=False, box=None)
+        table.add_column("term", style=banner.C_HI)
+        table.add_column("count", justify="right")
+        for t in top_terms:
+            table.add_row(t.term, str(t.count))
+        console.print(table)
+    else:
+        console.print("  [dim]no terms in the window[/dim]")
+    console.print()
+    _render_briefing_bullets(
+        "New domains",
+        [f"{d['domain']} ({d['count']})" for d in new_domains],
+        "no new domains in the window",
+    )
+    _render_briefing_bullets(
+        "Sentiment shift",
+        [
+            f"{s['term']}: last-day {s['last_day_avg']:+.2f} vs prior "
+            f"{s['prior_avg']:+.2f} {s['arrow']} ({s['delta']:+.2f})"
+            for s in sentiment
+        ],
+        "insufficient sentiment data",
+    )
+    _render_briefing_bullets(
+        "Alerts (last 24h)",
+        [f"{len(firings)} firing(s)"]
+        + [
+            f"• {f['rule_name']} — {f['term']} ({f['count']:g} vs {f['threshold']:g})"
+            for f in firings[:5]
+        ],
+        "no alert firings",
+    )
+    if gdelt_note:
+        gdelt_items = [f"[dim]{gdelt_note}[/dim]"]
+    elif gdelt_gaps:
+        gdelt_items = [
+            f"{g['term']}: local {g['local_count']} vs gdelt {g['gdelt_count']} "
+            f"(ratio {g['ratio']:.3f})"
+            for g in gdelt_gaps
+        ]
+    else:
+        gdelt_items = []
+    _render_briefing_bullets("GDELT gaps", gdelt_items, "no coverage gaps")
+
+
+@app.command(name="briefing")
+def briefing(
+    days: int = typer.Option(
+        1, "--days", min=1, max=365, help="Briefing window length in days"
+    ),
+    top: int = typer.Option(8, "--top", min=1, max=50, help="Top terms to list"),
+    emerging: int = typer.Option(
+        5, "--emerging", min=0, max=50, help="Movers / new domains to list"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Output a raw JSON object"),
+    no_gdelt: bool = typer.Option(False, "--no-gdelt", help="Skip the GDELT gaps fetch"),
+) -> None:
+    """Daily morning briefing: movers, top terms, new domains, sentiment, alerts, GDELT gaps.
+
+    Builds ONE DuckDB index (same pattern as ``report``) and renders: terms
+    that spiked in the window (z-scores), top terms by count, domains first
+    seen within the window, a last-day-vs-prior sentiment shift for the top
+    terms, alert firings in the last 24h, and GDELT coverage gaps (unless
+    ``--no-gdelt``). ``--json`` dumps a single JSON object; an empty corpus
+    prints a clean "no corpus yet" message and exits 0.
+    """
+    settings = get_settings()
+    idx: DuckDbIndex | None = None
+    try:
+        idx = DuckDbIndex(
+            db_path=settings.duckdb_path(),
+            jsonl_dir=settings.staging_jsonl_dir(),
+            iceberg_warehouse=settings.iceberg_warehouse,
+        )
+        rows = idx.execute("SELECT count(*) AS n FROM captures")
+        total_captures = int(rows[0]["n"]) if rows else 0
+        if total_captures == 0:
+            if json_out:
+                print(json.dumps({"message": _BRIEFING_EMPTY_MSG}, indent=2))
+            else:
+                rprint(f"[yellow]{_BRIEFING_EMPTY_MSG}[/yellow]")
+            return
+
+        from awareness.analytics.engine import TermFrequencyEngine  # noqa: PLC0415
+        from awareness.sentiment.engine import SentimentEngine  # noqa: PLC0415
+
+        now = utcnow()
+        window_start = now - timedelta(days=days)
+        engine = TermFrequencyEngine(idx)
+        top_terms = engine.top_terms(start=window_start, end=now, limit=top)
+        movers = _briefing_movers(engine, top_terms, days, window_start, now)
+        new_domains = [
+            {"domain": str(r["domain"]), "count": int(r["n"])}
+            for r in idx.execute(
+                " ".join(
+                    [
+                        "SELECT domain AS domain, count(*) AS n",
+                        "FROM captures",
+                        "WHERE domain IS NOT NULL AND TRIM(CAST(domain AS VARCHAR)) != ''",
+                        "GROUP BY domain HAVING min(fetch_ts) >= $start",
+                        "ORDER BY n DESC, domain ASC LIMIT $limit",
+                    ]
+                ),
+                {"start": window_start, "limit": emerging},
+            )
+        ]
+        sentiment = _briefing_sentiment(SentimentEngine(idx), top_terms, days)
+        firings = _briefing_alerts(settings, now)
+        gdelt_gaps, gdelt_note = _briefing_gdelt_gaps(idx, top_terms, days, no_gdelt)
+    except Exception as exc:
+        rprint(f"[red]briefing failed:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if idx is not None:
+            idx.close()
+
+    if json_out:
+        print(
+            json.dumps(
+                {
+                    "generated_at": now.isoformat(),
+                    "days": days,
+                    "window_start": window_start.isoformat(),
+                    "window_end": now.isoformat(),
+                    "total_captures": total_captures,
+                    "movers": movers,
+                    "top_terms": [{"term": t.term, "count": t.count} for t in top_terms],
+                    "new_domains": new_domains,
+                    "sentiment": sentiment,
+                    "alerts": {
+                        "count": len(firings),
+                        "recent": [
+                            {**f, "fired_at": f["fired_at"].isoformat()} for f in firings[:5]
+                        ],
+                    },
+                    "gdelt_gaps": {"skipped": no_gdelt, "note": gdelt_note, "gaps": gdelt_gaps},
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+    _render_briefing_text(
+        total_captures=total_captures,
+        now=now,
+        days=days,
+        emerging=emerging,
+        movers=movers,
+        top_terms=top_terms,
+        new_domains=new_domains,
+        sentiment=sentiment,
+        firings=firings,
+        gdelt_gaps=gdelt_gaps,
+        gdelt_note=gdelt_note,
+    )
+
+
+def _render_gap_table(reports: list[Any], days: int) -> None:
+    """Rich table of GapReports with ✓/✗ gap badges and ⚠ truncation flags."""
+    table = Table(title=f"GDELT coverage gaps (last {days}d)")
+    table.add_column("term", style=banner.C_HI)
+    table.add_column("local", justify="right")
+    table.add_column("gdelt", justify="right")
+    table.add_column("ratio", justify="right")
+    table.add_column("gap", justify="center")
+    table.add_column("truncated", justify="center")
+    for r in reports:
+        table.add_row(
+            r.term,
+            str(r.local_count),
+            str(r.gdelt_count),
+            f"{r.ratio:.3f}",
+            "✓" if r.gap else "✗",
+            "⚠" if r.truncated else "—",
+        )
+    console.print(table)
+
+
+@app.command(name="gdelt-gaps")
+def gdelt_gaps(
+    terms: str = typer.Option(
+        "",
+        "--terms",
+        help="Comma-separated terms (1..20); defaults to the top 10 corpus terms",
+    ),
+    days: int = typer.Option(7, "--days", min=1, max=60, help="Window length in days"),
+    json_out: bool = typer.Option(False, "--json", help="Output the raw GapReports as JSON"),
+) -> None:
+    """Flag coverage gaps: high GDELT volume with near-zero local capture.
+
+    With ``--terms`` the term list is validated (1..20 terms, each at most 80
+    chars); without it the top 10 corpus terms are used. GDELT queries hit
+    the live DOC 2.0 API (cached on disk, 6h TTL); when the bridge is
+    unavailable the command prints a clean note and exits 0.
+    """
+    settings = get_settings()
+    idx = DuckDbIndex(
+        db_path=settings.duckdb_path(),
+        jsonl_dir=settings.staging_jsonl_dir(),
+        iceberg_warehouse=settings.iceberg_warehouse,
+    )
+    from awareness.analytics.engine import TermFrequencyEngine  # noqa: PLC0415
+    from awareness.gdeltx.engine import GdeltBridge  # noqa: PLC0415
+
+    try:
+        term_list: list[str] = []
+        if terms.strip():
+            term_list = [t.strip() for t in terms.split(",") if t.strip()]
+            if not 1 <= len(term_list) <= 20:
+                raise typer.BadParameter("--terms must contain 1..20 terms")
+            for term in term_list:
+                if len(term) > 80:
+                    raise typer.BadParameter(f"term too long: {term[:40]!r}")
+        else:
+            term_list = [t.term for t in TermFrequencyEngine(idx).top_terms(limit=10)]
+            if not term_list:
+                rprint("[yellow]no corpus terms — pass --terms explicitly[/yellow]")
+                raise typer.Exit(code=0)
+        try:
+            bridge = GdeltBridge(idx)
+            reports = bridge.coverage_gap(term_list, window_days=days)
+        except Exception as exc:
+            # No logger.warning here: in JSON mode it can corrupt the stdout
+            # stream under CliRunner capture (stale handler) — the user-facing
+            # message below is sufficient.
+            if json_out:
+                print(json.dumps({"message": _GDELT_UNAVAILABLE_MSG}, indent=2))
+            else:
+                rprint(f"[yellow]{_GDELT_UNAVAILABLE_MSG}[/yellow]")
+            raise typer.Exit(code=0) from exc
+    finally:
+        idx.close()
+
+    if json_out:
+        print(json.dumps([r.model_dump(mode="json") for r in reports], indent=2))
+        return
+    if not reports:
+        rprint("[yellow]no gap reports for the window[/yellow]")
+        return
+    _render_gap_table(reports, days)
 
 
 # ── x: X scraper sessions ───────────────────────────────────────────────────

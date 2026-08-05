@@ -155,12 +155,23 @@ def _origin_allowed(request: Request) -> bool:
         return True
     # Loopback aliases: an operator opening the UI via http://localhost:8085
     # (instead of 127.0.0.1) sends Origin: http://localhost:8085 — accept the
-    # alias when the configured bind is loopback.
+    # alias when the configured bind is loopback (including IPv6 [::1]).
     bind_host = _api_bind_host()
+    port = _api_bind_port()
     if bind_host in ("127.0.0.1", "::1", "localhost"):
         return origin_host in (
-            f"localhost:{_api_bind_port()}",
-            f"127.0.0.1:{_api_bind_port()}",
+            f"localhost:{port}",
+            f"127.0.0.1:{port}",
+            f"[::1]:{port}",
+        )
+    # 0.0.0.0 bind: accept the loopback aliases too (a LAN operator on the
+    # machine's real IP sends the UI's own host as Origin — covered by the
+    # exact-match above; loopback access via localhost/127.0.0.1 stays open).
+    if bind_host == "0.0.0.0":
+        return origin_host in (
+            f"localhost:{port}",
+            f"127.0.0.1:{port}",
+            f"[::1]:{port}",
         )
     return False
 
@@ -499,10 +510,6 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        if not _rate_allowed(request.url.path):
-            return PlainTextResponse(
-                "429: rate limit exceeded (abuse-prone endpoint)", status_code=429
-            )
         if _is_csrf_protected(request.method, request.url.path):
             # Origin gate applies to every mutating route (body or not).
             if not _origin_allowed(request):
@@ -519,9 +526,16 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
                 body = await request.body()
                 if not body or not body.strip():
                     return PlainTextResponse("422: empty body not allowed", status_code=422)
+        # Rate limit AFTER auth+CSRF: blocked cross-origin/unauthorized
+        # traffic must not burn the operator's budget (W1 finding 2).
+        if not _rate_allowed(request.url.path):
+            return PlainTextResponse(
+                "429: rate limit exceeded (abuse-prone endpoint)", status_code=429
+            )
         return await call_next(request)
 
     @app.get("/healthz")
+    @app.head("/healthz")
     def healthz() -> dict[str, Any]:
         """Liveness probe plus search-index readiness.
 
@@ -1076,10 +1090,12 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
     from awareness.entities.router import create_entities_router
     from awareness.gdeltx.router import create_gdeltx_router
     from awareness.origin.router import create_origin_router
+    from awareness.qualityx.router import create_qualityx_router  # noqa: PLC0415
     from awareness.savedsearch.router import create_savedsearch_router  # noqa: PLC0415
     from awareness.savedsearch.store import SavedSearchStore  # noqa: PLC0415
     from awareness.sentiment.router import create_sentiment_router
     from awareness.sourceintel.router import router as sourceintel_router
+    from awareness.topicx.router import create_topicx_router
 
     app.include_router(create_analytics_router(_get_index))
     app.include_router(create_corpusx_router(_get_index))
@@ -1088,6 +1104,7 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
     app.include_router(create_sentiment_router(_get_index))
     app.include_router(create_origin_router(_get_index))
     app.include_router(create_gdeltx_router(_get_index))
+    app.include_router(create_topicx_router(_get_index))
 
     # Process-wide AlertStore: one SQLite connection for the app lifetime,
     # closed on shutdown. (Per-request construction leaked a connection + WAL
@@ -1121,6 +1138,7 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
 
     app.include_router(create_alerts_router(_get_index, _alert_store))
     app.include_router(create_savedsearch_router(_saved_store, _get_index))
+    app.include_router(create_qualityx_router(_get_index))
     wire(app)
 
     # ── static dashboard ─────────────────────────────────────────────────

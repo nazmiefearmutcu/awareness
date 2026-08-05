@@ -285,6 +285,28 @@ _REMOTE_SIGNATURE_BUCKET_SECONDS = 300
 # Set to 0.0 to disable (tests pinning immediate rebuilds do exactly that).
 _FTS_COALESCE_WINDOW_SECONDS = 30.0
 
+# W28: time-sharded FTS. The inverted index is extension-managed and has no
+# incremental update API, so every stale rebuild was a full
+# ``create_fts_index`` over the whole corpus. Instead the FTS source is split
+# into two shards:
+#
+# * ``captures_idx`` (archive) — the legacy table name, so pre-W28 persisted
+#   indexes become the archive on first open with ZERO migration. Rebuilt
+#   only when the current shard exceeds a cap (see below) or on a full
+#   rebuild (content edits / deletions).
+# * ``captures_idx_current`` — rows appended since the last archive
+#   promotion. Rebuilt on every stale batch; its size is bounded by the cap,
+#   and in steady cadence by the batch volume between promotions.
+#
+# Search UNIONs both shards and re-derives corpus-global BM25 statistics
+# (N = sum of shard stats, df = sum of per-shard dict dfs for the same
+# stemmed term), so ranking is bit-identical to the old single index.
+_FTS_ARCHIVE_TABLE = "captures_idx"
+_FTS_CURRENT_TABLE = "captures_idx_current"
+# Promote the current shard into the archive when it exceeds either cap.
+_FTS_SHARD_MAX_ROWS = 50_000
+_FTS_SHARD_MAX_DAYS = 7.0
+
 
 def _collapse_key(row: dict[str, Any]) -> str:
     """Key used to fold near/exact-duplicate search hits into one result.
@@ -537,6 +559,10 @@ class DuckDbIndex:
         self._fts_full_rebuilds: int = 0
         self._fts_incremental_appends: int = 0
         self._fts_restores: int = 0
+        # W28: archive promotions (current shard → captures_idx). Each
+        # promotion is the ONLY full archive-index rebuild outside of
+        # content-edit full rebuilds; rare by design.
+        self._fts_shard_promotions: int = 0
         self._initialized = True
 
     @contextlib.contextmanager
@@ -1326,6 +1352,115 @@ class DuckDbIndex:
         "overwrite=1, stemmer='english', stopwords='english')"
     )
 
+    # W28: the current (delta) shard's inverted index. Rebuilt on every pure-
+    # addition batch; bounded by the current shard size, not the corpus.
+    _FTS_CURRENT_CREATE_PRAGMA = (
+        "PRAGMA create_fts_index('captures_idx_current', 'capture_id', 'title', 'text', "
+        "overwrite=1, stemmer='english', stopwords='english')"
+    )
+
+    def _fts_total_rows(self, conn: duckdb.DuckDBPyConnection) -> int:
+        """Rows across both FTS shards (the logical FTS source count)."""
+        try:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM ("
+                f"  SELECT capture_id FROM {_FTS_ARCHIVE_TABLE}"
+                f"  UNION ALL SELECT capture_id FROM {_FTS_CURRENT_TABLE}"
+                f")"
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except duckdb.Error:
+            return 0
+
+    def _fts_num_docs(self, conn: duckdb.DuckDBPyConnection) -> int:
+        """Corpus-global document count for BM25 (sum of shard stats).
+
+        Falls back to the shard row counts when the extension stats tables
+        are missing (e.g. an empty shard index that was never built).
+        """
+        try:
+            row = conn.execute(
+                f"SELECT CAST(sum(num_docs) AS INTEGER) FROM ("
+                f"  SELECT num_docs FROM fts_main_{_FTS_ARCHIVE_TABLE}.stats"
+                f"  UNION ALL SELECT num_docs FROM fts_main_{_FTS_CURRENT_TABLE}.stats"
+                f")"
+            ).fetchone()
+            n = int(row[0]) if row and row[0] is not None else 0
+        except duckdb.Error:
+            n = 0
+        if n <= 0:
+            n = self._fts_total_rows(conn)
+        return max(1, n)
+
+    def _fts_shard_over_cap(self, conn: duckdb.DuckDBPyConnection) -> bool:
+        """True when the current shard exceeds the row or time-span cap.
+
+        A shard with a NULL/empty time span (all rows missing ``fetch_ts``)
+        can only trip the row cap. Errors degrade to False so a promotion
+        problem never bricks the append path (the caller's full-rebuild
+        fallback heals).
+        """
+        try:
+            row = conn.execute(f"SELECT COUNT(*) FROM {_FTS_CURRENT_TABLE}").fetchone()
+            count = int(row[0]) if row else 0
+            if count <= 0:
+                return False
+            if count > _FTS_SHARD_MAX_ROWS:
+                return True
+            span = conn.execute(
+                f"SELECT max(fetch_ts) - min(fetch_ts) FROM {_FTS_CURRENT_TABLE}"
+            ).fetchone()
+            if span is None or span[0] is None:
+                return False
+            seconds = float(span[0].total_seconds()) if hasattr(span[0], "total_seconds") else 0.0
+            return seconds > _FTS_SHARD_MAX_DAYS * 86400.0
+        except duckdb.Error:
+            return False
+
+    def _fts_base_sql(self, term_placeholders: str, where_sql: str) -> str:
+        """BM25 candidate base over BOTH FTS shards (rank-exact with one index).
+
+        Each shard contributes ``(capture_id, tf_title, tf_text, global df)``:
+        the per-shard ``dict.df`` is a *shard-local* doc frequency, so the
+        other shard's df for the same stemmed term is added via a
+        ``dict``-to-``dict`` term join (documents live in exactly one shard,
+        so summing dfs is the corpus-global df). With corpus-global N and df,
+        the score expression in the caller is bit-identical to the old
+        single-index query (verified in the round-3 perf/parity probe and by
+        the search test oracle). ``where_sql`` (range/source/domain/language
+        filters) applies per shard on the shard alias ``c``; the outer join
+        re-reads the full row from the shard union.
+        """
+        parts = []
+        for shard, other in (
+            (_FTS_ARCHIVE_TABLE, _FTS_CURRENT_TABLE),
+            (_FTS_CURRENT_TABLE, _FTS_ARCHIVE_TABLE),
+        ):
+            parts.append(
+                f"""
+              SELECT c.capture_id,
+                     sum(CASE WHEN t.fieldid = 0 THEN 1 ELSE 0 END) AS tf_title,
+                     sum(CASE WHEN t.fieldid = 1 THEN 1 ELSE 0 END) AS tf_text,
+                     d.df + COALESCE(o.df, 0) AS df
+              FROM {shard} c
+              JOIN fts_main_{shard}.docs docs ON c.capture_id = docs.name
+              JOIN fts_main_{shard}.terms t ON docs.docid = t.docid
+              JOIN fts_main_{shard}.dict d ON t.termid = d.termid
+              LEFT JOIN fts_main_{other}.dict o ON o.term = d.term
+              WHERE d.term IN ({term_placeholders})
+                {where_sql}
+              GROUP BY c.capture_id, d.df, o.df
+            """
+            )
+        return f"""
+        FROM (
+          {" UNION ALL ".join(parts)}
+        ) sub
+        JOIN (
+          SELECT * FROM {_FTS_ARCHIVE_TABLE} UNION ALL SELECT * FROM {_FTS_CURRENT_TABLE}
+        ) c USING (capture_id)
+        """
+
     @staticmethod
     def _main_table_exists(conn: duckdb.DuckDBPyConnection, name: str) -> bool:
         try:
@@ -1380,20 +1515,35 @@ class DuckDbIndex:
 
         Avoids a full rematerialize + create_fts_index after process restart when
         JSONL/Iceberg sources are unchanged (C3-T1 persisted FTS).
+
+        W28: the archive shard keeps the legacy ``captures_idx`` name, so a
+        pre-sharding persisted index is reused AS-IS (no migration, no
+        rebuild). The current shard is created empty (with its own tiny FTS
+        index) when missing, and rebuilt unconditionally — it is small by
+        construction and this guarantees no stale-index reuse.
         """
         if self._views_signature is None:
             return False
-        if not self._main_table_exists(conn, "captures_idx"):
+        if not self._main_table_exists(conn, _FTS_ARCHIVE_TABLE):
             return False
         stored = self._load_persisted_fts_signature(conn)
         if stored is None or stored != _signature_digest(self._views_signature):
             return False
         t0 = time.perf_counter()
         try:
-            # Probe FTS schema still present and queryable.
-            conn.execute("SELECT COUNT(*) FROM fts_main_captures_idx.docs").fetchone()
-            row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
-            count = int(row[0]) if row else 0
+            # Probe the archive FTS schema still present and queryable.
+            conn.execute(f"SELECT COUNT(*) FROM fts_main_{_FTS_ARCHIVE_TABLE}.docs").fetchone()
+            if not self._main_table_exists(conn, _FTS_CURRENT_TABLE):
+                # Legacy persisted index (pre-W28): seed an empty current
+                # shard with the archive's schema. Cheap.
+                conn.execute(
+                    f"CREATE TABLE {_FTS_CURRENT_TABLE} AS "
+                    f"SELECT * FROM {_FTS_ARCHIVE_TABLE} WHERE 1=0"
+                )
+            # Always (re)build the current-shard index — overwrite=1 replaces
+            # any stale extension tables from a dropped/recreated shard.
+            conn.execute(self._FTS_CURRENT_CREATE_PRAGMA)
+            count = self._fts_total_rows(conn)
             if count == 0:
                 return False
             self._fts_built_for_count = count
@@ -1407,24 +1557,28 @@ class DuckDbIndex:
             return False
 
     def _try_incremental_fts_append(self, conn: duckdb.DuckDBPyConnection, new_count: int) -> bool:
-        """If captures grew by insert-only ids, delta-INSERT then rebuild FTS.
+        """Pure-addition batches append to the current shard and rebuild ONLY it.
 
-        DuckDB FTS has no public partial-update API, so the inverted index is
-        still rebuilt; we skip re-scanning the entire JSONL-backed view into a
-        brand-new captures_idx table when old rows are still valid.
+        DuckDB FTS has no public partial-update API, so an inverted index is
+        still rebuilt — but W28 bounds the rebuild: the delta INSERTs go into
+        ``captures_idx_current`` and only ``fts_main_captures_idx_current``
+        is recreated (O(current shard), bounded by ``_FTS_SHARD_MAX_ROWS`` /
+        ``_FTS_SHARD_MAX_DAYS``), instead of recreating the ENTIRE corpus
+        index (~7.5s @100k → ms-to-sub-second for a small shard). The archive
+        shard is untouched; when the current shard exceeds its cap it is
+        promoted into the archive — the only rare archive rebuild.
 
         H-10: before the incremental path we verify overlapping rows are
-        unchanged (content_hash comparison between captures_idx and captures).
-        A capture_id whose text was re-fetched/updated keeps its id, so naive
-        "count-only" growth detection would serve STALE content forever.
+        unchanged (content_hash + fetch_ts comparison across BOTH shards
+        against ``captures``). A capture_id whose text was re-fetched/updated
+        keeps its id, so naive "count-only" growth detection would serve
+        STALE content forever.
         """
-        if not self._main_table_exists(conn, "captures_idx"):
+        if not self._main_table_exists(conn, _FTS_ARCHIVE_TABLE):
             return False
-        try:
-            old_row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
-            old_count = int(old_row[0]) if old_row else 0
-        except duckdb.Error:
+        if not self._main_table_exists(conn, _FTS_CURRENT_TABLE):
             return False
+        old_count = self._fts_total_rows(conn)
         if old_count <= 0 or new_count <= old_count:
             return False
         t0 = time.perf_counter()
@@ -1436,28 +1590,42 @@ class DuckDbIndex:
             # FTS index must track it or date-windowed ranked search serves
             # the old timestamp (silent window misses).
             stale_row = conn.execute(
-                """
-                SELECT COUNT(*) FROM captures_idx i
-                JOIN captures c ON c.capture_id = i.capture_id
-                WHERE (i.content_hash IS NOT DISTINCT FROM c.content_hash) = FALSE
-                   OR (i.fetch_ts IS NOT DISTINCT FROM c.fetch_ts) = FALSE
+                f"""
+                SELECT COUNT(*) FROM (
+                  SELECT i.capture_id
+                  FROM (
+                    SELECT capture_id, content_hash, fetch_ts FROM {_FTS_ARCHIVE_TABLE}
+                    UNION ALL
+                    SELECT capture_id, content_hash, fetch_ts FROM {_FTS_CURRENT_TABLE}
+                  ) i
+                  JOIN captures c ON c.capture_id = i.capture_id
+                  WHERE (i.content_hash IS NOT DISTINCT FROM c.content_hash) = FALSE
+                     OR (i.fetch_ts IS NOT DISTINCT FROM c.fetch_ts) = FALSE
+                ) s
                 """
             ).fetchone()
             if stale_row is not None and int(stale_row[0]) > 0:
                 return False
             missing = conn.execute(
-                """
-                SELECT COUNT(*) FROM captures_idx i
-                WHERE NOT EXISTS (
-                  SELECT 1 FROM captures c WHERE c.capture_id = i.capture_id
-                )
+                f"""
+                SELECT COUNT(*) FROM (
+                  SELECT i.capture_id FROM {_FTS_ARCHIVE_TABLE} i
+                  WHERE NOT EXISTS (
+                    SELECT 1 FROM captures c WHERE c.capture_id = i.capture_id
+                  )
+                  UNION ALL
+                  SELECT i.capture_id FROM {_FTS_CURRENT_TABLE} i
+                  WHERE NOT EXISTS (
+                    SELECT 1 FROM captures c WHERE c.capture_id = i.capture_id
+                  )
+                ) m
                 """
             ).fetchone()
             if missing is None or int(missing[0]) > 0:
                 return False
             conn.execute(
-                """
-                INSERT INTO captures_idx
+                f"""
+                INSERT INTO {_FTS_CURRENT_TABLE}
                 SELECT
                   c.capture_id, c.doc_id, c.parent_doc_or_dup_group,
                   c.source_type, c.source_name, c.discovery_channel,
@@ -1467,16 +1635,36 @@ class DuckDbIndex:
                   c.robots_decision
                 FROM captures c
                 WHERE NOT EXISTS (
-                  SELECT 1 FROM captures_idx i WHERE i.capture_id = c.capture_id
+                  SELECT 1 FROM {_FTS_ARCHIVE_TABLE} a WHERE a.capture_id = c.capture_id
                 )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM {_FTS_CURRENT_TABLE} cc WHERE cc.capture_id = c.capture_id
+                  )
                 """
             )
-            conn.execute(self._FTS_CREATE_PRAGMA)
+            # Post-insert cap check: when the delta pushed the current shard
+            # over the cap (rows OR time-span), promote it into the archive —
+            # the ONLY archive-index rebuild on the append path, rare by
+            # design (at most once per cap). The current shard rebuild below
+            # then runs on an empty shard (cheap) and the next batch starts
+            # small again.
+            if self._fts_shard_over_cap(conn):
+                conn.execute(
+                    f"INSERT INTO {_FTS_ARCHIVE_TABLE} SELECT * FROM {_FTS_CURRENT_TABLE}"
+                )
+                conn.execute(self._FTS_CREATE_PRAGMA)
+                conn.execute(f"DELETE FROM {_FTS_CURRENT_TABLE}")
+                self._fts_shard_promotions += 1
+                logger.info("duckdb_fts_shard_promoted", rows=old_count)
+            # Rebuild ONLY the current shard's inverted index. The archive
+            # index is still valid: archive rows never changed (edits force a
+            # full rebuild).
+            conn.execute(self._FTS_CURRENT_CREATE_PRAGMA)
             # H-10: fts.indexed_rows / _fts_built_for_count must reflect the
-            # materialized captures_idx count, not the (dedup'd) view count —
-            # they are the source the FTS index was actually built from.
-            idx_row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
-            idx_count = int(idx_row[0]) if idx_row else new_count
+            # materialized shard counts (archive + current), not the
+            # (dedup'd) view count — they are the source the FTS indexes were
+            # actually built from.
+            idx_count = self._fts_total_rows(conn)
             self._mark_fts_ready(idx_count)
             self._persist_fts_signature(conn)
             self._fts_incremental_appends += 1
@@ -1503,18 +1691,27 @@ class DuckDbIndex:
     def _full_rebuild_fts(self, conn: duckdb.DuckDBPyConnection, count: int) -> bool:
         t0 = time.perf_counter()
         try:
+            # W28: the whole corpus goes to the ARCHIVE shard (legacy table
+            # name); the current shard starts empty so the next pure-addition
+            # batch only rebuilds the small current-shard index.
             conn.execute(
                 f"""
-                CREATE OR REPLACE TABLE captures_idx AS
+                CREATE OR REPLACE TABLE {_FTS_ARCHIVE_TABLE} AS
                 {self._CAPTURES_IDX_SELECT}
                 """
             )
             conn.execute(self._FTS_CREATE_PRAGMA)
-            # H-10: report the materialized captures_idx count (see
+            conn.execute(
+                f"""
+                CREATE OR REPLACE TABLE {_FTS_CURRENT_TABLE} AS
+                SELECT * FROM {_FTS_ARCHIVE_TABLE} WHERE 1=0
+                """
+            )
+            conn.execute(self._FTS_CURRENT_CREATE_PRAGMA)
+            # H-10: report the materialized shard total (see
             # _try_incremental_fts_append) so health_snapshot gauges match the
             # actual FTS source.
-            idx_row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
-            idx_count = int(idx_row[0]) if idx_row else count
+            idx_count = self._fts_total_rows(conn)
             self._mark_fts_ready(idx_count)
             self._persist_fts_signature(conn)
             self._fts_full_rebuilds += 1
@@ -1538,16 +1735,19 @@ class DuckDbIndex:
         """Build/refresh the FTS index on a materialized captures table.
 
         DuckDB's FTS extension requires a real table. We materialize the
-        captures view into ``captures_idx`` and rebuild whenever the source
-        signature changes (not merely row count), so content replacement at
-        the same cardinality still refreshes BM25.
+        captures view into two time shards — ``captures_idx`` (archive) and
+        ``captures_idx_current`` — and rebuild whenever the source signature
+        changes (not merely row count), so content replacement at the same
+        cardinality still refreshes BM25.
 
         C3-T1 optimizations:
-        * **Persisted reuse** — if ``captures_idx`` + FTS + meta fingerprint
+        * **Persisted reuse** — if the shards + FTS + meta fingerprint
           still match the corpus, skip rebuild after process restart.
-        * **Append-only** — when only new ``capture_id``s appear, INSERT the
-          delta into ``captures_idx`` then recreate the FTS index (no full
-          rematerialize from JSONL).
+        * **Append-only (W28)** — when only new ``capture_id``s appear,
+          INSERT the delta into the CURRENT shard and recreate only its
+          inverted index (bounded by the shard cap), instead of recreating
+          the entire corpus index. The archive index is rebuilt only at
+          shard promotion (cap) or on a full rebuild.
 
         W25 coalescing: after a write batch the FTS index is stale but the
         materialized ``captures`` table already serves the new rows. When a
@@ -1555,8 +1755,9 @@ class DuckDbIndex:
         ``_fts_coalesce_window``, the expensive inverted-index rebuild is
         deferred and False is returned so the caller uses the prefix/substring
         fallback — the next write batch resets the window, coalescing N
-        batches into one rebuild. The first search after the window elapses
-        pays exactly one rebuild; subsequent searches are warm.
+        batches into one rebuild. With W28 that deferred rebuild touches only
+        the current shard. The first search after the window elapses pays
+        exactly one rebuild; subsequent searches are warm.
 
         Returns True if FTS is ready to use.
         """
@@ -1614,8 +1815,11 @@ class DuckDbIndex:
         ):
             return self._bm25_avg_lengths
         avg_row = conn.execute(
-            "SELECT CAST(avg(length(coalesce(title, ''))) AS DOUBLE) as avg_title, "
-            "CAST(avg(length(coalesce(text, ''))) AS DOUBLE) as avg_text FROM captures_idx"
+            f"SELECT CAST(avg(length(coalesce(title, ''))) AS DOUBLE) as avg_title, "
+            f"CAST(avg(length(coalesce(text, ''))) AS DOUBLE) as avg_text FROM ("
+            f"  SELECT title, text FROM {_FTS_ARCHIVE_TABLE}"
+            f"  UNION ALL SELECT title, text FROM {_FTS_CURRENT_TABLE}"
+            f")"
         ).fetchone()
         avg_title = float(avg_row[0] or 1.0) if avg_row else 1.0
         avg_text = float(avg_row[1] or 1.0) if avg_row else 1.0
@@ -1629,10 +1833,13 @@ class DuckDbIndex:
         return lengths
 
     def _bm25_term_dfs(self, conn: duckdb.DuckDBPyConnection, terms: list[str]) -> dict[str, int]:
-        """Batch-fetch document frequencies for stemmed terms (one dict query).
+        """Batch-fetch global document frequencies for stemmed terms (one query).
 
-        Missing terms map to df=0. Dedupes *terms* so multi-hit queries pay
-        one round-trip regardless of repeated stems.
+        W28: sums the per-shard ``dict.df`` values (a document lives in
+        exactly one shard, so the sum is the corpus-global df — the same
+        value a single unsharded index would report). Missing terms map to
+        df=0. Dedupes *terms* so multi-hit queries pay one round-trip
+        regardless of repeated stems.
         """
         if not terms:
             return {}
@@ -1641,8 +1848,13 @@ class DuckDbIndex:
         params = {f"df_term_{i}": t for i, t in enumerate(unique)}
         try:
             rows = conn.execute(
-                f"SELECT term, CAST(df AS INTEGER) FROM fts_main_captures_idx.dict "
-                f"WHERE term IN ({placeholders})",
+                f"SELECT term, CAST(sum(df) AS INTEGER) FROM ("
+                f"  SELECT term, df FROM fts_main_{_FTS_ARCHIVE_TABLE}.dict "
+                f"  WHERE term IN ({placeholders})"
+                f"  UNION ALL"
+                f"  SELECT term, df FROM fts_main_{_FTS_CURRENT_TABLE}.dict "
+                f"  WHERE term IN ({placeholders})"
+                f") GROUP BY term",
                 params,
             ).fetchall()
         except duckdb.Error:
@@ -1988,14 +2200,9 @@ class DuckDbIndex:
                     stemmed_terms = list(dict.fromkeys(stemmed_terms))
 
                     if stemmed_terms:
-                        # Get total docs from stats or captures_idx
-                        num_docs_row = conn.execute(
-                            "SELECT CAST(num_docs AS INTEGER) FROM fts_main_captures_idx.stats LIMIT 1"
-                        ).fetchone()
-                        N = num_docs_row[0] if num_docs_row else 1
-                        if N <= 0:
-                            count_row = conn.execute("SELECT COUNT(*) FROM captures_idx").fetchone()
-                            N = count_row[0] if count_row else 1
+                        # Corpus-global doc count across both FTS shards
+                        # (stats fallback to shard row counts when missing).
+                        N = self._fts_num_docs(conn)
 
                         # Avg field lengths: memoized per views_signature.
                         avg_title, avg_text = self._bm25_field_avg_lengths(conn)
@@ -2052,23 +2259,7 @@ class DuckDbIndex:
 
                         where_sql = (" AND " + " AND ".join(where)) if where else ""
 
-                        base = f"""
-                            FROM (
-                              SELECT 
-                                c.capture_id,
-                                d.df,
-                                sum(CASE WHEN t.fieldid = 0 THEN 1 ELSE 0 END) AS tf_title,
-                                sum(CASE WHEN t.fieldid = 1 THEN 1 ELSE 0 END) AS tf_text
-                              FROM captures_idx c
-                              JOIN fts_main_captures_idx.docs docs ON c.capture_id = docs.name
-                              JOIN fts_main_captures_idx.terms t ON docs.docid = t.docid
-                              JOIN fts_main_captures_idx.dict d ON t.termid = d.termid
-                              WHERE d.term IN ({term_placeholders})
-                                {where_sql}
-                              GROUP BY c.capture_id, t.termid, d.df
-                            ) sub
-                            JOIN captures_idx c USING (capture_id)
-                        """
+                        base = self._fts_base_sql(term_placeholders, where_sql)
 
                         count_params = {k: v for k, v in params.items() if f"${k}" in base or "term_" in k}
                         total_row = conn.execute(

@@ -226,9 +226,13 @@ class TailRecrawlAdapter(Adapter):
         # Observability: news floor accepted a body the bulk floor would drop.
         bulk_min = int(settings.text_min_chars)
         if min_chars < bulk_min and len(text) < bulk_min:
+            # discovery bucketed to a low-cardinality class (W1 finding 4):
+            # full feed URLs / sitemap paths would create unbounded
+            # Prometheus series on this counter.
+            _disc_class = str(discovery_channel or "").split(":", 1)[0].lower()[:24] or "other"
             get_metrics().inc(
                 "tail.news_floor_kept",
-                labels={"domain": "tail", "discovery": str(discovery_channel or "")[:48]},
+                labels={"domain": "tail", "discovery": _disc_class},
             )
         ch = compute_content_hash(text)
         sim = simhash64(text)

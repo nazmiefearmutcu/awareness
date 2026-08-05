@@ -157,23 +157,28 @@ async def export_tweets_csv(
     destination = Path(out_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = destination.with_name(destination.name + ".tmp")
-    with tmp_path.open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(
-            ["tweet_id", "created_at", "username", "text", "likes", "retweets", "lang", "source"]
-        )
-        for tweet in tweets:
+    try:
+        with tmp_path.open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
             writer.writerow(
-                [
-                    tweet.tweet_id,
-                    tweet.created_at.isoformat(),
-                    tweet.username,
-                    tweet.text,
-                    tweet.metrics.get("likes", 0),
-                    tweet.metrics.get("retweets", 0),
-                    tweet.lang or "",
-                    tweet.source,
-                ]
+                ["tweet_id", "created_at", "username", "text", "likes", "retweets", "lang", "source"]
             )
-    os.replace(tmp_path, destination)
+            for tweet in tweets:
+                writer.writerow(
+                    [
+                        tweet.tweet_id,
+                        tweet.created_at.isoformat(),
+                        tweet.username,
+                        tweet.text,
+                        tweet.metrics.get("likes", 0),
+                        tweet.metrics.get("retweets", 0),
+                        tweet.lang or "",
+                        tweet.source,
+                    ]
+                )
+        os.replace(tmp_path, destination)
+    except Exception:
+        # W1 finding 5: never leave a half-written .tmp behind on failure.
+        tmp_path.unlink(missing_ok=True)
+        raise
     return len(tweets)

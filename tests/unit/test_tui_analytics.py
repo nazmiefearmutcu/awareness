@@ -192,7 +192,11 @@ def test_analytics_layout_graceful_on_broken_index(tmp_path) -> None:
 
 def test_tui_analytics_key_registered() -> None:
     assert _TUI_ANALYTICS_KEY == "y"
-    source = inspect.getsource(tui)
+    # inspect.getsource on a large decorated function can return a truncated
+    # fragment in some run orders; read the source file directly instead.
+    import awareness.cli.main as _cli_main
+
+    source = Path(_cli_main.__file__).read_text(encoding="utf-8")
     assert "key_lower == _TUI_ANALYTICS_KEY" in source  # jump key wired
     assert 'current_view = "analytics"' in source  # panel switch wired
     assert 'current_view == "analytics"' in source  # refresh branch wired

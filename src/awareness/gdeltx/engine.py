@@ -5,9 +5,12 @@ and cross-references external GDELT article volume with local capture volume:
 
 * ``gdelt_query`` — per-day article counts for a term from the GDELT DOC 2.0
   API (``mode=artlist`` JSON), cached on disk under ``{cache_dir}`` with a
-  6-hour TTL. The bridge is deliberately resilient: every API failure (HTTP
-  status, transport, unparseable JSON) logs a structured warning and degrades
-  to ``[]`` — it never raises, so it keeps working offline.
+  6-hour TTL. The cache key is the *day range* (floor-to-day of start and
+  end), never the raw timestamps or the caller's ``window_days`` — see
+  :meth:`GdeltBridge._cache_path`. The bridge is deliberately resilient:
+  every API failure (HTTP status, transport, unparseable JSON) logs a
+  structured warning and degrades to ``[]`` — it never raises, so it keeps
+  working offline.
 * ``compare_with_local`` — aligned per-day local vs GDELT series for a term
   plus their Pearson correlation.
 * ``coverage_gap`` — flags terms where GDELT reports big volume but local
@@ -210,13 +213,22 @@ class GdeltBridge:
     # ── disk cache ───────────────────────────────────────────────────────
 
     def _cache_path(self, term: str, start_dt: datetime, end_dt: datetime, granularity: str) -> Path:
-        # Floor the end to the day: data is day-bucketed, so requests for the
-        # same day range must share a cache entry even though utcnow() ticks.
+        # W38 M-3: key on the DAY RANGE, not the exact timestamps. GDELT data
+        # is day-bucketed (one API call per floored day), so any two requests
+        # covering the SAME floored days must share one cache entry — even
+        # when the raw start/end tick intra-day or the caller expresses the
+        # window differently (window_days=7 vs 8 with a mocked/ticking end).
+        # Before this fix the START kept its raw ISO form (W12 floored only
+        # the END), so rotating window values minted DISTINCT cache files for
+        # the same underlying day range — a cache bypass that re-hit the
+        # GDELT API ~60x per request. The bucket merges only IDENTICAL day
+        # ranges: a 14-day request (start = end-13) never collides with a
+        # 7-day entry (start = end-6) because their floored starts differ.
         key = json.dumps(
             {
                 "term": term.lower(),
-                "start": start_dt.isoformat(),
-                "end": end_dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(),
+                "start": floor_to_day(start_dt).isoformat(),
+                "end": floor_to_day(end_dt).isoformat(),
                 "granularity": granularity,
             },
             sort_keys=True,
@@ -275,9 +287,17 @@ class GdeltBridge:
     ) -> list[GdeltWindow]:
         """GDELT article counts per bucket for *term* over the window.
 
-        Cached on disk (``gdeltx_<sha>.json``, TTL 6h) keyed by
-        (term, start, end, granularity). API failures degrade to ``[]`` with
-        a warning — never raise.
+        Cached on disk (``gdeltx_<sha>.json``, TTL 6h) keyed by the DAY
+        RANGE: (term, floor_to_day(start), floor_to_day(end), granularity),
+        so requests with the same floored days share one entry regardless of
+        the raw timestamps or the caller's ``window_days``. Different day
+        ranges never share (a 7-day window is never served from a 14-day
+        cache). The ``/gdelt/*`` API route already token-buckets 20
+        burst/10s (W38) — this day-range key is defense-in-depth for direct
+        engine calls (CLI reports, digest jobs) and for cache-variant abuse
+        (rotating window values minting distinct cache files that bypass the
+        disk cache and re-hit the GDELT API). API failures degrade to ``[]``
+        with a warning — never raise.
         """
         cleaned = _validate_term(term)
         start_dt, end_dt = self._coerce_window(start, end)
