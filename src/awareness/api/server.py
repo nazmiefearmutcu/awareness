@@ -119,7 +119,16 @@ _CSRF_ROUTE_PREFIXES = (
 # content-type/body requirements are relaxed for them.
 _CSRF_BODYLESS_PATHS = (
     "/alerts/check",
+    # POST /alerts/rules/{rule_id}/test takes no body (W22-F5); rule ids are
+    # variable so suffix-match below.
+    "/alerts/rules/",
 )
+
+
+def _is_csrf_bodyless(path: str) -> bool:
+    return path in _CSRF_BODYLESS_PATHS or (
+        path.startswith("/alerts/rules/") and path.endswith("/test")
+    )
 
 
 def _is_csrf_protected(method: str, path: str) -> bool:
@@ -183,7 +192,7 @@ def _origin_allowed(request: Request) -> bool:
 # /gdelt/*), not to replace real auth.
 _RATE_WINDOW_SECONDS = 10.0
 _RATE_MAX_BURST = 20
-_RATE_LIMITED_PREFIXES = ("/gdelt/", "/consume/export", "/alerts/check")
+_RATE_LIMITED_PREFIXES = ("/gdelt/", "/consume/export", "/alerts/check", "/alerts/rules/")
 _rate_buckets: dict[str, tuple[float, int]] = {}
 _rate_lock = threading.Lock()
 
@@ -519,7 +528,7 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
             # bodyless POSTs listed in _CSRF_BODYLESS_PATHS, and DELETE which
             # is never CORS-safelisted and always preflighted). Everything
             # else must carry a non-empty JSON body.
-            if request.method != "DELETE" and request.url.path not in _CSRF_BODYLESS_PATHS:
+            if request.method != "DELETE" and not _is_csrf_bodyless(request.url.path):
                 ctype = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
                 if ctype != "application/json":
                     return PlainTextResponse("415: content-type must be application/json", status_code=415)

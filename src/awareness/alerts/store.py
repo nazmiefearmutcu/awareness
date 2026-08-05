@@ -324,13 +324,19 @@ class AlertStore:
             rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_firing(r) for r in rows]
 
-    def count_firings_since(self, ts: datetime) -> int:
-        """Number of firings with ``fired_at >= *ts*``."""
+    def count_firings_since(self, ts: datetime, rule_id: str | None = None) -> int:
+        """Number of firings with ``fired_at >= *ts*`` (optionally one rule)."""
         with self._lock:
-            row = self._conn.execute(
-                "SELECT count(*) AS n FROM firings WHERE fired_at >= ?",
-                (_fmt(ts),),
-            ).fetchone()
+            if rule_id is None:
+                row = self._conn.execute(
+                    "SELECT count(*) AS n FROM firings WHERE fired_at >= ?",
+                    (_fmt(ts),),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT count(*) AS n FROM firings WHERE fired_at >= ? AND rule_id = ?",
+                    (_fmt(ts), rule_id),
+                ).fetchone()
         return int(row["n"]) if row is not None else 0
 
     def last_firing_time(self, rule_id: str) -> datetime | None:

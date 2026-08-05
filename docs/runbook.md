@@ -2,6 +2,9 @@
 
 Operational procedures for the awareness engine.
 
+> **Automation recipes** (cron, launchd, weekly email, alert runner,
+> retention): see [operations.md](operations.md).
+
 ## First-time setup
 
 ```bash

@@ -2908,6 +2908,11 @@ async function initAlerts() {
   $("#al-firings-refresh")?.addEventListener("click", () => void loadFiringsLog());
   $("#al-run-all")?.addEventListener("click", () => void runAlertsCheck());
   $("#al-form")?.addEventListener("submit", createAlertRule);
+  $("#al-history-clear")?.addEventListener("click", () => {
+    clearTestHistory();
+    renderTestHistory($("#al-history-body"));
+  });
+  renderTestHistory($("#al-history-body"));
   await loadAlertsView();
 }
 
@@ -3022,6 +3027,8 @@ function ruleTestSummary(res) {
     fired: !!r.fired,
     count: r.count != null ? r.count : null,
     threshold: r.threshold != null ? r.threshold : null,
+    required: r.required != null ? r.required : null,
+    active: r.active !== false,
     suppressed: !!r.suppressed_by_cooldown,
     term: (firing && firing.term) || null,
     firingCount: firing && firing.count != null ? firing.count : null,
@@ -3043,6 +3050,15 @@ function renderRuleTestResult(res) {
   });
   body.appendChild(status);
   body.appendChild(document.createTextNode(` — count ${fmt(s.count)} vs threshold ${fmt(s.threshold)}`));
+  if (s.required != null && s.required !== s.threshold) {
+    body.appendChild(document.createTextNode(` (requires ${fmt(s.required)})`));
+  }
+  if (!s.active) {
+    body.appendChild(el("span", {
+      class: "al-test-inactive",
+      text: " · rule is INACTIVE — a live run would skip it",
+    }));
+  }
   if (s.suppressed) {
     body.appendChild(el("span", {
       class: "al-test-cooldown",
@@ -3059,7 +3075,13 @@ function renderRuleTestResult(res) {
 }
 
 /** Test ONE rule (ignores cooldown; never persists); show the result panel. */
-async function testAlertRule(ruleId) {
+async function testAlertRule(ruleId, ruleName) {
+  if (!ruleName) {
+    // Resolve the display name from the rules table row (kept in sync with
+    // the row's name cell so callers stay `testAlertRule(r.id)`-simple).
+    const row = document.querySelector('tr[data-rule-id="' + ruleId + '"]');
+    if (row && row.cells.length) ruleName = row.cells[0].textContent || "";
+  }
   const panel = $("#al-test-panel");
   const body = $("#al-test-body");
   if (panel) panel.hidden = false;
@@ -3070,6 +3092,8 @@ async function testAlertRule(ruleId) {
   try {
     const res = await api("/alerts/rules/" + encodeURIComponent(ruleId) + "/test", { method: "POST", body: "{}" });
     renderRuleTestResult(res);
+    pushTestHistory(ruleTestHistoryEntry(ruleId, ruleName, res));
+    renderTestHistory($("#al-history-body"));
     toast(res.fired ? "rule fires right now" : "rule does not fire right now", res.fired ? "err" : "ok");
   } catch (err) {
     if (body) body.textContent = "test failed: " + err.message;
@@ -3110,6 +3134,87 @@ async function runAlertsCheck() {
   } catch (err) {
     if (body) body.textContent = "check failed: " + err.message;
     toast("check failed: " + err.message, "err");
+  }
+}
+
+// ── recent tests history (client-side; sessionStorage only) ───────────
+const TEST_HISTORY_KEY = "awareness:testHistory";
+const TEST_HISTORY_MAX = 20;
+
+function readTestHistory() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(TEST_HISTORY_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Record one per-rule test outcome, newest first, capped at TEST_HISTORY_MAX.
+ * Pure apart from sessionStorage; returns the resulting list.
+ */
+function pushTestHistory(entry) {
+  const list = readTestHistory();
+  list.unshift(entry);
+  const capped = list.slice(0, TEST_HISTORY_MAX);
+  try {
+    sessionStorage.setItem(TEST_HISTORY_KEY, JSON.stringify(capped));
+  } catch {
+    // Storage unavailable (private mode / quota) — history stays in-memory.
+  }
+  return capped;
+}
+
+/** Drop the stored test history (used by the panel's Clear button). */
+function clearTestHistory() {
+  try {
+    sessionStorage.removeItem(TEST_HISTORY_KEY);
+  } catch {
+    // Storage unavailable — nothing to clear.
+  }
+  return [];
+}
+
+/** Shape a test response + rule context into a history entry. Pure — no DOM. */
+function ruleTestHistoryEntry(ruleId, ruleName, res) {
+  const s = ruleTestSummary(res);
+  return {
+    rule_id: ruleId,
+    rule_name: ruleName || (s.term ? s.term : ruleId),
+    term: s.term,
+    fired: s.fired,
+    count: s.count,
+    threshold: s.threshold,
+    at: new Date().toISOString(),
+  };
+}
+
+/** Render the recent-tests table into *container* (a <tbody>; textContent only). */
+function renderTestHistory(container) {
+  if (!container) return;
+  clear(container);
+  const list = readTestHistory();
+  if (!list.length) {
+    const row = container.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 6;
+    cell.textContent = "No tests yet — press Test on a rule to record it here.";
+    return;
+  }
+  for (const e of list) {
+    const row = container.insertRow();
+    row.className = "al-history-row" + (e.fired ? " is-fired" : "");
+    row.insertCell().textContent = e.at
+      ? new Date(e.at).toISOString().slice(0, 19).replace("T", " ")
+      : "—";
+    row.insertCell().textContent = e.rule_name || e.rule_id || "—";
+    row.insertCell().textContent = e.term || "—";
+    const resultCell = row.insertCell();
+    resultCell.className = e.fired ? "al-history-fired" : "al-history-clean";
+    resultCell.textContent = e.fired ? "FIRED" : "clean";
+    row.insertCell().textContent = fmt(e.count);
+    row.insertCell().textContent = fmt(e.threshold);
   }
 }
 
@@ -4220,6 +4325,7 @@ function renderCrossView(root, view) {
 // ── Quality history band (dashboard) ──────────────────────────
 let dashQualitySig = null;
 let dashQualityTick = 0;
+let dashQualityGranularity = "day";
 
 /** Table rows for the quality history: [date, total, dup%, nearDup%, newDomains].
  *  Ratios are ×100 as percents. Pure — no DOM. */
@@ -4245,7 +4351,7 @@ function renderQualityHistory(data) {
   const meta = $("#dash-quality-meta");
   if (!dupBox || !domBox || !body) return;
   const points = (data && data.points) || [];
-  if (meta) meta.textContent = data && data.days ? `${data.days}d window` : "—";
+  if (meta) meta.textContent = data && data.days ? `${data.days}d window · ${dashQualityGranularity}` : "—";
   renderBarChart(dupBox, points.map((p) => ({ ts: p.ts, count: Math.round((p.duplicate_ratio || 0) * 100), unit: "%" })), { color: "#d97757" });
   renderBarChart(domBox, points.map((p) => ({ ts: p.ts, count: p.new_domains || 0 })));
   body.textContent = "";
@@ -4268,7 +4374,7 @@ async function refreshDashQuality() {
   dashQualityTick += 1;
   let data;
   try {
-    data = await api("/qualityx/history?days=30");
+    data = await api("/qualityx/history?days=30&granularity=" + dashQualityGranularity);
   } catch (_) {
     return; // non-fatal — dashboard KPIs keep rendering
   }
@@ -4278,6 +4384,19 @@ async function refreshDashQuality() {
   dashQualitySig = sig;
   renderQualityHistory(data);
 }
+
+/** Bucket-size toggle for the quality band: re-fetch at the chosen
+ *  granularity and force a re-render on the next tick. */
+function dashQualitySetGranularity(granularity) {
+  if (granularity === dashQualityGranularity) return;
+  dashQualityGranularity = granularity;
+  dashQualitySig = null; // force re-render
+  void refreshDashQuality();
+}
+
+$("#dash-quality-granularity")?.addEventListener("change", (e) => {
+  dashQualitySetGranularity(e.target.value);
+});
 
 // ── Dashboard saved widgets ───────────────────────────────────
 let dashSavedSig = null;

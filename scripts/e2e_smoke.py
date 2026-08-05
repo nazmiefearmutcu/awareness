@@ -18,6 +18,8 @@ LocalFixtureAdapter (no network):
     12. topicx    — /topicx/lifecycle (phase + counts) / emerging / impact
     13. qualityx  — /qualityx/history + /qualityx/current via the API
     14. briefing  — CLI ``briefing --save`` + ``briefing --json``
+    15. crossx    — /crossx/view (news phase x X sentiment alignment)
+    16. alert_test — POST /alerts/rules/{id}/test (fires, never persists)
 
 Usage:
     AW_PROJECT_ROOT=/tmp/aware-root .venv/bin/python scripts/e2e_smoke.py
@@ -74,6 +76,11 @@ ABSENT_TERM = "zzzqzx"
 # excluded: the fixture corpus is too fresh (all climate docs within 12h of
 # now) to ever classify as STABLE, so the assertion is deterministic.
 _TOPICX_PHASES = frozenset({"EMERGING", "EXPANDING", "PEAKING", "DECLINING", "DORMANT"})
+
+# Crossx convergence verdicts from crossx/engine.py:_convergence (exact strings).
+_CROSSX_CONVERGENCE = frozenset(
+    {"aligned bullish", "aligned bearish", "divergence", "neutral"}
+)
 
 FIXTURE_DOCS: list[dict[str, Any]] = [
     {
@@ -661,6 +668,104 @@ def stage_briefing(root: Path) -> dict[str, Any]:
     }
 
 
+# ── 15. crossx ─────────────────────────────────────────────────────────
+
+
+def stage_crossx(root: Path, session_id: str) -> dict[str, Any]:
+    """Topic-lifecycle x X-sentiment cross-view via the API TestClient.
+
+    Reuses the session created by stage_x: the /x surface and the crossx
+    router share the same ``{data_dir}/xscraper.sqlite`` store, and the
+    crossx engine opens its own store connection per request (so the
+    TestClient-level store shutdown after stage_x is irrelevant).
+    """
+    app = _build_app()
+    with TestClient(app) as client:
+        r = client.get(
+            "/crossx/view",
+            params={"term": CORPUS_TERM, "session_id": session_id, "window_days": 7},
+        )
+        _check(r.status_code == 200, f"/crossx/view -> {r.status_code}: {r.text[:300]}")
+        body = r.json()
+        _check(
+            body.get("news_phase") in _TOPICX_PHASES,
+            f"/crossx/view unexpected news_phase {body.get('news_phase')!r} "
+            f"(expected one of {sorted(_TOPICX_PHASES)})",
+        )
+        correlation = body.get("correlation_r")
+        _check(
+            isinstance(correlation, (int, float)) and -1.0 <= float(correlation) <= 1.0,
+            f"/crossx/view correlation_r out of range: {correlation!r}",
+        )
+        _check(
+            body.get("convergence") in _CROSSX_CONVERGENCE,
+            f"/crossx/view unexpected convergence {body.get('convergence')!r} "
+            f"(expected one of {sorted(_CROSSX_CONVERGENCE)})",
+        )
+        x_sentiment = body.get("x_sentiment")
+        _check(
+            isinstance(x_sentiment, list) or x_sentiment is None,
+            f"/crossx/view x_sentiment unexpected shape: {type(x_sentiment).__name__}",
+        )
+    return {
+        "news_phase": body["news_phase"],
+        "correlation_r": float(correlation),
+        "convergence": body["convergence"],
+        "x_sentiment_len": len(x_sentiment) if isinstance(x_sentiment, list) else None,
+    }
+
+
+# ── 16. alert_test ─────────────────────────────────────────────────────
+
+
+def stage_alert_test(root: Path, rule_id: str) -> dict[str, Any]:
+    """Manual rule test via POST /alerts/rules/{id}/test (never persists).
+
+    Reuses the term_count rule created by stage_alerts (the AlertStore is
+    file-backed at ``{data_dir}/alerts.db``, so the rule survives across
+    app builds). Verifies the report shape AND that the test run recorded no
+    firing: GET /alerts/firings count must be unchanged before/after.
+    """
+    app = _build_app()
+    with TestClient(app) as client:
+        r = client.get("/alerts/firings")
+        _check(r.status_code == 200, f"GET /alerts/firings (before) -> {r.status_code}")
+        before_count = len(r.json())
+
+        # Bodyless POST: the endpoint takes no body, but the API's CSRF
+        # middleware (server.py:_CSRF_BODYLESS_PATHS) requires a non-empty
+        # application/json body on every mutating /alerts route — a bodyless
+        # request is rejected with 415 (see BUG report). The harness sends
+        # an empty JSON object, which the route ignores.
+        r = client.post(f"/alerts/rules/{rule_id}/test", json={})
+        _check(
+            r.status_code == 200,
+            f"POST /alerts/rules/{rule_id}/test -> {r.status_code}: {r.text[:300]}",
+        )
+        report = r.json()
+        _check(report.get("fired") is True, "test report fired != true")
+        _check(int(report.get("count", 0)) >= 1, "test report count < 1")
+        _check(
+            report.get("suppressed_by_cooldown") is False,
+            "fresh rule unexpectedly in cooldown",
+        )
+
+        r = client.get("/alerts/firings")
+        _check(r.status_code == 200, f"GET /alerts/firings (after) -> {r.status_code}")
+        after_count = len(r.json())
+        _check(
+            after_count == before_count,
+            f"test run persisted a firing: firings {before_count} -> {after_count}",
+        )
+    return {
+        "fired": bool(report["fired"]),
+        "count": int(report["count"]),
+        "suppressed_by_cooldown": bool(report["suppressed_by_cooldown"]),
+        "firings_before": before_count,
+        "firings_after": after_count,
+    }
+
+
 # ── orchestrator ────────────────────────────────────────────────────────
 
 
@@ -684,6 +789,8 @@ def run_e2e_flow(project_root: Path) -> dict[str, Any]:
     results["topicx"] = stage_topicx(project_root)
     results["qualityx"] = stage_qualityx(project_root)
     results["briefing"] = stage_briefing(project_root)
+    results["crossx"] = stage_crossx(project_root, results["x"]["session_id"])
+    results["alert_test"] = stage_alert_test(project_root, results["alerts"]["rule_id"])
     return results
 
 

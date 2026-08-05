@@ -57,6 +57,8 @@ class RuleCheckReport:
     count: int
     threshold: float
     suppressed_by_cooldown: bool
+    active: bool  # W22-F6: testing an inactive rule is an explicit action
+    required: float  # W22-F7: effective requirement (spike: 3x baseline/floor)
 
 
 def _term_pattern(term: str) -> str:
@@ -156,12 +158,23 @@ class AlertEngine:
         else:
             window_start = now - timedelta(hours=rule.window_hours)
             count = self._count_docs(rule.term, window_start, now)
+        # W22-F7: surface the EFFECTIVE requirement — for spike rules it is
+        # the 3x-baseline (or the absolute floor), not the raw threshold.
+        required = rule.threshold
+        if rule.kind == "term_spike":
+            baseline = self._baseline_mean(rule.term, now - timedelta(hours=rule.window_hours))
+            if baseline > 0:
+                required = max(rule.threshold, _SPIKE_FACTOR * baseline)
+            else:
+                required = max(rule.threshold, _SPIKE_ABS_FLOOR)
         return RuleCheckReport(
             fired=firing is not None,
             firing=firing,
             count=count,
             threshold=rule.threshold,
             suppressed_by_cooldown=self._in_cooldown(rule, now),
+            active=rule.active,
+            required=round(required, 4),
         )
 
     # ── per-rule evaluation ──────────────────────────────────────────────
@@ -185,6 +198,7 @@ class AlertEngine:
         count = self._count_docs(rule.term, window_start, now)
         fired: bool
         detail: str
+        required: float = rule.threshold
         if rule.kind == "term_count":
             fired = count >= rule.threshold
             detail = (
@@ -194,7 +208,8 @@ class AlertEngine:
         elif rule.kind == "term_spike":
             baseline = self._baseline_mean(rule.term, window_start)
             if baseline > 0:
-                fired = count >= rule.threshold and count >= _SPIKE_FACTOR * baseline
+                required = max(rule.threshold, _SPIKE_FACTOR * baseline)
+                fired = count >= required
                 detail = (
                     f"{count} docs matched '{rule.term}' in the last "
                     f"{rule.window_hours:g}h (threshold {rule.threshold:g}, "

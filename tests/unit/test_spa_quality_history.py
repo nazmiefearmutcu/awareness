@@ -87,7 +87,19 @@ def test_quality_js_present_and_endpoint_used() -> None:
     assert "function qualityHistoryRows(" in q
     assert "function renderQualityHistory(" in q
     assert "async function refreshDashQuality(" in q
-    assert 'api("/qualityx/history?days=30")' in q
+    assert 'api("/qualityx/history?days=30&granularity="' in q
+
+
+def test_quality_band_has_granularity_toggle() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'id="dash-quality-granularity"' in html
+    for value in ("day", "week", "month"):
+        assert f'value="{value}"' in html
+    app_js = APP_JS.read_text(encoding="utf-8")
+    q = _quality_slice(app_js)
+    assert 'let dashQualityGranularity = "day";' in q
+    assert "function dashQualitySetGranularity(" in q
+    assert '$("#dash-quality-granularity")?.addEventListener("change"' in q
 
 
 def test_quality_refresh_hooked_into_dashboard_cadence() -> None:

@@ -3920,7 +3920,7 @@ def lifecycle(  # noqa: PLR0917 (7 params: TERM + window/chart/json/mode flags)
                     )
                 )
             else:
-                rprint(f"[yellow]No captures for {escape(lc.term)!r} in the last {days} days.[/yellow]")
+                rprint(f"[yellow]No captures for {escape(repr(lc.term))} in the last {days} days.[/yellow]")
             return
         if json_out:
             print(json.dumps(lc.model_dump(mode="json"), indent=2, default=str))
@@ -3949,17 +3949,21 @@ def _ratio_verdict(ratio: float) -> str:
 
 
 def _print_quality_history(
-    points: list[Any], *, days: int, json_out: bool
+    points: list[Any], *, days: int, json_out: bool, granularity: str = "day"
 ) -> None:
-    """Render per-day quality points as a Rich table (or JSON) plus a dup-ratio
-    sparkline; an all-empty series prints a clean "empty corpus" message."""
+    """Render per-bucket quality points as a Rich table (or JSON) plus dup-ratio
+    and capture-rate sparklines side by side; an all-empty series prints a
+    clean "empty corpus" message."""
     if json_out:
         print(json.dumps([p.model_dump(mode="json") for p in points], indent=2, default=str))
         return
     if all(p.total == 0 for p in points):
         rprint("[yellow]empty corpus[/yellow]")
         return
-    table = Table(title=f"Quality history (last {days} days)")
+    title = f"Quality history (last {days} days)"
+    if granularity != "day":
+        title += f", {granularity} buckets"
+    table = Table(title=title)
     table.add_column("Date", style=banner.C_HI)
     table.add_column("total", justify="right")
     table.add_column("dup%", justify="right")
@@ -3967,8 +3971,11 @@ def _print_quality_history(
     table.add_column("avg_len", justify="right")
     table.add_column("new_domains", justify="right")
     for p in points:
+        date_col = p.ts.isoformat()
+        if granularity != "day":
+            date_col = f"{date_col} ({_bucket_label(granularity)})"
         table.add_row(
-            p.ts.isoformat(),
+            date_col,
             f"{p.total:,}",
             f"{p.duplicate_ratio * 100.0:.1f}",
             f"{p.near_duplicate_ratio * 100.0:.1f}",
@@ -3977,8 +3984,10 @@ def _print_quality_history(
         )
     console.print(table)
     console.print(
-        "[dim]dup-ratio sparkline (per day):[/dim] "
+        f"[dim]dup-ratio sparkline (per {granularity}):[/dim] "
         + _sparkline([p.duplicate_ratio * 100.0 for p in points])
+        + f"   [dim]capture-rate sparkline (per {granularity}):[/dim] "
+        + _sparkline([p.capture_rate for p in points])
     )
 
 
@@ -3997,15 +4006,23 @@ def quality(
         metavar="DAYS",
         help="History window in days (1..365, default 30); only used with --history",
     ),
+    granularity: str = typer.Option(
+        "day",
+        "--granularity",
+        click_type=click.Choice(["day", "week", "month"]),
+        help="History bucket size (day | week | month); only used with --history",
+    ),
 ) -> None:
     """Corpus quality report: sizes, duplicate ratios, languages, domains.
 
     Builds the same DuckDB index as ``digest`` and prints
     ``CorpusXEngine.quality_snapshot()`` as a Rich table (or raw JSON with
-    ``--json``). ``--history`` prints a per-day quality series computed
+    ``--json``). ``--history`` prints a per-bucket quality series computed
     directly from the corpus (works on old data); DAYS defaults to 30 when
-    the flag is given without a value (add ``--json`` for the raw points).
-    An empty corpus prints a clean "empty corpus" message.
+    the flag is given without a value, buckets are ``--granularity`` (day |
+    week | month, default day) with a dup-ratio and capture-rate sparkline
+    (add ``--json`` for the raw points). An empty corpus prints a clean
+    "empty corpus" message.
     """
     settings = get_settings()
     idx = DuckDbIndex(
@@ -4019,8 +4036,10 @@ def quality(
     try:
         if history:
             window = days or 30
-            points = QualityTimeEngine(idx).history(days=window)
-            _print_quality_history(points, days=window, json_out=json_out)
+            points = QualityTimeEngine(idx).history(days=window, granularity=granularity)
+            _print_quality_history(
+                points, days=window, granularity=granularity, json_out=json_out
+            )
             return
         snapshot = CorpusXEngine(idx).quality_snapshot()
     finally:
@@ -4474,6 +4493,10 @@ def _briefing_alerts_summary(
         rid = f["rule_id"]
         per_rule[rid] = per_rule.get(rid, 0) + 1
         names[rid] = f["rule_name"] or rid
+    # W22-F4: the firing list is capped (100) — the top rule's true count
+    # needs the uncapped per-rule total, not the capped list length.
+    for rid in list(per_rule):
+        per_rule[rid] = store.count_firings_since(since, rule_id=rid)
     top_rule: dict[str, Any] | None = None
     if per_rule:
         top_id = max(per_rule, key=per_rule.get)

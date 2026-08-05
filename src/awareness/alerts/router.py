@@ -223,6 +223,8 @@ def create_alerts_router(  # noqa: PLR0915 - spec-mandated endpoint surface
                 "count": report.count,
                 "threshold": report.threshold,
                 "suppressed_by_cooldown": report.suppressed_by_cooldown,
+                "active": report.active,
+                "required": report.required,
             }
 
         return _call(_test, not_found="alert rule not found")

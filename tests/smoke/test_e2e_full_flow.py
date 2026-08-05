@@ -72,46 +72,25 @@ def _assert_new_stages(results: dict) -> None:
     assert isinstance(briefing["top_terms"], int) and briefing["top_terms"] >= 0
 
 
-def test_e2e_full_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    module = _load_smoke_module()
-    saved_env = os.environ.copy()
-    saved_logging = obs_logging._CONFIGURED
-    # The harness must never depend on the live GDELT API.
-    import awareness.gdeltx.engine as gdeltx_engine  # noqa: PLC0415
+def _assert_final_stages(results: dict) -> None:
+    """Assertions for the crossx / alert_test stages added last (15-16)."""
+    # ── 15. crossx: news phase + correlation + convergence + x shape ─────
+    crossx = results["crossx"]
+    assert crossx["news_phase"] in {"EMERGING", "EXPANDING", "PEAKING", "DECLINING", "DORMANT"}
+    assert -1.0 <= crossx["correlation_r"] <= 1.0
+    assert crossx["convergence"] in {"aligned bullish", "aligned bearish", "divergence", "neutral"}
+    assert crossx["x_sentiment_len"] is None or crossx["x_sentiment_len"] >= 0
 
-    monkeypatch.setattr(
-        gdeltx_engine.GdeltBridge,
-        "gdelt_query",
-        lambda self, term, start, end, granularity="day": [],
-    )
-    try:
-        results = module.run_e2e_flow(tmp_path)
-    finally:
-        # Restore the environment so other tests never see our overrides;
-        # reset the settings cache and API index singleton as well.
-        os.environ.clear()
-        os.environ.update(saved_env)
-        reset_settings()
-        # _close_index() FIRST: it both closes the DuckDbIndex and clears
-        # the singleton — nulling _State.index beforehand would make it a
-        # no-op and leak an open connection in DuckDbIndex._instances.
-        server._close_index()
-        # Restore logging: the init stage's configure_logging() binds a
-        # StreamHandler to Click's ephemeral capture stream, which is closed
-        # after CliRunner.invoke — any later WARNING would print
-        # "--- Logging error ---" garbage into the suite. Drop every root
-        # handler and reconfigure from a clean slate with safe values.
-        root = logging.getLogger()
-        for handler in list(root.handlers):
-            root.removeHandler(handler)
-        obs_logging._CONFIGURED = None
-        if saved_logging is not None:
-            obs_logging.configure_logging(
-                level=saved_logging[0], json=saved_logging[1], log_dir=None
-            )
-        else:
-            obs_logging.configure_logging(level="WARNING", json=False, log_dir=None)
+    # ── 16. alert_test: report fires, cooldown clear, nothing persisted ──
+    alert_test = results["alert_test"]
+    assert alert_test["fired"] is True
+    assert alert_test["count"] >= 1
+    assert alert_test["suppressed_by_cooldown"] is False
+    assert alert_test["firings_after"] == alert_test["firings_before"]
 
+
+def _assert_core_stages(results: dict, module) -> None:
+    """Assertions for the first eight stages (1-8)."""
     # ── 1. init: exit 0 (CliRunner inside stage), data tree exists ──────
     init = results["init"]
     assert init["state_db"].exists(), "state db missing after init"
@@ -156,8 +135,55 @@ def test_e2e_full_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert export["count"] == min(100, export["total"])
     assert len(export["files"]) > 0
 
+
+def test_e2e_full_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_smoke_module()
+    saved_env = os.environ.copy()
+    saved_logging = obs_logging._CONFIGURED
+    # The harness must never depend on the live GDELT API.
+    import awareness.gdeltx.engine as gdeltx_engine  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        gdeltx_engine.GdeltBridge,
+        "gdelt_query",
+        lambda self, term, start, end, granularity="day": [],
+    )
+    try:
+        results = module.run_e2e_flow(tmp_path)
+    finally:
+        # Restore the environment so other tests never see our overrides;
+        # reset the settings cache and API index singleton as well.
+        os.environ.clear()
+        os.environ.update(saved_env)
+        reset_settings()
+        # _close_index() FIRST: it both closes the DuckDbIndex and clears
+        # the singleton — nulling _State.index beforehand would make it a
+        # no-op and leak an open connection in DuckDbIndex._instances.
+        server._close_index()
+        # Restore logging: the init stage's configure_logging() binds a
+        # StreamHandler to Click's ephemeral capture stream, which is closed
+        # after CliRunner.invoke — any later WARNING would print
+        # "--- Logging error ---" garbage into the suite. Drop every root
+        # handler and reconfigure from a clean slate with safe values.
+        root = logging.getLogger()
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+        obs_logging._CONFIGURED = None
+        if saved_logging is not None:
+            obs_logging.configure_logging(
+                level=saved_logging[0], json=saved_logging[1], log_dir=None
+            )
+        else:
+            obs_logging.configure_logging(level="WARNING", json=False, log_dir=None)
+
+    # ── 1-8. core stages (see helper) ────────────────────────────────────
+    _assert_core_stages(results, module)
+
     # ── 9-11. saved / x / report stages (see helper) ─────────────────────
     _assert_extra_stages(results)
 
     # ── 12-14. topicx / qualityx / briefing stages (see helper) ──────────
     _assert_new_stages(results)
+
+    # ── 15-16. crossx / alert_test stages (see helper) ───────────────────
+    _assert_final_stages(results)

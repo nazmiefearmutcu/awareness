@@ -366,6 +366,13 @@
         <header class="band-head">
           <h2 id="dash-quality-title" class="band-title">Quality history</h2>
           <span class="band-meta" id="dash-quality-meta" aria-live="polite">—</span>
+          <div class="band-tools">
+            <select class="sel" id="dash-quality-granularity" aria-label="Quality history bucket size">
+              <option value="day" selected>day</option>
+              <option value="week">week</option>
+              <option value="month">month</option>
+            </select>
+          </div>
         </header>
         <div class="dash-quality-grid" id="dash-quality-grid">
           <div class="an-chart" id="dash-quality-dup" role="img" aria-label="Duplicate ratio per day">—</div>
@@ -1042,6 +1049,21 @@
           <h2 class="band-title" id="al-test-title">Test run</h2>
         </div>
         <div class="al-test-body" id="al-test-body" aria-live="polite">—</div>
+      </section>
+
+      <section class="band al-history-panel" id="al-history-panel" aria-labelledby="al-history-title">
+        <div class="band-head">
+          <h2 class="band-title" id="al-history-title">Recent tests</h2>
+          <button type="button" class="btn btn-link" id="al-history-clear">Clear</button>
+        </div>
+        <div class="an-table-wrap">
+          <table class="an-table al-history-table" id="al-history-table" aria-label="Recent rule tests in this browser session">
+            <thead>
+              <tr><th>When</th><th>Rule</th><th>Term</th><th>Result</th><th>Count</th><th>Threshold</th></tr>
+            </thead>
+            <tbody id="al-history-body"></tbody>
+          </table>
+        </div>
       </section>
 
       <section class="band al-trend" aria-labelledby="al-trend-title">

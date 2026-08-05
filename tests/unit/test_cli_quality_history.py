@@ -11,6 +11,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import click
 from typer.testing import CliRunner
 
 from awareness.cli.main import app
@@ -79,6 +80,21 @@ def _history_corpus(root: Path) -> list[str]:
     return [(anchor - timedelta(days=1)).date().isoformat(), anchor.date().isoformat()]
 
 
+def _week_corpus(root: Path) -> None:
+    """Fixed-date corpus spanning two ISO weeks (Tue 2026-05-26, Sun 05-31,
+    next Mon 06-01) so week buckets land on known Mondays (05-25 / 06-01)."""
+    _write_doc(root, 1, ts=datetime(2026, 5, 26, 12, 0, tzinfo=UTC), text="alpha one",
+               domain="tue.example", content_hash="htue")
+    _write_doc(root, 2, ts=datetime(2026, 5, 26, 13, 0, tzinfo=UTC), text="alpha two",
+               domain="tue.example", content_hash="htue")
+    _write_doc(root, 3, ts=datetime(2026, 5, 31, 12, 0, tzinfo=UTC), text="beta one",
+               domain="sun.example", content_hash="hsun")
+    _write_doc(root, 4, ts=datetime(2026, 6, 1, 12, 0, tzinfo=UTC), text="gamma one",
+               domain="mon.example", content_hash="hmon")
+    _write_doc(root, 5, ts=datetime(2026, 6, 1, 13, 0, tzinfo=UTC), text="gamma two",
+               domain="mon.example", content_hash="hmon")
+
+
 # ── --history ───────────────────────────────────────────────────────────────
 
 
@@ -123,6 +139,43 @@ def test_quality_history_empty_corpus_clean_message(tmp_project: Path) -> None:
     result = runner.invoke(app, ["quality", "--history", "5"])
     assert result.exit_code == 0, result.output
     assert "empty corpus" in result.output
+
+
+# ── --granularity ───────────────────────────────────────────────────────────
+
+
+def test_quality_history_week_granularity_rows_and_both_sparklines(
+    tmp_project: Path,
+) -> None:
+    _week_corpus(tmp_project / "data" / "jsonl")
+    result = runner.invoke(
+        app, ["quality", "--history", "14", "--granularity", "week"]
+    )
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "Quality history" in out
+    assert "week buckets" in out
+    # Monday-aligned bucket rows with the calendar anchor labelled.
+    assert "2026-05-18 (week of)" in out
+    assert "2026-05-25 (week of)" in out
+    assert "2026-06-01 (week of)" in out
+    assert "66.7" in out  # Tue pair: 2 of 3 docs in its week bucket
+    # Both sparklines render side by side, each labelled.
+    assert "dup-ratio sparkline (per week)" in out
+    assert "capture-rate sparkline (per week)" in out
+    blocks = sum(out.count(c) for c in "▁▂▃▄▅▆▇█")
+    assert blocks >= 40  # two 40-char sparklines
+
+
+def test_quality_history_bad_granularity_exits_nonzero(tmp_project: Path) -> None:
+    """Unknown --granularity fails with click's BadParameter (exit != 0)."""
+    _week_corpus(tmp_project / "data" / "jsonl")
+    result = runner.invoke(
+        app, ["quality", "--history", "7", "--granularity", "hour"]
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, click.exceptions.BadParameter)
+    assert "not one of 'day', 'week', 'month'" in str(result.exception)
 
 
 # ── plain quality (backward compat) ─────────────────────────────────────────

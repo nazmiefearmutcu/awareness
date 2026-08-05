@@ -76,15 +76,32 @@ def _mean(values: list[float]) -> float:
     return float(np.mean(values)) if values else 0.0
 
 
+# Minimum days where AT LEAST ONE series has data before a nonzero
+# correlation is surfaced (W22-F2: zero-filled sparse series otherwise
+# inflate r to ±1.0 from a single shared day).
+_MIN_OVERLAP_DAYS = 3
+
+
 def _correlation_r(news: list[float], x: list[float]) -> float:
-    """Pearson correlation of the aligned daily series; 0.0 when degenerate."""
+    """Pearson correlation over days where at least one series has data.
+
+    Zero-filled days (both sides silent) would otherwise inflate r to ±1.0
+    from a single shared day — the mask excludes them, and a sparse overlap
+    (< :data:`_MIN_OVERLAP_DAYS` data days) is reported as 0.0.
+    """
     a = np.asarray(news, dtype=np.float64)
     b = np.asarray(x, dtype=np.float64)
     if a.size < 2 or b.size < 2:
         return 0.0
-    if float(np.std(a)) == 0.0 or float(np.std(b)) == 0.0:
+    mask = (a != 0.0) | (b != 0.0)
+    if int(mask.sum()) < _MIN_OVERLAP_DAYS:
         return 0.0
-    value = float(np.corrcoef(a, b)[0, 1])
+    a_m, b_m = a[mask], b[mask]
+    if a_m.size < 2 or b_m.size < 2:
+        return 0.0
+    if float(np.std(a_m)) == 0.0 or float(np.std(b_m)) == 0.0:
+        return 0.0
+    value = float(np.corrcoef(a_m, b_m)[0, 1])
     return 0.0 if np.isnan(value) else round(value, 4)
 
 
@@ -171,17 +188,31 @@ class CrossXEngine:
         note = ""
         x_by_date = await self.x_session_sentiment(cleaned_session)
         if x_by_date is not None:
-            x_daily = [x_by_date.get(date.strftime("%Y-%m-%d"), 0.0) for date in dates]
-            x_sentiment = [
-                SentimentPoint(ts=date, avg_score=score)
-                for date, score in zip(dates, x_daily, strict=True)
-            ]
-            x_avg = round(_mean(x_daily), 4)
-            correlation = _correlation_r(news_daily, x_daily)
+            window_dates = {date.strftime("%Y-%m-%d") for date in dates}
+            in_window = any(d in window_dates for d in x_by_date)
+            if x_by_date and not in_window:
+                # W22-F3: tweets exist but all predate the window — surface
+                # it instead of an all-zero "X is silent" series.
+                note = "x session tweets predate the window — news side only"
+            else:
+                x_daily = [x_by_date.get(date.strftime("%Y-%m-%d"), 0.0) for date in dates]
+                x_sentiment = [
+                    SentimentPoint(ts=date, avg_score=score)
+                    for date, score in zip(dates, x_daily, strict=True)
+                ]
+                x_avg = round(_mean(x_daily), 4)
+                correlation = _correlation_r(news_daily, x_daily)
         else:
             note = "x session unknown — news side only"
 
         news_avg = round(_mean(news_daily), 4)
+        # W22-F2: convergence requires data on BOTH sides — a one-sided
+        # average with the other all-zero would mislead ("aligned bearish"
+        # from silence).
+        if x_sentiment is None or not any(v != 0.0 for v in x_daily):
+            convergence = "neutral"
+        else:
+            convergence = _convergence(news_avg, x_avg)
         return CombinedView(
             term=cleaned_term,
             news_phase=lifecycle.phase,
@@ -194,6 +225,6 @@ class CrossXEngine:
             news_avg_score=news_avg,
             x_avg_score=x_avg,
             correlation_r=correlation,
-            convergence=_convergence(news_avg, x_avg),
+            convergence=convergence,
             note=note,
         )

@@ -2708,6 +2708,12 @@ body{
 }
 .al-test-firing p { margin: 0 0 2px; }
 .al-test-firing-term { color: var(--accent-soft); }
+.al-history-panel { border-color: var(--border-strong); }
+.al-history-table td { white-space: nowrap; }
+.al-history-table td:first-child { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.al-history-fired { color: var(--rose, #ff6178); font-weight: 600; }
+.al-history-clean { color: var(--fg-mid); }
+.al-history-row.is-fired td { background: var(--surface-hi); }
 .al-firing-row { cursor: pointer; }
 .al-firing-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .al-firing-row:hover, .al-firing-row.is-open { background: var(--surface-hi); }
