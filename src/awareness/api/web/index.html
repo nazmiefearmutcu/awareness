@@ -975,6 +975,7 @@
       <section class="band" aria-labelledby="al-rules-title">
         <div class="band-head">
           <h2 class="band-title" id="al-rules-title">Rules</h2>
+          <button type="button" class="btn btn-link" id="al-run-all">Run all rules</button>
           <button type="button" class="btn btn-link" id="al-refresh">Refresh</button>
         </div>
         <div class="an-table-wrap">
@@ -1153,6 +1154,25 @@
           <h2 class="band-title" id="x-an-title">Analysis</h2>
         </div>
         <div id="x-an-root"></div>
+      </section>
+
+      <section class="band x-cross-band" id="x-cross" aria-labelledby="x-cross-title">
+        <div class="band-head">
+          <h2 class="band-title" id="x-cross-title">X ↔ News</h2>
+          <span class="band-meta">topic lifecycle vs session sentiment</span>
+        </div>
+        <div class="x-cross-controls">
+          <label class="field">
+            <span class="field-label">Session</span>
+            <select id="x-cross-session" class="inp" aria-label="Session for the cross-view"></select>
+          </label>
+          <label class="field">
+            <span class="field-label">Term</span>
+            <input id="x-cross-term" class="inp" type="text" placeholder="bitcoin" autocomplete="off" />
+          </label>
+          <button type="button" class="btn btn-primary" id="x-cross-go">Compare</button>
+        </div>
+        <div id="x-cross-root"></div>
       </section>
 
       <section class="band x-tweets-panel" id="x-tweets" aria-labelledby="x-tweets-title" hidden>

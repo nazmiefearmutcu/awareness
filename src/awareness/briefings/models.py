@@ -17,7 +17,7 @@ class SavedBriefing(BaseModel):
     date: str
     name: str | None = None
     path: str
-    size_bytes: int
+    size_bytes: int | None = None  # None when the file vanished mid-listing
     generated_at: str | None = None
     movers_count: int | None = None
     top_terms: list[str] | None = None

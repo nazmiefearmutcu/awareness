@@ -424,13 +424,13 @@ the commit diff). Related hardening in the same commit: GDELT CLI error
 paths drop `logger.warning` (stale-handler stream corruption under
 CliRunner capture), applied to `briefing` / `report` too.
 
-### R3-W6 (adversarial review of `a84a2ab`) — **pending**
+### R3-W6 (adversarial review of `a84a2ab`) — RESOLVED in `83f84e2`
 
-**Pending.** No R3-W6 report exists in `docs/` as of this writing
-(2026-08-04). `.ralph/loop-state.md` opens Round 3 / Iteration 2 with
-W6 ("fix-the-fixes — adversarial review of the R3-ITER1 code: topicx,
-qualityx, FTS delta, briefing, W1 fixes") as the scheduled next step.
-Status will be updated here when the report lands.
+**Superseded** — see "Ralph Loop Round 3 — iterations 2-3 (2026-08-05)"
+below: the report landed, 2 findings (qualityx 200k-row cap +
+alias-less `EXISTS`, briefing fake sentiment crash), both RESOLVED in
+`83f84e2`. This block was written while W6 was still scheduled
+(2026-08-04) and is kept only for continuity.
 
 ---
 
@@ -460,9 +460,39 @@ claim below was verified against `git show --stat` of the cited commit
 | R3-W10-3 | SPA | dup-ratio bar tooltip missing its unit | RESOLVED `1bdbced` | tooltip now shows '%' (`src/awareness/api/web/app.js`, +116 lines in the diff) |
 | R3-W10-4 | qualityx | scale verification missing for the W6 GROUP BY rewrite | RESOLVED `1bdbced` | verified at 1M rows: GROUP BY linear (1.3 s), no fabricated zero days at 260k, no O(n²) EXISTS (decorrelated hash semi-joins) — noted in the commit message, code unchanged |
 
-### R3-W14 (fix-the-fixes review of iteration 3) — **in progress**
+### R3-W14 (fix-the-fixes review of iteration 3) — RESOLVED in `3c65ce7`
+
+**Resolved.** The W14 report landed with iteration 4 (`3c65ce7`); **2
+findings, both RESOLVED in `3c65ce7`** (verified against
+`git show 3c65ce7 -- src/awareness/cli/main.py` — the diff carries both
+fixes with inline `W14-F1` / `W14-F2` comments). See "Ralph Loop Round 3 —
+iterations 4-5 (2026-08-05)" below for the per-finding register.
+
+---
+
+## Ralph Loop Round 3 — iterations 4-5 (2026-08-05)
+
+Iteration 4 = `3c65ce7` ("feat: saved-briefings API + SPA viewer, lifecycle
+CLI, final benchmark; fix: W14"): the `briefings/` package (filesystem-backed
+API + SPA viewer), the `awareness lifecycle` CLI, the final 100k benchmark,
+and the W14 fixes. Every RESOLVED claim below was verified against
+`git show` of the cited commit (touched files cited, not the commit message
+alone).
+
+### R3-W14 (fix-the-fixes review of iteration 3) — 2 findings, RESOLVED in `3c65ce7`
+
+| ID | Area | Finding | Status | Verification |
+|----|------|---------|--------|-------------|
+| R3-W14-1 | X CLI | `x timeline` / `x export` write failures (destination is a directory, read-only parent, ENOSPC) surfaced as raw OSError tracebacks | RESOLVED `3c65ce7` | both commands now print `cannot write <path>: <err>` and `raise typer.Exit(code=2)` — `src/awareness/cli/main.py` (+12 lines, inline `W14-F1` comment on the timeline path) |
+| R3-W14-2 | briefing save | unbounded `--save` name → `ENAMETOOLONG` traceback; `.tmp` cleanup on the failure path could itself raise OSError and mask the original error | RESOLVED `3c65ce7` | name regex capped `[A-Za-z0-9_-]{1,64}` with a friendly `typer.BadParameter`; cleanup wrapped in try/except OSError (`src/awareness/cli/main.py`, inline `W14-F2` comment) |
+
+**R3-W14 verdict:** 2/2 RESOLVED in `3c65ce7` — both findings verified in
+the `git show` diff of `src/awareness/cli/main.py`. Suite green (1731+);
+wheel builds.
+
+### R3-W18 (fix-the-fixes review of iteration 4) — **in progress**
 
 **In progress.** As of this writing (2026-08-05) `.ralph/loop-state.md`
-opens Round 3 / Iteration 4 with W14 ("fix-the-fixes — adversarial review
-of the R3-ITER3 code: SPA trend/glance, X timeline, E2E 14, W10 nits") as
-the scheduled next step. Status will be updated here when the report lands.
+opens Round 3 / Iteration 5 with W18 ("fix-the-fixes — adversarial review
+of the R3-ITER4 code: briefings API/SPA, lifecycle CLI, W14 fixes") as the
+scheduled next step. Status will be updated here when the report lands.

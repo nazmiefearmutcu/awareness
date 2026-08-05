@@ -21,6 +21,7 @@ parameters, so they can never reach SQL text.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from awareness.alerts.models import AlertFiring, AlertRule
@@ -45,6 +46,17 @@ _BASELINE_DAYS = 7
 _SPIKE_FACTOR = 3.0
 # Absolute floor when the baseline is empty.
 _SPIKE_ABS_FLOOR = 3.0
+
+
+@dataclass
+class RuleCheckReport:
+    """Single-rule test-mode evaluation result (:meth:`AlertEngine.check_rule_report`)."""
+
+    fired: bool
+    firing: AlertFiring | None
+    count: int
+    threshold: float
+    suppressed_by_cooldown: bool
 
 
 def _term_pattern(term: str) -> str:
@@ -96,14 +108,21 @@ class AlertEngine:
         now = datetime.now(UTC)
         firings: list[AlertFiring] = []
         for rule in self._store.list_rules(active_only=True):
+            if self._in_cooldown(rule, now):
+                continue
             firing = self._evaluate_rule(rule, now)
             if firing is not None:
                 firings.append(firing)
         return firings
 
-    def check_rule(self, rule_id: str) -> AlertFiring | None:
+    def check_rule(
+        self, rule_id: str, *, ignore_cooldown: bool = False
+    ) -> AlertFiring | None:
         """Evaluate a single rule (cooldown respected), or ``None``.
 
+        With ``ignore_cooldown=True`` (test mode) the per-rule cooldown gate
+        is bypassed and the firing is NOT persisted, so the current condition
+        is always surfaced without muting or polluting real alert history.
         Inactive or missing rules return ``None``; index-not-ready still
         raises :class:`RuntimeError`.
         """
@@ -111,18 +130,57 @@ class AlertEngine:
         rule = self._store.get_rule(rule_id)
         if rule is None or not rule.active:
             return None
-        return self._evaluate_rule(rule, datetime.now(UTC))
+        now = datetime.now(UTC)
+        if self._in_cooldown(rule, now) and not ignore_cooldown:
+            return None
+        return self._evaluate_rule(rule, now, persist=not ignore_cooldown)
+
+    def check_rule_report(self, rule_id: str) -> RuleCheckReport | None:
+        """Test-mode single-rule check returning the full current-status report.
+
+        The cooldown gate is always ignored and firings are never persisted:
+        a test surfaces the rule's live condition (fired or not, count vs
+        threshold, whether a normal run would have been suppressed) without
+        muting or polluting real history. Inactive rules are still evaluated
+        — a test is an explicit action. Returns ``None`` only for unknown
+        rule ids; index-not-ready raises :class:`RuntimeError`.
+        """
+        self.ensure_ready()
+        rule = self._store.get_rule(rule_id)
+        if rule is None:
+            return None
+        now = datetime.now(UTC)
+        firing = self._evaluate_rule(rule, now, persist=False)
+        if firing is not None:
+            count = firing.count
+        else:
+            window_start = now - timedelta(hours=rule.window_hours)
+            count = self._count_docs(rule.term, window_start, now)
+        return RuleCheckReport(
+            fired=firing is not None,
+            firing=firing,
+            count=count,
+            threshold=rule.threshold,
+            suppressed_by_cooldown=self._in_cooldown(rule, now),
+        )
 
     # ── per-rule evaluation ──────────────────────────────────────────────
 
-    def _evaluate_rule(self, rule: AlertRule, now: datetime) -> AlertFiring | None:
-        """Evaluate *rule* at *now*; record and return a firing when it fires."""
+    def _in_cooldown(self, rule: AlertRule, now: datetime) -> bool:
+        """True when *rule* last fired within its own cooldown window."""
         last = self._store.last_firing_time(rule.id)
-        if last is not None:
-            elapsed = (now - last).total_seconds()
-            if elapsed < rule.cooldown_minutes * 60.0:
-                return None
+        if last is None:
+            return False
+        return (now - last).total_seconds() < rule.cooldown_minutes * 60.0
 
+    def _evaluate_rule(
+        self, rule: AlertRule, now: datetime, *, persist: bool = True
+    ) -> AlertFiring | None:
+        """Evaluate *rule* at *now*; return a firing when it fires.
+
+        With ``persist=False`` (test mode) the firing is not recorded and
+        carries a placeholder id of ``0``.
+        """
         window_start = now - timedelta(hours=rule.window_hours)
         count = self._count_docs(rule.term, window_start, now)
         fired: bool
@@ -156,15 +214,18 @@ class AlertEngine:
 
         if not fired:
             return None
-        firing_id = self._store.record_firing(
-            rule_id=rule.id,
-            rule_name=rule.name,
-            kind=rule.kind,
-            term=rule.term,
-            count=float(count),
-            threshold=rule.threshold,
-            detail=detail,
-        )
+        if persist:
+            firing_id = self._store.record_firing(
+                rule_id=rule.id,
+                rule_name=rule.name,
+                kind=rule.kind,
+                term=rule.term,
+                count=float(count),
+                threshold=rule.threshold,
+                detail=detail,
+            )
+        else:
+            firing_id = 0  # test mode: not persisted, placeholder id
         return AlertFiring(
             id=firing_id,
             rule_id=rule.id,

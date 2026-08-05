@@ -197,6 +197,36 @@ def create_alerts_router(  # noqa: PLR0915 - spec-mandated endpoint surface
         _call(_delete, not_found="alert rule not found")
         return Response(status_code=204)
 
+    @router.post("/rules/{rule_id}/test")
+    def test_rule(rule_id: str) -> dict[str, Any]:
+        """Evaluate ONE rule ignoring cooldown (manual test; never persists).
+
+        Returns the current status report: ``fired``, the firing detail when
+        it fired, ``count`` vs ``threshold``, and whether a normal run would
+        have been suppressed by cooldown. 404 for unknown rules; 503 when the
+        index is not ready.
+        """
+
+        def _test() -> dict[str, Any]:
+            _ensure_ready()
+            engine = AlertEngine(index_getter(), store_getter())
+            report = engine.check_rule_report(rule_id)
+            if report is None:
+                raise KeyError(rule_id)
+            return {
+                "fired": report.fired,
+                "firing": (
+                    report.firing.model_dump(mode="json")
+                    if report.firing is not None
+                    else None
+                ),
+                "count": report.count,
+                "threshold": report.threshold,
+                "suppressed_by_cooldown": report.suppressed_by_cooldown,
+            }
+
+        return _call(_test, not_found="alert rule not found")
+
     @router.post("/check")
     async def check() -> dict[str, Any]:
         """Evaluate all active rules; return firings plus webhook delivery

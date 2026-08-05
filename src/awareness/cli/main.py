@@ -3880,11 +3880,29 @@ def lifecycle(  # noqa: PLR0917 (7 params: TERM + window/chart/json/mode flags)
                 )
             for raw in compare_terms:
                 _validate_lifecycle_term(raw)
-            if term and not json_out:
+            if json_out:
+                print(
+                    json.dumps(
+                        [lc.model_dump(mode="json") for lc in engine.compare_lifecycles(compare_terms, window_days=days)],
+                        indent=2,
+                        default=str,
+                    )
+                )
+                return
+            if term:
                 rprint(f"[dim]--compare given; ignoring TERM {term!r}[/dim]")
             _render_compare(engine.compare_lifecycles(compare_terms, window_days=days))
             return
         if emerging:
+            if json_out:
+                print(
+                    json.dumps(
+                        [e.model_dump(mode="json") for e in engine.top_emerging(window_days=days, limit=limit)],
+                        indent=2,
+                        default=str,
+                    )
+                )
+                return
             _render_emerging(engine.top_emerging(window_days=days, limit=limit))
             return
         cleaned = _validate_lifecycle_term(term)
@@ -3902,7 +3920,7 @@ def lifecycle(  # noqa: PLR0917 (7 params: TERM + window/chart/json/mode flags)
                     )
                 )
             else:
-                rprint(f"[yellow]No captures for {lc.term!r} in the last {days} days.[/yellow]")
+                rprint(f"[yellow]No captures for {escape(lc.term)!r} in the last {days} days.[/yellow]")
             return
         if json_out:
             print(json.dumps(lc.model_dump(mode="json"), indent=2, default=str))
@@ -4444,25 +4462,65 @@ def _briefing_sentiment(
     return out
 
 
-def _briefing_alerts(settings: Any, now: datetime) -> list[dict[str, Any]]:
-    """Alert firings in the last 24h (empty when no alerts.db or on errors)."""
+def _briefing_alerts_summary(
+    store: Any, firings: list[dict[str, Any]], since: datetime
+) -> dict[str, Any]:
+    """Rule + firing counts and the top firing rule for the alerts summary."""
+    rules_total = len(store.list_rules())
+    rules_active = len(store.list_rules(active_only=True))
+    per_rule: dict[str, int] = {}
+    names: dict[str, str] = {}
+    for f in firings:
+        rid = f["rule_id"]
+        per_rule[rid] = per_rule.get(rid, 0) + 1
+        names[rid] = f["rule_name"] or rid
+    top_rule: dict[str, Any] | None = None
+    if per_rule:
+        top_id = max(per_rule, key=per_rule.get)
+        top_rule = {
+            "rule_id": top_id,
+            "rule_name": names[top_id],
+            "firings": per_rule[top_id],
+        }
+    return {
+        "rules_active": rules_active,
+        "rules_total": rules_total,
+        "firings_24h": store.count_firings_since(since),
+        "top_rule": top_rule,
+    }
+
+
+def _empty_alerts_summary() -> dict[str, Any]:
+    """Zeroed summary for a missing/unreadable alerts.db."""
+    return {"rules_active": 0, "rules_total": 0, "firings_24h": 0, "top_rule": None}
+
+
+def _briefing_alerts(
+    settings: Any, now: datetime
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Alert firings in the last 24h plus the alerts summary.
+
+    Returns ``([], <zeroed summary>)`` when there is no alerts.db or on
+    errors.
+    """
     assert settings.data_dir is not None
     alerts_path = settings.data_dir / "alerts.db"
     if not alerts_path.exists():
-        return []
+        return [], _empty_alerts_summary()
     from awareness.alerts.store import AlertStore  # noqa: PLC0415
 
     try:
         store = AlertStore(alerts_path)
         try:
-            return store.list_firings(
-                limit=100, since=now - timedelta(hours=_BRIEFING_ALERT_HOURS)
-            )
+            since = now - timedelta(hours=_BRIEFING_ALERT_HOURS)
+            firings = store.list_firings(limit=100, since=since)
+            summary = _briefing_alerts_summary(store, firings, since)
+            return firings, summary
         finally:
             store.close()
     except Exception as exc:
         logger.warning("briefing_alerts_unavailable", err=str(exc))
-        return []
+        return [], _empty_alerts_summary()
 
 
 def _briefing_gdelt_gaps(
@@ -4502,7 +4560,7 @@ def _briefing_gdelt_gaps(
     )
 
 
-def _render_briefing_markdown(payload: dict[str, Any], *, emerging: int) -> str:  # noqa: PLR0912
+def _render_briefing_markdown(payload: dict[str, Any], *, emerging: int) -> str:  # noqa: PLR0912, PLR0915
     """Plain-text markdown variant of the briefing payload (the email body).
 
     The briefing command builds one ``payload`` dict (JSON or rich render
@@ -4551,6 +4609,15 @@ def _render_briefing_markdown(payload: dict[str, Any], *, emerging: int) -> str:
     lines.append("")
     lines.append("## Alerts (last 24h)")
     firings = payload["alerts"]["recent"]
+    summary = payload.get("alerts_summary") or {}
+    lines.append(
+        f"- {summary.get('rules_active', 0)} active / "
+        f"{summary.get('rules_total', 0)} rules — "
+        f"{summary.get('firings_24h', 0)} firings in 24h"
+    )
+    top_rule = summary.get("top_rule")
+    if top_rule:
+        lines.append(f"- top rule: {top_rule['rule_name']} ({top_rule['firings']} firings)")
     if firings:
         lines.append(f"- {payload['alerts']['count']} firing(s)")
         lines.extend(
@@ -4659,6 +4726,7 @@ def _render_briefing_text(
     new_domains: list[dict[str, Any]],
     sentiment: list[dict[str, Any]],
     firings: list[dict[str, Any]],
+    alerts_summary: dict[str, Any],
     gdelt_gaps: list[dict[str, Any]],
     gdelt_note: str | None,
 ) -> None:
@@ -4696,15 +4764,21 @@ def _render_briefing_text(
         ],
         "insufficient sentiment data",
     )
-    _render_briefing_bullets(
-        "Alerts (last 24h)",
-        [f"{len(firings)} firing(s)"]
-        + [
-            f"• {f['rule_name']} — {f['term']} ({f['count']:g} vs {f['threshold']:g})"
-            for f in firings[:5]
-        ],
-        "no alert firings",
+    alerts_items = [
+        f"{alerts_summary.get('rules_active', 0)} active / "
+        f"{alerts_summary.get('rules_total', 0)} rules — "
+        f"{alerts_summary.get('firings_24h', 0)} firings in 24h"
+    ]
+    top_rule = alerts_summary.get("top_rule")
+    if top_rule:
+        alerts_items.append(
+            f"top rule: {top_rule['rule_name']} ({top_rule['firings']} firings)"
+        )
+    alerts_items.extend(
+        f"• {f['rule_name']} — {f['term']} ({f['count']:g} vs {f['threshold']:g})"
+        for f in firings[:5]
     )
+    _render_briefing_bullets("Alerts (last 24h)", alerts_items, "no alert firings")
     if gdelt_note:
         gdelt_items = [f"[dim]{gdelt_note}[/dim]"]
     elif gdelt_gaps:
@@ -4820,7 +4894,7 @@ def briefing(  # noqa: PLR0912, PLR0917 (14 params incl. SMTP delivery + save/li
             )
         ]
         sentiment = _briefing_sentiment(SentimentEngine(idx), top_terms, days)
-        firings = _briefing_alerts(settings, now)
+        firings, alerts_summary = _briefing_alerts(settings, now)
         gdelt_gaps, gdelt_note = _briefing_gdelt_gaps(idx, top_terms, days, no_gdelt)
     except Exception as exc:
         rprint(f"[red]briefing failed:[/red] {escape(str(exc))}")
@@ -4845,6 +4919,7 @@ def briefing(  # noqa: PLR0912, PLR0917 (14 params incl. SMTP delivery + save/li
                 {**f, "fired_at": f["fired_at"].isoformat()} for f in firings[:5]
             ],
         },
+        "alerts_summary": alerts_summary,
         "gdelt_gaps": {"skipped": no_gdelt, "note": gdelt_note, "gaps": gdelt_gaps},
     }
     if save:
@@ -4889,6 +4964,7 @@ def briefing(  # noqa: PLR0912, PLR0917 (14 params incl. SMTP delivery + save/li
         new_domains=new_domains,
         sentiment=sentiment,
         firings=firings,
+        alerts_summary=alerts_summary,
         gdelt_gaps=gdelt_gaps,
         gdelt_note=gdelt_note,
     )

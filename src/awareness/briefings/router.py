@@ -7,6 +7,12 @@ per request (via *briefings_dir_getter*), so files the CLI writes at any
 time are picked up. No index is needed — the endpoints are purely
 filesystem-backed.
 
+Trust model: ``{data_dir}`` must be operator-controlled and non-writable by
+untrusted users — the endpoints follow symlinks inside the briefings dir
+(an attacker with write access there can already read the machine directly,
+so this adds no capability; a ``resolve()`` containment check could be added
+as defense-in-depth if the deployment model ever changes).
+
 Error contract (all endpoints):
 
 * ``400`` — malformed date (must match ``YYYY-MM-DD`` or
@@ -51,9 +57,13 @@ def _briefing_from_path(path: Path) -> SavedBriefing:
     generated_at: str | None = None
     movers_count: int | None = None
     top_terms: list[str] | None = None
+    size_bytes: int | None = None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        size_bytes = path.stat().st_size
     except (OSError, ValueError):
+        # W18-F2: a file that vanishes between glob() and stat() must not
+        # 500 — the entry still lists (size null) instead of crashing.
         data = None
     if isinstance(data, dict):
         if isinstance(data.get("generated_at"), str):
@@ -74,7 +84,7 @@ def _briefing_from_path(path: Path) -> SavedBriefing:
         date=date,
         name=name,
         path=str(path),
-        size_bytes=path.stat().st_size,
+        size_bytes=size_bytes,
         generated_at=generated_at,
         movers_count=movers_count,
         top_terms=top_terms,
@@ -100,7 +110,13 @@ def create_briefings_router(briefings_dir_getter: Callable[[], Path]) -> APIRout
         if not briefings_dir.exists():
             return []
         paths = sorted(briefings_dir.glob("*.json"), reverse=True)[:_MAX_LIST]
-        return [_briefing_from_path(p) for p in paths]
+        # W18-L6: skip stray non-conforming *.json files (e.g. "notes.json")
+        # so the list never advertises a chip whose click would 400.
+        return [
+            _briefing_from_path(p)
+            for p in paths
+            if _DATE_RE.fullmatch(p.stem)
+        ]
 
     @router.get("/{date}", response_model=BriefingDetail)
     def get_briefing(date: str) -> BriefingDetail:

@@ -58,8 +58,10 @@ def test_briefings_js_present_and_endpoints_used() -> None:
 def test_briefings_click_to_view_wiring() -> None:
     app_js = APP_JS.read_text(encoding="utf-8")
     band = _briefings_slice(app_js)
-    # Date chips open the collapsible viewer for their date and fetch it.
-    assert "() => void openDashBriefing(b.date)" in band
+    # Date chips open the collapsible viewer for their full stem — named
+    # briefings are stored as {date}-{name}.json and must not 404 (W18-F1).
+    assert 'const slug = b.date + (b.name ? "-" + b.name : "")' in band
+    assert "void openDashBriefing(slug)" in band
     assert '$("#dash-briefings-viewer")' in band
     assert "viewer.open = true" in band
     assert 'api("/briefings/" + encodeURIComponent(date))' in band

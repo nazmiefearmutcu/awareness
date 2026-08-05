@@ -15,7 +15,10 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from awareness.alerts.models import AlertRuleCreate
+from awareness.alerts.store import AlertStore
 from awareness.cli.main import app
+from awareness.config import get_settings
 
 runner = CliRunner()
 
@@ -113,6 +116,8 @@ def test_briefing_sections(tmp_project: Path) -> None:
     # reported as a fabricated sentiment crash (▼ would be a lie).
     assert "▼" not in out
     assert "Alerts (last 24h)" in out
+    # No alerts.db → the summary line still renders (zeroed counts).
+    assert "0 active / 0 rules — 0 firings in 24h" in out
     assert "GDELT gaps" in out
     assert "no coverage gaps" in out
 
@@ -130,8 +135,58 @@ def test_briefing_json(tmp_project: Path) -> None:
     assert {"domain": "spike.news", "count": 10} in payload["new_domains"]
     assert any(s["term"] == "bitcoin" and s["direction"] == "up" for s in payload["sentiment"])
     assert payload["alerts"] == {"count": 0, "recent": []}
+    assert payload["alerts_summary"] == {
+        "rules_active": 0,
+        "rules_total": 0,
+        "firings_24h": 0,
+        "top_rule": None,
+    }
     assert payload["gdelt_gaps"] == {"skipped": True, "note": None, "gaps": []}
     assert payload["window_start"] < payload["window_end"]
+
+
+def test_briefing_alerts_summary(tmp_project: Path) -> None:
+    """With an alerts.db: the summary line + JSON carry rule counts and top rule."""
+    _corpus(tmp_project)
+    settings = get_settings()
+    assert settings.data_dir is not None
+    store = AlertStore(settings.data_dir / "alerts.db")
+    try:
+        btc = store.create_rule(
+            AlertRuleCreate(
+                name="btc", kind="term_count", term="bitcoin", threshold=1.0,
+                window_hours=24.0, cooldown_minutes=1.0, active=True,
+            )
+        )
+        store.create_rule(
+            AlertRuleCreate(
+                name="eth", kind="term_count", term="ethereum", threshold=1.0,
+                window_hours=24.0, cooldown_minutes=1.0, active=False,
+            )
+        )
+        for _ in range(3):
+            store.record_firing(
+                rule_id=btc.id, rule_name=btc.name, kind=btc.kind, term=btc.term,
+                count=5.0, threshold=1.0, detail="3 docs matched 'bitcoin'",
+            )
+    finally:
+        store.close()
+
+    result = runner.invoke(app, ["briefing", "--days", "3", "--json", "--no-gdelt"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    summary = payload["alerts_summary"]
+    assert summary["rules_active"] == 1
+    assert summary["rules_total"] == 2
+    assert summary["firings_24h"] == 3
+    assert summary["top_rule"] == {"rule_id": btc.id, "rule_name": "btc", "firings": 3}
+    assert payload["alerts"]["count"] == 3
+
+    result = runner.invoke(app, ["briefing", "--days", "3", "--no-gdelt"])
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "1 active / 2 rules — 3 firings in 24h" in out
+    assert "top rule: btc (3 firings)" in out
 
 
 def test_briefing_empty_corpus(tmp_project: Path) -> None:

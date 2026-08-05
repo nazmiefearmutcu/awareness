@@ -1088,6 +1088,7 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
     from awareness.briefings.router import create_briefings_router  # noqa: PLC0415
     from awareness.consume.router import wire
     from awareness.corpusx.router import create_corpusx_router
+    from awareness.crossx.router import create_crossx_router  # noqa: PLC0415
     from awareness.entities.router import create_entities_router
     from awareness.gdeltx.router import create_gdeltx_router
     from awareness.origin.router import create_origin_router
@@ -1103,6 +1104,9 @@ def create_app() -> FastAPI:  # noqa: PLR0915 - route surface is spec-mandated
     # resolved lazily per request so CLI-written files appear without restart.
     app.include_router(create_briefings_router(lambda: get_settings().data_dir / "briefings"))
     app.include_router(create_corpusx_router(_get_index))
+    # Cross-view (topic lifecycle x X sentiment): X store path defaults to
+    # the same {data_dir}/xscraper.sqlite the /x/sessions surface uses.
+    app.include_router(create_crossx_router(_get_index))
     app.include_router(create_entities_router(_get_index))
     app.include_router(sourceintel_router)
     app.include_router(create_sentiment_router(_get_index))

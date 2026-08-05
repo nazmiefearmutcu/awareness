@@ -171,6 +171,16 @@ history at `/qualityx/history` and today at `/qualityx/current`.
 SPA ships a Saved view with a ★ save control on the search box, and the CLI
 mirrors it as `awareness saved list|add|rm|run`.
 
+**Saved briefings** (`/briefings/*`) — a filesystem-backed, read-only API
+over the briefings the CLI persists under `{data_dir}/briefings/`: the
+saved-file list at `GET /briefings` (corrupt/legacy files stay visible with
+nulled fields) and full content at `GET /briefings/{date}` (`YYYY-MM-DD` or
+`YYYY-MM-DD-<name>`; malformed dates 400, missing files 404). The directory
+is resolved lazily per request, so files written by `awareness briefing
+--save` appear without a restart. The SPA dashboard ships a "Saved
+briefings" band with clickable date chips and a collapsible viewer (movers,
+top-term chips deep-linking into the Analytics view).
+
 **Consumption** (`/consume/*`, `/x/*`) — LLM-ready dataset export (jsonl or
 parquet, deduped, streamed, atomic) at `/consume/export`, a weekly digest as
 JSON or markdown at `/consume/digest[/markdown]`, and the X-scraper bridge
@@ -206,6 +216,12 @@ awareness quality --history [DAYS] [--json]               # per-day quality seri
 awareness briefing [--days N --top N --emerging N]        # movers (z-score spikes), top terms,
                          [--json] [--no-gdelt]            # new domains, sentiment shift, alert
                                                           # activity, GDELT gaps — one read
+                         [--email you@example.com]        # SMTP delivery (digest machinery)
+                         [--save [NAME] --list-saved]     # persist JSON under data_dir/briefings/,
+                                                          # or list saved files (served at /briefings/*)
+awareness lifecycle TERM [--days N] [--chart] [--json]    # topic phase badge + stats + counts
+                         [--compare a,b]                  # side-by-side up to 10 terms
+                         [--emerging]                     # corpus-wide first-seen terms
 awareness gdelt-gaps [--terms a,b --days N] [--json]      # coverage-gap report standalone
 awareness feeds                                           # feed-health report: fetch outcomes,
                                                           # p95 latency, 0-100 health score

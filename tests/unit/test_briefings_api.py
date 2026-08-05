@@ -86,11 +86,12 @@ def test_list_returns_all_files_newest_first(tmp_path: Path) -> None:
     assert legacy["movers_count"] == 0
     assert legacy["top_terms"] is None
 
-    # Corrupt file: nulls everywhere but still listed with a size.
+    # Corrupt file: nulls everywhere but still listed (size may be null
+    # when stat() fails mid-listing — W18-F2 TOCTOU).
     assert corrupt["generated_at"] is None
     assert corrupt["movers_count"] is None
     assert corrupt["top_terms"] is None
-    assert corrupt["size_bytes"] > 0
+    assert corrupt["size_bytes"] is None or corrupt["size_bytes"] > 0
     assert corrupt["path"].endswith("2026-08-03.json")
 
 

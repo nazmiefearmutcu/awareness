@@ -109,6 +109,39 @@ term_frequency ×2.1, detect_spikes ×2.0, export 10k rows in 1.319 s; FTS
 delta maintenance search-wall 5.57 s (FTS-internal 0.466 s) —
 [`docs/benchmarks/perf_final_round3.md`](docs/benchmarks/perf_final_round3.md).
 
+### Ralph Loop Round 3 — iterations 4-5 (`3c65ce7`)
+
+Saved-briefings API + SPA viewer, the lifecycle CLI, and the W14 fixes.
+R3-W14 (2 findings) is fully resolved in `3c65ce7`; the W18
+fix-the-fixes audit of this output is in progress (see
+[`docs/AUDIT_FINDINGS_2026-08-03.md`](docs/AUDIT_FINDINGS_2026-08-03.md)).
+
+- **Saved-briefings API** (`/briefings/*`) — read-only, filesystem-backed:
+  `GET /briefings` (saved-file list, newest-first, corrupt-tolerant, capped
+  at 100) and `GET /briefings/{date}` (full payload; date must match
+  `YYYY-MM-DD[-name]` — strict regex before any path join, so traversal is
+  impossible). The directory is resolved per request, so CLI-written files
+  appear without a restart (`3c65ce7`).
+- **SPA "Saved briefings" band** — clickable date chips + a collapsible
+  viewer (movers, top-term chips deep-linking to the Analytics view),
+  same 12-tick refresh cadence as the other dashboard bands (`3c65ce7`).
+- **`awareness lifecycle`** — topicx from the terminal: color-coded phase
+  badge (matching the SPA colors), slope/peak stats, per-day counts table
+  with `--chart` sparkline, `--compare` (≤ 10 terms side-by-side),
+  `--emerging` corpus scan, `--json` (`3c65ce7`).
+
+**Fixes (R3-W14, 2 findings):** `x timeline` / `x export` write failures
+(directory destination, read-only parent, ENOSPC) now print a friendly
+message and exit 2 instead of a raw OSError traceback; `briefing --save`
+name capped at 64 chars (ENAMETOOLONG closed) and the failure-path `.tmp`
+cleanup can no longer mask the original error.
+
+**Performance (final 100k benchmark, `3c65ce7`):** every warm op ≤ 1.7 s
+under a contended host (load 41–75); term_frequency ×2.1 and domain_rank
+**×31.6** vs Round 1; one-time cold costs flagged (cold health 6.1 s,
+FTS build 24.1 s, delta first-search 5.57 s) with top-3 recommendations —
+[`docs/benchmarks/perf_final_round3.md`](docs/benchmarks/perf_final_round3.md).
+
 ---
 
 ## [0.2.0] — 2026-08-04

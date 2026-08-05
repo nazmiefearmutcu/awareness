@@ -2906,6 +2906,7 @@ async function initAlerts() {
   alertsReady = true;
   $("#al-refresh")?.addEventListener("click", () => void loadAlertsView());
   $("#al-firings-refresh")?.addEventListener("click", () => void loadFiringsLog());
+  $("#al-run-all")?.addEventListener("click", () => void runAlertsCheck());
   $("#al-form")?.addEventListener("submit", createAlertRule);
   await loadAlertsView();
 }
@@ -2975,7 +2976,7 @@ function renderAlertsRules(rules) {
       : "—";
     const actCell = row.insertCell();
     const testBtn = el("button", { class: "btn btn-link al-test-btn", type: "button", text: "Test" });
-    testBtn.addEventListener("click", () => void runAlertsCheck());
+    testBtn.addEventListener("click", () => void testAlertRule(r.id));
     actCell.appendChild(testBtn);
     const delBtn = el("button", { class: "btn btn-link al-del-btn", type: "button", text: "Delete" });
     delBtn.addEventListener("click", () => void deleteAlertRule(r.id, r.name));
@@ -3006,6 +3007,73 @@ async function deleteAlertRule(ruleId, name) {
     toast("delete failed: " + err.message, "err");
   } finally {
     void loadAlertsView();
+  }
+}
+
+/**
+ * Normalize a per-rule test response into render-ready fields. Pure — no DOM,
+ * so the result-panel data logic is unit-testable.
+ */
+function ruleTestSummary(res) {
+  const r = res || {};
+  const firing = r.firing || null;
+  const t = firing && firing.fired_at ? new Date(firing.fired_at) : null;
+  return {
+    fired: !!r.fired,
+    count: r.count != null ? r.count : null,
+    threshold: r.threshold != null ? r.threshold : null,
+    suppressed: !!r.suppressed_by_cooldown,
+    term: (firing && firing.term) || null,
+    firingCount: firing && firing.count != null ? firing.count : null,
+    firedAt: t && !Number.isNaN(t.getTime()) ? t.toISOString() : null,
+  };
+}
+
+/** Render the per-rule test result into the shared panel (el()/textContent only). */
+function renderRuleTestResult(res) {
+  const panel = $("#al-test-panel");
+  const body = $("#al-test-body");
+  if (panel) panel.hidden = false;
+  if (!body) return;
+  clear(body);
+  const s = ruleTestSummary(res);
+  const status = el("strong", {
+    class: s.fired ? "al-test-fired" : "al-test-clean",
+    text: s.fired ? "FIRED" : "Not fired",
+  });
+  body.appendChild(status);
+  body.appendChild(document.createTextNode(` — count ${fmt(s.count)} vs threshold ${fmt(s.threshold)}`));
+  if (s.suppressed) {
+    body.appendChild(el("span", {
+      class: "al-test-cooldown",
+      text: " · in cooldown: this test bypasses it (a real run would be suppressed)",
+    }));
+  }
+  if (s.fired && s.term) {
+    const detail = el("div", { class: "al-test-firing" });
+    detail.appendChild(el("p", { class: "al-test-firing-term", text: `term: ${s.term}` }));
+    detail.appendChild(el("p", { class: "al-test-firing-count", text: `count: ${fmt(s.firingCount)}` }));
+    detail.appendChild(el("p", { class: "al-test-firing-at", text: `fired_at: ${s.firedAt || "just now"}` }));
+    body.appendChild(detail);
+  }
+}
+
+/** Test ONE rule (ignores cooldown; never persists); show the result panel. */
+async function testAlertRule(ruleId) {
+  const panel = $("#al-test-panel");
+  const body = $("#al-test-body");
+  if (panel) panel.hidden = false;
+  if (body) {
+    clear(body);
+    body.appendChild(document.createTextNode("Testing rule…"));
+  }
+  try {
+    const res = await api("/alerts/rules/" + encodeURIComponent(ruleId) + "/test", { method: "POST", body: "{}" });
+    renderRuleTestResult(res);
+    toast(res.fired ? "rule fires right now" : "rule does not fire right now", res.fired ? "err" : "ok");
+  } catch (err) {
+    if (body) body.textContent = "test failed: " + err.message;
+    toast("test failed: " + err.message, "err");
   }
 }
 
@@ -3786,6 +3854,10 @@ async function initXView() {
   xViewReady = true;
   $("#x-refresh")?.addEventListener("click", () => void loadXView());
   $("#x-form")?.addEventListener("submit", createXSession);
+  $("#x-cross-go")?.addEventListener("click", () => void loadCrossView());
+  $("#x-cross-term")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") void loadCrossView();
+  });
   await loadXView();
 }
 
@@ -3797,6 +3869,7 @@ async function loadXView() {
   try {
     const sessions = await api("/x/sessions");
     renderXSessionList(sessions || []);
+    renderCrossSessionSelect(sessions || []);
   } catch (err) {
     clear(body);
     body.appendChild(emptyXRow("sessions failed: " + err.message));
@@ -4044,6 +4117,104 @@ function renderXTweetList(list, tweets) {
     li.appendChild(el("p", { class: "x-tweet-text", text: truncateText(t.text, 160) }));
     list.appendChild(li);
   }
+}
+
+// ── X ↔ News cross-view band ──────────────────────────────
+
+/** Fill the cross-view session <select> from the loaded sessions. */
+function renderCrossSessionSelect(sessions) {
+  const sel = $("#x-cross-session");
+  if (!sel) return;
+  sel.textContent = "";
+  const list = Array.isArray(sessions) ? sessions : [];
+  if (!list.length) {
+    sel.appendChild(el("option", { value: "", text: "No sessions yet" }));
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  for (const s of list) {
+    sel.appendChild(el("option", {
+      value: s.session_id,
+      text: (s.title || s.session_id) + " · " + String(s.session_id).slice(0, 8),
+    }));
+  }
+}
+
+/** Map an avg_score in [-1, 1] onto a positive bar height 0..100. Pure. */
+function sentimentBars(score) {
+  const s = Number(score);
+  if (!Number.isFinite(s)) return 0;
+  return Math.round((Math.max(-1, Math.min(1, s)) + 1) * 50);
+}
+
+/** Fetch + render the cross-view for the selected session + term. */
+async function loadCrossView() {
+  const root = $("#x-cross-root");
+  const sessionSel = $("#x-cross-session");
+  const termInput = $("#x-cross-term");
+  const go = $("#x-cross-go");
+  if (!root || !sessionSel || !termInput) return;
+  const sessionId = sessionSel.value;
+  const term = (termInput.value || "").trim();
+  if (!sessionId) {
+    clear(root);
+    root.appendChild(el("p", { class: "muted", text: "No session selected — create and simulate one first." }));
+    return;
+  }
+  if (!term) {
+    clear(root);
+    root.appendChild(el("p", { class: "muted", text: "Enter a term to compare." }));
+    return;
+  }
+  if (go) go.disabled = true;
+  clear(root);
+  root.appendChild(el("p", { class: "muted", text: "comparing…" }));
+  try {
+    const view = await api("/crossx/view?term=" + encodeURIComponent(term)
+      + "&session_id=" + encodeURIComponent(sessionId) + "&window_days=14");
+    renderCrossView(root, view);
+  } catch (err) {
+    clear(root);
+    root.appendChild(el("p", { class: "muted", text: "compare failed: " + err.message }));
+    toast("compare failed: " + err.message, "err");
+  } finally {
+    if (go) go.disabled = false;
+  }
+}
+
+/** Render a /crossx/view payload: phase badge, two sentiment charts, r + verdict. */
+function renderCrossView(root, view) {
+  clear(root);
+  const v = view || {};
+  const head = el("div", { class: "x-cross-head" });
+  head.appendChild(el("span", {
+    class: "an-life-badge " + phaseClass(v.news_phase),
+    text: v.news_phase || "—",
+  }));
+  head.appendChild(el("span", { class: "x-cross-term", text: v.term || "" }));
+  root.appendChild(head);
+  if (v.note) root.appendChild(el("p", { class: "muted x-cross-note", text: v.note }));
+  const charts = el("div", { class: "x-cross-charts" });
+  charts.appendChild(el("h3", { class: "x-an-sub", text: "News sentiment" }));
+  const newsBox = el("div", { class: "x-cross-chart", role: "img", "aria-label": "News daily sentiment" });
+  renderBarChart(newsBox, (Array.isArray(v.news_sentiment) ? v.news_sentiment : []).map(
+    (p) => ({ ts: p.ts, count: sentimentBars(p.avg_score) })
+  ));
+  charts.appendChild(newsBox);
+  charts.appendChild(el("h3", { class: "x-an-sub", text: "X sentiment" }));
+  const xBox = el("div", { class: "x-cross-chart", role: "img", "aria-label": "X daily sentiment" });
+  renderBarChart(xBox, (Array.isArray(v.x_sentiment) ? v.x_sentiment : []).map(
+    (p) => ({ ts: p.ts, count: sentimentBars(p.avg_score) })
+  ), { color: "#d97757" });
+  charts.appendChild(xBox);
+  root.appendChild(charts);
+  const foot = el("p", { class: "x-cross-foot" });
+  foot.appendChild(el("strong", {
+    text: "r " + (v.correlation_r != null ? Number(v.correlation_r).toFixed(2) : "—"),
+  }));
+  foot.appendChild(document.createTextNode(" · " + (v.convergence || "neutral")));
+  root.appendChild(foot);
 }
 
 // ── Quality history band (dashboard) ──────────────────────────
@@ -4312,7 +4483,10 @@ function renderDashBriefings(items) {
       title: b.path || "",
       text: b.movers_count != null ? `${label} · ${b.movers_count} movers` : label,
     });
-    chip.addEventListener("click", () => void openDashBriefing(b.date));
+    // W18-F1: named briefings are stored as {date}-{name}.json — the click
+    // must pass the full stem or the viewer 404s on every named file.
+    const slug = b.date + (b.name ? "-" + b.name : "");
+    chip.addEventListener("click", () => void openDashBriefing(slug));
     box.appendChild(chip);
   }
 }

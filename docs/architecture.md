@@ -338,3 +338,32 @@ still one FastAPI process, still zero extra services.
   full build (~16×)**; see
   [`docs/benchmarks/perf_iter9_report.md`](benchmarks/perf_iter9_report.md).
 
+### Round 3 — iterations 4-5 (2026-08-05)
+
+Round-3 iteration 4 (`3c65ce7`) with iteration 5 (W18 fix-the-fixes audit)
+in progress: the SPA dashboard bands, the briefings API, the lifecycle CLI,
+and the W14 fixes — still one FastAPI process, still zero extra services.
+
+- **Saved-briefings API** (`awareness/briefings/`): a read-only,
+  filesystem-backed router over `{data_dir}/briefings/` — `GET /briefings`
+  lists the saved files (corrupt/legacy JSON tolerated; clamped to 100) and
+  `GET /briefings/{date}` returns the full payload. Path confinement is by
+  construction: the `{date}` route value must match a strict
+  `^\d{4}-\d{2}-\d{2}(-[A-Za-z0-9_-]+)?$` regex before it is joined to the
+  directory (malformed → 400, missing → 404), so no traversal is possible;
+  the directory getter is re-invoked per request, so CLI-written files
+  appear without a restart.
+- **Lifecycle CLI** (`awareness lifecycle`): the terminal face of the
+  topicx engine — a color-coded phase badge (colors mirror the SPA),
+  slope/peak stats, a per-day counts table with an optional sparkline,
+  `--compare` (side-by-side lifecycles for up to 10 terms) and `--emerging`
+  (corpus-wide first-seen scan), with `--json` for scripting.
+- **Alert test endpoint**: `POST /alerts/check` evaluates the rule store
+  against the corpus one-shot (no rule persisted) — the SPA Alerts view uses
+  it to test-run rules; it is treated as a bodyless CSRF path (Origin-gated,
+  no content-type requirement) and shares the `/alerts/*` rate-limit budget.
+
+The final 100k-doc benchmark (`3c65ce7`) confirmed every warm operation
+≤ 1.7 s under a contended host (load 41–75) — see
+[`docs/benchmarks/perf_final_round3.md`](benchmarks/perf_final_round3.md).
+

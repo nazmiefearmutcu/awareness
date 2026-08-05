@@ -60,3 +60,20 @@ def test_x_timeline_unknown_session_fails(tmp_project: Path) -> None:
     result = runner.invoke(app, ["x", "timeline", "does-not-exist"])
     assert result.exit_code == 2
     assert "not found" in result.output
+
+
+def test_x_timeline_out_is_directory_friendly_error(tmp_project: Path) -> None:
+    """W18-L7/W14-F1 regression: --out pointing at an existing directory must
+    produce a friendly message + exit 2, never a raw traceback."""
+    session_id = _create_and_simulate()
+    result = runner.invoke(app, ["x", "timeline", session_id, "--out", str(tmp_project)])
+    assert result.exit_code == 2, result.output
+    assert "cannot write" in result.output
+    assert "Is a directory" in result.output or "is a directory" in result.output
+
+
+def test_x_export_out_is_directory_friendly_error(tmp_project: Path) -> None:
+    session_id = _create_and_simulate()
+    result = runner.invoke(app, ["x", "export", session_id, "--out", str(tmp_project)])
+    assert result.exit_code == 2, result.output
+    assert "cannot write" in result.output
