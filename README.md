@@ -125,7 +125,7 @@ a sessionStorage history panel (cap 20, clearable). Rule rows also carry
 **Edit** (fills the create form, submits `PUT /alerts/rules/{id}`) and
 **Duplicate** (POSTs a copy named `<name> (copy)` through the create
 path) controls with a Cancel affordance back to create mode (iteration 8,
-pre-commit). Firings deliver to
+`3fcdd70`). Firings deliver to
 **all** configured webhooks with retry; payloads are plain JSON or
 Slack-style (`hooks.slack.com` auto-detected or forced per rule), and
 every webhook URL is validated against the public-host gate before it is
@@ -182,7 +182,7 @@ capture), and capture rate, zero-filled over calendar buckets — the full
 history at `/qualityx/history` and today at `/qualityx/current`. The SPA
 dashboard quality band carries a latest-point **mini-card** (total, dup-%,
 near-dup-%, capture rate KPIs + a 14-bucket dup-ratio sparkline) next to the
-per-day table.
+per-day table and a granularity select (day/week/month).
 
 **Cross-view** (`/crossx/*`) — aligns a term's news lifecycle phase and
 daily news sentiment with X-session sentiment into one aligned, zero-filled
@@ -242,10 +242,12 @@ awareness x simulate <SESSION_ID> --seed 42 --count 100  # deterministic, no net
 awareness x analyze <SESSION_ID>                          # authors, terms, sentiment,
                                                           # daily trend, timeline, engagement
 awareness x export <SESSION_ID> --out tweets.csv          # session tweets → CSV
+awareness x timeline <SESSION_ID> [--out timeline.csv]    # per-day sentiment timeline CSV
 awareness quality [--json]                                # corpus snapshot: sizes, dup ratios,
                                                           # languages, domains (/corpus/quality)
 awareness quality --history [DAYS] [--json]               # per-day quality series with sparkline
                                                           # (default window 30d; /qualityx/*)
+awareness quality --history --granularity day|week|month  # bucket size (UTC-aligned)
 awareness quality --record                               # append snapshot to
                                                           # data/quality_history.jsonl (cron hook)
 awareness quality --recorded 30 [--json]                  # print recorded snapshots (last N days)
@@ -263,9 +265,10 @@ awareness gdelt-gaps [--terms a,b --days N] [--json]      # coverage-gap report 
 awareness feeds                                           # feed-health report: fetch outcomes,
                                                           # p95 latency, 0-100 health score
 awareness saved list|add|rm|run                           # named-query store (/saved/*)
-awareness report [--out report.md --email you@example.com]  # digest + quality + alert
-                                                            # activity + topic lifecycle
-                                                            # (top digest terms) + GDELT context
+awareness report [--days N --out report.md --email you@example.com]  # digest + quality + alert
+                                                             # activity + topic lifecycle
+                                                             # (top digest terms) + GDELT context
+                            [--json] [--no-gdelt]
 ```
 
 Two opt-in knobs enable the newer runtime behavior: `AW_API_KEY` gates the
@@ -478,10 +481,11 @@ pytest -m integration     # integration only
 ruff check . && mypy src  # lint + types
 ```
 
-The end-to-end smoke harness walks the full stack — **11 stages**: init →
+The end-to-end smoke harness walks the full stack — **16 stages**: init →
 ingest → query → analytics → API → alerts → digest → export → saved → X →
-report — against a throwaway project root with no network, and exits
-non-zero on the first failing stage:
+report → topicx → qualityx → briefing → crossx → alert-test — against a
+throwaway project root with no network, and exits non-zero on the first
+failing stage:
 
 ```bash
 .venv/bin/python scripts/e2e_smoke.py                  # temp root

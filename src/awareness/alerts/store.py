@@ -343,7 +343,10 @@ class AlertStore:
         """Firing counts grouped by weekday (Mon=0..Sun=6) since *ts*.
 
         Exact SQL aggregation — unlike a capped row list, a 500-firing week
-        cannot silently truncate the distribution (W30-F2).
+        cannot silently truncate the distribution (W30-F2). SQLite's
+        ``strftime('%w')`` is Sunday-based (0=Sun..6=Sat); the +6 % 7 shift
+        converts it to the Mon=0..Sun=6 convention used by the CLI labels
+        and Python's ``datetime.weekday()`` (W34-F1).
         """
         with self._lock:
             rows = self._conn.execute(
@@ -354,7 +357,7 @@ class AlertStore:
             ).fetchall()
         out: dict[int, int] = {i: 0 for i in range(7)}
         for row in rows:
-            dow = int(row["dow"])
+            dow = (int(row["dow"]) + 6) % 7
             out[dow] = int(row["n"])
         return out
 

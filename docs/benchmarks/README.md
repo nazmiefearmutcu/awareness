@@ -17,11 +17,14 @@ fixed seed, so accuracy reproduces exactly and throughput drifts only with hardw
 | [perf_iter9_report.md](perf_iter9_report.md) | 2026-08-04 | Round 3 iteration 1 (`a84a2ab`): FTS delta-append fast path probe (`/tmp/r3w2perf.py`, 20k + 1k corpus) — FTS-internal delta rebuild **0.137 s vs 2.243 s full build (~16×)** for a pure-addition batch; warm search 130.78 ms; edit batch still full-rebuilds (2.952 s) with no stale text |
 | [perf_final_round3.md](perf_final_round3.md) | 2026-08-05 | Round-3 final 100k-doc benchmark (`1bdbced`, contended host, load 41–75): every warm op ≤ 1.7 s (domain_rank 0.051 s = **×31.6 vs Round 1**, term_frequency ×2.1, detect_spikes ×2.0, export 1.319 s); flags = one-time cold health 6.1 s / FTS build 24.1 s and FTS delta first-search 5.57 s (FTS-internal 0.466 s); top-3 recommendations incl. day-partition-scoped view refresh |
 
-> No iteration-7/8 performance report exists: iterations 7–8 (`e4b1417`,
-> `7d46372`) shipped SPA/export/E2E work with no perf probe, so the index
-> jumps from `perf_iter6_report.md` to the Round-3 `perf_iter9_report.md`.
-> A `/tmp/awprobe2` scan found only the iter-5 probe (archived above) — no
-> newer report to add.
+> No post-round-3 perf report exists: iterations 7–9 (`e4b1417` →
+> `3fcdd70`) shipped SPA/export/E2E/report-lifecycle work with no perf
+> probe, so **the round-3 final reference remains
+> `perf_final_round3.md`** (100k docs, every warm op ≤ 1.7 s). A
+> `/tmp/r3w17` scan (2026-08-05) found only probe scripts + `results.json`
+> (topicx_lifecycle 0.57 s, topicx_top_emerging 0.72 s at 100k) — no
+> report to add; `/tmp/awprobe2` held only the iter-5 probe already
+> archived above.
 
 Machine-independent results and per-suite entries live in
 [results.json](results.json) (written by `benchmarks.run_all`); charts live in this

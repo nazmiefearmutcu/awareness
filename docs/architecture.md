@@ -441,79 +441,40 @@ Shipped 2026-08-06 — the working-tree WIP items below are now pinned to
   latest-point mini-card (total / dup-% / near-dup-% / capture-rate KPIs
   + 14-bucket dup-ratio sparkline).
 
-### Round 3 — iterations 7-8 (2026-08-05)
+### Round 3 — iterations 8-9 (2026-08-06)
 
-Iteration 7 (`c1e3b1e`, 2026-08-06): the W26 fix-the-fixes audit (3/3
-RESOLVED), W27 (SPA convergence badge + quality mini-card), W28 (CLI
-`alerts` weekly + `quality --record` store), and W29 (docs + operations
-cron recipes) — still one FastAPI process, still zero extra services.
+Iteration 8 (`3fcdd70`, 2026-08-06): W31 (report topic-lifecycle section +
+briefing quality trend), W32 (SPA alert rule edit/duplicate), W33 (docs),
+and the R3-W30 5-fix pass — still one FastAPI process, still zero extra
+services. Iteration 9 (W34 fix-the-fixes of this output) is in progress
+per `.ralph/loop-state.md`; see the audit register for status.
 
-- **Crossx intersection-mask correlation semantics** — the W26 fix closes
-  the union-mask hole: `_correlation_r` now masks to days where **both**
-  series have data (`(a != 0.0) & (b != 0.0)`), so zero-padding one-sided
-  days can no longer fabricate a correlation between series that never
-  co-occurred (disjoint news {2,4} / X {3,5} previously produced r=-1.0).
-  `_MIN_OVERLAP_DAYS = 3` counts shared-data days only, and a sparse
-  overlap still reports 0.0 with a note. Regression tests cover the
-  disjoint and single-shared-day cases (`tests/unit/test_crossx_engine.py`).
-- **Quality JSONL record store** (`awareness/qualityx/store.py`) — an
-  append-only store at `<data_dir>/quality_history.jsonl`: `quality
-  --record` appends the live `CorpusXEngine.quality_snapshot()` as one JSON
-  object (the daily cron hook), and `--recorded N` reads the last N days
-  back as a table or JSON. Writes are append-only by construction — a torn
-  final line from a crash mid-write is skipped on read, every earlier line
-  stays intact — and the store is a *cache*: `/qualityx/history` still
-  computes per-day series directly from the corpus, so an empty store never
-  blocks history reads.
-- **Weekly alerts SQL counts** — `awareness alerts weekly` (UTC) summarizes
-  the last 7 days: total firings, exact per-rule counts via uncapped
-  `count_firings_since(ts, rule_id=…)` SQL aggregates (which survive the
-  500-row history-list clamp), last firing per rule, the top rule, and a
-  Mon..Sun distribution rendered as a block sparkline; `--json` emits the
-  raw payload for cron scripting. Rule IDs span configured rules plus any
-  deleted-since rule folded in from its firing rows' name/term snapshot.
+- **Report lifecycle section** — `awareness report` now profiles the
+  digest's top 3 terms through the topicx engine: each term's phase,
+  7-day slope, and peak date render as a `## Topic lifecycle` section in
+  the markdown and as a `lifecycle` array in the `--json` payload
+  (`_lifecycle_section` / `_report_lifecycles`, `src/awareness/cli/main.py`).
+  The probe is fault-tolerant by design — a lifecycle engine failure
+  degrades to a "no topic lifecycle data" note and can never fail the
+  report.
+- **Briefing quality trend line** — the briefing carries a one-line
+  dup-ratio trajectory: `QualityTimeEngine.history(days=14)` is split at
+  the midpoint, so the **trailing 7 days compare against the 7 days before
+  them** — ▲ worsened / ▼ improved / — flat, `prior% → now%`, plus the new
+  domains count summed over the trailing window (`_briefing_quality_trend`,
+  `_quality_trend_line`). It renders in the text, markdown/email, and JSON
+  payload variants; an engine error or a series shorter than 14 buckets
+  drops the line entirely rather than printing a wrong trend.
+- **SPA alert rule edit/duplicate** — every rule row in the Alerts view
+  gains **Edit** (loads the rule into the create form via the pure
+  `ruleToForm` helper, submits `PUT /alerts/rules/{id}` with the full
+  field set) and **Duplicate** (`formToPayload` with `name + " (copy)"`
+  through the create path); a Cancel button returns the form to create
+  mode. Editing state lives in module-level `editingRuleId`; all DOM is
+  built with `el()`/`textContent` (`src/awareness/api/web/app.js`).
 
-### Round 3 — iterations 7-8 (2026-08-05)
+#### Iteration 8 (`3fcdd70`, shipped)
 
-Iteration 7 (`c1e3b1e`, 2026-08-06): the W26 fix-the-fixes audit (3/3
-RESOLVED), W27 (SPA convergence badge + quality mini-card), W28 (CLI
-`alerts` weekly + `quality --record` store), and W29 (docs + operations
-cron recipes) — still one FastAPI process, still zero extra services.
-
-- **Crossx intersection-mask correlation semantics** — the W26 fix closes
-  the union-mask hole: `_correlation_r` now masks to days where **both**
-  series have data (`(a != 0.0) & (b != 0.0)`), so zero-padding one-sided
-  days can no longer fabricate a correlation between series that never
-  co-occurred (disjoint news {2,4} / X {3,5} previously produced r=-1.0).
-  `_MIN_OVERLAP_DAYS = 3` counts shared-data days only, and a sparse
-  overlap still reports 0.0 with a note. Regression tests cover the
-  disjoint and single-shared-day cases (`tests/unit/test_crossx_engine.py`).
-- **Quality JSONL record store** (`awareness/qualityx/store.py`) — an
-  append-only store at `<data_dir>/quality_history.jsonl`: `quality
-  --record` appends the live `CorpusXEngine.quality_snapshot()` as one JSON
-  object (the daily cron hook), and `--recorded N` reads the last N days
-  back as a table or JSON. Writes are append-only by construction — a torn
-  final line from a crash mid-write is skipped on read, every earlier line
-  stays intact — and the store is a *cache*: `/qualityx/history` still
-  computes per-day series directly from the corpus, so an empty store never
-  blocks history reads.
-- **Weekly alerts SQL counts** — `awareness alerts weekly` (UTC) summarizes
-  the last 7 days: total firings, exact per-rule counts via uncapped
-  `count_firings_since(ts, rule_id=…)` SQL aggregates (which survive the
-  500-row history-list clamp), last firing per rule, the top rule, and a
-  Mon..Sun distribution rendered as a block sparkline; `--json` emits the
-  raw payload for cron scripting. Rule IDs span configured rules plus any
-  deleted-since rule folded in from its firing rows' name/term snapshot.
-
-#### Iteration-8 WIP (working tree, pre-commit)
-
-Iteration 8 (W30 fix-the-fixes audit scheduled; W31/W32 features landing
-pre-commit — see the audit register for status): the SPA Alerts view gains
-per-rule **Edit** (fills the create form, `PUT /alerts/rules/{id}`) and
-**Duplicate** (`<name> (copy)` via the create path) controls with a Cancel
-affordance (`editingRuleId` module state; `el()`/`textContent` only, in
-`app.js`); `awareness report` adds a **## Topic lifecycle** section over the
-digest's top 3 terms (phase, 7-day slope, peak — `_lifecycle_section`,
-degrades to a note); and the briefing gains a one-line **quality trend**
-(dup-ratio trailing 7 days vs the prior 7, ▲/▼/—, new domains this window —
-`_briefing_quality_trend`, rendered in the markdown/text/payload variants).
+Shipped 2026-08-06 — the WIP items above are now pinned to `3fcdd70`; the
+audit register marks R3-W30 RESOLVED (5/5). The iteration-8 features are
+described in the "Round 3 — iterations 8-9" subsection above.

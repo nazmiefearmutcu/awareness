@@ -158,3 +158,38 @@ def test_weekly_rule_with_no_activity_still_in_rules_total(tmp_project: Path) ->
     assert payload["total_firings"] == 1
     assert payload["rules_fired"] == 1
     assert payload["rules_total"] == 1
+
+
+def test_weekly_weekday_distribution_monday_maps_to_monday(tmp_project: Path) -> None:
+    """W34-F1 regression: a firing on a known Monday must land in the Mon
+    bucket (SQLite strftime %w is Sunday-based; the +6 % 7 shift fixes it)."""
+    from datetime import UTC, datetime, timedelta
+    import sqlite3 as _sqlite3
+    from awareness.alerts.store import AlertStore
+
+    store = _store(tmp_project)
+    try:
+        fid = store.record_firing(
+            rule_id="r1", rule_name="bitcoin mentions", kind="term_count",
+            term="bitcoin", count=12.0, threshold=5.0, detail="x",
+        )
+    finally:
+        store.close()
+    # Pin the firing to a known Monday (2026-08-03: weekday() == 0).
+    monday = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
+    assert monday.weekday() == 0
+    conn = _sqlite3.connect(str(_db_path(tmp_project)))
+    try:
+        conn.execute(
+            "UPDATE firings SET fired_at = ? WHERE id = ?",
+            (monday.isoformat(), fid),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = runner.invoke(app, ["alerts", "weekly", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["by_weekday"]["Mon"] == 1, payload["by_weekday"]
+    assert payload["by_weekday"]["Tue"] == 0, payload["by_weekday"]

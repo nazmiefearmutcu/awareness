@@ -48,15 +48,14 @@ def _week_sparkline(counts: list[int]) -> str:
     (``cli.main`` wires the alerts subcommand from here).
     """
     values = [float(c) for c in counts]
-    low = min(values)
-    top = max(values)
     if not values:
         return ""
+    low = min(values)
+    top = max(values)
     if low == top:
         # W30-F5: a flat NONZERO week must not read as silence — scale
         # against zero so a busy-but-steady week renders mid-high blocks.
         return _SPARK_BLOCKS[min(7, max(1, int(round(top))))] * len(values)
-        return _SPARK_BLOCKS[0] * len(values)
     scale = 7.0 / (top - low)
     out = []
     for value in values:

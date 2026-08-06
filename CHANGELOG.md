@@ -257,30 +257,48 @@ full suite green (1835+).
 `quality --record` + weekly `alerts weekly`), enforced by the docs
 contract test.
 
-### Ralph Loop Round 3 — iteration 8 (working tree, pre-commit)
+### Ralph Loop Round 3 — iterations 8-9 (`3fcdd70`)
 
-Landing in the working tree at this writing (HEAD `c1e3b1e`; W30
-fix-the-fixes audit of the iteration-7 code scheduled in
-`.ralph/loop-state.md`, alongside W31/W32 — see
+Shipped 2026-08-06 — iteration 8: W31 (report topic-lifecycle section +
+briefing quality trend line), W32 (SPA alert rule edit/duplicate), W33
+(docs), and the R3-W30 fix-the-fixes pass (5/5 resolved). The suite is
+green (1894+) and the wheel builds; iteration 9 (W34 fix-the-fixes of
+this output) is in progress per `.ralph/loop-state.md` — see
 [`docs/AUDIT_FINDINGS_2026-08-03.md`](docs/AUDIT_FINDINGS_2026-08-03.md)
-for the register status):
+for the register status.
 
-- **SPA alert rule edit + duplicate** — every rule row gains **Edit**
-  (loads the rule into the create form, submits `PUT /alerts/rules/{id}`
-  with the full field set) and **Duplicate** (POSTs a copy named
-  `<name> (copy)` via the create path); a Cancel button returns the form to
-  create mode. Form state lives in module-level `editingRuleId`; all DOM is
-  built with `el()`/`textContent` (`src/awareness/api/web/app.js`).
 - **Report topic-lifecycle section** — `awareness report` gains a `##
   Topic lifecycle` section profiling the digest's top 3 terms (phase, 7-day
-  slope, peak), plus a `lifecycle` key in the JSON payload; a lifecycle
+  slope, peak), plus a `lifecycle` array in the JSON payload; a lifecycle
   probe failure degrades to a note, never fails the report
-  (`_lifecycle_section` in `src/awareness/cli/main.py`).
+  (`_lifecycle_section` / `_report_lifecycles` in `src/awareness/cli/main.py`).
 - **Briefing quality trend line** — the briefing gains a one-line dup-ratio
-  trajectory (trailing 7 days vs the 7 before them via
-  `QualityTimeEngine.history(days=14)`: ▲ worsened / ▼ improved / — flat,
-  `X% → Y%`, plus new domains this window) in the markdown, text, and
-  payload variants (`_briefing_quality_trend` / `_quality_trend_line`).
+  trajectory: trailing 7 days vs the 7 before them via
+  `QualityTimeEngine.history(days=14)` — ▲ worsened / ▼ improved / — flat,
+  `prior% → now%`, plus new domains this window — in the markdown, text,
+  and payload variants (`_briefing_quality_trend` / `_quality_trend_line`).
+- **SPA alert rule edit + duplicate** — every rule row gains **Edit**
+  (loads the rule into the create form via the pure `ruleToForm` helper,
+  submits `PUT /alerts/rules/{id}`) and **Duplicate** (POSTs a copy named
+  `<name> (copy)` via the create path); a Cancel button returns the form to
+  create mode. Editing state lives in module-level `editingRuleId`; all DOM
+  is built with `el()`/`textContent` (`src/awareness/api/web/app.js`).
+
+**Fixes (R3-W30, 5 findings):** `alerts weekly --json` on an empty week now
+emits the full zeroed JSON shape instead of prose (the most common cron run
+stays machine-readable) and `quality --recorded --json` with no records
+prints `[]`; the weekday distribution is aggregated in SQL
+(`firings_by_weekday_since`) so a >500-firing week no longer truncates the
+Mon..Sun sparkline/counts; a vacuous test stub (unreachable `if False`
+body) was removed from the alert-test suite; `docs/operations.md` now
+correctly states that an empty-corpus `quality --record` writes the zeroed
+snapshot; and `_week_sparkline` scales a flat NONZERO week against zero so
+busy-but-steady weeks no longer render as silence.
+
+**Testing:** suite grew ~530 tests across the iteration
+(`test_spa_rule_edit.py` 268, `test_cli_briefing_quality.py` 136,
+`test_cli_report_topicx.py` 117, `test_cli_weekly_alerts.py` +7); full
+suite green (1894+).
 
 ---
 

@@ -577,17 +577,41 @@ superseded by the register below.
 
 **R3-W26 verdict:** 3/3 RESOLVED in `c1e3b1e`.
 
-#### R3-W30 (adversarial review of iteration 7) — **pending**
+---
 
-**Pending.** As of this writing (2026-08-06) `.ralph/loop-state.md` opens
-Round 3 / Iteration 8 with W30 ("fix-the-fixes — adversarial review of the
-R3-ITER7 code: SPA badge/mini-card, weekly/record CLI, W26 fixes") as the
-scheduled step, alongside W31 (CLI report topicx lifecycle summary +
-briefing quality trend line) and W32 (SPA alert rule edit form + rule
-duplication). **No W30 report exists in `docs/` and no iteration-8 commit
-has landed** — HEAD is `c1e3b1e`. The W31/W32 features are landing in the
-working tree pre-commit (`_lifecycle_section` + `_briefing_quality_trend`
-in `cli/main.py`, Edit/Duplicate handlers in the SPA Alerts view with
-`tests/unit/test_spa_rule_edit.py`), so nothing here can be pinned to a
-commit yet. Status will be updated here when the iteration-8 commit and
-the W30 report land.
+## Ralph Loop Round 3 — iterations 8-9 (2026-08-06)
+
+Iteration 8 = `3fcdd70` ("feat: report lifecycle, briefing quality trend,
+SPA rule edit; fix: W30"): W31 (report topic-lifecycle section + briefing
+quality trend line), W32 (SPA alert rule edit/duplicate), W33 (docs), and
+the R3-W30 5-fix pass. Iteration 9 (W34 fix-the-fixes of the iteration-8
+output, W35 final polish, W36 loop finalize) is the current step per
+`.ralph/loop-state.md` — **no W34 report exists in `docs/` yet, so R3-W34
+remains pending**. Every RESOLVED claim below was verified against
+`git show 3fcdd70` (inline `W30-F*` comments cited, not the commit message
+alone).
+
+### R3-W30 (adversarial review of iteration 7) — 5 findings, RESOLVED in `3fcdd70`
+
+| ID | Area | Finding | Status | Verification |
+|----|------|---------|--------|-------------|
+| R3-W30-1 | alerts weekly CLI | `alerts weekly --json` on an empty week printed prose ("No alert firings…") — the most common cron run became non-machine-readable; `quality --recorded --json` on an empty store likewise printed a human message | RESOLVED `3fcdd70` | empty weeks now emit the full zeroed JSON shape (`rules: [], by_weekday: {Mon..Sun: 0}, …`); `--recorded --json` with no records prints `[]` — inline `W30-F1` comments in `src/awareness/alerts/cli.py` and `src/awareness/cli/main.py` |
+| R3-W30-2 | alerts weekly CLI | weekday distribution was built in Python from the **capped** firing list — a >500-firing week silently truncated the Mon..Sun sparkline and counts | RESOLVED `3fcdd70` | `AlertStore.firings_by_weekday_since()` aggregates in SQL (`GROUP BY dow`), computed **before** `store.close()`; the capped list only powers last-fired-per-rule — inline `W30-F2` comment in `src/awareness/alerts/store.py` (+19 lines) and `alerts/cli.py` |
+| R3-W30-3 | tests | dead test stub — `test_rule_test_report_includes_active_and_required` was vacuous (unreachable `if False else None` body) | RESOLVED `3fcdd70` | stub removed (`tests/unit/test_alerts_test_area.py`, −14); the API-level twin `test_api_test_report_includes_active_and_required` remains |
+| R3-W30-4 | docs | `docs/operations.md` claimed an empty-corpus `quality --record` "writes nothing" — wrong, a zeroed snapshot IS written | RESOLVED `3fcdd70` | claim corrected: empty corpus records the zeroed snapshot (total=0) so the trend has no gaps, with a cron-before-first-ingestion caveat (`docs/operations.md` diff) |
+| R3-W30-5 | alerts weekly CLI | `_week_sparkline` rendered a flat NONZERO week as all-silence (min==max → zero blocks) | RESOLVED `3fcdd70` | flat NONZERO weeks now scale against zero so busy-but-steady weeks render mid-high blocks — inline `W30-F5` comment in `src/awareness/alerts/cli.py` |
+
+**R3-W30 verdict:** 5/5 RESOLVED in `3fcdd70` (each finding verified in the
+`git show` diff; four carry inline `W30-F*` comments). Regression coverage
+landed alongside: `tests/unit/test_cli_weekly_alerts.py` +7,
+`test_cli_briefing_quality.py` +136, `test_cli_report_topicx.py` +117,
+`test_spa_rule_edit.py` +268. Suite green (1894+); wheel builds.
+
+### R3-W34 (fix-the-fixes review of iteration 8) — **pending**
+
+**Pending.** `.ralph/loop-state.md` opens Round 3 / Iteration 9 with W34
+("fix-the-fixes — adversarial review of the R3-ITER8 code: report
+lifecycle, briefing trend, rule edit, W30 fixes"), alongside W35 (final
+docs polish) and W36 (loop finalize). **No W34 report exists in `docs/`
+and no iteration-9 commit has landed** — HEAD is `3fcdd70`. Status will be
+updated here when the report lands.
