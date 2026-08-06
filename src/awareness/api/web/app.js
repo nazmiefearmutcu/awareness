@@ -2900,6 +2900,8 @@ async function loadImpact() {
 
 // ── Alerts ────────────────────────────────────────────────────
 let alertsReady = false;
+// Rule being edited in the create form (null = create mode).
+let editingRuleId = null;
 
 async function initAlerts() {
   if (alertsReady) return;
@@ -2908,6 +2910,7 @@ async function initAlerts() {
   $("#al-firings-refresh")?.addEventListener("click", () => void loadFiringsLog());
   $("#al-run-all")?.addEventListener("click", () => void runAlertsCheck());
   $("#al-form")?.addEventListener("submit", createAlertRule);
+  $("#al-cancel")?.addEventListener("click", () => void resetRuleForm());
   $("#al-history-clear")?.addEventListener("click", () => {
     clearTestHistory();
     renderTestHistory($("#al-history-body"));
@@ -2980,6 +2983,15 @@ function renderAlertsRules(rules) {
       ? new Date(r.created_at).toISOString().slice(0, 10)
       : "—";
     const actCell = row.insertCell();
+    const editBtn = el("button", { class: "btn btn-link al-edit-btn", type: "button", text: "Edit" });
+    editBtn.addEventListener("click", () => {
+      fillRuleForm(r);
+      $("#al-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    actCell.appendChild(editBtn);
+    const dupBtn = el("button", { class: "btn btn-link al-dup-btn", type: "button", text: "Duplicate" });
+    dupBtn.addEventListener("click", () => void duplicateAlertRule(r));
+    actCell.appendChild(dupBtn);
     const testBtn = el("button", { class: "btn btn-link al-test-btn", type: "button", text: "Test" });
     testBtn.addEventListener("click", () => void testAlertRule(r.id));
     actCell.appendChild(testBtn);
@@ -3224,33 +3236,139 @@ function renderTestHistory(container) {
   }
 }
 
+/**
+ * Map an AlertRule (backend shape) to create-form field values. Pure — no DOM.
+ * Multiple webhooks are joined into the single form input; the active flag is
+ * preserved as-is.
+ */
+function ruleToForm(rule) {
+  const r = rule || {};
+  const webhooks = Array.isArray(r.webhooks) ? r.webhooks.filter(Boolean) : [];
+  return {
+    name: r.name || "",
+    kind: r.kind || "term_count",
+    term: r.term || "",
+    threshold: r.threshold != null ? String(r.threshold) : "",
+    window_hours: r.window_hours != null ? String(r.window_hours) : "",
+    cooldown_minutes: r.cooldown_minutes != null ? String(r.cooldown_minutes) : "",
+    webhook: webhooks.length ? webhooks.join(", ") : (r.webhook_url || ""),
+    active: r.active !== false,
+  };
+}
+
+/**
+ * Build the API payload from form field values. Create and update send the
+ * same full field set (update is a full patch; the target id comes from
+ * editingRuleId). Pure — no DOM.
+ */
+function formToPayload(form, mode) {
+  const f = form || {};
+  const webhooks = String(f.webhook || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const payload = {
+    name: String(f.name || "").trim(),
+    kind: f.kind || "term_count",
+    term: String(f.term || "").trim(),
+    threshold: Number(f.threshold),
+    window_hours: Number(f.window_hours),
+    cooldown_minutes: Number(f.cooldown_minutes),
+    webhooks,
+    active: f.active !== false,
+  };
+  return payload;
+}
+
+/** Read the create form's current field values into a plain object. */
+function readRuleForm() {
+  return {
+    name: ($("#al-name")?.value ?? "").trim(),
+    kind: $("#al-kind")?.value || "term_count",
+    term: ($("#al-term")?.value ?? "").trim(),
+    threshold: $("#al-threshold")?.value ?? "",
+    window_hours: $("#al-window")?.value ?? "",
+    cooldown_minutes: $("#al-cooldown")?.value ?? "",
+    webhook: $("#al-webhook")?.value ?? "",
+    active: !!$("#al-active")?.checked,
+  };
+}
+
+/** Switch the form between create mode (null) and edit mode (rule id). */
+function setRuleFormMode(ruleId) {
+  editingRuleId = ruleId || null;
+  const btn = $("#al-form button[type=submit]");
+  const cancel = $("#al-cancel");
+  const title = $("#al-new-title");
+  if (btn) btn.textContent = editingRuleId ? "Update rule" : "Create rule";
+  if (cancel) cancel.hidden = !editingRuleId;
+  if (title) title.textContent = editingRuleId ? "Edit rule" : "New rule";
+}
+
+/** Load *rule* into the create form and switch it into edit mode. */
+function fillRuleForm(rule) {
+  const v = ruleToForm(rule);
+  const set = (id, value) => {
+    const node = $(id);
+    if (node) node.value = value;
+  };
+  set("#al-name", v.name);
+  set("#al-kind", v.kind);
+  set("#al-term", v.term);
+  set("#al-threshold", v.threshold);
+  set("#al-window", v.window_hours);
+  set("#al-cooldown", v.cooldown_minutes);
+  set("#al-webhook", v.webhook);
+  const active = $("#al-active");
+  if (active) active.checked = v.active;
+  setRuleFormMode(rule && rule.id ? rule.id : null);
+}
+
+/** Clear the form and return to create mode. */
+function resetRuleForm() {
+  const form = $("#al-form");
+  if (form) form.reset();
+  const active = $("#al-active");
+  if (active) active.checked = true;
+  setRuleFormMode(null);
+}
+
+/** POST a copy of an existing rule (name + " (copy)") via the create path. */
+async function duplicateAlertRule(rule) {
+  const values = ruleToForm(rule);
+  const body = formToPayload({ ...values, name: (values.name || "") + " (copy)" }, "create");
+  try {
+    const created = await api("/alerts/rules", { method: "POST", body: JSON.stringify(body) });
+    toast(`rule "${created.name || body.name}" duplicated`, "ok");
+    void loadAlertsView();
+  } catch (err) {
+    toast("duplicate failed: " + err.message, "err");
+  }
+}
+
 async function createAlertRule(e) {
   e.preventDefault();
   const btn = e.target.querySelector('button[type=submit]');
   btn.disabled = true;
   try {
-    const name = ($("#al-name").value || "").trim();
-    if (!name) { toast("name is required", "err"); return; }
-    const term = ($("#al-term").value || "").trim();
-    if (!term) { toast("term is required", "err"); return; }
-    const body = {
-      name,
-      kind: $("#al-kind").value,
-      term,
-      threshold: Number($("#al-threshold").value),
-      window_hours: Number($("#al-window").value),
-      cooldown_minutes: Number($("#al-cooldown").value),
-      webhook_url: ($("#al-webhook").value || "").trim() || null,
-      active: $("#al-active").checked,
-    };
-    const created = await api("/alerts/rules", { method: "POST", body: JSON.stringify(body) });
-    toast(`rule "${created.name || body.name}" created`, "ok");
-    e.target.reset();
-    $("#al-active").checked = true;
+    const body = formToPayload(readRuleForm(), editingRuleId ? "update" : "create");
+    if (!body.name) { toast("name is required", "err"); return; }
+    if (!body.term) { toast("term is required", "err"); return; }
+    if (editingRuleId) {
+      const updated = await api("/alerts/rules/" + encodeURIComponent(editingRuleId), {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      toast(`rule "${updated.name || body.name}" updated`, "ok");
+    } else {
+      const created = await api("/alerts/rules", { method: "POST", body: JSON.stringify(body) });
+      toast(`rule "${created.name || body.name}" created`, "ok");
+    }
+    resetRuleForm();
     void loadAlertsView();
   } catch (err) {
     // api() surfaces the backend 400 detail inside err.message.
-    toast("create failed: " + err.message, "err");
+    toast((editingRuleId ? "update" : "create") + " failed: " + err.message, "err");
   } finally {
     btn.disabled = false;
   }

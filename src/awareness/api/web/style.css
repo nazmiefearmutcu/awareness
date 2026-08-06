@@ -2722,7 +2722,9 @@ body{
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
 .al-active-field { align-self: end; padding-bottom: 8px; }
-.al-form-actions { align-self: end; }
+.al-form-actions { align-self: end; display: flex; gap: 8px; }
+.al-cancel-btn { color: var(--fg-mid); }
+.al-dup-btn { color: var(--fg-mid); }
 .al-toggle { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
 .al-table td, .al-table th { white-space: nowrap; }
 .al-table td:first-child { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }

@@ -129,10 +129,12 @@ object, appended to `<data_dir>/quality_history.jsonl` — an append-only
 JSONL store chosen so a crash mid-write can never corrupt history (a torn
 final line is skipped on read, every earlier line stays intact). The
 snapshot comes from `CorpusXEngine.quality_snapshot()`; an empty corpus
-prints `empty corpus` and writes nothing (exit 0). Read the recorded
-series back with `awareness quality --recorded N` (last N days, table or
-`--json`); the per-day history served by `/qualityx/history` is computed
-directly from the corpus, so a missing or empty store never blocks reads.
+still records the zeroed snapshot (total=0) so the trend has no gaps —
+note that a cron running before first ingestion records zero-days. Read
+the recorded series back with `awareness quality --recorded N` (last N
+days, table or `--json`); the per-day history served by
+`/qualityx/history` is computed directly from the corpus, so a missing or
+empty store never blocks reads.
 
 Crontab line (06:30 daily, UTC; adjust for your TZ):
 

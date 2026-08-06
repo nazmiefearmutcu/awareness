@@ -544,7 +544,7 @@ alone).
 
 ### R3-W26 — **in progress** (iteration 7 landed in the working tree, uncommitted)
 
-**In progress.** As of this writing (2026-08-05) `.ralph/loop-state.md`
+**Superseded.** As of this writing (2026-08-05) `.ralph/loop-state.md`
 opens Round 3 / Iteration 7 with W26 ("fix-the-fixes — adversarial review
 of the R3-ITER6 code: ops docs, test history, qualityx granularity, W22
 fixes") as the scheduled step, alongside the W27 (SPA X↔News convergence
@@ -556,5 +556,38 @@ still `07351ba`. The working tree does carry uncommitted iteration-7 WIP
 `alerts weekly` in `alerts/cli.py`, the `x-conv-badge` + dashboard quality
 mini-card in the SPA, and `test_spa_convergence_badge.py` /
 `test_spa_quality_minicard.py`), so nothing in this register can be pinned
-to a commit yet. Status will be updated here when the iteration-7 commit
-and the W26 report land.
+to a commit yet. **This entry is superseded by the iterations 7-8 register
+below: iteration 7 shipped as `c1e3b1e` and R3-W26 is RESOLVED (3/3).**
+### Ralph Loop Round 3 — iterations 7-8 (`c1e3b1e`)
+
+Iteration 7 shipped as `c1e3b1e` (2026-08-06): W26 fix-the-fixes (3
+findings, all RESOLVED), W27 (SPA convergence badge + quality mini-card),
+W28 (CLI `alerts` weekly summary + `quality --record`/`--recorded` store),
+and W29 (docs: audit register, README, architecture, CHANGELOG,
+operations.md cron sections). The "in progress" W26 entry above is
+superseded by the register below.
+
+#### R3-W26 (adversarial review of iteration 6) — 3 findings, RESOLVED in `c1e3b1e`
+
+| ID | Area | Finding | Status | Verification |
+|----|------|---------|--------|-------------|
+| R3-W26-1 | crossx | correlation mask was UNION — days where only ONE series had data were zero-padded and fed into Pearson r, so fully disjoint series (news {2,4}, X {3,5}) fabricated r=-1.0 | RESOLVED `c1e3b1e` | mask is now INTERSECTION — `(a != 0.0) & (b != 0.0)`, shared-data days only; `_MIN_OVERLAP_DAYS = 3` counts shared days; regression tests for disjoint + single-shared-day cases (`src/awareness/crossx/engine.py`, `tests/unit/test_crossx_engine.py` +38) |
+| R3-W26-2 | SPA | test-history panel crashed on a corrupt `at` entry (invalid Date from bad data) | RESOLVED `c1e3b1e` | `firedAt` guarded with `Number.isNaN(t.getTime())` → `null`; the panel renders instead of crashing (`src/awareness/api/web/app.js`) |
+| R3-W26-3 | tests | missing regression coverage for prior W-series fixes: lifecycle markup escape, `/test` `active` + `required` fields, CSRF bodyless suffix, `/alerts/rules` rate-limit 429 | RESOLVED `c1e3b1e` | `tests/unit/test_cli_lifecycle.py` +10, `test_alerts_test_area.py` +39, `test_auth_security_fixes.py` +27 |
+
+**R3-W26 verdict:** 3/3 RESOLVED in `c1e3b1e`.
+
+#### R3-W30 (adversarial review of iteration 7) — **pending**
+
+**Pending.** As of this writing (2026-08-06) `.ralph/loop-state.md` opens
+Round 3 / Iteration 8 with W30 ("fix-the-fixes — adversarial review of the
+R3-ITER7 code: SPA badge/mini-card, weekly/record CLI, W26 fixes") as the
+scheduled step, alongside W31 (CLI report topicx lifecycle summary +
+briefing quality trend line) and W32 (SPA alert rule edit form + rule
+duplication). **No W30 report exists in `docs/` and no iteration-8 commit
+has landed** — HEAD is `c1e3b1e`. The W31/W32 features are landing in the
+working tree pre-commit (`_lifecycle_section` + `_briefing_quality_trend`
+in `cli/main.py`, Edit/Duplicate handlers in the SPA Alerts view with
+`tests/unit/test_spa_rule_edit.py`), so nothing here can be pinned to a
+commit yet. Status will be updated here when the iteration-8 commit and
+the W30 report land.

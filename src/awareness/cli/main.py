@@ -4033,7 +4033,11 @@ def _show_recorded_quality(recorded: int, json_out: bool) -> None:
 
     records, skipped = QualityStore(_quality_history_path()).list(days=recorded)
     if not records:
-        rprint(f"[yellow]no recorded quality snapshots in the last {recorded} days[/yellow]")
+        if json_out:
+            # W30-F1: --json stays machine-readable on empty stores — [].
+            print("[]")
+        else:
+            rprint(f"[yellow]no recorded quality snapshots in the last {recorded} days[/yellow]")
         return
     _print_recorded_quality(records, skipped=skipped, json_out=json_out)
 
@@ -4198,6 +4202,7 @@ def quality(  # noqa: PLR0917 - spec-mandated option surface (record/recorded cr
 
 # ── report ───────────────────────────────────────────────────────────────────
 _FIRING_DETAIL_MAX = 80
+_REPORT_LIFECYCLE_TERMS = 3  # digest top terms profiled in the lifecycle section
 
 
 def _quality_section(snap: Any) -> list[str]:
@@ -4261,14 +4266,56 @@ def _gdelt_section(note: str | None, no_gdelt: bool) -> list[str]:
     return lines
 
 
+def _lifecycle_section(lifecycles: list[Any]) -> list[str]:
+    """Topic-lifecycle bullets for the combined report (top digest terms).
+
+    One plain-markdown line per lifecycle: ``term (PHASE, slope 7d +0.3,
+    peak 3 on 2026-08-05)``; the peak clause is dropped when the term never
+    appeared in the window. An empty list renders a note instead.
+    """
+    lines = ["## Topic lifecycle", ""]
+    if not lifecycles:
+        lines.append("_No topic lifecycle data (empty corpus or engine unavailable)._")
+        return lines
+    for lc in lifecycles:
+        peak = (
+            f", peak {lc.peak_count} on {lc.peak_date:%Y-%m-%d}"
+            if lc.peak_date is not None
+            else ""
+        )
+        lines.append(f"- {lc.term} ({lc.phase}, slope 7d {lc.slope_7d:+.1f}{peak})")
+    return lines
+
+
+def _report_lifecycles(idx: DuckDbIndex, terms: list[Any], days: int) -> list[Any]:
+    """Topic lifecycles for the digest's top terms (bounded, never raises).
+
+    Profiles up to ``_REPORT_LIFECYCLE_TERMS`` terms; any engine failure is
+    swallowed (the renderers degrade to a "no topic lifecycle data" note) so
+    a lifecycle probe can never fail the report.
+    """
+    lifecycles: list[Any] = []
+    try:
+        from awareness.topicx.engine import TopicEngine  # noqa: PLC0415
+
+        topic_engine = TopicEngine(idx)
+        for term in terms[:_REPORT_LIFECYCLE_TERMS]:
+            lifecycles.append(topic_engine.lifecycle(term.term, window_days=days))
+    except Exception as exc:
+        logger.warning("report_lifecycle_unavailable", err=str(exc))
+    return lifecycles
+
+
 def _render_report_markdown(
     digest_obj: Any,
     quality_snap: Any,
     firings: list[dict[str, Any]],
     gdelt_note: str | None,
     no_gdelt: bool,
+    *,
+    lifecycles: list[Any],
 ) -> str:
-    """Combine the digest markdown with quality, alerts and GDELT sections."""
+    """Combine the digest markdown with quality, lifecycle, alerts and GDELT sections."""
     from awareness.consume.digest import render_digest_markdown  # noqa: PLC0415
 
     days = digest_obj.days
@@ -4282,6 +4329,8 @@ def _render_report_markdown(
     lines.append(digest_body)
     lines.append("")
     lines.extend(_quality_section(quality_snap))
+    lines.append("")
+    lines.extend(_lifecycle_section(lifecycles))
     lines.append("")
     lines.extend(_firings_section(firings, days))
     lines.append("")
@@ -4300,16 +4349,17 @@ def report(
     email_to: str = typer.Option("", "--email", help="Email the report to this address via SMTP"),
     no_gdelt: bool = typer.Option(False, "--no-gdelt", help="Skip the GDELT context fetch"),
 ) -> None:
-    """Combined report: digest + corpus quality + alert activity + GDELT context.
+    """Combined report: digest + corpus quality + topic lifecycle + alert activity + GDELT context.
 
     Builds ONE DuckDB index (same pattern as ``digest``) and computes the
     digest (with ``include_gdelt=False`` — the report owns GDELT so an offline
     bridge degrades to a note instead of failing the digest), the corpus
-    quality snapshot, alert firings in the window, and (unless ``--no-gdelt``)
-    a GDELT comparison for the digest's top term. Renders a combined markdown
-    report; ``--out`` writes it to a file, ``--email`` delivers it over SMTP
-    (same machinery as ``digest --email``), ``--json`` dumps one JSON object.
-    An empty corpus yields a report with zeros (exit 0); fatal errors exit 1.
+    quality snapshot, a topic lifecycle for the digest's top terms, alert
+    firings in the window, and (unless ``--no-gdelt``) a GDELT comparison for
+    the digest's top term. Renders a combined markdown report; ``--out``
+    writes it to a file, ``--email`` delivers it over SMTP (same machinery as
+    ``digest --email``), ``--json`` dumps one JSON object. An empty corpus
+    yields a report with zeros (exit 0); fatal errors exit 1.
     """
     settings = get_settings()
     idx: DuckDbIndex | None = None
@@ -4324,6 +4374,8 @@ def report(
 
         digest_obj = generate_digest(idx, days=days, include_gdelt=False)
         quality_snap = CorpusXEngine(idx).quality_snapshot()
+
+        lifecycles = _report_lifecycles(idx, digest_obj.top_terms, days)
 
         from awareness.alerts.store import AlertStore  # noqa: PLC0415
 
@@ -4363,6 +4415,7 @@ def report(
         "days": days,
         "digest": digest_obj.model_dump(mode="json"),
         "quality": quality_snap.model_dump(mode="json"),
+        "lifecycle": [lc.model_dump(mode="json") for lc in lifecycles],
         "firings": [{**f, "fired_at": f["fired_at"].isoformat()} for f in firings],
         "gdelt": gdelt_note,
     }
@@ -4377,7 +4430,9 @@ def report(
                 file=_sys.stderr,
             )
         return
-    text = _render_report_markdown(digest_obj, quality_snap, firings, gdelt_note, no_gdelt)
+    text = _render_report_markdown(
+        digest_obj, quality_snap, firings, gdelt_note, no_gdelt, lifecycles=lifecycles
+    )
     if email_to:
         # _email_digest already takes (to_addr, subject, body) — reuse it with
         # the combined markdown as the body; SMTP details fall back to env vars.
@@ -4522,6 +4577,7 @@ _BRIEFING_MOVER_TERMS = 5  # terms scanned for spikes
 _BRIEFING_SENTIMENT_TERMS = 3  # terms scored for the sentiment shift
 _BRIEFING_GAP_TERMS = 10  # terms sent to the GDELT bridge
 _BRIEFING_ALERT_HOURS = 24
+_BRIEFING_QUALITY_DAYS = 14  # dup-ratio trend: trailing vs prior 7 days
 
 
 def _briefing_movers(
@@ -4693,6 +4749,54 @@ def _briefing_gdelt_gaps(
     )
 
 
+def _briefing_quality_trend(idx: DuckDbIndex) -> dict[str, Any] | None:
+    """Dup-ratio trajectory (trailing 7d vs prior 7d) + new domains this window.
+
+    Averages the per-day ``duplicate_ratio`` over the trailing 7 buckets of
+    ``QualityTimeEngine.history(days=14)`` against the 7 buckets before them;
+    ``direction`` is "worsened" when the trailing ratio rose, "improved" when
+    it fell, "flat" otherwise. Returns None when the engine errors or the
+    series is shorter than expected — the caller then drops the summary line.
+    """
+    try:
+        from awareness.qualityx.engine import QualityTimeEngine  # noqa: PLC0415
+
+        points = QualityTimeEngine(idx).history(days=_BRIEFING_QUALITY_DAYS)
+        if len(points) < _BRIEFING_QUALITY_DAYS:
+            return None
+        prior = points[:7]
+        now = points[-7:]
+        dup_ratio_prior = sum(p.duplicate_ratio for p in prior) / 7.0
+        dup_ratio_now = sum(p.duplicate_ratio for p in now) / 7.0
+        if dup_ratio_now > dup_ratio_prior:
+            direction = "worsened"
+        elif dup_ratio_now < dup_ratio_prior:
+            direction = "improved"
+        else:
+            direction = "flat"
+        return {
+            "dup_ratio_now": round(dup_ratio_now, 4),
+            "dup_ratio_prior": round(dup_ratio_prior, 4),
+            "direction": direction,
+            "new_domains": sum(p.new_domains for p in now),
+        }
+    except Exception as exc:
+        logger.warning("briefing_quality_trend_unavailable", err=str(exc))
+        return None
+
+
+def _quality_trend_line(quality_trend: dict[str, Any]) -> str:
+    """One-line dup-ratio trajectory (▲ = worsened, ▼ = improved, — = flat)."""
+    direction = quality_trend["direction"]
+    arrow = "▲" if direction == "worsened" else ("▼" if direction == "improved" else "—")
+    prior = quality_trend["dup_ratio_prior"] * 100.0
+    now = quality_trend["dup_ratio_now"] * 100.0
+    return (
+        f"quality: dup-ratio {arrow} vs last week ({prior:.1f}% → {now:.1f}%), "
+        f"{quality_trend['new_domains']} new domains this window"
+    )
+
+
 def _render_briefing_markdown(payload: dict[str, Any], *, emerging: int) -> str:  # noqa: PLR0912, PLR0915
     """Plain-text markdown variant of the briefing payload (the email body).
 
@@ -4704,9 +4808,11 @@ def _render_briefing_markdown(payload: dict[str, Any], *, emerging: int) -> str:
     lines = [
         f"# Awareness briefing — {date_part}",
         f"corpus: {payload['total_captures']} captures (last {payload['days']}d)",
-        "",
-        "## Movers",
     ]
+    quality_trend = payload.get("quality_trend")
+    if quality_trend:
+        lines.append(_quality_trend_line(quality_trend))
+    lines.extend(["", "## Movers"])
     movers = payload["movers"][:emerging]
     if movers:
         lines.extend(
@@ -4860,12 +4966,15 @@ def _render_briefing_text(
     sentiment: list[dict[str, Any]],
     firings: list[dict[str, Any]],
     alerts_summary: dict[str, Any],
+    quality_trend: dict[str, Any] | None,
     gdelt_gaps: list[dict[str, Any]],
     gdelt_note: str | None,
 ) -> None:
     """Render the briefing as a compact rich layout (headers + lists/tables)."""
     console.print(f"[bold]Awareness briefing[/bold] — {now:%Y-%m-%d %H:%M} UTC (last {days}d)")
     console.print(f"[dim]corpus: {total_captures} captures[/dim]")
+    if quality_trend:
+        console.print(f"[dim]{_quality_trend_line(quality_trend)}[/dim]")
     console.print()
     _render_briefing_bullets(
         "Yesterday's movers",
@@ -4970,12 +5079,13 @@ def briefing(  # noqa: PLR0912, PLR0917 (14 params incl. SMTP delivery + save/li
         False, "--list-saved", help="List saved briefing files (no corpus work)"
     ),
 ) -> None:
-    """Daily morning briefing: movers, top terms, new domains, sentiment, alerts, GDELT gaps.
+    """Daily morning briefing: movers, top terms, new domains, sentiment, quality, alerts, GDELT gaps.
 
     Builds ONE DuckDB index (same pattern as ``report``) and renders: terms
     that spiked in the window (z-scores), top terms by count, domains first
     seen within the window, a last-day-vs-prior sentiment shift for the top
-    terms, alert firings in the last 24h, and GDELT coverage gaps (unless
+    terms, a dup-ratio quality trend (trailing vs prior 7 days), alert
+    firings in the last 24h, and GDELT coverage gaps (unless
     ``--no-gdelt``). ``--json`` dumps a single JSON object; ``--email``
     delivers a plain-text markdown copy over SMTP (same machinery as
     ``digest --email``, SMTP_SSL on 465, STARTTLS otherwise, env fallbacks);
@@ -5029,6 +5139,7 @@ def briefing(  # noqa: PLR0912, PLR0917 (14 params incl. SMTP delivery + save/li
         sentiment = _briefing_sentiment(SentimentEngine(idx), top_terms, days)
         firings, alerts_summary = _briefing_alerts(settings, now)
         gdelt_gaps, gdelt_note = _briefing_gdelt_gaps(idx, top_terms, days, no_gdelt)
+        quality_trend = _briefing_quality_trend(idx)
     except Exception as exc:
         rprint(f"[red]briefing failed:[/red] {escape(str(exc))}")
         raise typer.Exit(code=1) from exc
@@ -5046,6 +5157,7 @@ def briefing(  # noqa: PLR0912, PLR0917 (14 params incl. SMTP delivery + save/li
         "top_terms": [{"term": t.term, "count": t.count} for t in top_terms],
         "new_domains": new_domains,
         "sentiment": sentiment,
+        "quality_trend": quality_trend,
         "alerts": {
             "count": len(firings),
             "recent": [
@@ -5098,6 +5210,7 @@ def briefing(  # noqa: PLR0912, PLR0917 (14 params incl. SMTP delivery + save/li
         sentiment=sentiment,
         firings=firings,
         alerts_summary=alerts_summary,
+        quality_trend=quality_trend,
         gdelt_gaps=gdelt_gaps,
         gdelt_note=gdelt_note,
     )

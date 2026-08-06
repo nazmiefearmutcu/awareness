@@ -50,7 +50,12 @@ def _week_sparkline(counts: list[int]) -> str:
     values = [float(c) for c in counts]
     low = min(values)
     top = max(values)
-    if not values or low == top:
+    if not values:
+        return ""
+    if low == top:
+        # W30-F5: a flat NONZERO week must not read as silence — scale
+        # against zero so a busy-but-steady week renders mid-high blocks.
+        return _SPARK_BLOCKS[min(7, max(1, int(round(top))))] * len(values)
         return _SPARK_BLOCKS[0] * len(values)
     scale = 7.0 / (top - low)
     out = []
@@ -359,15 +364,18 @@ def weekly(
         # the firing-row name/term snapshot).
         rule_ids = sorted({r.id for r in rules} | {f["rule_id"] for f in firings})
         counts = {rid: store.count_firings_since(since, rid) for rid in rule_ids}
+        # W30-F2: weekday distribution aggregated in SQL — the capped row
+        # list only powers last-fired per rule (a >500-firing week would
+        # silently truncate a list-built distribution). Computed before
+        # close() below.
+        by_weekday_list = [store.firings_by_weekday_since(since)[i] for i in range(7)]
     finally:
         store.close()
 
     by_name: dict[str, str] = {r.id: r.name for r in rules}
     by_term: dict[str, str] = {r.id: r.term for r in rules}
-    by_weekday = [0] * 7
     last_fired: dict[str, datetime] = {}
     for f in firings:
-        by_weekday[f["fired_at"].weekday()] += 1
         if f["rule_id"] not in last_fired or f["fired_at"] > last_fired[f["rule_id"]]:
             last_fired[f["rule_id"]] = f["fired_at"]
         by_name.setdefault(f["rule_id"], f["rule_name"])
@@ -388,7 +396,28 @@ def weekly(
     top = fired[0] if fired else None
 
     if not fired:
-        console.print("No alert firings in the last 7 days.")
+        if json_out:
+            # W30-F1: --json must stay machine-readable on empty weeks (the
+            # most common cron run) — full zeroed shape, never prose.
+            print(
+                json.dumps(
+                    {
+                        "window_days": 7,
+                        "since": since.isoformat(),
+                        "total_firings": total,
+                        "rules": [],
+                        "top_rule": None,
+                        "rules_fired": 0,
+                        "rules_total": len(rule_ids),
+                        "by_weekday": {
+                            label: by_weekday_list[i] for i, label in enumerate(_WEEKDAY_LABELS)
+                        },
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            console.print("No alert firings in the last 7 days.")
         return
     if json_out:
         print(
@@ -419,7 +448,7 @@ def weekly(
                     "rules_fired": len(fired),
                     "rules_total": len(rule_ids),
                     "by_weekday": {
-                        label: by_weekday[i] for i, label in enumerate(_WEEKDAY_LABELS)
+                        label: by_weekday_list[i] for i, label in enumerate(_WEEKDAY_LABELS)
                     },
                 },
                 indent=2,
@@ -448,7 +477,7 @@ def weekly(
     console.print(table)
     console.print(
         "[dim]weekday firings (Mon-Sun):[/dim] "
-        + _week_sparkline(by_weekday)
+        + _week_sparkline(by_weekday_list)
         + "  "
-        + " ".join(str(c) for c in by_weekday)
+        + " ".join(str(c) for c in by_weekday_list)
     )

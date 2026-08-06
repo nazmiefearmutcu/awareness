@@ -139,9 +139,14 @@ def test_weekly_excludes_firings_older_than_7_days(tmp_project: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "No alert firings in the last 7 days." in result.output
 
+    # W30-F1: --json stays machine-readable on empty weeks (full zeroed shape).
     result = runner.invoke(app, ["alerts", "weekly", "--json"])
     assert result.exit_code == 0, result.output
-    assert "No alert firings in the last 7 days." in result.output
+    payload = json.loads(result.output)
+    assert payload["total_firings"] == 0
+    assert payload["rules"] == []
+    assert payload["top_rule"] is None
+    assert sum(payload["by_weekday"].values()) == 0
 
 
 def test_weekly_rule_with_no_activity_still_in_rules_total(tmp_project: Path) -> None:

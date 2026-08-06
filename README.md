@@ -121,7 +121,11 @@ inactive rules included — and returns `fired`, `count` vs `threshold`,
 `suppressed_by_cooldown`, `active`, and the effective `required` count
 (spike rules: 3× the rolling baseline or the absolute floor); the SPA
 renders a Test button + result panel per rule, and test runs are kept in
-a sessionStorage history panel (cap 20, clearable). Firings deliver to
+a sessionStorage history panel (cap 20, clearable). Rule rows also carry
+**Edit** (fills the create form, submits `PUT /alerts/rules/{id}`) and
+**Duplicate** (POSTs a copy named `<name> (copy)` through the create
+path) controls with a Cancel affordance back to create mode (iteration 8,
+pre-commit). Firings deliver to
 **all** configured webhooks with retry; payloads are plain JSON or
 Slack-style (`hooks.slack.com` auto-detected or forced per rule), and
 every webhook URL is validated against the public-host gate before it is
@@ -184,9 +188,10 @@ per-day table.
 daily news sentiment with X-session sentiment into one aligned, zero-filled
 series pair at `GET /crossx/view`, reporting the Pearson correlation and a
 convergence verdict (aligned bullish / aligned bearish / divergence /
-neutral). The correlation is masked to overlapping-data days (≥ 3 required;
-a sparse overlap reports 0.0 with a note instead of inflating r from one
-shared day) and convergence requires data on **both** sides — one-sided
+neutral). The correlation is masked to **shared-data days** — both series
+must have data on the same day (≥ 3 such days required; a sparse overlap
+reports 0.0 with a note instead of inflating r from one shared day) and
+convergence requires data on **both** sides — one-sided
 silence reads neutral, and out-of-window X sessions return `x_sentiment:
 None` with a note rather than a misleading zeroed series. The SPA X view
 renders the X-news band: phase badge, dual sentiment charts, r, and a
@@ -246,7 +251,8 @@ awareness quality --record                               # append snapshot to
 awareness quality --recorded 30 [--json]                  # print recorded snapshots (last N days)
 awareness briefing [--days N --top N --emerging N]        # movers (z-score spikes), top terms,
                          [--json] [--no-gdelt]            # new domains, sentiment shift, alert
-                                                          # activity, GDELT gaps — one read
+                                                          # activity, GDELT gaps, quality trend
+                                                          # line (dup-ratio vs prior 7d) — one read
                          [--email you@example.com]        # SMTP delivery (digest machinery)
                          [--save [NAME] --list-saved]     # persist JSON under data_dir/briefings/,
                                                           # or list saved files (served at /briefings/*)
@@ -258,7 +264,8 @@ awareness feeds                                           # feed-health report: 
                                                           # p95 latency, 0-100 health score
 awareness saved list|add|rm|run                           # named-query store (/saved/*)
 awareness report [--out report.md --email you@example.com]  # digest + quality + alert
-                                                            # activity + GDELT context
+                                                            # activity + topic lifecycle
+                                                            # (top digest terms) + GDELT context
 ```
 
 Two opt-in knobs enable the newer runtime behavior: `AW_API_KEY` gates the

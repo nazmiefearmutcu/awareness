@@ -211,12 +211,14 @@ area 316, crossx engine 385 + API 190, SPA test history 326, qualityx
 granularity 231, SPA alert test area 207, SPA crossx view 274, docs
 operations 199); full suite green (1804+).
 
-### Ralph Loop Round 3 — iteration 7 (working tree, pre-commit)
+### Ralph Loop Round 3 — iterations 7-8 (`c1e3b1e`)
 
-Landing in the working tree at this writing (HEAD still `07351ba`; the
-W26 fix-the-fixes audit and the iteration-7 commit had not landed — see
+Shipped 2026-08-06 — the W26 fix-the-fixes audit (3/3 resolved), W27 (SPA
+convergence badge + quality mini-card), W28 (CLI `alerts` weekly summary +
+`quality --record` store), and W29 (docs). The suite is green (1835+) and
+the wheel builds; see
 [`docs/AUDIT_FINDINGS_2026-08-03.md`](docs/AUDIT_FINDINGS_2026-08-03.md)
-for the register status):
+for the register status.
 
 - **`awareness quality --record` / `--recorded`** — the cron hook:
   `--record` appends the corpus-quality snapshot as one JSON object to
@@ -235,9 +237,50 @@ for the register status):
   latest-point mini-card: total / dup-% / near-dup-% / capture-rate KPIs
   plus a 14-bucket dup-ratio sparkline.
 
+**Fixes (R3-W26, 3 findings):** the crossx correlation mask is now the
+**intersection** of both series' data days — days where only one side had
+data were previously zero-padded and fed into Pearson r, fabricating
+r=-1.0 for fully disjoint series; `_MIN_OVERLAP_DAYS` counts shared-data
+days only, with regression tests for the disjoint and single-shared-day
+cases; the SPA test-history panel no longer crashes on a corrupt `at`
+entry (Date NaN guard → `null`); and missing regression coverage landed for
+the lifecycle markup escape, `/test` `active` + `required` fields, CSRF
+bodyless suffix, and `/alerts/rules` rate-limit 429.
+
+**Testing:** suite grew ~30 tests across the iteration (`test_crossx_engine.py`
++38, `test_alerts_test_area.py` +39, `test_auth_security_fixes.py` +27,
+`test_cli_quality_record.py` 186, `test_cli_weekly_alerts.py` 155,
+`test_spa_convergence_badge.py` 250, `test_spa_quality_minicard.py` 244);
+full suite green (1835+).
+
 `docs/operations.md` already documents the two new cron hooks (daily
 `quality --record` + weekly `alerts weekly`), enforced by the docs
 contract test.
+
+### Ralph Loop Round 3 — iteration 8 (working tree, pre-commit)
+
+Landing in the working tree at this writing (HEAD `c1e3b1e`; W30
+fix-the-fixes audit of the iteration-7 code scheduled in
+`.ralph/loop-state.md`, alongside W31/W32 — see
+[`docs/AUDIT_FINDINGS_2026-08-03.md`](docs/AUDIT_FINDINGS_2026-08-03.md)
+for the register status):
+
+- **SPA alert rule edit + duplicate** — every rule row gains **Edit**
+  (loads the rule into the create form, submits `PUT /alerts/rules/{id}`
+  with the full field set) and **Duplicate** (POSTs a copy named
+  `<name> (copy)` via the create path); a Cancel button returns the form to
+  create mode. Form state lives in module-level `editingRuleId`; all DOM is
+  built with `el()`/`textContent` (`src/awareness/api/web/app.js`).
+- **Report topic-lifecycle section** — `awareness report` gains a `##
+  Topic lifecycle` section profiling the digest's top 3 terms (phase, 7-day
+  slope, peak), plus a `lifecycle` key in the JSON payload; a lifecycle
+  probe failure degrades to a note, never fails the report
+  (`_lifecycle_section` in `src/awareness/cli/main.py`).
+- **Briefing quality trend line** — the briefing gains a one-line dup-ratio
+  trajectory (trailing 7 days vs the 7 before them via
+  `QualityTimeEngine.history(days=14)`: ▲ worsened / ▼ improved / — flat,
+  `X% → Y%`, plus new domains this window) in the markdown, text, and
+  payload variants (`_briefing_quality_trend` / `_quality_trend_line`).
 
 ---
 

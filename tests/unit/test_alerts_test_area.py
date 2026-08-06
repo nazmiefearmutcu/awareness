@@ -316,20 +316,6 @@ def test_api_test_rule_reports_cooldown_suppression(tmp_path: Path) -> None:
     assert body["suppressed_by_cooldown"] is True  # a real run would be suppressed
 
 
-def test_rule_test_report_includes_active_and_required(tmp_path, monkeypatch) -> None:
-    """W26-F2: the test report surfaces active state and the effective
-    requirement (spike: 3x baseline or floor)."""
-    from awareness.alerts.store import AlertStore
-    from awareness.alerts.engine import AlertEngine
-
-    store = AlertStore(tmp_path / "alerts.db")
-    rule = store.create_rule(
-        type("R", (), {
-            "model_validate": lambda cls, v: v,
-        })() if False else None
-    ) if False else None
-
-
 def test_api_test_report_includes_active_and_required(tmp_path: Path) -> None:
     """W26-F2: the /test response surfaces active state + effective
     requirement (term_count: threshold; spike: 3x baseline or floor)."""

@@ -339,6 +339,25 @@ class AlertStore:
                 ).fetchone()
         return int(row["n"]) if row is not None else 0
 
+    def firings_by_weekday_since(self, ts: datetime) -> dict[int, int]:
+        """Firing counts grouped by weekday (Mon=0..Sun=6) since *ts*.
+
+        Exact SQL aggregation — unlike a capped row list, a 500-firing week
+        cannot silently truncate the distribution (W30-F2).
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT CAST(strftime('%w', fired_at) AS INTEGER) AS dow, "
+                "count(*) AS n FROM firings WHERE fired_at >= ? "
+                "GROUP BY dow",
+                (_fmt(ts),),
+            ).fetchall()
+        out: dict[int, int] = {i: 0 for i in range(7)}
+        for row in rows:
+            dow = int(row["dow"])
+            out[dow] = int(row["n"])
+        return out
+
     def last_firing_time(self, rule_id: str) -> datetime | None:
         """Most recent firing time for *rule_id*, or ``None``."""
         with self._lock:
