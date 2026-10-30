@@ -1,12 +1,6 @@
-<div align="center">
-
 # Awareness
 
-**A private index of the public web — built on your laptop, queried like a table.**
-
-Point it at a date range and it backfills historical public text. Leave it running and it tails
-the web live. Everything lands in one local lake you can search from a dashboard, a terminal, or SQL.
-One Python process. No Spark, no Kafka, no cloud account, nothing leaves the machine.
+Awareness builds a searchable local collection of public web text. Backfill an archive, follow RSS feeds and sitemaps, then inspect the resulting corpus through a browser dashboard, a CLI or DuckDB queries.
 
 [![Release](https://img.shields.io/github/v/release/nazmiefearmutcu/awareness?label=release&color=0e9b8d)](https://github.com/nazmiefearmutcu/awareness/releases)
 [![License: MIT](https://img.shields.io/github/license/nazmiefearmutcu/awareness?color=0e9b8d)](LICENSE)
@@ -14,488 +8,139 @@ One Python process. No Spark, no Kafka, no cloud account, nothing leaves the mac
 [![Storage: Apache Iceberg](https://img.shields.io/badge/lake-Apache%20Iceberg-1f6bff)](https://iceberg.apache.org/)
 [![Query: DuckDB](https://img.shields.io/badge/query-DuckDB-f5a623?logo=duckdb&logoColor=black)](https://duckdb.org/)
 
-</div>
-
-Awareness ingests **text and text-oriented metadata only**. No images, no binary media, no
-login-gated content, no paywall circumvention. `robots.txt` is obeyed and per-domain politeness
-is enforced on every live fetch. What you point it at is your responsibility; what it stores is
-plain, auditable JSON on your disk.
-
----
-
-## The two things it does
-
-**BODY** — *backfill.* Ask for a historical window and Awareness plans it into partitions, pulls
-the matching public text (Common Crawl, HuggingFace FineWeb, GDELT, seed feeds), de-duplicates it,
-and writes it to the lake. Bounded, resumable, cancellable.
-
-**TAIL** — *live capture.* Give it a list of RSS/Atom/sitemap seeds and it watches them, fetching
-newly published articles as they appear until you stop it. Politeness and robots apply; crashes
-resume where they left off.
-
-Both feed the **same durable schema** (`DocCapture`) and the **same query surface**. A backfilled
-2024 archive and a document captured thirty seconds ago sit in one table.
-
----
-
-## Quickstart
-
-```bash
-git clone https://github.com/nazmiefearmutcu/awareness && cd awareness
-uv venv --python 3.13 --seed
-uv pip install -e '.[dev]'
-
-awareness init                                   # create the local lake + state DB
-awareness-api                                    # dashboard at http://127.0.0.1:8085
-```
-
-Open the dashboard, hit **Start** on the live tail, and watch real articles land. Or drive it
-entirely from the shell:
-
-```bash
-awareness tail start                             # live capture from configs/tail_seeds.yaml
-awareness search "central bank" --limit 20       # BM25 over everything captured
-awareness browse                                 # read captured text in the terminal
-```
-
----
-
-## The workbench
-
-A single-process FastAPI server ships a hand-written vanilla-JS SPA at `/` — no build step, no
-runtime dependencies, no external requests (fonts are self-hosted; it renders fully offline). Ten
-views, keyboard shortcuts `1`–`9` (and `0` for the tenth), a `⌘K` command palette,
-and a light/dark theme that follows your system and remembers your choice.
-
-**Dashboard** — the corpus at a glance, plus deep process telemetry: fetch latency percentiles,
-robots-cache hit rate, dedup fold ratio, Iceberg row counts, staging lag, per-source health.
-
 ![Awareness dashboard: KPI tiles for captures, unique hashes, dedup folds and jobs, above a wall of process-telemetry tiles for HTTP/robots/storage/feed health, in a dark observatory theme](docs/screenshots/01-dashboard.png)
 
-**Captures** — full-text search (BM25, prefix, or substring) with source / domain / language / date
-filters, duplicate collapsing, and a reader for the stored text.
+## What it does
 
-![Captures browser: search bar and filters above a chronological list of captured articles from BBC, Al Jazeera and WIRED with source badges and character counts](docs/screenshots/02-captures.png)
+- **Historical backfill (BODY):** plans a date window into resumable jobs and tasks for Common Crawl, FineWeb/FineWeb-2, GDELT and feed-based sources.
+- **Live capture (TAIL):** polls configured RSS/Atom feeds and sitemaps, extracts article text and records new captures with source and timestamp metadata.
+- **Search and analysis:** full-text search, date/domain/language filters, term trends, topic lifecycle, corpus quality, heuristic entities, lexicon sentiment and source replication analysis.
+- **Research workflows:** saved searches, alerts, briefings, digest/report export, public job-board search and X-session analysis with deterministic simulation and CSV export.
 
-**Pipeline** — submit a backfill and watch every run: progress bars, task/doc/fold counters, and
-status badges you can read by colour, not just by squinting at a label.
+The FastAPI dashboard and Typer CLI share the same storage and processing modules. SMTP delivery, webhooks, GDELT comparison and Hugging Face publishing are explicit outbound integrations; local storage does not imply that every operation is offline.
 
-![Pipeline view: a new-backfill form on the left with source toggles, and a list of jobs on the right with teal progress bars and coloured completed/cancelled status badges](docs/screenshots/03-jobs.png)
+## Quick start
 
-**Tail** — the live-capture console: queue depth, what's fetching now, what just landed, what's
-backing off on retry, and recent storage commits.
-
-![Tail console: a large status hero showing the live-capture state, with panels for the queue, fetching, just-captured, retrying and storage commits](docs/screenshots/04-tail.png)
-
-**Settings** — every knob in one place, written straight to `awareness.yaml`: sources, politeness,
-storage routing, search behaviour, the tail seed list, and a job-search profile — with live runtime
-status underneath.
-
-![Settings page: a table-of-contents of config sections, a job-search profile form, job-board toggles, and the editable tail-seed feed list](docs/screenshots/05-settings.png)
-
-*(A **Work** section reuses the same engine to search public job boards against a saved profile.)*
-
----
-
-## Feature surface
-
-Beyond the ten workbench views, the API exposes the corpus through feature
-subsystems — small, dependency-free modules under `src/awareness/`, all served
-by the same single process:
-
-**Analytics** (`/analytics/*`) — term frequency over time (day/week/month
-buckets, zero-filled), rolling z-score spike detection, top terms
-(stopword-filtered), domain and language breakdowns, and co-occurring term
-counts: `/term-frequency`, `/top-terms`, `/spikes`, `/domains`, `/languages`,
-`/co-occurring`.
-
-**Alerts** (`/alerts/*`) — a SQLite rule store for keyword and term-spike
-rules (threshold, window, cooldown), with CRUD at `/alerts/rules` (plus
-`/alerts/rules/export` + `/alerts/rules/import` for moving rules between
-instances), one-shot evaluation at `/alerts/check`, and `/alerts/status` +
-`/alerts/firings` for the audit trail (the SPA Alerts view renders that
-firing history — last-50 log and a 24 h count — with expandable firing
-detail). A per-rule **test area** at `POST /alerts/rules/{id}/test`
-evaluates ONE rule ignoring cooldown **without persisting any firing** —
-inactive rules included — and returns `fired`, `count` vs `threshold`,
-`suppressed_by_cooldown`, `active`, and the effective `required` count
-(spike rules: 3× the rolling baseline or the absolute floor); the SPA
-renders a Test button + result panel per rule, and test runs are kept in
-a sessionStorage history panel (cap 20, clearable). Rule rows also carry
-**Edit** (fills the create form, submits `PUT /alerts/rules/{id}`) and
-**Duplicate** (POSTs a copy named `<name> (copy)` through the create
-path) controls with a Cancel affordance back to create mode (iteration 8,
-`3fcdd70`). Firings deliver to
-**all** configured webhooks with retry; payloads are plain JSON or
-Slack-style (`hooks.slack.com` auto-detected or forced per rule), and
-every webhook URL is validated against the public-host gate before it is
-stored **or** called. A periodic runner (`AW_ALERTS_AUTOSTART=1`)
-evaluates rules inside the API process. The same engine is drivable from
-the terminal:
+Requires **Python 3.11+**. From a terminal:
 
 ```bash
-awareness alerts list|create|delete|check|export|import|history|run-once|weekly
+git clone https://github.com/nazmiefearmutcu/awareness.git
+cd awareness
+python -m venv .venv
 ```
 
-`awareness alerts weekly [--json]` prints a 7-day (UTC) alert summary —
-exact per-rule counts, last firing per rule, top rule, and a Mon..Sun
-distribution sparkline — the cron-friendly weekly alert recap.
-
-**Entities** (`/entities/*`) — dependency-free heuristic NER
-(ORG/PERSON/PLACE/TICKER) aggregated over the corpus: `/top`, `/co-occurring`,
-`/trend`, and `/correlation` (Pearson with lead-lag).
-
-**Source intelligence** (`/source-intel/*`) — domain quality scoring (volume,
-length, replication, velocity), a replication map ("who copies whom", from the
-dedup groups), top replicators, and a freshness report: `/domains`,
-`/domain/{d}`, `/replication`, `/replicators`, `/freshness`.
-
-**Sentiment** (`/sentiment/*`) — a finance lexicon (189 positive / 251 negative
-terms) with negation and intensity scoring over the corpus: per-term sentiment
-over time at `/sentiment/term`, and a market-heat snapshot (volatility, 7-day
-trend) at `/sentiment/heat`.
-
-**Origin** (`/origin/*`) — breaking-news origin tracking from the dedup groups:
-first publisher + lead minutes per story at `/origin/stories`, and a
-publisher-firsts ranking at `/origin/publishers`.
-
-**GDELT bridge** (`/gdelt/*`) — cross-references external GDELT DOC 2.0 article
-counts with the local corpus: a local-vs-GDELT correlation at `/gdelt/compare`
-and coverage-gap detection ("GDELT says this story is big, our capture rate is
-near zero") at `/gdelt/gaps`. The bridge caches GDELT counts on disk (6 h TTL)
-and degrades to empty series with a structured-log warning when offline.
-
-**Corpus intelligence** (`/corpus/*`) — a term × domain topic matrix at
-`/corpus/topic-matrix` and a corpus-quality snapshot at `/corpus/quality`
-(duplicate / near-dup ratios, language rollup, capture rate per day).
-
-**Topic lifecycle** (`/topicx/*`) — term-level topic intelligence over the
-corpus: lifecycle phase classification (EMERGING / EXPANDING / PEAKING /
-DECLINING / DORMANT from a 7-day slope + peak), an emerging-topics corpus
-scan, source-impact scoring (replication-weighted), and per-domain topic
-dominance — `/topicx/lifecycle`, `/topicx/emerging`, `/topicx/impact`,
-`/topicx/dominance`.
-
-**Quality time series** (`/qualityx/*`) — corpus-quality trends instead of a
-single snapshot: per-day duplicate / near-dup ratios, new domains (first-ever
-capture), and capture rate, zero-filled over calendar buckets — the full
-history at `/qualityx/history` and today at `/qualityx/current`. The SPA
-dashboard quality band carries a latest-point **mini-card** (total, dup-%,
-near-dup-%, capture rate KPIs + a 14-bucket dup-ratio sparkline) next to the
-per-day table and a granularity select (day/week/month).
-
-**Cross-view** (`/crossx/*`) — aligns a term's news lifecycle phase and
-daily news sentiment with X-session sentiment into one aligned, zero-filled
-series pair at `GET /crossx/view`, reporting the Pearson correlation and a
-convergence verdict (aligned bullish / aligned bearish / divergence /
-neutral). The correlation is masked to **shared-data days** — both series
-must have data on the same day (≥ 3 such days required; a sparse overlap
-reports 0.0 with a note instead of inflating r from one shared day) and
-convergence requires data on **both** sides — one-sided
-silence reads neutral, and out-of-window X sessions return `x_sentiment:
-None` with a note rather than a misleading zeroed series. The SPA X view
-renders the X-news band: phase badge, dual sentiment charts, r, and a
-color-coded convergence badge (green aligned-bullish / red aligned-bearish
-/ amber divergence / gray neutral) with a tooltip carrying r + the
-out-of-window note.
-
-**Saved searches** (`/saved/*`) — a SQLite-backed store of named queries
-(CRUD at `/saved`, pin/run at `/saved/{id}/pin` + `/saved/{id}/run`). The
-SPA ships a Saved view with a ★ save control on the search box, and the CLI
-mirrors it as `awareness saved list|add|rm|run`.
-
-**Saved briefings** (`/briefings/*`) — a filesystem-backed, read-only API
-over the briefings the CLI persists under `{data_dir}/briefings/`: the
-saved-file list at `GET /briefings` (corrupt/legacy files stay visible with
-nulled fields) and full content at `GET /briefings/{date}` (`YYYY-MM-DD` or
-`YYYY-MM-DD-<name>`; malformed dates 400, missing files 404). The directory
-is resolved lazily per request, so files written by `awareness briefing
---save` appear without a restart. The SPA dashboard ships a "Saved
-briefings" band with clickable date chips and a collapsible viewer (movers,
-top-term chips deep-linking into the Analytics view).
-
-**Consumption** (`/consume/*`, `/x/*`) — LLM-ready dataset export (jsonl or
-parquet, deduped, streamed, atomic) at `/consume/export`, a weekly digest as
-JSON or markdown at `/consume/digest[/markdown]`, and the X-scraper bridge
-(`/x/sessions`, `/x/sessions/{id}/tweets`). X sessions can also be exercised
-without a live connection: deterministic, seeded tweet simulation at
-`POST /x/sessions/{id}/simulate` (no network), aggregated analysis
-(authors, top terms, lexicon sentiment, **per-day sentiment trend**,
-timeline, engagement) at `GET /x/sessions/{id}/analysis`, and a CSV export
-of a session's tweets at `GET /x/sessions/{id}/tweets.csv` (download
-attachment) or via `awareness x export`. The digest generator also ships as
-a CLI command — print, write, or email it:
+Activate the environment with `source .venv/bin/activate` on macOS/Linux or `.venv\Scripts\Activate.ps1` in PowerShell. Then:
 
 ```bash
-awareness digest --days 7 --markdown --out digest.md    # or --json to stdout
-awareness digest --days 7 --email me@example.com        # SMTP delivery
-# SMTP via --smtp-* flags or SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / EMAIL_FROM
+python -m pip install -e '.[dev]'
+awareness init
+awareness-api
 ```
 
-The newer subsystems also ship terminal equivalents:
+Open `http://127.0.0.1:8085`. Configure sources and start the live tail from the dashboard, or run `awareness tail start` in another terminal. FineWeb adapters require the optional Hugging Face dependencies: `python -m pip install -e '.[dev,hf]'`.
+
+## Common commands
 
 ```bash
-awareness trends "bitcoin" --days 30 --chart --sentiment  # zero-filled series, z-score
-                                                          # spike marks, optional sentiment
-awareness x sessions|show|create                          # X-scraper session store
-awareness x simulate <SESSION_ID> --seed 42 --count 100  # deterministic, no network
-awareness x analyze <SESSION_ID>                          # authors, terms, sentiment,
-                                                          # daily trend, timeline, engagement
-awareness x export <SESSION_ID> --out tweets.csv          # session tweets → CSV
-awareness x timeline <SESSION_ID> [--out timeline.csv]    # per-day sentiment timeline CSV
-awareness quality [--json]                                # corpus snapshot: sizes, dup ratios,
-                                                          # languages, domains (/corpus/quality)
-awareness quality --history [DAYS] [--json]               # per-day quality series with sparkline
-                                                          # (default window 30d; /qualityx/*)
-awareness quality --history --granularity day|week|month  # bucket size (UTC-aligned)
-awareness quality --record                               # append snapshot to
-                                                          # data/quality_history.jsonl (cron hook)
-awareness quality --recorded 30 [--json]                  # print recorded snapshots (last N days)
-awareness briefing [--days N --top N --emerging N]        # movers (z-score spikes), top terms,
-                         [--json] [--no-gdelt]            # new domains, sentiment shift, alert
-                                                          # activity, GDELT gaps, quality trend
-                                                          # line (dup-ratio vs prior 7d) — one read
-                         [--email you@example.com]        # SMTP delivery (digest machinery)
-                         [--save [NAME] --list-saved]     # persist JSON under data_dir/briefings/,
-                                                          # or list saved files (served at /briefings/*)
-awareness lifecycle TERM [--days N] [--chart] [--json]    # topic phase badge + stats + counts
-                         [--compare a,b]                  # side-by-side up to 10 terms
-                         [--emerging]                     # corpus-wide first-seen terms
-awareness gdelt-gaps [--terms a,b --days N] [--json]      # coverage-gap report standalone
-awareness feeds                                           # feed-health report: fetch outcomes,
-                                                          # p95 latency, 0-100 health score
-awareness saved list|add|rm|run                           # named-query store (/saved/*)
-awareness report [--days N --out report.md --email you@example.com]  # digest + quality + alert
-                                                             # activity + topic lifecycle
-                                                             # (top digest terms) + GDELT context
-                            [--json] [--no-gdelt]
+awareness search "central bank" --limit 20
+awareness browse
+awareness backfill submit --start 2024-06-01 --end 2024-06-14 --max-tasks 5
+awareness backfill run JOB_ID
+awareness backfill status JOB_ID
+awareness trends "bitcoin" --days 30 --chart
+awareness quality --json
+awareness export --out corpus.jsonl
+awareness compact
 ```
 
-Two opt-in knobs enable the newer runtime behavior: `AW_API_KEY` gates the
-HTTP control plane behind a bearer token, and `AW_ALERTS_AUTOSTART=1` runs
-periodic alert evaluation inside the API process (see Configuration below).
+Replace `JOB_ID` with the identifier returned by submission. `awareness commands` lists the command groups; use `--help` for individual options. [Operations recipes](docs/operations.md) cover scheduled briefings, alerts, quality snapshots and retention.
 
-### Security posture
-
-- **API key auth** — setting `AW_API_KEY` requires `Authorization: Bearer` on
-  the control plane; binding to a non-loopback interface **refuses to start**
-  (`SystemExit`) without one, and the guard runs again at lifespan startup.
-- **CSRF JSON enforcement** — mutating requests with a body must be
-  `application/json`; the CORS-safelisted `text/plain` route is rejected.
-- **SSRF gates** — untrusted URLs (seeds, alert webhooks, redirect hops) pass
-  through `is_public_http_url`: no loopback/private/link-local/metadata hosts,
-  no userinfo, and DNS resolutions must be globally routable. Alert webhook
-  URLs are validated on rule create/update **and** re-checked at delivery.
-- **Digest email STARTTLS** — `awareness digest --email` upgrades to
-  STARTTLS on non-465 ports before any SMTP authentication, so credentials
-  and the digest body are never sent in the clear.
-- **Path confinement** — config writes (`data_dir`, `tail_seed_file`, …) must
-  resolve inside the project root with no `..` segments, and `data_dir` may
-  not point at an existing non-directory.
-
----
-
-## How it works
+## Architecture
 
 ```mermaid
-flowchart TD
-    user(["CLI / API / dashboard"]) -->|"plan a window"| planner[Planner]
-    planner -->|partitions| state[("state DB<br/>jobs · tasks · manifests")]
-    state --> worker["Worker engine<br/>asyncio · backpressure"]
-    worker -->|"runs partition"| adapters
-
-    subgraph adapters["Source adapters"]
-      cc["Common Crawl<br/>WET · CDX · WARC"]
-      fw["HuggingFace<br/>FineWeb · FineWeb-2"]
-      rss["RSS · Atom · sitemap"]
-      tail["Tail recrawl<br/>politeness · robots"]
-      gd["GDELT"]
-    end
-
-    adapters -->|DocCapture| norm["Normalize → Dedup<br/>trafilatura · xxh3<br/>128-bit SimHash · 32-band"]
-    norm --> jsonl["JSONL staging (atomic)<br/>data/jsonl/captures/Y/M/D/"]
-    jsonl -.->|optional| iceberg[("Apache Iceberg<br/>PyIceberg warehouse")]
-    jsonl --> duckdb["DuckDB<br/>BM25 search · range scans · analytics"]
-    iceberg --> duckdb
-
-    classDef src fill:#0e9b8d18,stroke:#0e9b8d,color:#0e9b8d
-    classDef store fill:#1f6bff18,stroke:#1f6bff,color:#1f6bff
-    class cc,fw,rss,tail,gd src
-    class state,iceberg store
+flowchart LR
+    UI[CLI / FastAPI dashboard] --> Planner[Planner and state DB]
+    Planner --> Workers[Async workers / live tail]
+    Workers --> Sources[Source adapters]
+    Sources --> Records[DocCapture: text and provenance]
+    Records --> Dedup[Normalize and deduplicate]
+    Dedup --> JSONL[JSONL staging]
+    JSONL --> Iceberg[Optional Iceberg copy]
+    JSONL --> DuckDB[DuckDB search and analytics]
+    Iceberg --> DuckDB
+    DuckDB --> UI
 ```
 
-The design is deliberately boring where it should be: JSONL on disk is the source of truth and is
-written atomically, so a `kill -9` never corrupts the lake. Iceberg is an *optional* durable copy.
-DuckDB reads both — the same SQL engine answers a ranked search, a date-range scan, and an Iceberg
-analytics query, so there's one query surface instead of three.
+| Layer | Location and responsibility |
+| --- | --- |
+| Sources | `src/awareness/sources/`: adapters emit a shared [`DocCapture`](src/awareness/schemas/doc.py) record. |
+| Scheduling | `planner/`, `workers/`, `tail/`: partition planning, async execution, retries, checkpoints and feed polling. |
+| Text processing | `normalize/`, `dedup/`: extraction, content/URL identity and 128-bit SimHash grouping. |
+| Persistence | `storage/`: JSONL batches, Iceberg tables, SQLite state and a DuckDB query index. |
+| Access | `api/`, `cli/`: dashboard, HTTP endpoints, terminal commands and research modules. |
 
-| Layer | Module | Job |
-| --- | --- | --- |
-| Sources | `awareness.sources.*` | one adapter per data tier, all emitting `DocCapture` |
-| Normalize | `awareness.normalize.{text,html}` | trafilatura extraction + cleanup |
-| Dedup | `awareness.dedup.engine` | exact (xxh3) + canonical-URL + near-dup (SimHash) |
-| Storage | `awareness.storage.{jsonl,iceberg,duckdb_index,state}` | staging · durable · query · state |
-| Planner / Workers | `awareness.{planner,workers}` | window → partitions → tasks → async execution |
-| Tail | `awareness.tail.engine` | live-capture lifecycle, resume, politeness |
-| API / CLI | `awareness.{api,cli}` | the human surface |
+JSONL batches use temporary files, sync and rename; recovery handles orphaned temporary files. Iceberg is a configurable second copy. Deduplication skips durable full-text writes for exact duplicates, revisions and tightly matched near-duplicates; other captures retain their grouping and provenance metadata. See [architecture](docs/architecture.md) and the [data dictionary](docs/data_dictionary.md) for details.
 
-The single durable record is [`DocCapture`](src/awareness/schemas/doc.py) — every adapter produces
-it, Iceberg mirrors it. Timestamps are UTC; provenance lives in `source_*`; identity in
-`doc_id` / `capture_id`; dedup grouping in `parent_doc_or_dup_group`.
+## Configuration and boundaries
 
----
+Defaults load from `configs/awareness.yaml`; `AW_*` environment variables override YAML values. Data normally lives under `data/`, including JSONL captures, the Iceberg warehouse and SQLite state.
 
-## From the terminal
+| Variable | Purpose |
+| --- | --- |
+| `AW_DATA_DIR` / `AW_CONFIG_FILE` | Select the data directory or configuration file. |
+| `AW_API_HOST` / `AW_API_PORT` | Bind address and port; defaults are loopback and `8085`. |
+| `AW_API_KEY` | Require a bearer token for the control plane; required for a non-loopback binding. |
+| `AW_ENABLE_ICEBERG` | Enable or disable the Iceberg copy. |
+| `AW_PER_DOMAIN_CONCURRENCY` / `AW_TAIL_POLL_SECONDS` | Control live fetch concurrency and polling. |
+| `AW_ALERTS_AUTOSTART` | Enable periodic alert evaluation inside the API process. |
 
-The dashboard is optional. The CLI is the full control surface:
+Live fetching checks `robots.txt` and applies per-domain limits. Durable records contain text and metadata; HTML/WARC bytes may be cached during processing. Coverage depends on upstream archives and available public pages. The engine does not authenticate to websites or bypass paywalls. `--max-tasks` limits the initial backfill plan; source discovery can enqueue additional tasks.
 
-```bash
-awareness backfill submit --start 2024-06-01 --end 2024-06-14 --max-tasks 5
-awareness backfill run  <JOB_ID>            # execute in-process (or `awareness-worker`)
-awareness backfill status <JOB_ID>
+Entity, sentiment and topic labels are heuristic research outputs. They need validation for a specific corpus or decision. Optional infrastructure in `ops/compose/` is documented in the [runbook](docs/runbook.md); availability of a service there does not establish that every integration is complete.
 
-awareness inspect --start 2024-06-01 --end now --limit 25
-awareness counts  --start 2024-06-01 --end now          # by source / domain / language
-awareness search  "sanctions" --mode fts --limit 20     # BM25, prefix, or substring
-awareness browse                                        # interactive terminal reader
-awareness export  --out corpus.jsonl                    # or --raw-text for a folder of .txt
-awareness compact                                       # fold JSONL staging into Iceberg
-awareness hf-push  <dataset>                             # publish to the HF Hub
-
-awareness tui                                           # a full-screen terminal dashboard
-awareness shell                                         # interactive REPL over every command
-awareness stats                                         # storage / DB / ingestion telemetry
-```
-
-`awareness configure` walks you through *where* the engine writes before you start a tail.
-`awareness commands` prints the categorised map of everything.
-
----
-
-## Benchmarks — measured, not asserted
-
-Awareness is benchmarked **head-to-head against the de-facto peer in each space**, on one machine,
-over a **deterministic** synthetic corpus (fixed seed — accuracy reproduces exactly; throughput
-drifts with hardware). Where a result trailed the standard, the gap was closed with a *real code
-change* and re-measured. Nothing here is tuned to flatter a single number.
+## Benchmarks
 
 ![Head-to-head summary: hashing throughput, near-dup throughput, near-dup memory footprint, and extraction quality](docs/benchmarks/summary.png)
 
-```bash
-uv pip install -e '.[bench]'
-python -m benchmarks.run_all      # writes docs/benchmarks/results.json
-python -m benchmarks.plot         # renders the charts
-```
+This preserved chart summarizes checked-in synthetic benchmark results, not performance guaranteed for a live corpus. The current [results JSON](docs/benchmarks/results.json) records Python 3.13.9 on arm64 macOS. [Reports and methodology](docs/benchmarks/README.md) describe datasets, peers and tradeoffs, including near-duplicate recall versus throughput.
 
-<sub>Apple Silicon (arm64), Python 3.11, single core. Peers: datasketch 1.10, BLAKE3 1.0, trafilatura, DuckDB FTS, SQLite FTS5.</sub>
-
-### Near-duplicate detection — precision-first, resource-frugal
-
-Awareness folds near-duplicates with a **128-bit frequency-weighted Charikar SimHash** under a
-Hamming threshold, retrieved through **Manku/Jain pigeonhole banding** (32 bands × 4 bits — so any
-pair within Hamming ≤ 31 is *guaranteed* to share a band, covering the default merge threshold of
-24 with exact recall). The peer is `datasketch` **MinHashLSH** (num_perm=128), compared on the
-**full end-to-end pipeline** (retrieval + threshold + grouping), the way text-dedup and datasketch
-report — not an all-pairs oracle.
-
-| End-to-end pipeline | **Awareness DedupEngine** | `datasketch` MinHashLSH |
-| --- | --- | --- |
-| **Precision** | **1.00** — never false-merges | 0.999 |
-| **F1** (default · tuned) | 0.84 · 0.96 | 0.998 |
-| **Throughput** | **≈5,200 docs/s** (≈3.3×) | ≈1,600 docs/s |
-| **Signature footprint** | **16 B/doc** (64× smaller) | 1,024 B/doc |
-
-The 64-bit fingerprint the engine started with had fine *separability* (0.99, on par with MinHash)
-but its coarse index retrieved almost nothing at a realistic near-dup radius — end-to-end recall was
-**~2%**. Widening to 128 bits and finer banding fixed the retrieval, not the fingerprint.
-
-**Honest verdict:** MinHashLSH wins recall and needs no per-corpus tuning — the classic SimHash↔MinHash
-trade. Awareness picks the other corner on purpose: identical precision at **3.3× the throughput and
-64× less memory**, and because dedup only ever sets a *grouping hint* and never drops a row, lower
-recall costs a little less folding — never data. Full numbers and the other three benchmarks
-(xxh3 hashing, trafilatura extraction quality, the search/ingest speedups shipped while measuring)
-are in [`docs/benchmarks/`](docs/benchmarks/). Three dated reports add the M1-baseline run
-([`benchmark_report_2026-08-04.md`](docs/benchmarks/benchmark_report_2026-08-04.md) — per-finding
-resolution status, including the 365× materialized-corpus fix), the 100k-doc / Postgres-parity
-probe ([`perf_100k_2026-08-04.md`](docs/benchmarks/perf_100k_2026-08-04.md) — steady-state analytics
-≤2 s at 100k docs), and the Round-3 FTS delta-append probe
-([`perf_iter9_report.md`](docs/benchmarks/perf_iter9_report.md) — delta rebuild ~16× faster than
-a full build on pure-addition batches).
-
----
-
-## What it is, and what it isn't
-
-Honesty beats a feature matrix. This is the part most READMEs leave out.
-
-| It does | It does **not** |
-| --- | --- |
-| Run entirely local: SQLite state, JSONL on disk, Iceberg on disk via PyIceberg. | Touch the cloud. Nothing leaves your machine. The `ops/compose` Postgres + MinIO + Redpanda + ClickHouse stack is opt-in scaffolding — off by default, and the code never writes to it unless you point it there. |
-| Poll for live updates: the dashboard refreshes on an interval and the tail view every few seconds. | Push over SSE/WebSocket. If the tail is idle (nothing new to discover), the numbers simply don't move. |
-| Enforce `robots.txt` + per-domain politeness on every live fetch, with crawl-delay honoured. | Surface per-fetch robots decisions in the UI yet. |
-| Cap the *planner's* initial fan-out with `--max-tasks`. | Cap sub-partitions that discovery adapters enqueue. One GDELT 15-minute slot can fan out into 1000+ downstream fetches — `--max-tasks` won't stop that. |
-| Store text and text-oriented metadata, converted from HTML and audited on disk. | Store images, binary media, or anything behind a login or paywall. |
-
----
-
-## Configuration & layout
-
-`configs/awareness.yaml` is the config file; the Settings screen writes to it. Common overrides
-also read from the environment:
-
-| Env | Meaning |
-| --- | --- |
-| `AW_DATA_DIR` | where the lake (Iceberg + JSONL + state) lives |
-| `AW_STATE_DB_URL` | SQLAlchemy URL — SQLite by default, Postgres works |
-| `AW_API_PORT` | dashboard/API port (default `8085`) |
-| `AW_USER_AGENT` | the bot identity sent on every fetch |
-| `AW_PER_DOMAIN_CONCURRENCY` | live-fetch concurrency cap per domain |
-| `AW_TAIL_POLL_SECONDS` | feed re-poll interval |
-| `AW_ENABLE_ICEBERG` | toggle the durable Iceberg copy (JSONL is always on) |
-| `AW_API_KEY` | bearer token required by the HTTP control plane (empty = localhost trust) |
-| `AW_ALERTS_AUTOSTART` | `1` runs periodic alert evaluation inside the API process |
-
-```text
-data/
-├── jsonl/captures/YYYY/MM/DD/captures-*.jsonl   ← atomic staging (source of truth)
-├── iceberg/                                     ← PyIceberg warehouse + catalog
-├── state/awareness.sqlite                       ← jobs · tasks · manifests · dedup index
-├── warc/                                        ← cached WET/WARC bytes (TTL-able)
-├── dlq/  cache/  checkpoints/  logs/            ← dead-letter · robots cache · resume · logs
-```
-
-For the analytics-grade environment (Postgres + Redpanda + MinIO + ClickHouse), the same binary
-points at `ops/compose/docker-compose.yml` via env vars — no code change. See
-[`docs/runbook.md`](docs/runbook.md). For scheduled automation — cron and
-macOS launchd recipes for the daily briefing, weekly digest email, alert
-runner, quality snapshot, and retention — see [`docs/operations.md`](docs/operations.md).
-
----
-
-## Develop
+To reproduce the benchmark suite in the active environment:
 
 ```bash
-pytest                    # full suite
-pytest -m smoke           # smoke only
-pytest -m integration     # integration only
-ruff check . && mypy src  # lint + types
+python -m pip install -e '.[bench]'
+python -m benchmarks.run_all
+python -m benchmarks.plot
 ```
 
-The end-to-end smoke harness walks the full stack — **16 stages**: init →
-ingest → query → analytics → API → alerts → digest → export → saved → X →
-report → topicx → qualityx → briefing → crossx → alert-test — against a
-throwaway project root with no network, and exits non-zero on the first
-failing stage:
+## Screenshots
+
+<details>
+<summary>Capture search, pipeline, live tail and settings</summary>
+
+![Captures browser: search bar and filters above a chronological list of captured articles from BBC, Al Jazeera and WIRED with source badges and character counts](docs/screenshots/02-captures.png)
+
+![Pipeline view: a new-backfill form on the left with source toggles, and a list of jobs on the right with teal progress bars and coloured completed/cancelled status badges](docs/screenshots/03-jobs.png)
+
+![Tail console: a large status hero showing the live-capture state, with panels for the queue, fetching, just-captured, retrying and storage commits](docs/screenshots/04-tail.png)
+
+![Settings page: a table-of-contents of config sections, a job-search profile form, job-board toggles, and the editable tail-seed feed list](docs/screenshots/05-settings.png)
+
+</details>
+
+## Development
 
 ```bash
-.venv/bin/python scripts/e2e_smoke.py                  # temp root
-AW_PROJECT_ROOT=/tmp/aware-root .venv/bin/python scripts/e2e_smoke.py
+pytest
+pytest -m smoke
+ruff check .
+mypy src
+python scripts/e2e_smoke.py
 ```
 
-The same flow runs in-process as `tests/smoke/test_e2e_full_flow.py`.
+The smoke harness exercises ingestion, search, analytics, API and research workflows in a temporary project root. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
-Architecture notes live in [`docs/architecture.md`](docs/architecture.md); the field-by-field
-record layout in [`docs/data_dictionary.md`](docs/data_dictionary.md); contribution norms in
-[`CONTRIBUTING.md`](CONTRIBUTING.md). Bugs and security reports: [`SECURITY.md`](SECURITY.md).
+## License
 
-**MIT-licensed.** Use it responsibly — you are accountable for what you point it at.
+[MIT](LICENSE). Source access and content rights still depend on the sites and datasets you collect.
+
+Created By Nazmi Efe Armutcu (Aylin)
