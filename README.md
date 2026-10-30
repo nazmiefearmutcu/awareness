@@ -143,4 +143,4 @@ The smoke harness exercises ingestion, search, analytics, API and research workf
 
 [MIT](LICENSE). Source access and content rights still depend on the sites and datasets you collect.
 
-Created By Nazmi Efe Armutcu (Aylin)
+Created By Aylin (Nazmi Efe Armutcu)
