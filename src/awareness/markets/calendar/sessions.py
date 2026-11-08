@@ -24,8 +24,12 @@ def _to_utc(ts: Any) -> datetime | None:
 
         if pd.isna(ts):
             return None
-    except Exception:  # pandas missing or ts not a pandas scalar
-        pass
+    except (ImportError, TypeError, ValueError):
+        return None if ts is None else _plain(ts)
+    return _plain(ts)
+
+
+def _plain(ts: Any) -> datetime | None:
     dt = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
     if not isinstance(dt, datetime):
         return None
@@ -71,7 +75,7 @@ def exchange_sessions(mic: str, start: date, end: date) -> dict[str, Any]:
                 "open_local": open_utc.astimezone(tz).strftime("%H:%M"),
                 "close_local": close_local,
                 "break_local": (
-                    f"{break_start.astimezone(tz).strftime('%H:%M')}–{break_end.astimezone(tz).strftime('%H:%M')}"
+                    f"{break_start.astimezone(tz).strftime('%H:%M')}-{break_end.astimezone(tz).strftime('%H:%M')}"
                     if break_start and break_end
                     else None
                 ),
