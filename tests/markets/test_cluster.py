@@ -390,11 +390,6 @@ def test_amount_and_synonym_folding() -> None:
 
 
 def test_promo_price_pages_never_join_stories_via_entity_rules() -> None:
-    from datetime import UTC, datetime, timedelta
-
-    from awareness.markets.models import EntityRef, NewsItem
-    from awareness.markets.news.cluster import StoryClusterer
-
     now = datetime(2026, 11, 6, 12, tzinfo=UTC)
     eth = EntityRef(type="crypto", id="ETH", name="Ethereum", confidence=0.95, salience=1.0)
 
