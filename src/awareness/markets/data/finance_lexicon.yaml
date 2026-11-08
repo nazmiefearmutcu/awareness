@@ -1,0 +1,237 @@
+# aw-fin-1: awareness finance sentiment lexicon (hand-curated, original word lists).
+#
+# Keys are lower-cased terms or phrases. A key may list alternative surface forms
+# separated by "|" (for example "surge|surges|surged"); every alternative receives the
+# same weight. Phrases are matched greedily before single words, so a phrase entry
+# overrides the words it contains. Weight 0 entries are blockers: they consume their
+# tokens without contributing a hit (for example "by default").
+#
+# Weights are roughly in [-3, +3]. Negators flip and dampen a hit (x -0.6); intensifiers
+# scale it (x 1.4). See awareness.markets.nlp.lexicon for the scoring rules.
+
+version: aw-fin-1
+
+neutral_phrases:
+  "by default|default setting|default settings|default value|varsayılan": 0
+
+positive:
+  # ── earnings and guidance ────────────────────────────────────────────────
+  "beat estimates|beats estimates|beat expectations|beats expectations": 2
+  "tops estimates|topped estimates|exceeds expectations|exceeded expectations|exceeds estimates|exceeded estimates": 2
+  "raised guidance|raises guidance|raise guidance|raising guidance|lifts guidance|lifted guidance": 2
+  "raised outlook|raises outlook|raising outlook|lifted outlook|raises forecast|raised forecast|raising forecast": 2
+  "better-than-expected|above expectations|above estimates|above forecasts": 1.5
+  "strong earnings|strong results|strong demand|strong guidance|strong quarter": 1.5
+  "record revenue|record profit|record earnings|record sales|record quarter": 1.5
+  "profit growth|profit rose|profit jumped|profit surges|profit surged|earnings growth": 1.5
+  "margin expansion|margins expand|margins improve|margin improvement": 1.5
+  "record high|record highs|records high|record close": 1.5
+  "all-time high|all-time highs|multi-year high|multi-year highs": 1.5
+  "contract win|wins contract|wins deal|secures contract|secures deal|lands contract": 1.5
+  "dividend hike|dividend increase|dividend raise|raises dividend|raised dividend": 1.5
+  "strong buy|buy rating|buy-rated": 1.5
+  "stock split|share split": 0.5
+  "profitable|profitability": 1
+  "turnaround|turnaround plan": 1
+  "approval|approved|approves|approving": 1
+  "wins|won|win|winning": 1
+  "accretive|accretion": 1
+  "outperform|outperforms|outperformed|outperforming|outpaces|outpaced|outpacing": 1
+  "beats|beat": 1.5
+  "exceeds|exceeded|exceeding": 1.5
+  "tops|topped": 1
+  "stellar": 1.5
+  "bullish|upbeat": 1.5
+  "optimistic|optimism": 1
+  "overweight": 1
+  "upside": 1
+  "undervalued|bargain": 1
+  "breakthrough|breakthroughs": 1.5
+  "partnership|partnerships": 0.8
+  "milestone|milestones": 0.8
+  "successful|success": 1
+  "resilient|resilience": 1
+  "favorable|favourable": 1
+  "healthy|healthier": 0.8
+  "solid": 0.8
+  "strong|stronger|strongest|robust": 0.8
+  "growth|grows|grew|growing": 0.7
+  "expands|expansion|expanding": 0.8
+  "improves|improved|improvement|improving": 1
+  "accelerates|accelerated|accelerating": 1
+  "dominant|dominance": 0.8
+  # ── price action ─────────────────────────────────────────────────────────
+  "surge|surges|surged|surging": 1
+  "soar|soars|soared|soaring": 1.5
+  "rally|rallies|rallied|rallying": 1
+  "rebound|rebounds|rebounded|rebounding": 1
+  "recovers|recovered|recovering|recovery|recoveries": 1
+  "jump|jumps|jumped|jumping": 1
+  "climb|climbs|climbed|climbing": 1
+  "gain|gains|gained|gaining": 0.8
+  "boost|boosts|boosted|boosting": 1
+  "lifts|lifted": 0.8
+  "buyback|buybacks|share repurchase|share repurchases": 1
+  # ── analyst and corporate actions ───────────────────────────────────────
+  "upgrade|upgrades|upgraded|upgrading": 1.5
+  "raises price target|raised price target|price target raised": 1.5
+  "accretive deal|synergies ahead": 1
+  # ── Turkish ─────────────────────────────────────────────────────────────
+  "yükseliş|yükseldi|yükselen|yükselir|yükseliyor|yükselişe": 1
+  "yükseltti|yükseltildi|yükseltilmesi|yükseltilen": 1.5
+  "hedef fiyat yükseltti|hedef fiyatı artırdı|hedef fiyatı yükseltti": 1.5
+  "beklentilerin üzerinde|beklentilerin üstünde|beklentileri aştı": 1.5
+  "kâr artışı|kâr artırdı|kârını artırdı|kâr arttı|kârda artış": 1.5
+  "rekor kâr|rekor kar": 1.5
+  "rekor|rekor kırdı|rekor seviye": 1.5
+  "kâr|kazanç|kazandı|kazanç artışı": 1
+  "temettü|temettü ödemesi|temettü artışı": 1
+  "geri alım|geri alım programı": 1
+  "büyüme|büyüdü|büyüyen|büyümesi": 1
+  "artış|arttı|artar|artırdı|artırarak|artan": 0.8
+  "toparlandı|toparlanma|toparlanır": 1
+  "güçlü|güçlü bilanço|güçlendi": 1
+  "olumlu|olumlu beklenti|olumlu gelişme": 1
+  "başarılı|başarı": 1
+  "sağlam|sağlamlaştı": 1
+  "ihracat artışı|ihracat rekoru": 1
+
+negative:
+  # ── earnings and guidance ────────────────────────────────────────────────
+  "missed estimates|misses estimates|miss estimates|missing estimates|missed expectations|misses expectations|missing expectations": -2
+  "cut guidance|cuts guidance|cutting guidance|lowered guidance|lowers guidance|lowering guidance": -2
+  "lowered outlook|lowers outlook|cuts outlook|cut outlook|cutting outlook": -2
+  "cuts forecast|cut forecast|lowers forecast|lowered forecast|slashes forecast|slashed forecast|slashes outlook": -2
+  "guidance cut|guidance cuts": -2
+  "profit warning|profit warnings|revenue warning|kâr uyarısı": -2.5
+  "warns on profit|warns of lower profit|warned on profit": -2
+  "weak outlook|weak guidance|weak demand|weak results|weak earnings|weak quarter": -1.5
+  "net loss|losses widen|widened losses|wider losses": -2
+  "beklentilerin altında|beklentilerin altında kaldı|beklentilerin altında kalan": -1.5
+  "düşük beklenti|düşük kâr": -1
+  "zarar|zararı|zarar etti|zarar açıkladı": -1.5
+  "kâr düştü|kârı düştü|kâr geriledi": -1.5
+  "weak|weaker|weakest|weakness|weakens|weakened": -1
+  "shortfall|shortfalls": -1.5
+  "disappoints|disappointed|disappointing|disappointment|disappoint": -1.5
+  "misses|missed|miss": -1.5
+  "headwinds|headwind": -1
+  "impairment|impairments|writedown|write-down|write-downs|writedowns": -2
+  # ── distress and legal ───────────────────────────────────────────────────
+  "bankruptcy|bankruptcies|bankrupt": -3
+  "insolvency|insolvent": -2.5
+  "default|defaults|defaulted|defaulting": -2
+  "fraud|frauds|fraudulent": -3
+  "embezzlement|ponzi": -3
+  "scandal|scandals": -2
+  "misled|misleading": -2
+  "illegal|violation|violations|violated": -2
+  "arrested|arrest": -2
+  "charged with|faces charges": -1.5
+  "lawsuit|lawsuits|sued|sues|litigation": -1.5
+  "fined|fines|penalty|penalties": -1.5
+  "probe|probes|probed|investigation|investigations|investigates|investigating|investigated": -1.5
+  "scrutiny": -1
+  "sanction|sanctions|sanctioned": -1
+  "recall|recalls|recalled": -1
+  "hack|hacked|hacks|breach|breached|data breach": -2
+  "outage|outages": -1.5
+  "suspends|suspended|suspension|suspend": -1.5
+  "crisis|crises": -2
+  "recession|recessions|recessionary": -2
+  "downturn|downturns": -1.5
+  "contraction|contracted": -1
+  "shutdown|shutdowns": -1
+  # ── labour and restructuring ─────────────────────────────────────────────
+  "layoff|layoffs|laid off|lays off|job cuts|job losses|cuts jobs|cutting jobs": -1.5
+  "restructuring|restructure": -0.8
+  "delay|delays|delayed|delaying": -1
+  # ── price action ─────────────────────────────────────────────────────────
+  "plunge|plunges|plunged|plunging": -1.5
+  "plummet|plummets|plummeted|plummeting": -2
+  "tumble|tumbles|tumbled|tumbling": -2
+  "crash|crashes|crashed|crashing": -2
+  "collapse|collapses|collapsed|collapsing": -2
+  "slump|slumps|slumped|slumping": -1.5
+  "sink|sinks|sank|sinking": -1.5
+  "tank|tanks|tanked|tanking": -1.5
+  "sell-off|selloff|sell off|sell-offs|selloffs|sell offs": -1.5
+  "fall|falls|fell|falling": -1
+  "drop|drops|dropped|dropping": -1
+  "decline|declines|declined|declining|decrease|decreases|decreased": -1
+  "slides|slid|sliding": -1
+  "loss|losses": -1.5
+  "lost|losing": -1
+  "downgrade|downgrades|downgraded|downgrading": -1.5
+  "underperform|underperforms|underperformed|underperforming|underweight": -1
+  "bearish|pessimistic|pessimism": -1.5
+  "worst|worse|worsen|worsens|worsened|worsening": -1
+  "struggles|struggling|struggle": -1
+  "concerns|concern|concerned": -0.8
+  "warning|warns|warned|warn": -1
+  "tariff|tariffs": -0.8
+  "war|conflict": -0.5
+  # ── Turkish ─────────────────────────────────────────────────────────────
+  "düştü|düşüş|düşen|düşer|düştükçe|düşerek|düşmesi": -1
+  "sert düşüş|keskin düşüş|sert düştü|keskin düştü": -1.5
+  "çöktü|çöküş|çakıldı|çakılma": -2
+  "zayıf|zayıf beklenti|zayıfladı|zayıflama": -1
+  "gerileme|geriledi|geriliyor": -1
+  "kötü|kötüleşti|kötüleşme": -1
+  "kaybetti|kayıp|kayıplar|kaybetmek": -1.5
+  "iflas|iflas başvurusu|iflas etti|iflas başvurusunda": -3
+  "temerrüt|temerrüde": -2
+  "dolandırıcılık|sahtecilik": -3
+  "soruşturma|soruşturması|soruşturmaya|soruşturmasında": -1.5
+  "ceza|cezası|cezalandırıldı": -1.5
+  "dava|davası|davalık|davalar": -1.5
+  "işten çıkarma|işten çıkardı|işten çıkarmalar|işten çıkarılma|işten çıkaracak": -1.5
+  "geri çağırma|geri çağırıldı": -1
+  "kriz|krizi": -2
+  "daralma|daraldı|küçüldü|küçülme": -1.5
+  "satış baskısı|satış dalgası": -1.5
+  "yasak|yasaklandı": -1
+  "uyarı|uyardı|uyarısında": -1
+  "siber saldırı|saldırıya uğradı": -1.5
+  "erteleme|ertelendi": -1
+
+negators:
+  - not
+  - no
+  - never
+  - without
+  - nor
+  - cannot
+  - "can't"
+  - "didn't"
+  - "isn't"
+  - "doesn't"
+  - "don't"
+  - "wasn't"
+  - "weren't"
+  - "won't"
+  - "değil"
+  - "yok"
+  - "hiç"
+
+# "fails to" / "failed to" / "fail to" / "failing to" also negate (handled in code).
+failure_words:
+  - fails
+  - fail
+  - failed
+  - failing
+
+intensifiers:
+  - sharply
+  - sharp
+  - sharper
+  - steeply
+  - significantly
+  - dramatically
+  - massively
+  - strongly
+  - heavily
+  - deeply
+  - sert
+  - keskin
+  - ciddi
