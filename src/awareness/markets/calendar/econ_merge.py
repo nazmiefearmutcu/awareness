@@ -42,6 +42,9 @@ SCHEDULE_RANK: dict[str, int] = {
     "nasdaq": 1, "forexfactory": 2,
 }
 VALUE_FIELDS: tuple[str, ...] = ("actual", "actual_value", "forecast", "forecast_value", "previous", "previous_value")
+# A value group is a display string plus its parsed number; each group has its own supplier.
+VALUE_GROUPS: tuple[str, ...] = ("actual", "forecast", "previous")
+CENTRAL_PROVIDERS: frozenset[str] = frozenset({"fed", "ecb", "boe", "boj", "tcmb"})
 _UNKNOWN_RANK = 9
 
 
@@ -54,16 +57,21 @@ class MergeState:
     """
 
     aliases: dict[str, str] = field(default_factory=dict)
-    value_provider: dict[str, str] = field(default_factory=dict)
+    # event id -> {value group -> provider that supplied it}; groups: actual, forecast, previous
+    value_provider: dict[str, dict[str, str]] = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, raw: Any) -> MergeState:
         if not isinstance(raw, dict):
             return cls()
-        return cls(
-            aliases=dict(raw.get("aliases") or {}),
-            value_provider=dict(raw.get("value_provider") or {}),
-        )
+        value_provider: dict[str, dict[str, str]] = {}
+        for event_key, supplied in (raw.get("value_provider") or {}).items():
+            if isinstance(supplied, str):
+                # legacy shape (one supplier per event): applies to every value group
+                value_provider[event_key] = {group: supplied for group in VALUE_GROUPS}
+            elif isinstance(supplied, dict):
+                value_provider[event_key] = {str(g): str(p) for g, p in supplied.items()}
+        return cls(aliases=dict(raw.get("aliases") or {}), value_provider=value_provider)
 
     def to_json(self) -> dict[str, Any]:
         return {"aliases": dict(self.aliases), "value_provider": dict(self.value_provider)}
@@ -124,8 +132,35 @@ def _incoming_provider(event: EconEvent) -> str | None:
     return event.sources[0].provider if event.sources else None
 
 
-def _supplier(event: EconEvent, state: MergeState) -> str | None:
-    return state.value_provider.get(event.id) or _best_provider(event, VALUE_RANK)
+def _supplier(event: EconEvent, state: MergeState, group: str) -> str | None:
+    """Provider that supplied this value group; falls back to the best-ranked source if unknown."""
+    recorded = state.value_provider.get(event.id, {}).get(group)
+    return recorded or _best_provider(event, VALUE_RANK)
+
+
+def _record_supplier(state: MergeState, event_key: str, event: EconEvent, provider: str | None) -> None:
+    """Record ``provider`` as the supplier of every value group ``event`` actually carries."""
+    if provider is None:
+        return
+    for group in VALUE_GROUPS:
+        if getattr(event, group) is not None or getattr(event, f"{group}_value") is not None:
+            state.value_provider.setdefault(event_key, {})[group] = provider
+
+
+def _is_official(event: EconEvent) -> bool:
+    return event.category == "central_bank" and bool(_providers(event) & CENTRAL_PROVIDERS)
+
+
+def _official_side(old: EconEvent, new: EconEvent) -> EconEvent | None:
+    """The central-bank side of a decision/ForexFactory-rate pair, or None.
+
+    Works for merged rows too: an already-merged row still counts as official.
+    """
+    if _is_official(old) and "forexfactory" in _providers(new) and new.category == "central_bank":
+        return old
+    if _is_official(new) and "forexfactory" in _providers(old) and old.category == "central_bank":
+        return new
+    return None
 
 
 def _merge_sources(old: Iterable[ProviderRef], new: Iterable[ProviderRef]) -> list[ProviderRef]:
@@ -210,22 +245,35 @@ def _resolve(event: EconEvent, working: Mapping[str, EconEvent], state: MergeSta
 
 
 def _merge_values(old: EconEvent, new: EconEvent, state: MergeState) -> dict[str, Any]:
-    new_provider = _incoming_provider(new)
-    old_supplier = _supplier(old, state)
-    old_has, new_has = _has_values(old), _has_values(new)
-    if old_supplier is not None and new_provider == old_supplier:
-        replace = True  # newer snapshot from the same provider always replaces its values
-    elif not old_has and new_has:
-        replace = True
-    elif new_has and VALUE_RANK.get(new_provider or "", _UNKNOWN_RANK) < VALUE_RANK.get(old_supplier or "", _UNKNOWN_RANK):
-        replace = True  # higher-ranked provider
-    else:
-        replace = False  # lower-ranked provider only fills fields still None
-    if replace:
-        if new_provider is not None:
-            state.value_provider[old.id] = new_provider
-        return {name: getattr(new, name) for name in VALUE_FIELDS}
-    return {name: getattr(old, name) if getattr(old, name) is not None else getattr(new, name) for name in VALUE_FIELDS}
+    """Per value group (actual / forecast / previous), decide which side's value is kept.
+
+    * A snapshot that carries no value for a group never clears the stored one.
+    * An empty stored group takes the incoming value.
+    * The same provider that supplied the group replaces it (a newer revision).
+    * A higher-ranked provider replaces a lower-ranked supplier's value.
+    * Otherwise the stored value stays (a lower-ranked provider only fills empty groups).
+    """
+    provider = _incoming_provider(new)
+    out: dict[str, Any] = {}
+    for group in VALUE_GROUPS:
+        value_name = f"{group}_value"
+        old_pair = (getattr(old, group), getattr(old, value_name))
+        new_pair = (getattr(new, group), getattr(new, value_name))
+        if new_pair == (None, None):
+            take = False
+        elif old_pair == (None, None):
+            take = True
+        else:
+            supplier = _supplier(old, state, group)
+            outranks = VALUE_RANK.get(provider or "", _UNKNOWN_RANK) < VALUE_RANK.get(supplier or "", _UNKNOWN_RANK)
+            take = provider is not None and (provider == supplier or outranks)
+        if take:
+            out[group], out[value_name] = new_pair
+            if provider is not None:
+                state.value_provider.setdefault(old.id, {})[group] = provider
+        else:
+            out[group], out[value_name] = old_pair
+    return out
 
 
 def _unit_for(values: Mapping[str, Any], old: EconEvent, new: EconEvent) -> str | None:
@@ -241,11 +289,15 @@ def _unit_for(values: Mapping[str, Any], old: EconEvent, new: EconEvent) -> str 
 
 def _merge_pair(old: EconEvent, new: EconEvent, state: MergeState) -> EconEvent:
     values = _merge_values(old, new, state)
-    if old.all_day != new.all_day:
-        take_new_time = old.all_day and not new.all_day  # never a timed value replaced by all-day
+    official = _official_side(old, new)
+    if official is not None:
+        time_source = official  # central bank sets the date, time and all-day flag of its decision
     else:
-        take_new_time = _best_rank(new, SCHEDULE_RANK) < _best_rank(old, SCHEDULE_RANK)
-    time_source = new if take_new_time else old
+        if old.all_day != new.all_day:
+            take_new_time = old.all_day and not new.all_day  # never a timed value replaced by all-day
+        else:
+            take_new_time = _best_rank(new, SCHEDULE_RANK) < _best_rank(old, SCHEDULE_RANK)
+        time_source = new if take_new_time else old
     title_source = new if _best_rank(new, SCHEDULE_RANK) < _best_rank(old, SCHEDULE_RANK) else old
 
     statuses = {old.status, new.status}
@@ -302,9 +354,7 @@ def merge_econ_events(
         if target is None:
             working[event.id] = event
             touched[event.id] = None
-            provider = _incoming_provider(event)
-            if _has_values(event) and provider is not None:
-                state.value_provider[event.id] = provider
+            _record_supplier(state, event.id, event, _incoming_provider(event))
         else:
             if target != event.id:
                 state.aliases[event.id] = target

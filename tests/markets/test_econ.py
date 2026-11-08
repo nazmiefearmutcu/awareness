@@ -667,3 +667,79 @@ def test_central_bank_decision_merges_with_ff_rate_row_in_either_order() -> None
 def test_nasdaq_rejects_non_object_payload() -> None:
     with pytest.raises(ValueError):
         parse_nasdaq_econ([], day=NASDAQ_DAY, fetched_at=NOW)  # type: ignore[arg-type]
+
+
+# ── fix round 2 ───────────────────────────────────────────────────────────
+
+
+def _latest(current: EconEvent, changed: list[EconEvent]) -> EconEvent:
+    return changed[0] if changed else current
+
+
+def test_refresh_from_one_provider_never_clears_another_providers_actual() -> None:
+    state = MergeState()
+    t = NOW
+    current = _stored(merge_econ_events([], [_snap("nasdaq", forecast="0.5%")], now=t, state=state))
+    assert current.status == "scheduled"
+
+    t += timedelta(minutes=30)  # FF fills the actual
+    current = _latest(current, merge_econ_events(
+        [current], [_snap("forexfactory", forecast="0.9%", actual="0.4%", fetched=t)], now=t, state=state))
+    assert current.actual == "0.4%" and current.forecast == "0.5%" and current.status == "released"
+
+    steps = [
+        ("nasdaq", "0.5%"),          # step 3: Nasdaq refresh, no actual
+        ("forexfactory", "0.9%"),    # step 4: FF refresh, actual again
+        ("nasdaq", "0.5%"),          # step 5: Nasdaq refresh, no actual
+    ]
+    for provider, forecast in steps:
+        t += timedelta(minutes=30)
+        changed = merge_econ_events(
+            [current], [_snap(provider, forecast=forecast, fetched=t)], now=t, state=state)
+        current = _latest(current, changed)
+        assert current.actual == "0.4%", provider
+        assert current.actual_value == pytest.approx(0.4), provider
+        assert current.status == "released", provider
+        assert current.forecast == "0.5%", provider
+
+
+def test_nasdaq_actual_overrides_ff_actual() -> None:
+    state = MergeState()
+    t = NOW
+    current = _stored(merge_econ_events([], [_snap("nasdaq", forecast="0.5%")], now=t, state=state))
+    t += timedelta(minutes=30)
+    current = _latest(current, merge_econ_events(
+        [current], [_snap("forexfactory", actual="0.4%", fetched=t)], now=t, state=state))
+    assert current.actual == "0.4%"
+    t += timedelta(minutes=30)
+    current = _latest(current, merge_econ_events(
+        [current], [_snap("nasdaq", forecast="0.5%", actual="0.45%", fetched=t)], now=t, state=state))
+    assert current.actual == "0.45%"
+    assert current.actual_value == pytest.approx(0.45)
+    assert current.status == "released"
+
+
+@pytest.mark.parametrize("cb_first", [True, False])
+def test_all_day_boj_decision_keeps_its_date_when_merged_with_ff_rate(cb_first: bool) -> None:
+    at = datetime(2026, 12, 18, 0, 0, tzinfo=UTC)
+    boj = EconEvent(
+        id=event_id("JP", "BoJ Interest Rate Decision", at),
+        country="JP", currency="JPY", title="BoJ Interest Rate Decision", category="central_bank",
+        scheduled_at=at, all_day=True, importance=3,
+        sources=[ProviderRef(provider="boj", url="https://www.boj.or.jp/en/mopo/mpmsche_minu/index.htm",
+                             fetched_at=NOW, basis="native")],
+    )
+    ff = parse_forexfactory(
+        [{"title": "BOJ Policy Rate", "country": "JPY", "date": "2026-12-18T08:00:00+00:00",
+          "impact": "High", "forecast": "0.75%", "previous": "0.50%"}],
+        fetched_at=NOW,
+    )[0]
+    incoming = [boj, ff] if cb_first else [ff, boj]
+    changed = merge_econ_events([], incoming, now=NOW)
+    assert len(changed) == 1
+    ev = changed[0]
+    assert ev.all_day is True
+    assert ev.scheduled_at == at
+    assert ev.title == "BoJ Interest Rate Decision"
+    assert ev.forecast == "0.75%"
+    assert {s.provider for s in ev.sources} == {"boj", "forexfactory"}

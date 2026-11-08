@@ -180,8 +180,11 @@ def test_packaged_tcmb_schedule_is_verified_and_complete(markets_settings: Marke
     assert len(summaries) == 12
     # Turkiye is UTC+3 all year: 14:00 Istanbul = 11:00 UTC.
     assert all(e.scheduled_at.timetz().replace(tzinfo=None) == time(11, 0) for e in decisions)
-    assert decisions[0].scheduled_at == datetime(2026, 1, 22, 11, 0, tzinfo=UTC)
-    assert decisions[-1].scheduled_at == datetime(2027, 6, 10, 11, 0, tzinfo=UTC)
+    expected_dates = [
+        (2026, 1, 22), (2026, 3, 12), (2026, 4, 22), (2026, 6, 11), (2026, 7, 23), (2026, 9, 10),
+        (2026, 10, 22), (2026, 12, 10), (2027, 1, 21), (2027, 3, 18), (2027, 4, 22), (2027, 6, 10),
+    ]
+    assert [e.scheduled_at for e in decisions] == [datetime(y, m, d, 11, 0, tzinfo=UTC) for y, m, d in expected_dates]
     for event in decisions:
         assert event.country == "TR" and event.currency == "TRY"
         assert event.importance == 3 and event.category == "central_bank"
