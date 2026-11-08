@@ -74,10 +74,10 @@ def label_for_score(score: float) -> SentimentLabel:
 
 @dataclass(frozen=True)
 class GappedRule:
-    """A ``first`` word and a ``second`` word separated by at most GAP_MAX tokens."""
+    """A ``first`` word and a ``second`` phrase separated by at most GAP_MAX tokens."""
 
     first: frozenset[str]
-    second: frozenset[str]
+    second: frozenset[Term]
     weight: float
 
 
@@ -149,10 +149,13 @@ def load_lexicon(path: Path = LEXICON_PATH) -> Lexicon:
 def _parse_gapped(entries: list[dict[str, Any]]) -> list[GappedRule]:
     rules: list[GappedRule] = []
     for entry in entries:
-        first = frozenset(w for w in (tokenize(p)[0] for p in str(entry["first"]).split("|") if p.strip()) if w)
-        second = frozenset(w for w in (tokenize(p)[0] for p in str(entry["second"]).split("|") if p.strip()) if w)
+        first_terms = [tuple(t) for t in (tokenize(p) for p in str(entry["first"]).split("|")) if t]
+        first = frozenset(term[0] for term in first_terms if len(term) == 1)
+        second = frozenset(
+            tuple(t) for t in (tokenize(p) for p in str(entry["second"]).split("|")) if t
+        )
         if not first or not second:
-            raise ValueError(f"gapped rule needs non-empty first and second words: {entry!r}")
+            raise ValueError(f"gapped rule needs non-empty first and second terms: {entry!r}")
         rules.append(GappedRule(first=first, second=second, weight=float(entry["weight"])))
     return rules
 
@@ -174,9 +177,12 @@ class LexiconScorer:
         hits = 0
         i = 0
         while i < len(tokens):
-            matched_len, weight = self._match_at(tokens, i)
+            # Priority: multi-word phrase, then gapped rule, then single word.
+            matched_len, weight = self._match_at(tokens, i, multi_only=True)
             if matched_len == 0:
                 matched_len, weight = self._match_gapped(tokens, i)
+            if matched_len == 0:
+                matched_len, weight = self._match_at(tokens, i)
             if matched_len == 0:
                 i += 1
                 continue
@@ -194,10 +200,14 @@ class LexiconScorer:
             model=self.name,
         )
 
-    def _match_at(self, tokens: list[str], start: int) -> tuple[int, float]:
-        """Longest lexicon term starting at ``start``. Returns (length, weight) or (0, 0.0)."""
+    def _match_at(self, tokens: list[str], start: int, *, multi_only: bool = False) -> tuple[int, float]:
+        """Longest lexicon term starting at ``start``. Returns (length, weight) or (0, 0.0).
+
+        With ``multi_only`` only terms of two or more tokens are tried.
+        """
         table = self._lex.table
-        for length in range(min(self._lex.max_len, len(tokens) - start), 0, -1):
+        lowest = 2 if multi_only else 1
+        for length in range(min(self._lex.max_len, len(tokens) - start), lowest - 1, -1):
             term = tuple(tokens[start : start + length])
             if term in table:
                 return length, table[term]
@@ -211,8 +221,9 @@ class LexiconScorer:
             for j in range(start + 1, min(len(tokens), start + GAP_MAX + 2)):
                 if tokens[j] == CLAUSE_BOUNDARY:
                     break
-                if tokens[j] in rule.second:
-                    return j - start + 1, rule.weight
+                for term in rule.second:
+                    if tuple(tokens[j : j + len(term)]) == term:
+                        return j + len(term) - start, rule.weight
         return 0, 0.0
 
     def _modifier(self, tokens: list[str], index: int) -> float:

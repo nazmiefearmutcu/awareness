@@ -267,12 +267,39 @@ def test_mention_order_attribution_without_clause_break() -> None:
         ("Nvidia soars on record revenue while Intel slumps after weak outlook.", "positive", "negative"),
         ("Analysts cut Intel rating while Nvidia rallies.", "positive", "negative"),
         ("Weak outlook hits Intel while Nvidia rallies.", "positive", "negative"),
+        ("Nvidia, the chipmaker, soars while Intel slumps after weak outlook.", "positive", "negative"),
+        ("Intel shares slump as Nvidia stock surges to record.", "positive", "negative"),
+        ("Nvidia stock surges to record as Intel shares slump.", "positive", "negative"),
+        ("Intel slumps after Nvidia record revenue beats.", "positive", "negative"),
     ],
 )
 def test_predicate_on_either_side_of_mention_is_kept(headline: str, nvda_label: str, intc_label: str) -> None:
     out = SentimentScorer("lexicon").entity_sentiment(headline, None, [_nvda(), _intc()])
     assert out["NVDA"].label == nvda_label
     assert out["INTC"].label == intc_label
+
+
+def test_words_between_mentions_belong_to_one_side() -> None:
+    pieces = sentiment_mod._sentence_pieces(
+        "Intel shares slump as Nvidia stock surges to record.",
+        {"NVDA": sentiment_mod._surface_pattern(_nvda()), "INTC": sentiment_mod._surface_pattern(_intc())},
+    )
+    assert pieces == {"INTC": "Intel shares slump", "NVDA": "Nvidia stock surges to record."}
+
+
+def test_gapped_rules_require_analyst_or_price_target_object() -> None:
+    assert LEX.score("Oil falls after OPEC raised output target").label == "negative"
+    assert LEX.score("Company cuts emissions target").label == "neutral"
+    assert LEX.score("Analysts cut Intel rating").label == "negative"
+    assert LEX.score("Analysts raised price target on Nvidia").label == "positive"
+
+
+def test_oil_entity_not_flipped_by_output_target() -> None:
+    oil = EntityRef(type="commodity", id="CL", name="Oil", confidence=0.9)
+    out = SentimentScorer("lexicon").entity_sentiment(
+        "Oil falls after OPEC raised output target", None, [oil]
+    )
+    assert out["CL"].label == "negative"
 
 
 # ── entity sentiment ──────────────────────────────────────────────────────
