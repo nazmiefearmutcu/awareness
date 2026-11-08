@@ -74,7 +74,8 @@ def corp_event_id(type_: str, symbol: str | None, day: date, extra: str = "") ->
 def parse_split_ratio(raw: str | None) -> tuple[float, float] | None:
     """``"8:1"``, ``"1 : 2"``, ``"2-for-1"`` -> ``(8.0, 1.0)``, ``(1.0, 2.0)``, ``(2.0, 1.0)``.
 
-    The two numbers are kept in the order the provider wrote them (``ratio_from``, ``ratio_to``).
+    The two numbers are kept in the order the provider wrote them (``ratio_first``, ``ratio_second``).
+    Whether that order is new:old or old:new is not established by the fixture, so no direction is implied.
     """
     text = _clean(raw)
     if text is None:
@@ -175,9 +176,11 @@ def parse_nasdaq_dividends(payload: dict[str, Any], *, fetched_at: datetime, url
         if ex_date is None or symbol is None or company is None:
             continue
         amount = _money(row.get("dividend_Rate"))
+        if amount is None:  # identity includes the amount, so a row without one is not stored
+            continue
         events.append(
             CorpEvent(
-                id=corp_event_id("dividend", symbol, ex_date, "" if amount is None else repr(amount)),
+                id=corp_event_id("dividend", symbol, ex_date, repr(amount)),
                 type="dividend",
                 symbol=symbol,
                 company=company,
@@ -219,14 +222,25 @@ def parse_nasdaq_splits(payload: dict[str, Any], *, fetched_at: datetime, url: s
                 status="scheduled" if effective >= fetched_day else "completed",
                 fields={
                     "ratio": ratio_raw,
-                    "ratio_from": parsed[0] if parsed else None,
-                    "ratio_to": parsed[1] if parsed else None,
+                    "ratio_first": parsed[0] if parsed else None,
+                    "ratio_second": parsed[1] if parsed else None,
                     "payable_date": _iso(parse_us_date(_clean(row.get("payableDate")))),
                 },
                 sources=[provider],
             )
         )
     return events
+
+
+def _ipo_id(deal_id: str | None, company: str, symbol: str | None) -> str:
+    """One IPO deal, one id: the Nasdaq deal id when present, else company and proposed symbol.
+
+    Date and status are deliberately excluded, so a deal moving through the pipeline
+    (filed, scheduled, priced, withdrawn) updates its existing row in place.
+    """
+    if deal_id:
+        return stable_id("ipo", deal_id)
+    return stable_id("ipo", company.upper(), symbol)
 
 
 def parse_nasdaq_ipos(payload: dict[str, Any], *, fetched_at: datetime, url: str) -> list[CorpEvent]:
@@ -251,7 +265,7 @@ def parse_nasdaq_ipos(payload: dict[str, Any], *, fetched_at: datetime, url: str
             symbol = _normalize_symbol(row.get("proposedTickerSymbol"))
             events.append(
                 CorpEvent(
-                    id=corp_event_id("ipo", symbol, day, deal_id or company),
+                    id=_ipo_id(deal_id, company, symbol),
                     type="ipo",
                     symbol=symbol,
                     company=company,

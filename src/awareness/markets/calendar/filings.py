@@ -12,16 +12,16 @@ import html
 import logging
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import quote
 
 import feedparser
 
-from awareness.markets.calendar.corporate import corp_event_id
 from awareness.markets.collectors.base import CollectorContext, CollectorResult
 from awareness.markets.http import FetchError
-from awareness.markets.models import CorpEvent, ProviderRef
+from awareness.markets.models import CorpEvent, ProviderRef, stable_id
 from awareness.markets.ref.sec_tickers import SecIssuer, cik_to_issuer, load_issuers
 
 log = logging.getLogger(__name__)
@@ -73,7 +73,9 @@ FORMS: tuple[str, ...] = ("8-K", "10-Q", "10-K", "S-1", "6-K", "20-F", "SC 13D",
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _ITEM_RE = re.compile(r"Item\s+(\d\.\d{2})", re.IGNORECASE)
-_TITLE_RE = re.compile(r"^(?P<form>.+?) - (?P<company>.+) \((?P<cik>\d+)\) \((?P<role>Filer|Reporting)\)\s*$")
+_TITLE_RE = re.compile(
+    r"^(?P<form>.+?) - (?P<company>.+) \((?P<cik>\d+)\) \((?P<role>Filer|Issuer|Subject|Reporting)\)\s*$"
+)
 _FILED_RE = re.compile(r"Filed:\s*(\d{4}-\d{2}-\d{2})")
 _ACCNO_RE = re.compile(r"AccNo:\s*(\d{10}-\d{2}-\d{6})")
 _ID_ACCESSION_RE = re.compile(r"accession-number=(\d{10}-\d{2}-\d{6})")
@@ -121,6 +123,72 @@ def _accession(summary: str, entry_id: object) -> str | None:
     return id_match.group(1) if id_match else None
 
 
+@dataclass(frozen=True)
+class _Entry:
+    """One usable Atom entry: a filer, issuer, subject or reporting-owner view of a filing."""
+
+    role: str
+    form: str
+    company: str
+    cik: int
+    accession: str
+    filed: date
+    summary: str
+    link: str | None
+    updated: datetime | None
+
+
+def _entry_record(entry: Any) -> _Entry | None:
+    match = _TITLE_RE.match(_plain(entry.get("title")).strip())
+    if match is None:
+        return None
+    summary = _plain(entry.get("summary"))
+    filed_match = _FILED_RE.search(summary)
+    accession = _accession(summary, entry.get("id"))
+    if filed_match is None or accession is None:
+        return None
+    try:
+        filed = date.fromisoformat(filed_match.group(1))
+    except ValueError:  # regex matched but the date is impossible (e.g. 2026-02-30): skip this entry only
+        log.warning("corp.sec_filings: invalid filed date in entry %s", accession)
+        return None
+    return _Entry(
+        role=match["role"],
+        form=match["form"].strip(),
+        company=match["company"].strip(),
+        cik=int(match["cik"]),
+        accession=accession,
+        filed=filed,
+        summary=summary,
+        link=entry.get("link") or None,
+        updated=_entry_updated(entry),
+    )
+
+
+def _wants_issuer_side(form: str) -> bool:
+    """Form 4 and Schedule 13D/G are about the issuer or subject company, not the filer."""
+    upper = form.upper()
+    return upper == "4" or upper.startswith("SC 13D") or upper.startswith("SC 13G")
+
+
+def _pick(records: list[_Entry], issuer_side: bool) -> list[_Entry]:
+    """One entry per accession. Filing forms keep the ``Filer`` view only; issuer-side forms
+    keep the ``Issuer``/``Subject`` view and fall back to whatever entry exists."""
+    groups: dict[str, list[_Entry]] = {}
+    for record in records:
+        groups.setdefault(record.accession, []).append(record)
+    picked: list[_Entry] = []
+    for group in groups.values():
+        if issuer_side:
+            preferred = [r for r in group if r.role in ("Issuer", "Subject")]
+            picked.append(preferred[0] if preferred else group[0])
+        else:
+            filers = [r for r in group if r.role == "Filer"]
+            if filers:
+                picked.append(filers[0])
+    return picked
+
+
 def parse_sec_current_atom(
     content: bytes,
     *,
@@ -129,48 +197,40 @@ def parse_sec_current_atom(
     issuers_by_cik: Mapping[int, SecIssuer],
     url: str,
 ) -> list[CorpEvent]:
-    """Filer entries of an EDGAR "Latest Filings" Atom feed as ``filing`` corporate events.
+    """Filings from an EDGAR "Latest Filings" Atom feed as ``filing`` corporate events.
 
     ``form`` is the requested form type; item codes are decoded for 8-K requests only.
+    The event id is keyed on the accession number alone, so it does not change when
+    the ticker cache appears; the resolved ``symbol`` is an ordinary field.
     """
     feed = feedparser.parse(content)
     provider = ProviderRef(provider=SEC_PROVIDER, url=url, fetched_at=fetched_at)
     is_8k = form.upper().startswith("8-K")
+    issuer_side = _wants_issuer_side(form)
+    records = [r for r in (_entry_record(entry) for entry in feed.entries) if r is not None]
     events: list[CorpEvent] = []
-    seen: set[str] = set()
-    for entry in feed.entries:
-        title = _plain(entry.get("title"))
-        match = _TITLE_RE.match(title.strip())
-        if match is None or match["role"] != "Filer":
-            continue
-        summary = _plain(entry.get("summary"))
-        filed_match = _FILED_RE.search(summary)
-        accession = _accession(summary, entry.get("id"))
-        if filed_match is None or accession is None or accession in seen:
-            continue
-        seen.add(accession)
-        filed = date.fromisoformat(filed_match.group(1))
-        cik = int(match["cik"])
-        issuer = issuers_by_cik.get(cik)
+    for rec in _pick(records, issuer_side):
+        issuer = issuers_by_cik.get(rec.cik)
         symbol = issuer.ticker if issuer else None
         fields: dict[str, object] = {
-            "form": match["form"].strip(),
-            "accession": accession,
-            "cik": cik,
-            "url": entry.get("link") or None,
+            "form": rec.form,
+            "accession": rec.accession,
+            "cik": rec.cik,
+            "party": rec.role,
+            "url": rec.link,
         }
         if is_8k:
-            items = decode_8k_items(summary)
+            items = decode_8k_items(rec.summary)
             fields["items"] = items
             fields["material"] = any(item["code"] in MATERIAL_8K_ITEMS for item in items)
         events.append(
             CorpEvent(
-                id=corp_event_id("filing", symbol or str(cik), filed, accession),
+                id=stable_id("filing", rec.accession),
                 type="filing",
                 symbol=symbol,
-                company=match["company"].strip(),
-                date=filed,
-                datetime_utc=_entry_updated(entry),
+                company=rec.company,
+                date=rec.filed,
+                datetime_utc=rec.updated,
                 status="filed",
                 fields=fields,
                 sources=[provider],

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, date, datetime, timedelta
-from typing import Any, Literal
+from datetime import UTC, date, datetime, time, timedelta
+from typing import Literal
 
 from awareness.markets.collectors.base import CollectorContext, CollectorResult
 from awareness.markets.http import FetchError
@@ -34,12 +34,14 @@ EXCHANGE_WINDOW_BACK_DAYS = 7
 EXCHANGE_WINDOW_AHEAD_DAYS = 400
 
 
-def parse_nager(payload: list[Any], *, country: str, fetched_at: datetime, url: str) -> list[Holiday]:
+def parse_nager(payload: object, *, country: str, fetched_at: datetime, url: str) -> list[Holiday]:
     """Public holidays from a Nager ``PublicHolidays`` response.
 
     National holidays (``global`` true) are kept. Regional entries are kept only when
     they carry no ``counties`` restriction.
     """
+    if not isinstance(payload, list):  # e.g. an error object returned with HTTP 200
+        raise ValueError(f"Nager payload for {country} is not a list")
     cc = country.upper()
     provider = ProviderRef(provider=NAGER_PROVIDER, url=url, fetched_at=fetched_at)
     out: list[Holiday] = []
@@ -126,7 +128,7 @@ def _exchange_holiday(
     name: str,
     provider: ProviderRef,
     *,
-    early_close_time: Any = None,
+    early_close_time: time | None = None,
 ) -> Holiday:
     return Holiday(
         id=stable_id("xholiday", exchange, day, kind),
@@ -175,6 +177,21 @@ class NagerHolidayCollector:
         return CollectorResult(items=upserted, notes=notes)
 
 
+def exchange_coverage_end(mic: str) -> date:
+    """Last date the installed exchange_calendars version covers for ``mic``.
+
+    Beyond this date the store holds no closures for the exchange; the coverage end is
+    recorded in kv as ``holidays.coverage_end.<MIC>`` so consumers can say "unknown".
+    """
+    import exchange_calendars as xcals  # noqa: PLC0415 - pandas-backed, loaded only when needed
+
+    return xcals.get_calendar(mic).last_session.date()
+
+
+def _build_exchange(mic: str, start: date, end: date, fetched_at: datetime) -> tuple[list[Holiday], date]:
+    return exchange_holidays(mic, start, end, fetched_at=fetched_at), exchange_coverage_end(mic)
+
+
 class ExchangeHolidayCollector:
     """Closures and early closes for ``settings.exchanges`` over a rolling window."""
 
@@ -187,17 +204,24 @@ class ExchangeHolidayCollector:
         today = now.date()
         start = today - timedelta(days=EXCHANGE_WINDOW_BACK_DAYS)
         end = today + timedelta(days=EXCHANGE_WINDOW_AHEAD_DAYS)
+        from exchange_calendars.errors import InvalidCalendarName  # noqa: PLC0415 - lazy, pandas-backed
+
         holidays: list[Holiday] = []
         errors: list[str] = []
         ok = 0
         for mic in ctx.settings.exchanges:
             try:
-                found = await asyncio.to_thread(exchange_holidays, mic, start, end, fetched_at=now)
-            except Exception as exc:  # unknown MIC or calendar failure: log and skip this exchange
+                found, coverage_end = await asyncio.to_thread(_build_exchange, mic, start, end, now)
+            except InvalidCalendarName as exc:
+                errors.append(f"{mic}: unknown calendar")
+                log.warning("holidays.exchanges skipped unknown MIC %s: %s", mic, exc)
+                continue
+            except Exception as exc:  # calendar bug or data problem: keep the traceback, skip this exchange
                 errors.append(f"{mic}: {exc}")
-                log.warning("holidays.exchanges skipped %s: %s", mic, exc)
+                log.exception("holidays.exchanges failed for %s", mic)
                 continue
             holidays.extend(found)
+            ctx.store.kv_set(f"holidays.coverage_end.{mic.upper()}", coverage_end.isoformat())
             ok += 1
         if ok == 0 and errors:
             raise RuntimeError(f"no exchange calendar could be built; last: {errors[-1]}")

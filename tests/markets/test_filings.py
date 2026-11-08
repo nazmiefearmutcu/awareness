@@ -25,7 +25,8 @@ from awareness.markets.calendar.filings import (
 from awareness.markets.collectors.base import CollectorContext
 from awareness.markets.config import MarketsSettings
 from awareness.markets.http import Fetcher
-from awareness.markets.ref.sec_tickers import cik_to_issuer, parse_company_tickers
+from awareness.markets.models import CorpEvent
+from awareness.markets.ref.sec_tickers import SecIssuer, cik_to_issuer, parse_company_tickers
 from awareness.markets.sources.registry import PublisherRegistry
 from awareness.markets.store import MarketsStore
 
@@ -173,6 +174,9 @@ def test_collector_upserts_and_tolerates_failures(
     atom = fixture_bytes("sec_current_8k.atom")
     seen: list[str] = []
 
+    # Point the first entry at Apple's CIK so symbol resolution is exercised end to end.
+    atom = atom.replace(b"(0002108164)", b"(0000320193)")
+
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         seen.append(url)
@@ -201,6 +205,7 @@ def test_collector_upserts_and_tolerates_failures(
     stored = store.query_corp(date(2026, 11, 1), date(2026, 11, 30), types=["filing"])
     assert len(stored) == 10
     assert all(e.sources[0].provider == "sec" for e in stored)
+    assert [e.symbol for e in stored if e.fields["cik"] == 320193] == ["AAPL"]
 
 
 def test_collector_raises_when_every_form_fails(tmp_path: Path, store: MarketsStore) -> None:
@@ -224,3 +229,86 @@ def test_collector_raises_when_every_form_fails(tmp_path: Path, store: MarketsSt
 
     with pytest.raises(RuntimeError):
         asyncio.run(run())
+
+
+def _feed(*entries: str) -> bytes:
+    body = "".join(entries)
+    head = '<?xml version="1.0" encoding="ISO-8859-1"?>\n'
+    return (head + '<feed xmlns="http://www.w3.org/2005/Atom">' + body + "</feed>").encode("latin-1")
+
+
+def _entry(title: str, accession: str, filed: str = "2026-11-07", link: str = "https://www.sec.gov/x-index.htm") -> str:
+    return (
+        f"<entry><title>{title}</title>"
+        f'<link rel="alternate" type="text/html" href="{link}"/>'
+        f"<summary type=\"html\">&lt;b&gt;Filed:&lt;/b&gt; {filed} &lt;b&gt;AccNo:&lt;/b&gt; {accession}</summary>"
+        "<updated>2026-11-07T10:00:00-05:00</updated>"
+        f"<id>urn:tag:sec.gov,2008:accession-number={accession}</id></entry>"
+    )
+
+
+def _parse(content: bytes, form: str, issuers: dict[int, Any] | None = None) -> list[CorpEvent]:
+    return parse_sec_current_atom(content, form=form, fetched_at=FETCHED, issuers_by_cik=issuers or {}, url=FEED_URL)
+
+
+def test_filing_id_ignores_resolved_symbol(fixture_bytes: Callable[[str], bytes]) -> None:
+    content = fixture_bytes("sec_current_8k.atom")
+    unresolved = _parse(content, "8-K")[0]
+    resolved = _parse(content, "8-K", _issuers(fixture_bytes))[0]
+    # Map the first entry's CIK (2108164) to a ticker to force a symbol change.
+    mapped = {2108164: SecIssuer(cik=2108164, ticker="PONO", title="Pono Capital Four, Inc.", rank=0)}
+    with_symbol = _parse(content, "8-K", mapped)[0]
+    assert unresolved.symbol is None and with_symbol.symbol == "PONO"
+    assert with_symbol.id == unresolved.id == resolved.id
+
+
+def test_form4_keeps_issuer_side_not_reporting_owner() -> None:
+    content = _feed(
+        _entry("4 - Insider Jane (0001111111) (Reporting)", "0000000001-26-000001"),
+        _entry("4 - Example Corp (0002222222) (Issuer)", "0000000001-26-000001"),
+    )
+    (event,) = _parse(content, "4")
+    assert event.company == "Example Corp"
+    assert event.fields["cik"] == 2222222
+    assert event.fields["party"] == "Issuer"
+
+
+def test_sc13d_keeps_subject_company() -> None:
+    content = _feed(
+        _entry("SC 13D - Holder Fund (0003333333) (Filer)", "0000000002-26-000002"),
+        _entry("SC 13D - Target Inc (0004444444) (Subject)", "0000000002-26-000002"),
+    )
+    (event,) = _parse(content, "SC 13D")
+    assert event.company == "Target Inc"
+    assert event.fields["party"] == "Subject"
+
+
+def test_issuer_side_form_falls_back_when_no_issuer_entry() -> None:
+    content = _feed(_entry("4 - Insider Jane (0001111111) (Reporting)", "0000000003-26-000003"))
+    (event,) = _parse(content, "4")
+    assert event.company == "Insider Jane"
+    assert event.fields["party"] == "Reporting"
+
+
+def test_filing_form_drops_reporting_only_entries() -> None:
+    content = _feed(_entry("8-K - Reporter Co (0005555555) (Reporting)", "0000000004-26-000004"))
+    assert _parse(content, "8-K") == []
+
+
+def test_dedupe_by_accession_for_issuer_side() -> None:
+    content = _feed(
+        _entry("4 - Example Corp (0002222222) (Issuer)", "0000000005-26-000005"),
+        _entry("4 - Example Corp (0002222222) (Issuer)", "0000000005-26-000005"),
+        _entry("4 - Insider Jane (0001111111) (Reporting)", "0000000005-26-000005"),
+    )
+    events = _parse(content, "4")
+    assert len(events) == 1 and events[0].company == "Example Corp"
+
+
+def test_impossible_filed_date_skips_only_that_entry() -> None:
+    content = _feed(
+        _entry("8-K - Bad Date Co (0006666666) (Filer)", "0000000006-26-000006", filed="2026-02-30"),
+        _entry("8-K - Good Co (0007777777) (Filer)", "0000000006-26-000007"),
+    )
+    events = _parse(content, "8-K")
+    assert [e.company for e in events] == ["Good Co"]
