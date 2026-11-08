@@ -77,7 +77,11 @@ def test_populated_snapshot_cnn_section(store: MarketsStore, fixture_path: Fixtu
     assert len(cnn["history"]) == 30
     assert cnn["history"][0].keys() == {"ts", "value"}
     labels = {c["key"]: c["label"] for c in cnn["components"]}
-    assert len(cnn["components"]) >= 5
+    assert {c["key"] for c in cnn["components"]} == {
+        "market_momentum_sp500", "stock_price_strength", "stock_price_breadth", "put_call_options",
+        "market_volatility_vix", "junk_bond_demand", "safe_haven_demand",
+    }
+    assert len(cnn["components"]) == 7
     assert labels["market_momentum_sp500"] == "Market momentum (S&P 500)"
     assert labels["put_call_options"] == "Put/call options"
     sp500 = next(c for c in cnn["components"] if c["key"] == "market_momentum_sp500")

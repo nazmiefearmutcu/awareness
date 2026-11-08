@@ -100,13 +100,13 @@ def test_cnn_components_emitted_with_score_scale_for_current(fixture_path: Fixtu
     points = parse_cnn_fear_greed(payload, fetched_at=NOW, url="https://cnn.example/fng")
     comp = [p for p in points if p.indicator.startswith("cnn_fg.")]
     keys = {p.indicator.removeprefix("cnn_fg.") for p in comp}
+    # CNN publishes exactly seven components; the two moving-average series are not components.
     assert keys == {
-        "market_momentum_sp500", "market_momentum_sp125", "stock_price_strength", "stock_price_breadth",
-        "put_call_options", "market_volatility_vix", "market_volatility_vix_50", "junk_bond_demand",
-        "safe_haven_demand",
+        "market_momentum_sp500", "stock_price_strength", "stock_price_breadth",
+        "put_call_options", "market_volatility_vix", "junk_bond_demand", "safe_haven_demand",
     }
     current = [p for p in comp if p.meta.get("scale") == "score"]
-    assert len(current) == 9
+    assert len(current) == 7
     for p in current:
         assert 0.0 <= p.value <= 100.0
         assert "raw" in p.meta and p.label
@@ -116,6 +116,10 @@ def test_cnn_components_emitted_with_score_scale_for_current(fixture_path: Fixtu
     assert sp500.label == "extreme fear"
     history = [p for p in comp if p.meta.get("scale") == "raw"]
     assert history  # native-unit history points are kept, flagged, never mixed with score points
+    # The 125-day momentum and 50-day VIX series are kept only as meta of their parent component.
+    assert "moving_average_score" in sp500.meta
+    assert sp500.meta["moving_average_score"] == 8.0
+    assert not any("sp125" in p.indicator or "vix_50" in p.indicator for p in points)
 
 
 def test_cnn_rejects_payload_without_current_reading() -> None:
@@ -173,6 +177,15 @@ def test_cboe_max_rows_keeps_most_recent(fixture_path: FixturePath) -> None:
     rows = list(csv.reader(io.StringIO(text)))[1:]
     fifth_last = datetime.strptime(rows[-5][0], "%m/%d/%Y").replace(hour=21, minute=15, tzinfo=UTC)
     assert min(p.ts for p in points) == fifth_last
+
+
+def test_cboe_close_is_1615_new_york_per_date_dst_aware() -> None:
+    """The close is 16:15 New York local time: 21:15 UTC in EST (November), 20:15 UTC in EDT (July)."""
+    text = "DATE,OPEN,HIGH,LOW,CLOSE\n07/15/2026,1,2,0.5,1.5\n11/06/2026,1,2,0.5,2.5\n"
+    points = parse_cboe_history_csv(text, indicator="vix", fetched_at=NOW, url="u")
+    stamps = {p.value: p.ts for p in points}
+    assert stamps[1.5] == datetime(2026, 7, 15, 20, 15, tzinfo=UTC)
+    assert stamps[2.5] == datetime(2026, 11, 6, 21, 15, tzinfo=UTC)
 
 
 def test_cboe_skips_unparseable_rows() -> None:
@@ -474,7 +487,7 @@ def test_cboe_max_rows_zero_returns_nothing(fixture_path: FixturePath) -> None:
 
 
 def test_cboe_accepts_utf8_bom(fixture_path: FixturePath) -> None:
-    text = "﻿" + fixture_path("cboe_vix_history.csv").read_text(encoding="utf-8")
+    text = "\ufeff" + fixture_path("cboe_vix_history.csv").read_text(encoding="utf-8")
     points = parse_cboe_history_csv(text, indicator="vix", fetched_at=NOW, url="u")
     assert len(points) == 90
 

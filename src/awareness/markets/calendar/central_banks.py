@@ -68,7 +68,7 @@ def _doc(html_text: str) -> Any:
     if not html_text.strip():
         raise ValueError("empty page body")
     try:
-        return lxml_html.fromstring(html_text.lstrip("﻿"))
+        return lxml_html.fromstring(html_text.lstrip("\ufeff"))
     except etree.LxmlError as exc:
         raise ValueError(f"unparseable page body: {exc}") from exc
 

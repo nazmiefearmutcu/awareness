@@ -10,8 +10,8 @@ Series stored as :class:`IndicatorPoint` rows (see ``store.upsert_indicator_poin
   ``meta["scale"] == "raw"``. Consumers that want a 0-100 series must filter on
   ``scale == "score"``; the snapshot does.
 * ``crypto_fear_greed`` - alternative.me crypto Fear & Greed (0-100).
-* ``vix`` / ``vix9d`` / ``vix3m`` - CBOE closes. Each daily row is stamped at 21:15 UTC,
-  an approximation of the 16:00 New York close (16:15 EST, 17:15 EDT).
+* ``vix`` / ``vix9d`` / ``vix3m`` - CBOE closes. Each daily row is stamped at 16:15 New York
+  local time on its date, converted to UTC (21:15 UTC in EST, 20:15 UTC in EDT).
 * ``social.<universe>.mentions:<TICKER>`` - ApeWisdom mention counts, stamped at
   ``fetched_at`` floored to 30 minutes. Crypto ``.X`` suffixes are stripped.
 * ``gdelt.tone:<query_key>`` - GDELT average tone over the last 7 days, hourly.
@@ -28,9 +28,10 @@ import io
 import logging
 import math
 from collections.abc import Iterable, Mapping
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any, Literal
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 from awareness.markets.collectors.base import CollectorContext, CollectorResult
 from awareness.markets.http import FetchError, FetchResult
@@ -51,20 +52,24 @@ GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 GDELT_CURSOR_KEY = "gdelt.tone.cursor"
 GDELT_BATCH = 6
 
-CBOE_CLOSE_HOUR_UTC = 21
-CBOE_CLOSE_MINUTE_UTC = 15
+CBOE_CLOSE_LOCAL = time(16, 15)  # CBOE closes at 16:15 New York local time (DST-aware)
+CBOE_CLOSE_TZ = ZoneInfo("America/New_York")
 CBOE_HEADER = ["DATE", "OPEN", "HIGH", "LOW", "CLOSE"]
 
 CNN_COMPONENT_LABELS: dict[str, str] = {
     "market_momentum_sp500": "Market momentum (S&P 500)",
-    "market_momentum_sp125": "Market momentum (S&P 500, 125-day)",
     "stock_price_strength": "Stock price strength",
     "stock_price_breadth": "Stock price breadth",
     "put_call_options": "Put/call options",
     "market_volatility_vix": "Market volatility (VIX)",
-    "market_volatility_vix_50": "Market volatility (VIX 50-day)",
     "junk_bond_demand": "Junk bond demand",
     "safe_haven_demand": "Safe haven demand",
+}
+# CNN publishes two moving-average series beside its seven components. They are not components:
+# each one is kept only as meta (moving_average_score / _rating) of its parent component.
+CNN_MOVING_AVERAGE_PARENTS: dict[str, str] = {
+    "market_momentum_sp125": "market_momentum_sp500",
+    "market_volatility_vix_50": "market_volatility_vix",
 }
 CNN_PREVIOUS_KEYS = ("previous_close", "previous_1_week", "previous_1_month", "previous_1_year")
 
@@ -148,7 +153,7 @@ def _row_epoch(row: Mapping[str, Any]) -> datetime | None:
 
 
 def _cboe_stamp(day: date) -> datetime:
-    return datetime(day.year, day.month, day.day, CBOE_CLOSE_HOUR_UTC, CBOE_CLOSE_MINUTE_UTC, tzinfo=UTC)
+    return datetime.combine(day, CBOE_CLOSE_LOCAL, CBOE_CLOSE_TZ).astimezone(UTC)
 
 
 def _dedupe(points: Iterable[IndicatorPoint]) -> list[IndicatorPoint]:
@@ -160,6 +165,19 @@ def _dedupe(points: Iterable[IndicatorPoint]) -> list[IndicatorPoint]:
 
 
 # ── CNN Fear & Greed ──────────────────────────────────────────────────────
+
+
+def _moving_average_meta(payload: Mapping[str, Any], parent: str) -> dict[str, Any]:
+    """Current score and rating of the moving-average series whose parent is ``parent`` (if any)."""
+    for ma_key, ma_parent in CNN_MOVING_AVERAGE_PARENTS.items():
+        block = payload.get(ma_key)
+        if ma_parent != parent or not isinstance(block, Mapping):
+            continue
+        score = _score_or_none(block.get("score"))
+        if score is None:
+            return {}
+        return {"moving_average_score": score, "moving_average_rating": block.get("rating")}
+    return {}
 
 
 def parse_cnn_fear_greed(payload: dict, *, fetched_at: datetime, url: str) -> list[IndicatorPoint]:
@@ -202,9 +220,10 @@ def parse_cnn_fear_greed(payload: dict, *, fetched_at: datetime, url: str) -> li
         block_score = _score_or_none(block.get("score"))
         if block_ts is not None and block_score is not None:
             raw_now = next((_float_or_none(r.get("y")) for ts, r in timed if ts == block_ts), None)
+            meta: dict[str, Any] = {"scale": "score", "raw": raw_now}
+            meta.update(_moving_average_meta(payload, key))
             points.append(IndicatorPoint(indicator=indicator, ts=block_ts, value=block_score,
-                                         label=block.get("rating"),
-                                         meta={"scale": "score", "raw": raw_now}, source=source))
+                                         label=block.get("rating"), meta=meta, source=source))
         for ts, row in timed:
             raw = _float_or_none(row.get("y"))
             if ts is None or raw is None or ts == block_ts:
@@ -247,7 +266,7 @@ def parse_cboe_history_csv(
     (an HTML error page, for example).
     """
     source = ProviderRef(provider="cboe", url=url, fetched_at=fetched_at)
-    reader = csv.reader(io.StringIO(text.lstrip("﻿")))
+    reader = csv.reader(io.StringIO(text.lstrip("\ufeff")))
     header = next(reader, None)
     if not header or [h.strip().upper() for h in header[:5]] != CBOE_HEADER:
         raise ValueError(f"unexpected CBOE CSV header for {indicator}")

@@ -11,7 +11,9 @@ Rules
   lower-ranked provider only fills fields that are still None.
 * Schedule: a timed value is never replaced by an all-day one; otherwise the more official
   source wins. The title comes from the more official source (central bank > exchange/
-  calendar feeds > ForexFactory).
+  calendar feeds > ForexFactory); a refresh from the same provider takes its newer title.
+* Category and importance are re-derived from the title rules on every merge (the importance
+  rule is a floor; provider impact can raise it). A central-bank source keeps ``central_bank``.
 * Idempotent: merging the same inputs again returns ``[]`` (the alias map carries the
   fuzzy matches across runs, so the second run does not insert a duplicate).
 """
@@ -24,6 +26,7 @@ from datetime import timedelta
 from typing import Any
 
 from awareness.markets.calendar.econ_common import (
+    classify,
     is_rate_decision_title,
     normalize_title,
     parse_value,
@@ -46,6 +49,7 @@ VALUE_FIELDS: tuple[str, ...] = ("actual", "actual_value", "forecast", "forecast
 VALUE_GROUPS: tuple[str, ...] = ("actual", "forecast", "previous")
 CENTRAL_PROVIDERS: frozenset[str] = frozenset({"fed", "ecb", "boe", "boj", "tcmb"})
 _UNKNOWN_RANK = 9
+_DEFAULT_CATEGORY = "other"  # the rule table's default category (econ_importance.yaml)
 
 
 @dataclass
@@ -172,6 +176,24 @@ def _official_side(old: EconEvent, new: EconEvent) -> EconEvent | None:
     if _is_official(new) and _is_unmerged_rate_row(old):
         return new
     return None
+
+
+def derive_category(title: str, providers: set[str], *candidates: str | None) -> str:
+    """Category from the title rules. A central-bank source with a central-bank candidate stays
+    ``central_bank``; a title no rule matches keeps the first non-default candidate, else ``other``."""
+    if providers & CENTRAL_PROVIDERS and "central_bank" in candidates:
+        return "central_bank"
+    rule_category = classify(title)[1]
+    if rule_category != _DEFAULT_CATEGORY:
+        return rule_category
+    return next((c for c in candidates if c and c != _DEFAULT_CATEGORY), _DEFAULT_CATEGORY)
+
+
+def apply_rules(event: EconEvent) -> EconEvent:
+    """Re-apply the title rules to a stored event: category, and importance floored by the rule table."""
+    floor, _ = classify(event.title)
+    category = derive_category(event.title, _providers(event), event.category)
+    return event.model_copy(update={"category": category, "importance": max(event.importance, floor)})
 
 
 def _merge_sources(old: Iterable[ProviderRef], new: Iterable[ProviderRef]) -> list[ProviderRef]:
@@ -309,7 +331,8 @@ def _merge_pair(old: EconEvent, new: EconEvent, state: MergeState) -> EconEvent:
         else:
             take_new_time = _best_rank(new, SCHEDULE_RANK) < _best_rank(old, SCHEDULE_RANK)
         time_source = new if take_new_time else old
-    title_source = new if _best_rank(new, SCHEDULE_RANK) < _best_rank(old, SCHEDULE_RANK) else old
+    same_provider = _best_provider(old, SCHEDULE_RANK) == _best_provider(new, SCHEDULE_RANK)
+    title_source = new if same_provider or _best_rank(new, SCHEDULE_RANK) < _best_rank(old, SCHEDULE_RANK) else old
 
     statuses = {old.status, new.status}
     if "cancelled" in statuses:
@@ -327,8 +350,10 @@ def _merge_pair(old: EconEvent, new: EconEvent, state: MergeState) -> EconEvent:
             "title": title_source.title,
             "scheduled_at": time_source.scheduled_at,
             "all_day": time_source.all_day,
-            "importance": max(old.importance, new.importance),
-            "category": old.category if old.category is not None else new.category,
+            "importance": max(old.importance, new.importance, classify(title_source.title)[0]),
+            "category": derive_category(
+                title_source.title, _providers(old) | _providers(new), old.category, new.category
+            ),
             "description": old.description if old.description is not None else new.description,
             "currency": old.currency if old.currency is not None else new.currency,
             "status": status,

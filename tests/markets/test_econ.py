@@ -25,6 +25,7 @@ from awareness.markets.calendar.economic import (
     parse_forexfactory,
     parse_nasdaq_econ,
     parse_value,
+    reclassify_stored,
     store_merge,
 )
 from awareness.markets.collectors.base import CollectorContext
@@ -149,17 +150,21 @@ def test_nasdaq_countries_mapped(nasdaq_events: list[EconEvent]) -> None:
 
 
 def test_nasdaq_leading_index_duplicates_have_distinct_ids(nasdaq_events: list[EconEvent]) -> None:
-    leading = [e for e in nasdaq_events if e.country == "JP" and e.title == "Leading Index"]
+    leading = [e for e in nasdaq_events if e.country == "JP" and e.title.startswith("Leading Index")]
     assert len(leading) == 2
     assert leading[0].id != leading[1].id
 
 
-def test_nasdaq_times_are_utc_and_all_day_markers(nasdaq_events: list[EconEvent]) -> None:
-    spend = [e for e in nasdaq_events if e.title == "Household Spending"]
-    assert all(e.scheduled_at == datetime(2026, 11, 10, 18, 30, tzinfo=UTC) for e in spend)
+def test_nasdaq_gmt_is_new_york_wall_clock_converted_to_utc(nasdaq_events: list[EconEvent]) -> None:
+    # Nasdaq's "gmt" field is America/New_York local time (EST on 2026-11-10): 18:30 ET = 23:30 UTC.
+    spend = [e for e in nasdaq_events if e.title.startswith("Household Spending")]
+    assert len(spend) == 2
+    assert all(e.scheduled_at == datetime(2026, 11, 10, 23, 30, tzinfo=UTC) for e in spend)
     reserves = next(e for e in nasdaq_events if e.title == "Foreign Reserves (USD)")
-    assert reserves.scheduled_at == datetime(2026, 11, 10, 1, 0, tzinfo=UTC)
+    assert reserves.scheduled_at == datetime(2026, 11, 10, 6, 0, tzinfo=UTC)  # 01:00 ET
     assert reserves.all_day is False
+    wholesale = next(e for e in nasdaq_events if e.title == "Wholesale Inventories")
+    assert wholesale.scheduled_at == datetime(2026, 11, 10, 15, 0, tzinfo=UTC)  # 10:00 ET
     coincident = next(e for e in nasdaq_events if e.title == "Coincident Indicator")
     assert coincident.all_day is True
     assert coincident.scheduled_at == datetime(2026, 11, 10, 0, 0, tzinfo=UTC)
@@ -630,7 +635,7 @@ def test_ff_german_row_merges_with_nasdaq_de_row(fixture_path: Callable[[str], P
     nasdaq = next(e for e in parse_nasdaq_econ(payload, day=NASDAQ_DAY, fetched_at=NOW)
                   if e.title == "German Trade Balance")
     ff = parse_forexfactory(
-        [{"title": "German Trade Balance", "country": "EUR", "date": "2026-11-10T03:00:00+01:00",
+        [{"title": "German Trade Balance", "country": "EUR", "date": "2026-11-10T08:00:00+01:00",  # 07:00 UTC
           "impact": "Medium", "forecast": "19.0B", "previous": "19.5B"}],
         fetched_at=NOW,
     )[0]
@@ -769,3 +774,121 @@ def test_all_day_boj_decision_keeps_its_date_when_merged_with_ff_rate(cb_first: 
     assert ev.title == "BoJ Interest Rate Decision"
     assert ev.forecast == "0.75%"
     assert {s.provider for s in ev.sources} == {"boj", "forexfactory"}
+
+
+# ── final review wave A: New York times, variant labels, category re-derivation ──
+
+
+def _row(gmt: str, country: str, name: str, *, desc: str | None = None, actual: str | None = None,
+         consensus: str | None = None, previous: str | None = None) -> dict[str, Any]:
+    return {"gmt": gmt, "country": country, "eventName": name, "actual": actual,
+            "consensus": consensus, "previous": previous, "description": desc}
+
+
+def _payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"data": {"rows": rows}}
+
+
+def test_nasdaq_cpi_0830_new_york_in_november_is_1330_utc() -> None:
+    events = parse_nasdaq_econ(_payload([_row("08:30", "United States", "CPI")]),
+                               day=date(2026, 11, 10), fetched_at=NOW)
+    assert events[0].scheduled_at == datetime(2026, 11, 10, 13, 30, tzinfo=UTC)
+    assert events[0].all_day is False
+
+
+def test_nasdaq_cpi_0830_new_york_in_july_edt_is_1230_utc() -> None:
+    events = parse_nasdaq_econ(_payload([_row("08:30", "United States", "CPI")]),
+                               day=date(2026, 7, 14), fetched_at=NOW)
+    assert events[0].scheduled_at == datetime(2026, 7, 14, 12, 30, tzinfo=UTC)
+
+
+def test_nasdaq_all_day_rows_stay_utc_midnight_of_the_day() -> None:
+    events = parse_nasdaq_econ(_payload([_row("24H", "United States", "Coincident Indicator")]),
+                               day=date(2026, 7, 14), fetched_at=NOW)
+    assert events[0].all_day is True
+    assert events[0].scheduled_at == datetime(2026, 7, 14, 0, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("ff_first", [True, False])
+def test_nasdaq_and_ff_rows_for_same_release_merge_into_one_event(ff_first: bool) -> None:
+    nasdaq = parse_nasdaq_econ(
+        _payload([_row("10:00", "United States", "Wholesale Inventories", consensus="0.6%")]),
+        day=date(2026, 11, 10), fetched_at=NOW)
+    ff = parse_forexfactory(
+        [{"title": "Wholesale Inventories", "country": "USD", "date": "2026-11-10T10:00:00-05:00",
+          "impact": "Medium", "forecast": "0.6%", "previous": ""}],
+        fetched_at=NOW)
+    incoming = [*ff, *nasdaq] if ff_first else [*nasdaq, *ff]
+    changed = merge_econ_events([], incoming, now=NOW)
+    assert len(changed) == 1
+    assert changed[0].scheduled_at == datetime(2026, 11, 10, 15, 0, tzinfo=UTC)
+    assert {s.provider for s in changed[0].sources} == {"nasdaq", "forexfactory"}
+
+
+def test_duplicate_cpi_rows_get_period_labels_and_stable_ids() -> None:
+    rows = [
+        _row("08:30", "United States", "CPI", desc="Consumer prices, month-over-month change."),
+        _row("08:30", "United States", "CPI", desc="Consumer prices, year-over-year change."),
+    ]
+    events = parse_nasdaq_econ(_payload(rows), day=date(2026, 11, 10), fetched_at=NOW)
+    assert [e.title for e in events] == ["CPI (m/m)", "CPI (y/y)"]
+    at = datetime(2026, 11, 10, 13, 30, tzinfo=UTC)
+    assert [e.id for e in events] == [event_id("US", "CPI [#1]", at), event_id("US", "CPI [#2]", at)]
+
+
+def test_duplicate_rows_with_different_unit_pattern_get_unit_labels() -> None:
+    rows = [
+        _row("24H", "Japan", "Leading Index", previous="0.4%"),
+        _row("24H", "Japan", "Leading Index", consensus="116.7", previous="118.0"),
+    ]
+    events = parse_nasdaq_econ(_payload(rows), day=date(2026, 11, 10), fetched_at=NOW)
+    assert [e.title for e in events] == ["Leading Index (%)", "Leading Index (level)"]
+
+
+def test_identical_duplicate_rows_fall_back_to_ordinal_labels() -> None:
+    rows = [
+        _row("18:30", "Japan", "Household Spending", consensus="0.3%", previous="0.1%"),
+        _row("18:30", "Japan", "Household Spending", previous="-3.1%"),
+    ]
+    events = parse_nasdaq_econ(_payload(rows), day=date(2026, 11, 10), fetched_at=NOW)
+    assert [e.title for e in events] == ["Household Spending (1 of 2)", "Household Spending (2 of 2)"]
+
+
+def test_single_row_title_is_not_labelled() -> None:
+    events = parse_nasdaq_econ(_payload([_row("08:30", "United States", "CPI", desc="month-over-month")]),
+                               day=date(2026, 11, 10), fetched_at=NOW)
+    assert events[0].title == "CPI"
+
+
+def test_merge_rederives_category_and_importance_floor_from_title() -> None:
+    at = datetime(2026, 11, 10, 13, 30, tzinfo=UTC)
+    stale = EconEvent(id=event_id("US", "CPI m/m", at), country="US", title="CPI m/m", category="other",
+                      importance=1, scheduled_at=at, sources=[_ref("forexfactory")])
+    incoming = _event("CPI m/m", "US", at, "forexfactory")
+    changed = merge_econ_events([stale], [incoming], now=NOW)
+    assert len(changed) == 1
+    assert changed[0].category == "inflation"
+    assert changed[0].importance == 3
+
+
+def test_same_provider_refresh_takes_the_newer_title() -> None:
+    at = datetime(2026, 11, 10, 13, 30, tzinfo=UTC)
+    stored = _event("CPI", "US", at, "nasdaq")
+    incoming = _event("CPI", "US", at, "nasdaq").model_copy(update={"title": "CPI (m/m)"})
+    changed = merge_econ_events([stored], [incoming], now=NOW)
+    assert len(changed) == 1
+    assert changed[0].title == "CPI (m/m)"
+    assert changed[0].id == stored.id
+
+
+def test_reclassify_stored_fixes_stale_categories_and_is_idempotent(store: MarketsStore) -> None:
+    at = datetime(2026, 11, 10, 13, 30, tzinfo=UTC)
+    store.upsert_econ_events([EconEvent(id=event_id("US", "CPI", at), country="US", title="CPI",
+                                        category="other", importance=1, scheduled_at=at,
+                                        sources=[_ref("nasdaq")])])
+    assert reclassify_stored(store, NOW) == 1
+    stored = store.query_econ(at - timedelta(days=1), at + timedelta(days=1), min_importance=0)
+    assert len(stored) == 1
+    assert stored[0].category == "inflation"
+    assert stored[0].importance == 3
+    assert reclassify_stored(store, NOW) == 0

@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from dateutil import parser as dateparser
 
@@ -26,10 +27,19 @@ from awareness.markets.calendar.econ_common import (
     parse_value,
     utc_of,
 )
-from awareness.markets.calendar.econ_merge import MergeState, finalize_event, merge_econ_events
+from awareness.markets.calendar.econ_merge import (
+    MergeState,
+    apply_rules,
+    finalize_event,
+    merge_econ_events,
+)
+from awareness.markets.calendar.econ_variants import VariantRow, variant_suffixes
 from awareness.markets.collectors.base import CollectorContext, CollectorResult
 from awareness.markets.http import FetchError
 from awareness.markets.models import EconEvent, ProviderRef
+
+if TYPE_CHECKING:
+    from awareness.markets.store import MarketsStore
 
 __all__ = [
     "BEA_URL",
@@ -49,6 +59,7 @@ __all__ = [
     "parse_forexfactory",
     "parse_nasdaq_econ",
     "parse_value",
+    "reclassify_stored",
     "store_merge",
 ]
 
@@ -59,6 +70,8 @@ FF_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 BEA_URL = "https://apps.bea.gov/API/signup/release_dates.json"
 STATE_KEY = "econ.merge_state"
 _FF_IMPACT: dict[str, int] = {"high": 3, "medium": 2, "low": 1, "non-economic": 1}
+# Nasdaq's "gmt" field is wall-clock time in New York (not UTC); the offset follows DST per date.
+NASDAQ_LOCAL_TZ = ZoneInfo("America/New_York")
 
 
 def nasdaq_url(day: date) -> str:
@@ -66,12 +79,14 @@ def nasdaq_url(day: date) -> str:
 
 
 def _nasdaq_time(gmt: Any, day: date) -> tuple[datetime, bool]:
+    """UTC instant of a Nasdaq ``gmt`` value on ``day`` (New York wall clock), or all-day midnight UTC."""
     text = str(gmt or "").strip()
     parts = text.split(":")
     if len(parts) == 2 and all(p.isdigit() for p in parts):
         hour, minute = int(parts[0]), int(parts[1])
         if 0 <= hour < 24 and 0 <= minute < 60:
-            return datetime.combine(day, time(hour, minute), UTC), False
+            local = datetime.combine(day, time(hour, minute), tzinfo=NASDAQ_LOCAL_TZ)
+            return local.astimezone(UTC), False
     # "24H", "All Day", "Tentative", blank: the date is known, the time is not
     return datetime.combine(day, time(0, 0), UTC), True
 
@@ -102,15 +117,19 @@ def parse_nasdaq_econ(payload: dict[str, Any], *, day: date, fetched_at: datetim
     if skipped:
         log.info("nasdaq econ %s: skipped %d row(s) with unmapped country or title", day.isoformat(), skipped)
 
-    group_sizes = Counter((iso, normalize_title(title), at.date()) for _, iso, title, at, _ in prepared)
+    groups: dict[tuple[str, str, date], list[int]] = {}
+    for index, (_, iso, title, scheduled, _) in enumerate(prepared):
+        groups.setdefault((iso, normalize_title(title), scheduled.date()), []).append(index)
+    labels = _variant_labels(prepared, groups)
     seen: Counter[tuple[str, str, date]] = Counter()
     events: list[EconEvent] = []
-    for row, iso, title, scheduled, all_day in prepared:
+    for index, (row, iso, title, scheduled, all_day) in enumerate(prepared):
         key = (iso, normalize_title(title), scheduled.date())
         id_title = title
-        if group_sizes[key] > 1:
+        if len(groups[key]) > 1:
             seen[key] += 1
-            id_title = f"{title} [#{seen[key]}]"  # same-day duplicates stay distinct
+            id_title = f"{title} [#{seen[key]}]"  # same-day duplicates stay distinct (ids never change)
+        display_title = f"{title} ({labels[index]})" if index in labels else title
         actual = display(row.get("actual"))
         consensus = display(row.get("consensus"))
         previous = display(row.get("previous"))
@@ -123,7 +142,7 @@ def parse_nasdaq_econ(payload: dict[str, Any], *, day: date, fetched_at: datetim
                 id=event_id(iso, id_title, scheduled),
                 country=iso,
                 currency=CURRENCY_BY_ISO.get(iso),
-                title=title,
+                title=display_title,
                 category=category,
                 scheduled_at=scheduled,
                 all_day=all_day,
@@ -140,6 +159,30 @@ def parse_nasdaq_econ(payload: dict[str, Any], *, day: date, fetched_at: datetim
             )
         )
     return events
+
+
+def _variant_labels(
+    prepared: list[tuple[dict[str, Any], str, str, datetime, bool]],
+    groups: dict[tuple[str, str, date], list[int]],
+) -> dict[int, str]:
+    """Display-title suffix for every row that shares its title, country and day with another row."""
+    labels: dict[int, str] = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        rows = [
+            VariantRow(
+                description=clean_text(prepared[i][0].get("description")),
+                values=(
+                    display(prepared[i][0].get("actual")),
+                    display(prepared[i][0].get("consensus")),
+                    display(prepared[i][0].get("previous")),
+                ),
+            )
+            for i in members
+        ]
+        labels.update(zip(members, variant_suffixes(rows), strict=True))
+    return labels
 
 
 def parse_forexfactory(payload: list[dict[str, Any]], *, fetched_at: datetime) -> list[EconEvent]:
@@ -261,6 +304,25 @@ def padded_bounds(events: list[EconEvent]) -> tuple[datetime, datetime] | None:
     lowest = min(e.scheduled_at for e in events) - timedelta(days=1)
     highest = max(e.scheduled_at for e in events) + timedelta(days=1)
     return lowest, highest
+
+
+def reclassify_stored(store: MarketsStore, now: datetime) -> int:
+    """One-off maintenance: re-apply the title rules (category, importance floor) to stored econ events.
+
+    No network. Returns the number of stored rows whose category or importance changed.
+    """
+    stamp = utc_of(now)
+    everything = store.query_econ(
+        datetime(2000, 1, 1, tzinfo=UTC), datetime(2100, 1, 1, tzinfo=UTC),
+        min_importance=0, limit=1_000_000,
+    )
+    changed: list[EconEvent] = []
+    for event in everything:
+        updated = apply_rules(event)
+        if updated.category != event.category or updated.importance != event.importance:
+            changed.append(updated.model_copy(update={"updated_at": stamp}))
+    store.upsert_econ_events(changed)
+    return len(changed)
 
 
 class NasdaqEconCollector:
