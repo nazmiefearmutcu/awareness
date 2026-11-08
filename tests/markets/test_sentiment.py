@@ -78,11 +78,11 @@ def test_intensifier_strengthens_hit() -> None:
 
 
 def test_turkish_positive_headline() -> None:
-    assert LEX.score("Şirket beklentilerin üzerinde kâr açıkladı").label == "positive"  # noqa: RUF001
+    assert LEX.score("Şirket beklentilerin üzerinde kâr açıkladı").label == "positive"
 
 
 def test_turkish_negative_headline() -> None:
-    assert LEX.score("Şirket iflas başvurusu yaptı").label == "negative"  # noqa: RUF001
+    assert LEX.score("Şirket iflas başvurusu yaptı").label == "negative"
 
 
 def test_empty_text_is_neutral_zero() -> None:
@@ -371,3 +371,79 @@ def test_finbert_labels_and_batch_consistency() -> None:
     assert batch[1] == SentimentScore(label="neutral", score=0.0, confidence=0.0, model=scorer.model)
     assert batch[0].score == pytest.approx(pos.score, abs=1e-4)
     assert batch[2].score == pytest.approx(neg.score, abs=1e-4)
+
+
+# ── language routing and lexicon veto (final review wave B) ───────────────
+
+
+def _fake_finbert_positive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Load the fake model and make every FinBERT verdict positive, whatever the text."""
+    _fake_finbert(monkeypatch)
+
+    def _always_positive(self: object, texts: object, model_name: str) -> list[SentimentScore]:
+        return [SentimentScore(label="positive", score=0.8, confidence=0.9, model=model_name)
+                for _ in texts]  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(sentiment_mod._FinBertRuntime, "score", _always_positive)
+
+
+def test_score_many_routes_turkish_to_lexicon(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_finbert_positive(monkeypatch)
+    scorer = SentimentScorer("auto")
+    tr_text = "Şirket iflas başvurusu yaptı"
+    en_text = "Company beats estimates"
+    out = scorer.score_many([tr_text, en_text], ["tr", "en"])
+    assert out[0].model == LEXICON_MODEL
+    assert out[0].label == "negative"
+    assert out[1].model == "finbert:ProsusAI/finbert"
+    assert out[1].label == "positive"
+
+
+def test_score_many_without_languages_is_english(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_finbert_positive(monkeypatch)
+    scorer = SentimentScorer("auto")
+    assert scorer.score_many(["Company beats estimates"])[0].model == "finbert:ProsusAI/finbert"
+
+
+def test_score_many_language_length_must_match() -> None:
+    with pytest.raises(ValueError):
+        SentimentScorer("lexicon").score_many(["a text here"], ["en", "tr"])
+
+
+def test_entity_sentiment_language_uses_lexicon(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_finbert_positive(monkeypatch)
+    scorer = SentimentScorer("auto")
+    result = scorer.entity_sentiment(
+        "Nvidia iflas başvurusu yaptı", None, [_nvda()], language="tr",
+    )
+    assert result["NVDA"].model == LEXICON_MODEL
+    assert result["NVDA"].label == "negative"
+
+
+def test_finbert_positive_is_vetoed_by_strong_negative(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_finbert_positive(monkeypatch)
+    scorer = SentimentScorer("auto")
+    out = scorer.score("Private credit defaults record largest quarterly jump")
+    assert out.label == "negative"
+    assert out.model == "finbert+lexicon-veto:ProsusAI/finbert"
+
+
+def test_by_default_is_not_a_strong_negative(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_finbert_positive(monkeypatch)
+    scorer = SentimentScorer("auto")
+    out = scorer.score("Index funds are enrolled by default and inflows remain strong")
+    assert out.label == "positive"
+    assert out.model == "finbert:ProsusAI/finbert"
+
+
+def test_negated_strong_negative_does_not_veto(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_finbert_positive(monkeypatch)
+    scorer = SentimentScorer("auto")
+    out = scorer.score("Audit found no fraud and shares rallied")
+    assert out.label == "positive"
+    assert out.model == "finbert:ProsusAI/finbert"
+
+
+def test_lexicon_only_backend_never_reports_veto() -> None:
+    out = SentimentScorer("lexicon").score("Private credit defaults record largest quarterly jump")
+    assert out.model == LEXICON_MODEL

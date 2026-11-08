@@ -63,6 +63,10 @@ STOP_TICKERS = frozenset(
     PR HQ VP MD DEX NFT""".split()
 )
 
+# Turkish agency abbreviation: "AA" followed by these words is Anadolu Ajansı, never American Airlines.
+AGENCY_NEXT_WORDS = frozenset({"anadolu", "muhabiri", "muhabir"})
+ENGLISH_CODES = frozenset({"en", ""})
+
 BARE_CONTEXT = frozenset(
     {"stock", "stocks", "shares", "share", "ticker", "nyse", "nasdaq", "earnings", "eps",
      "guidance", "rallied", "slumped", "fell", "rose", "jumped", "plunged", "soared"}
@@ -90,6 +94,13 @@ _SUFFIX_WORDS = frozenset(
 )
 
 
+def is_foreign_language(language: str | None) -> bool:
+    """True when a language hint is given and is not English (e.g. ``tr``)."""
+    if not language:
+        return False
+    return language.strip().lower().replace("_", "-").split("-")[0] not in ENGLISH_CODES
+
+
 @dataclass(frozen=True, slots=True)
 class _Cand:
     """One alias candidate and the gates that decide whether a token span matches it."""
@@ -114,6 +125,7 @@ class _Cand:
     person_implied: bool = False
     unless: frozenset[str] = frozenset()  # title words that cancel a person-implied link
     links: tuple[_Cand, ...] = ()
+    auto: bool = False  # generated from an SEC issuer title (disabled for non-English text)
 
 
 @dataclass(slots=True)
@@ -136,6 +148,7 @@ class _Sink:
     def __init__(self) -> None:
         self.acc: dict[tuple[str, str], _Acc] = {}
         self.item = ""  # folded title+body token phrase, space-padded
+        self.foreign = False  # non-English text: bare tickers and SEC auto-aliases are off
 
     def add(
         self, etype: EntityType, eid: str, name: str, conf: float, *, in_title: bool,
@@ -425,17 +438,21 @@ class EntityLinker:
             if not key or key in self._aliases:
                 continue
             display = self._names.get(("equity", issuer.ticker), issuer.title)
-            self._put(key, _Cand("equity", issuer.ticker, display, SEC_ALIAS_CONF, capital=True))
+            self._put(key, _Cand("equity", issuer.ticker, display, SEC_ALIAS_CONF, capital=True,
+                                 auto=True))
 
     # ── public API ────────────────────────────────────────────────────────
 
     def link(self, title: str, text: str | None = None, *, language: str | None = None) -> list[EntityRef]:
         """Return de-duplicated entities for a headline and optional body.
 
-        ``language`` is a hint only: both English and Turkish dictionaries are always scanned.
+        ``language`` is a hint: both English and Turkish dictionaries are always scanned, but for
+        non-English text only cashtags, exchange-qualified tickers, BIST codes and curated aliases
+        count. Bare upper-case US tickers and SEC auto-aliases are off, so "AA" (Anadolu Ajansı),
+        "SSB", "MW" or "KDP" in Turkish copy are not American issuers.
         """
-        del language
         sink = _Sink()
+        sink.foreign = is_foreign_language(language)
         sink.item = _item_phrase(title or "", text)
         self._scan(title or "", True, sink)
         if text:
@@ -574,6 +591,7 @@ class EntityLinker:
                 c for c in cands
                 if _accept(c, tokens, i, i + width - 1, sent_ranges)
                 and not (c.etype == "crypto" and c.upper and c.eid in self._sec)
+                and not (sink.foreign and c.auto)
             ]
             if not accepted:
                 continue
@@ -604,7 +622,11 @@ class EntityLinker:
         symbol = raw.replace(".", "-")
         if symbol in STOP_TICKERS:
             return
+        if symbol == "AA" and i + 1 < len(tokens) and tokens[i + 1].key in AGENCY_NEXT_WORDS:
+            return  # Anadolu Ajansı (AA muhabiri, AA haberi)
         if symbol in self._sec:
+            if sink.foreign:
+                return  # bare US tickers are not read in non-English copy
             if _in_parens(text, tok) or _near(tokens, i, BARE_CONTEXT, 3):
                 name = self._names.get(("equity", symbol), self._sec[symbol].title)
                 sink.add("equity", symbol, name, BARE_TICKER_CONF, in_title=in_title)

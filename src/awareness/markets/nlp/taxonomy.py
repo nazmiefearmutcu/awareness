@@ -27,12 +27,14 @@ ENTITY_TOPIC_HINT = 1.5
 HINT_MIN_CONFIDENCE = 0.8
 FINANCE_ENTITY_TYPES = frozenset({"equity", "crypto", "fx", "commodity", "index", "central_bank"})
 ENTITY_EVIDENCE_CONF = 0.8
+ENTITY_EVIDENCE_SALIENCE = 0.6  # body-only mentions below this do not count as finance evidence
 ENTITY_EVIDENCE_BONUS = 0.4
 TOPIC_EVIDENCE_STEP = 0.15
 TOPIC_EVIDENCE_CAP = 0.45
 PUBLISHER_BONUS = 0.2
 PUBLISHER_PENALTY = -0.1
 FEED_BONUS = 0.15
+PRIOR_CAP = 0.1  # publisher and feed priors together move relevance by at most this much
 NEGATIVE_TITLE = -0.5
 NEGATIVE_BODY = -0.2
 
@@ -73,9 +75,16 @@ def _matches(pattern: re.Pattern[str] | None, text: str) -> set[str]:
 
 
 def _has_finance_entity(entities: list[EntityRef]) -> bool:
-    """A confident market entity outweighs non-finance vocabulary in the same item."""
+    """A confident, salient market entity: it outweighs non-finance vocabulary in the same item.
+
+    Salience must reach ``ENTITY_EVIDENCE_SALIENCE`` so that a passing body mention (a dollar
+    figure, a ticker quoted in an unrelated story) cannot lift relevance or cancel a negative.
+    """
     return any(
-        e.type in FINANCE_ENTITY_TYPES and e.confidence >= ENTITY_EVIDENCE_CONF for e in entities
+        e.type in FINANCE_ENTITY_TYPES
+        and e.confidence >= ENTITY_EVIDENCE_CONF
+        and e.salience >= ENTITY_EVIDENCE_SALIENCE
+        for e in entities
     )
 
 
@@ -232,13 +241,15 @@ class TaxonomyClassifier:
         if _has_finance_entity(entities):
             score += ENTITY_EVIDENCE_BONUS
         score += min(TOPIC_EVIDENCE_CAP, TOPIC_EVIDENCE_STEP * len(topics))
+        priors = 0.0
         if publisher is not None:
             if publisher.kind in self._pub_boost:
-                score += PUBLISHER_BONUS
+                priors += PUBLISHER_BONUS
             elif publisher.kind in self._pub_penalty:
-                score += PUBLISHER_PENALTY
+                priors += PUBLISHER_PENALTY
         if feed_categories and any(c.lower() in self._feed_categories for c in feed_categories):
-            score += FEED_BONUS
+            priors += FEED_BONUS
+        score += max(-PRIOR_CAP, min(PRIOR_CAP, priors))
         score += negatives
         return min(1.0, max(0.0, score))
 

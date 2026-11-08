@@ -156,3 +156,49 @@ def test_fed_up_is_not_a_central_bank_topic(clf: TaxonomyClassifier) -> None:
 def test_real_negative_still_suppresses_without_finance_entity(clf: TaxonomyClassifier) -> None:
     result = clf.classify("Taylor Swift attends the Oscars red carpet", None, [])
     assert result.finance_relevance == 0.0
+
+
+# ── salient-only finance evidence (final review wave B) ───────────────────
+
+
+def test_body_only_finance_mentions_do_not_lift_relevance(clf: TaxonomyClassifier) -> None:
+    result = clf.classify(
+        "31-year-old dumpster diver brought in $140,000 from online sales",
+        "Shares of META rose this year and the dollar was strong in the background.",
+        [_ent("equity", "META", 0.95, salience=0.45), _ent("fx", "USD", 0.9, salience=0.45)],
+        publisher=_publisher("financial_press"),
+        feed_categories=["markets"],
+    )
+    assert result.finance_relevance <= 0.1 + 1e-9
+
+
+def test_offtopic_trump_headline_has_low_relevance(clf: TaxonomyClassifier) -> None:
+    result = clf.classify(
+        "Trump offers UFC chief Dana White press secretary job",
+        None,
+        [_ent("person", "TRUMP", 0.9), _ent("country", "US", 0.85)],
+        publisher=_publisher("financial_press"),
+    )
+    assert result.finance_relevance < 0.45
+
+
+def test_salient_finance_entity_still_counts(clf: TaxonomyClassifier) -> None:
+    result = clf.classify("Company posts results", None, [_ent("equity", "XYZ", 0.95, salience=1.0)])
+    assert result.finance_relevance >= 0.4
+
+
+def test_publisher_and_feed_priors_add_at_most_point_one(clf: TaxonomyClassifier) -> None:
+    both = clf.classify("Quiet day in town", None, [], publisher=_publisher("financial_press"),
+                        feed_categories=["markets"])
+    assert both.finance_relevance == pytest.approx(0.1)
+    penalised = clf.classify("Quiet day in town", None, [], publisher=_publisher("community"))
+    assert penalised.finance_relevance == 0.0
+
+
+def test_negative_class_is_not_cancelled_by_body_only_entity(clf: TaxonomyClassifier) -> None:
+    result = clf.classify(
+        "Taylor Swift attends the Oscars red carpet",
+        "The singer later mentioned the dollar in an interview.",
+        [_ent("fx", "USD", 0.9, salience=0.45)],
+    )
+    assert result.finance_relevance == 0.0

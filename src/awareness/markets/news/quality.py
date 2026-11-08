@@ -33,6 +33,13 @@ RULES_PATH = Path(__file__).resolve().parents[1] / "data" / "quality_rules.yaml"
 
 _CONTENT_TYPES: frozenset[str] = frozenset(get_args(ContentType))
 _OFFICIAL_KINDS = frozenset({"official", "regulator"})
+_SALIENT_FINANCE_TYPES = frozenset({"equity", "crypto", "fx", "commodity", "index", "central_bank"})
+RELEVANCE_POINTS = 20  # score points per unit of finance_relevance
+LOW_RELEVANCE = 0.45  # below this an item is at most "low" (reason low_relevance_cap)
+PREMIUM_RELEVANCE = 0.6  # premium also needs a topic or a salient finance entity
+OFFICIAL_FLOOR_RELEVANCE = 0.3  # official/regulator tier-1 items keep "never below standard" from here
+SALIENT_CONFIDENCE = 0.8
+SALIENT_SALIENCE = 0.6
 _TIER_BASE: dict[int, int] = {1: 45, 2: 38, 3: 28, 4: 15, 5: 5}
 _IMPORTANCE_TIER_BASE: dict[int, int] = {1: 30, 2: 24, 3: 16, 4: 8, 5: 2}
 _TOPIC_WEIGHTS: dict[str, int] = {
@@ -156,6 +163,32 @@ def _is_seeking_alpha_article(item: NewsItem) -> bool:
     return host.endswith("seekingalpha.com") and "/article/" in parts.path
 
 
+def _is_salient_finance(entity: EntityRef) -> bool:
+    """A finance entity the story is about: confident, and named in the title or repeatedly."""
+    return (
+        entity.type in _SALIENT_FINANCE_TYPES
+        and entity.confidence >= SALIENT_CONFIDENCE
+        and entity.salience >= SALIENT_SALIENCE
+    )
+
+
+def _capped_label(
+    score: float, item: NewsItem, finance_relevance: float,
+) -> tuple[QualityLabel, list[str]]:
+    """Map the score to a label, then apply the relevance caps. Returns (label, cap reasons)."""
+    label = _label_for(score)
+    if finance_relevance < LOW_RELEVANCE:
+        if label != "low":
+            return "low", ["low_relevance_cap"]
+        return label, []
+    if label == "premium" and not (
+        finance_relevance >= PREMIUM_RELEVANCE
+        and (item.topics or any(_is_salient_finance(e) for e in item.entities))
+    ):
+        return "standard", ["premium_cap"]
+    return label, []
+
+
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
@@ -216,8 +249,14 @@ class QualityGate:
         )
         reasons = [name for name, _ in components]
         score = _clamp(sum(delta for _, delta in components))
-        label = _label_for(score)
-        if publisher.kind in _OFFICIAL_KINDS and publisher.tier == 1 and label == "low":
+        label, cap_reasons = _capped_label(score, item, finance_relevance)
+        reasons.extend(cap_reasons)
+        if (
+            publisher.kind in _OFFICIAL_KINDS
+            and publisher.tier == 1
+            and label == "low"
+            and finance_relevance >= OFFICIAL_FLOOR_RELEVANCE
+        ):
             label = "standard"
             reasons.append("official_floor")
         return QualityVerdict(
@@ -279,6 +318,8 @@ class QualityGate:
         out: list[tuple[str, float]] = []
         base = _TIER_BASE[publisher.tier]
         out.append((f"tier{publisher.tier}:+{base}", base))
+        relevance_pts = round(RELEVANCE_POINTS * max(0.0, min(1.0, finance_relevance)))
+        out.append((f"relevance:+{relevance_pts}", relevance_pts))
 
         summary = (item.summary or "").strip()
         out.extend(self._depth(item, summary))
@@ -288,7 +329,7 @@ class QualityGate:
         if timestamp_source in {"feed", "article"} and item.published_at.time() != _MIDNIGHT:
             out.append(("time_precise:+3", 3))
 
-        if any(e.confidence >= 0.8 for e in item.entities):
+        if any(_is_salient_finance(e) for e in item.entities):
             out.append(("entity_high_conf:+7", 7))
         if item.topics:
             out.append(("topic:+5", 5))

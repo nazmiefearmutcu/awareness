@@ -386,3 +386,69 @@ def test_from_settings_reads_sec_cache(tmp_path: Path, issuers: list[SecIssuer])
     settings = MarketsSettings(data_dir=tmp_path / "markets", autostart_runner=False)
     linker = EntityLinker.from_settings(settings)
     assert _find(linker.link("SK hynix posts record quarterly profit"), "equity", "SKHY") is not None
+
+
+# ── language-aware tickers (final review wave B) ──────────────────────────
+# Synthetic SEC issuers for the Turkish collisions: the recorded fixture does not contain AA/SSB/MW.
+
+COLLISION_ISSUERS = [
+    SecIssuer(cik=1, ticker="AA", title="Alcoa Corp", rank=500),
+    SecIssuer(cik=2, ticker="SSB", title="SouthState Corp", rank=900),
+    SecIssuer(cik=3, ticker="MW", title="Mathews International Corp", rank=2000),
+    SecIssuer(cik=4, ticker="KDP", title="Keurig Dr Pepper Inc.", rank=300),
+]
+
+
+@pytest.fixture(scope="module")
+def collision_linker() -> EntityLinker:
+    return EntityLinker(COLLISION_ISSUERS)
+
+
+@pytest.mark.parametrize(
+    ("headline", "forbidden"),
+    [
+        ("Anadolu Ajansı muhabiri AA haberine göre dolar yükseldi", ("equity", "AA")),
+        ("(AA) haberine göre piyasalar açıldı", ("equity", "AA")),
+        ("Kürdistan Demokrat Partisi (KDP) açıklama yaptı", ("equity", "KDP")),
+        ("Savunma Sanayii Başkanlığı (SSB) ihale açıkladı", ("equity", "SSB")),
+        ("Siemens 2 MW (MW) türbin siparişi aldı", ("equity", "MW")),
+    ],
+)
+def test_turkish_abbreviations_are_not_us_tickers(
+    collision_linker: EntityLinker, headline: str, forbidden: tuple[str, str],
+) -> None:
+    assert forbidden not in _ids(collision_linker.link(headline, language="tr")), headline
+
+
+def test_english_text_still_links_parenthesised_ticker(collision_linker: EntityLinker) -> None:
+    assert ("equity", "AA") in _ids(collision_linker.link("(AA) shares rose sharply today"))
+    assert ("equity", "KDP") in _ids(collision_linker.link("(KDP) shares rise on results", language="en"))
+
+
+def test_turkish_text_keeps_cashtags_and_exchange_qualified_tickers(
+    collision_linker: EntityLinker,
+) -> None:
+    assert ("equity", "AA") in _ids(collision_linker.link("$AA hisseleri yükseldi", language="tr"))
+    assert ("equity", "AA") in _ids(
+        collision_linker.link("NYSE: AA hisseleri yükseldi", language="tr")
+    )
+
+
+def test_turkish_text_keeps_bist_codes_and_curated_aliases(linker: EntityLinker) -> None:
+    refs = linker.link("Berkshire Hathaway hisseleri yükseldi", language="tr")
+    assert ("equity", "BRK-B") in _ids(refs)
+    bist = linker.link("THYAO hisseleri yükseldi", language="tr")
+    assert ("equity", "THYAO.IS") in _ids(bist)
+
+
+def test_turkish_text_disables_sec_auto_alias() -> None:
+    linker = EntityLinker([SecIssuer(cik=9, ticker="ZZZQ", title="Quantum Widget Holdings Corp", rank=10)])
+    headline = "Quantum Widget Holdings shares rose in Istanbul"
+    assert ("equity", "ZZZQ") in _ids(linker.link(headline))
+    assert ("equity", "ZZZQ") not in _ids(linker.link(headline, language="tr"))
+
+
+def test_language_none_behaves_like_english(collision_linker: EntityLinker) -> None:
+    assert _ids(collision_linker.link("(AA) shares rose", language=None)) == _ids(
+        collision_linker.link("(AA) shares rose")
+    )

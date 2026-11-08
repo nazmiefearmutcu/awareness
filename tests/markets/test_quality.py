@@ -154,8 +154,8 @@ def test_tier2_cnbc_with_entity_and_topic_is_premium_with_reasons() -> None:
     verdict = evaluate(make_item(), make_publisher())
     assert verdict.hard_reject is False
     assert verdict.label == "premium"
-    assert verdict.score == pytest.approx(61.0)
-    assert {"tier2:+38", "depth_summary140:+8", "time_precise:+3",
+    assert verdict.score == pytest.approx(79.0)  # 61 + relevance 0.9 x 20
+    assert {"tier2:+38", "relevance:+18", "depth_summary140:+8", "time_precise:+3",
             "entity_high_conf:+7", "topic:+5"} <= set(verdict.reasons)
 
 
@@ -183,7 +183,7 @@ def test_official_release_with_short_summary_is_at_least_standard() -> None:
         entities=[], topics=[], content_type="official",
         published_at=datetime(2026, 11, 8, 0, 0, tzinfo=UTC),
     )
-    verdict = evaluate(item, publisher, timestamp_source="feed")
+    verdict = evaluate(item, publisher, timestamp_source="feed", finance_relevance=0.3)
     assert verdict.score < 40  # raw score would be low ...
     assert verdict.label == "standard"  # ... but official publishers are floored
     assert "all_caps_title:-10" in verdict.reasons
@@ -360,7 +360,7 @@ def test_official_floor_applies_only_to_tier_1() -> None:
                      entities=[], topics=[], publisher_id="agency", publisher_name="Agency",
                      publisher_domain="agency.example", publisher_tier=2,
                      published_at=datetime(2026, 11, 8, 0, 0, tzinfo=UTC))
-    verdict = evaluate(item, tier2_official, timestamp_source="feed")
+    verdict = evaluate(item, tier2_official, timestamp_source="feed", finance_relevance=0.2)
     assert verdict.label == "low"
     assert "official_floor" not in verdict.reasons
 
@@ -394,3 +394,86 @@ def test_buy_now_pay_later_news_is_not_clickbait_with_comma(title: str) -> None:
     verdict = evaluate(make_item(title=title), make_publisher())
     assert not any(r.startswith("clickbait") for r in verdict.reasons)
 
+
+
+# ── relevance term and label caps (final review wave B) ───────────────────
+
+TRUMP = EntityRef(type="person", id="TRUMP", name="Trump", confidence=0.9, mentions=1, salience=1.0)
+US_COUNTRY = EntityRef(type="country", id="US", name="US", confidence=0.85, mentions=1, salience=1.0)
+META_BODY = EntityRef(type="equity", id="META", name="Meta", confidence=0.95, mentions=2, salience=0.45)
+USD_BODY = EntityRef(type="fx", id="USD", name="USD", confidence=0.9, mentions=1, salience=0.45)
+
+
+def test_relevance_term_adds_twenty_points_scaled() -> None:
+    verdict = evaluate(make_item(), make_publisher(), finance_relevance=0.5)
+    assert "relevance:+10" in verdict.reasons
+
+
+def test_offtopic_trump_press_secretary_story_is_not_premium() -> None:
+    item = make_item(
+        url="https://example.com/trump-dana-white",
+        title="Trump offers UFC chief Dana White press secretary job",
+        summary="The president said he would like the mixed martial arts boss to brief reporters.",
+        entities=[TRUMP, US_COUNTRY], topics=[],
+    )
+    verdict = evaluate(item, make_publisher(), finance_relevance=0.3)
+    assert verdict.label == "low"
+    assert "low_relevance_cap" in verdict.reasons
+
+
+def test_offtopic_dumpster_diver_story_is_low_or_rejected() -> None:
+    item = make_item(
+        url="https://example.com/dumpster-diver",
+        title="31-year-old dumpster diver brought in $140,000 from online sales",
+        summary="A man who recovers discarded goods says his side business now earns well.",
+        entities=[META_BODY, USD_BODY], topics=[],
+    )
+    # relevance 0.1 (body-only META/USD do not count): non_finance hard reject for general press
+    verdict = evaluate(item, make_publisher(), finance_relevance=0.1)
+    assert verdict.label in {"low", "rejected"}
+    assert verdict.label != "premium"
+
+
+def test_body_only_entities_do_not_satisfy_premium_without_topic() -> None:
+    item = make_item(entities=[META_BODY], topics=[])
+    verdict = evaluate(item, make_publisher(), finance_relevance=0.9)
+    assert "entity_high_conf:+7" not in verdict.reasons
+    assert verdict.label == "standard"
+    assert "premium_cap" in verdict.reasons
+
+
+def test_premium_requires_relevance_of_point_six() -> None:
+    verdict = evaluate(make_item(), make_publisher(), finance_relevance=0.5)
+    assert verdict.label == "standard"
+    assert "premium_cap" in verdict.reasons
+
+
+def test_real_earnings_story_stays_premium() -> None:
+    verdict = evaluate(make_item(), make_publisher(), finance_relevance=0.85)
+    assert verdict.label == "premium"
+    assert "premium_cap" not in verdict.reasons
+    assert "low_relevance_cap" not in verdict.reasons
+
+
+def test_low_relevance_caps_label_even_for_high_tier() -> None:
+    publisher = make_publisher(id="reuters", name="Reuters", domain="reuters.com", tier=1,
+                               kind="wire")
+    verdict = evaluate(make_item(), publisher, finance_relevance=0.4)
+    assert verdict.label == "low"
+    assert "low_relevance_cap" in verdict.reasons
+
+
+def test_official_floor_needs_relevance_of_point_three() -> None:
+    fed = make_publisher(id="fed", name="Federal Reserve", domain="federalreserve.gov", tier=1,
+                         kind="official")
+    item = make_item(title="FEDERAL RESERVE ISSUES FOMC STATEMENT", summary="Statement.",
+                     entities=[], topics=[], content_type="official",
+                     publisher_id="fed", publisher_name="Federal Reserve",
+                     publisher_domain="federalreserve.gov", publisher_tier=1,
+                     published_at=datetime(2026, 11, 8, 0, 0, tzinfo=UTC))
+    floored = evaluate(item, fed, timestamp_source="feed", finance_relevance=0.3)
+    assert floored.label == "standard"
+    assert "official_floor" in floored.reasons
+    unfloored = evaluate(item, fed, timestamp_source="feed", finance_relevance=0.2)
+    assert unfloored.label == "low"
+    assert "official_floor" not in unfloored.reasons

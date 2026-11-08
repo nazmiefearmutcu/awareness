@@ -45,6 +45,18 @@ _CONNECTOR_RE = re.compile(
 
 Backend = Literal["auto", "finbert", "lexicon"]
 
+# Strong negatives that FinBERT tends to misread as positive ("by default" is neutral).
+_STRONG_NEGATIVE_RE = re.compile(
+    r"(?<!by )\b(?:defaults?|defaulted|defaulting|bankruptcy|bankrupt|fraud|delisting|delisted"
+    r"|insolvency|iflas|temerr\u00fct|temerrut)\b",
+    re.IGNORECASE,
+)
+_CLAUSE_SPLIT_RE = re.compile(r"[,;:.!?]|\bbut\b|\bama\b|\bfakat\b", re.IGNORECASE)
+ENGLISH_CODES = frozenset({"en", ""})
+# Negators the veto checks itself: the lexicon has no bare "no" entry, so "no fraud" needs this.
+VETO_NEGATORS = frozenset({"no", "not", "without", "never", "nor", "zero", "free"})
+_WORD_RE = re.compile(r"[\w']+")
+
 _FINBERT_CACHE: dict[str, tuple[Any, Any]] = {}
 _FINBERT_CACHE_LOCK = threading.Lock()
 
@@ -89,6 +101,13 @@ def clear_finbert_cache() -> None:
 
 def _clamp(value: float) -> float:
     return max(-1.0, min(1.0, value))
+
+
+def is_english(language: str | None) -> bool:
+    """True for English or an unknown language (None): only English uses FinBERT."""
+    if language is None:
+        return True
+    return language.strip().lower().replace("_", "-").split("-")[0] in ENGLISH_CODES
 
 
 def _as_label(name: str) -> SentimentLabel:
@@ -296,23 +315,77 @@ class SentimentScorer:
         """Score one text."""
         return self.score_many([text])[0]
 
-    def score_many(self, texts: Sequence[str]) -> list[SentimentScore]:
-        """Score many texts in order. Empty texts are neutral and never reach the model."""
+    def score_many(
+        self, texts: Sequence[str], languages: list[str] | None = None,
+    ) -> list[SentimentScore]:
+        """Score many texts in order. Empty texts are neutral and never reach a model.
+
+        ``languages`` gives one language code per text (``None`` entries and a ``None`` list mean
+        English). Non-English texts are scored by the finance lexicon, which carries Turkish terms,
+        and report the lexicon model; English texts use FinBERT when it is active.
+        """
+        if languages is not None and len(languages) != len(texts):
+            raise ValueError("languages must have one entry per text")
         results: list[SentimentScore | None] = [None] * len(texts)
         pending_index: list[int] = []
         pending_text: list[str] = []
+        pending_lang: list[str | None] = []
         for index, text in enumerate(texts):
             if not text or not text.strip():
                 results[index] = SentimentScore(label="neutral", score=0.0, confidence=0.0, model=self.model)
             else:
                 pending_index.append(index)
                 pending_text.append(text)
+                pending_lang.append(languages[index] if languages is not None else None)
         if pending_text:
-            for index, result in zip(pending_index, self._score_pending(pending_text), strict=True):
+            for index, result in zip(pending_index, self._score_pending(pending_text, pending_lang), strict=True):
                 results[index] = result
         return [r for r in results if r is not None]
 
-    def _score_pending(self, texts: list[str]) -> list[SentimentScore]:
+    def _score_pending(self, texts: list[str], languages: list[str | None]) -> list[SentimentScore]:
+        """Route non-English texts to the lexicon and the rest to :meth:`_score_english`."""
+        results: list[SentimentScore | None] = [None] * len(texts)
+        english: list[int] = []
+        for index, (text, language) in enumerate(zip(texts, languages, strict=True)):
+            if is_english(language):
+                english.append(index)
+            else:
+                results[index] = self._lexicon.score(text)
+        if english:
+            scored = self._score_english([texts[i] for i in english])
+            for index, result in zip(english, scored, strict=True):
+                results[index] = result
+        return [r for r in results if r is not None]
+
+    def _lexicon_veto(self, text: str, score: SentimentScore) -> SentimentScore:
+        """Override a FinBERT positive when a strong negative is not negated in its clause.
+
+        The clause ending at each strong-negative word is scored by the lexicon (which handles
+        negation); the strongest negative clause replaces the FinBERT verdict.
+        """
+        if score.label != "positive":
+            return score
+        best: SentimentScore | None = None
+        for match in _STRONG_NEGATIVE_RE.finditer(text):
+            clause_start = max(
+                (m.end() for m in _CLAUSE_SPLIT_RE.finditer(text, 0, match.start())), default=0,
+            )
+            before = _WORD_RE.findall(text[clause_start : match.start()].lower())[-3:]
+            if any(word in VETO_NEGATORS for word in before):
+                continue
+            clause = self._lexicon.score(text[clause_start : match.end()])
+            if clause.label == "negative" and (best is None or clause.score < best.score):
+                best = clause
+        if best is None:
+            return score
+        return SentimentScore(
+            label="negative",
+            score=best.score,
+            confidence=best.confidence,
+            model=f"finbert+lexicon-veto:{self._model_name}",
+        )
+
+    def _score_english(self, texts: list[str]) -> list[SentimentScore]:
         """Run FinBERT when active. In auto mode an inference error falls back for this call."""
         if self._finbert is None:
             return [self._lexicon.score(t) for t in texts]
@@ -335,7 +408,7 @@ class SentimentScorer:
                 self._finbert = None
             return [self._lexicon.score(t) for t in texts]
         self._inference_failures = 0
-        return scored
+        return [self._lexicon_veto(t, s) for t, s in zip(texts, scored, strict=True)]
 
     def entity_sentiment(
         self,
@@ -344,10 +417,12 @@ class SentimentScorer:
         entities: Iterable[EntityRef],
         *,
         max_sentences_per_entity: int = 4,
+        language: str | None = None,
     ) -> dict[str, SentimentScore]:
         """Per-entity sentiment from the sentences (title first) that mention each entity.
 
         Returns ``{entity.id: SentimentScore}`` only for entities with at least one sentence.
+        ``language`` routes the snippets like :meth:`score_many` (non-English uses the lexicon).
         """
         unique: dict[str, EntityRef] = {}
         for entity in entities:
@@ -368,7 +443,10 @@ class SentimentScorer:
         if not selected:
             return {}
 
-        scores = self.score_many([snippet for _, snippet in selected])
+        scores = self.score_many(
+            [snippet for _, snippet in selected],
+            [language] * len(selected) if language is not None else None,
+        )
         grouped: dict[str, list[SentimentScore]] = defaultdict(list)
         for (eid, _), result in zip(selected, scores, strict=True):
             grouped[eid].append(result)
