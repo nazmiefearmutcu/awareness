@@ -7,17 +7,20 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from awareness.markets.app import create_app
 from awareness.markets.collectors.base import CollectorContext, CollectorResult
 from awareness.markets.config import MarketsSettings
+from awareness.markets.http import Fetcher, FetchError
 from awareness.markets.models import (
     CorpEvent,
     EconEvent,
     EntityRef,
     Holiday,
+    IndicatorPoint,
     NewsItem,
     ProviderRef,
     Publisher,
@@ -400,3 +403,66 @@ def test_reenrich_reapplies_current_rules(markets_settings: MarketsSettings, sto
     again = store.get_news(stale.id)
     assert again is not None and again.symbols == ["NVDA"] and again.topics == ["earnings"]
     assert again.first_seen_at == stored[0].first_seen_at
+
+
+def test_collapsed_pagination_never_repeats_a_story(store: MarketsStore) -> None:
+    base = datetime(2026, 11, 8, 10, tzinfo=UTC)
+
+    def item(n: int, minutes: int, story: str, tier: int = 2) -> NewsItem:
+        url = f"https://www.cnbc.com/p{n}"
+        return NewsItem(id=NewsItem.id_for_url(url), url=url, title=f"Paged story item number {n}", publisher_id="cnbc",
+                        publisher_name="CNBC", publisher_domain="cnbc.com", publisher_tier=tier,
+                        published_at=base - timedelta(minutes=minutes), first_seen_at=base, feed_id="cnbc.top",
+                        quality_label="standard", story_id=story)
+
+    # story S has a lead (tier 1, newest) on page 1 and an older member that must not resurface on page 2
+    store.upsert_news([item(1, 1, "S", tier=1), item(2, 2, "A"), item(3, 3, "B"), item(4, 30, "S"), item(5, 40, "C")])
+    stories: list[str | None] = []
+    cursor: str | None = None
+    for _ in range(5):
+        page, cursor = store.query_news(NewsQuery(collapse_stories=True, limit=2, cursor=cursor))
+        stories.extend(i.story_id for i in page)
+        if cursor is None:
+            break
+    assert sorted(s for s in stories if s) == ["A", "B", "C", "S"], stories
+
+
+def test_cluster_candidates_exclude_body_and_rejected(store: MarketsStore) -> None:
+    now = datetime.now(UTC)
+    url = "https://www.cnbc.com/body"
+    store.upsert_news([NewsItem(id=NewsItem.id_for_url(url), url=url, title="A story with a long body text", body_text="x" * 5000,
+                                publisher_id="cnbc", publisher_name="CNBC", publisher_domain="cnbc.com", publisher_tier=2,
+                                published_at=now, first_seen_at=now, feed_id="cnbc.top", quality_label="standard", story_id="s")])
+    cands = store.cluster_candidates(now - timedelta(hours=1))
+    assert len(cands) == 1 and cands[0].body_text is None
+
+
+def test_prune_indicators_keeps_daily_snapshot(store: MarketsStore) -> None:
+    ref = ProviderRef(provider="apewisdom", fetched_at=NOW)
+    old = datetime(2026, 10, 1, tzinfo=UTC)
+    pts = [IndicatorPoint(indicator="social.stocks.mentions:NVDA", ts=old + timedelta(hours=h), value=h, source=ref) for h in range(0, 48, 6)]
+    store.upsert_indicator_points(pts)
+    removed = store.prune_indicators("social.", datetime(2026, 11, 1, tzinfo=UTC), keep_daily=True)
+    left = store.query_indicator("social.stocks.mentions:NVDA")
+    assert removed == 6 and len(left) == 2  # one point per day kept
+
+
+def test_fetcher_retry_budget_gives_up_fast(markets_settings: MarketsSettings) -> None:
+    slept: list[float] = []
+
+    async def fake_sleep(s: float) -> None:
+        slept.append(s)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"retry-after": "40"}, text="rate limited")
+
+    async def go() -> None:
+        f = Fetcher(markets_settings, None, transport=httpx.MockTransport(handler), sleep=fake_sleep,
+                    host_intervals={"x.test": 0.0})
+        with pytest.raises(FetchError) as exc:
+            await f.get("https://x.test/feed", max_retries=3)
+        assert "retry budget" in exc.value.message
+        await f.aclose()
+
+    asyncio.run(go())
+    assert sum(slept) <= 45.0

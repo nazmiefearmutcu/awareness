@@ -41,6 +41,7 @@ DEFAULT_HOST_INTERVALS: dict[str, float] = {
     "date.nager.at": 0.3,
 }
 DEFAULT_INTERVAL = 0.4
+MAX_TOTAL_RETRY_WAIT = 45.0  # seconds a single request may spend sleeping between retries
 RETRY_STATUSES = {408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 524}
 
 
@@ -180,6 +181,7 @@ class Fetcher:
                 req_headers["If-Modified-Since"] = validators["last_modified"]
         last_error: str = "unknown error"
         last_status: int | None = None
+        waited = 0.0
         for attempt in range(max_retries + 1):
             await self._pace(host)
             started = time.perf_counter()
@@ -230,7 +232,11 @@ class Fetcher:
             last_status = response.status_code
             last_error = response.text[:200].replace("\n", " ") if response.content else response.reason_phrase
             if response.status_code in RETRY_STATUSES and attempt < max_retries:
-                await self._sleep(self._backoff(attempt, response.headers.get("retry-after")))
+                delay = self._backoff(attempt, response.headers.get("retry-after"))
+                if waited + delay > MAX_TOTAL_RETRY_WAIT:
+                    raise FetchError(url, last_status, f"{last_error} (gave up: retry budget exhausted)")
+                waited += delay
+                await self._sleep(delay)
                 continue
             raise FetchError(url, last_status, last_error)
         raise FetchError(url, last_status, last_error)  # pragma: no cover - loop always returns/raises

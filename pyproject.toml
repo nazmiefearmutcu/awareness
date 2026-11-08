@@ -109,10 +109,12 @@ ignore = ["S101", "PLR0913", "PLR2004", "E501"]
 "src/awareness/entities/**" = ["PLR0912"]
 # Markets store builds SQL from constant table names and "?" placeholder lists only;
 # every user value is bound as a parameter.
-"src/awareness/markets/store.py" = ["S608", "PLR0912"]
+"src/awareness/markets/store.py" = ["S608", "PLR0912", "PLR0915"]
 # Lazy imports keep torch / exchange_calendars / optional modules off the import path and
 # let the markets service degrade per module instead of failing to start.
 "src/awareness/markets/**" = ["PLC0415"]
+# The NLP layer matches Turkish text on purpose (dotless ı etc.).
+"src/awareness/markets/nlp/**" = ["PLC0415", "RUF001", "RUF002", "RUF003"]
 # Collectors accept a per-request timeout for the underlying httpx call.
 "src/awareness/markets/http.py" = ["ASYNC109"]
 "tests/markets/**" = ["S608", "PLR0915", "RUF001"]  # Turkish fixture text

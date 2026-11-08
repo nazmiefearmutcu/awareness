@@ -530,12 +530,17 @@ def create_markets_router(api: MarketsAPI, *, prefix: str = "/v1/markets") -> AP
         store = api.get_store()
         tracker = HealthTracker(store, now=api.now)
         rows = tracker.snapshot()
-        core = [r for r in rows if not r.provider.startswith("feed.")]
+        core = [r for r in rows if not r.provider.startswith(("feed.", "gnews."))]
+        gnews = {"ok": 0, "degraded": 0, "down": 0, "never": 0}
+        for r in rows:
+            if r.provider.startswith("gnews."):
+                gnews[r.status] = gnews.get(r.status, 0) + 1
         runner = api.get_runner()
         data = {
             "status": "ok" if all(r.status in ("ok", "never") for r in core) else "degraded",
             "providers": _provider_summary(core),
             "feeds": api.feed_health_summary(),
+            "gnews_queries": gnews,
             "counts": store.counts(),
             "runner": runner.status() if runner is not None else {"running": False, "collectors": []},
             "watchlist": store.get_watchlist(),

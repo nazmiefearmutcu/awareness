@@ -67,12 +67,33 @@ class MarketsService:
 
     async def start_runner(self) -> None:
         if self.pipeline is None and self.pipeline_error is None:
-            self.build_pipeline()
+            await asyncio.to_thread(self.build_pipeline)  # FinBERT load must not block HTTP
         collectors = list(self._collectors) if self._collectors is not None else default_collectors()
         self.runner = MarketsRunner(self.context(), collectors)
         await self.runner.start()
         if self.pipeline is not None and hasattr(self.pipeline, "recluster"):
             self._recluster_task = asyncio.create_task(self._recluster_once())
+
+    def _static_config_changed(self) -> list[str]:
+        """Collectors whose static config changed since their last run (forced once at startup)."""
+        import hashlib
+
+        watched = {
+            "econ.central_banks": ["central_banks.yaml"],
+            "econ.forexfactory": ["econ_importance.yaml"],
+        }
+        due: list[str] = []
+        for collector, files in watched.items():
+            digest = hashlib.sha256()
+            for name in files:
+                path = self.settings.config_file(name)
+                if path.exists():
+                    digest.update(path.read_bytes())
+            key = f"config.hash:{collector}"
+            if self.store.kv_get(key) != digest.hexdigest():
+                self.store.kv_set(key, digest.hexdigest())
+                due.append(collector)
+        return due
 
     async def _recluster_once(self) -> None:
         try:
@@ -84,6 +105,10 @@ class MarketsService:
                 log.info("startup re-enrichment: %d items follow NLP %s", count, NLP_VERSION)
             changed = await self.pipeline.recluster()
             log.info("startup recluster changed %d items", changed)
+            if self.runner is not None:
+                for name in self._static_config_changed():
+                    self.runner.trigger(name)
+                    log.info("static config changed: %s triggered", name)
         except Exception as exc:  # never block the service on maintenance
             log.warning("startup maintenance failed: %s", exc)
 
@@ -112,11 +137,14 @@ def create_app(
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         svc = service()
         run = settings.autostart_runner if start_runner is None else start_runner
+        starter: asyncio.Task[None] | None = None
         if run:
-            await svc.start_runner()
+            starter = asyncio.create_task(svc.start_runner())  # API answers while models load
         try:
             yield
         finally:
+            if starter is not None and not starter.done():
+                starter.cancel()
             await svc.close()
             holder.pop("svc", None)
 
@@ -159,6 +187,11 @@ def run(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--log-level", default="info")
     args = parser.parse_args(argv)
     settings = get_markets_settings()
+    host = args.host or settings.host
+    if host not in {"127.0.0.1", "localhost", "::1"} and not settings.api_key:
+        raise SystemExit(
+            f"refusing to bind {host} without AW_MARKETS_API_KEY: POST endpoints would be open to the network"
+        )
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -166,7 +199,7 @@ def run(argv: Sequence[str] | None = None) -> None:
     app = create_app(settings, start_runner=False if args.no_runner else None)
     uvicorn.run(
         app,
-        host=args.host or settings.host,
+        host=host,
         port=args.port or settings.port,
         log_level=args.log_level,
         access_log=False,

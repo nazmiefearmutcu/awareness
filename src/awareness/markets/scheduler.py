@@ -227,6 +227,13 @@ class MarketsRunner:
                 removed = await asyncio.to_thread(self.ctx.store.prune_news, cutoff)
                 if removed:
                     log.info("pruned %d news items older than %s", removed, cutoff.date())
+                now = self._now()
+                social = await asyncio.to_thread(
+                    self.ctx.store.prune_indicators, "social.", now - timedelta(days=7), keep_daily=True
+                )
+                tone = await asyncio.to_thread(self.ctx.store.prune_indicators, "gdelt.tone:", now - timedelta(days=90))
+                if social or tone:
+                    log.info("pruned indicators: social=%d gdelt=%d", social, tone)
             except Exception as exc:
                 log.warning("maintenance failed: %s", exc)
             await self._sleep(24 * 3600)

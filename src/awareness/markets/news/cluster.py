@@ -27,6 +27,7 @@ import unicodedata
 from collections import Counter
 from collections.abc import Iterable
 from datetime import timedelta
+from functools import lru_cache
 from itertools import pairwise
 
 from awareness.markets.models import (
@@ -174,6 +175,7 @@ def _strip_publisher_suffix(title: str, publisher_names: frozenset[str]) -> str:
     return title
 
 
+@lru_cache(maxsize=20000)
 def _title_tokens(title: str, publisher_names: frozenset[str]) -> list[str]:
     return _normalise_tokens(_strip_publisher_suffix(title, publisher_names))
 

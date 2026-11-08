@@ -457,12 +457,16 @@ class MarketsStore:
                 where.append("n.id IN (SELECT news_id FROM news_fts WHERE news_fts MATCH ?)")
                 params.append(fts)
         cursor = _decode_cursor(q.cursor) if q.cursor else None
-        if cursor is not None:
-            where.append("(n.published_at < ? OR (n.published_at = ? AND n.id < ?))")
-            params.extend([cursor[0], cursor[0], cursor[1]])
         limit = max(1, min(int(q.limit), 500))
-        where_sql = " AND ".join(where)
         if q.collapse_stories:
+            # The story representative is chosen over the UNCURSORED filter set; the cursor then
+            # pages over representatives, so a story never reappears on a later page.
+            where_sql = " AND ".join(where)
+            outer = ""
+            outer_params: list[Any] = []
+            if cursor is not None:
+                outer = "AND (published_at < ? OR (published_at = ? AND id < ?))"
+                outer_params = [cursor[0], cursor[0], cursor[1]]
             sql = f"""
                 SELECT doc, published_at, id FROM (
                     SELECT n.doc, n.published_at, n.id,
@@ -471,15 +475,20 @@ class MarketsStore:
                             ORDER BY n.publisher_tier ASC, n.quality_score DESC, n.published_at ASC
                         ) AS rn
                     FROM news n WHERE {where_sql}
-                ) WHERE rn = 1
+                ) WHERE rn = 1 {outer}
                 ORDER BY published_at DESC, id DESC LIMIT ?
             """
+            rows = self._conn().execute(sql, [*params, *outer_params, limit + 1]).fetchall()
         else:
+            if cursor is not None:
+                where.append("(n.published_at < ? OR (n.published_at = ? AND n.id < ?))")
+                params.extend([cursor[0], cursor[0], cursor[1]])
+            where_sql = " AND ".join(where)
             sql = f"""
                 SELECT n.doc, n.published_at, n.id FROM news n WHERE {where_sql}
                 ORDER BY n.published_at DESC, n.id DESC LIMIT ?
             """
-        rows = self._conn().execute(sql, [*params, limit + 1]).fetchall()
+            rows = self._conn().execute(sql, [*params, limit + 1]).fetchall()
         items = [NewsItem.model_validate_json(r["doc"]) for r in rows[:limit]]
         next_cursor = None
         if len(rows) > limit:
@@ -492,6 +501,16 @@ class MarketsStore:
             "SELECT doc FROM news WHERE published_at >= ? AND quality_rank >= ? "
             "ORDER BY published_at DESC LIMIT ?",
             (ts(since), QUALITY_ORDER[min_quality], limit),
+        ).fetchall()
+        return [NewsItem.model_validate_json(r["doc"]) for r in rows]
+
+    def cluster_candidates(self, since: datetime, *, limit: int = 3000) -> list[NewsItem]:
+        """Recent clustered, non-rejected items WITHOUT body text (cheap to load for clustering)."""
+        rows = self._conn().execute(
+            "SELECT json_remove(doc, '$.body_text') AS doc FROM news "
+            "WHERE published_at >= ? AND quality_rank >= 1 AND story_id IS NOT NULL "
+            "ORDER BY published_at DESC LIMIT ?",
+            (ts(since), limit),
         ).fetchall()
         return [NewsItem.model_validate_json(r["doc"]) for r in rows]
 
@@ -821,6 +840,26 @@ class MarketsStore:
         if limit is not None:
             rows = rows[-limit:]
         return [self._point(r) for r in rows]
+
+    def prune_indicators(self, prefix: str, older_than: datetime, *, keep_daily: bool = False) -> int:
+        """Delete points of ``prefix*`` older than ``older_than``; ``keep_daily`` keeps the last point per day."""
+        like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        cutoff = ts(older_than)
+        with self._tx() as conn:
+            if keep_daily:
+                cur = conn.execute(
+                    """DELETE FROM indicators WHERE indicator LIKE ? ESCAPE '\\' AND ts < ?
+                       AND ts NOT IN (
+                           SELECT MAX(ts) FROM indicators i2 WHERE i2.indicator = indicators.indicator
+                           AND i2.ts < ? GROUP BY substr(i2.ts, 1, 10)
+                       )""",
+                    (like, cutoff, cutoff),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM indicators WHERE indicator LIKE ? ESCAPE '\\' AND ts < ?", (like, cutoff)
+                )
+            return cur.rowcount
 
     def latest_indicator(self, indicator: str) -> IndicatorPoint | None:
         row = self._conn().execute(

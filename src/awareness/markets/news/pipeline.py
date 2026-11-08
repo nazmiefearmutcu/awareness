@@ -36,6 +36,7 @@ from awareness.markets.store import MarketsStore
 log = logging.getLogger(__name__)
 
 FILTER_ENTITY_TYPES = {"equity", "crypto", "fx", "commodity", "index"}
+SALIENT = 0.6  # title mention, or repeated body mentions
 FINANCE_FEED_CATEGORIES = {
     "markets", "economy", "earnings", "business", "crypto", "central_bank", "rates",
     "equities", "commodities",
@@ -251,20 +252,26 @@ class NewsPipeline:
         await self._date_undated(drafts)
         await asyncio.to_thread(self._enrich, drafts, now)
 
-        stored, touched_stories, rescored = self._cluster_and_score(drafts, now)
+        stored, touched_stories, rescored = await asyncio.to_thread(self._cluster_and_persist, drafts, now)
         stats.stored = len(stored)
         stats.rejected = sum(1 for d in drafts if d.item.quality_label == "rejected")
         stats.stories_touched = len(touched_stories)
         stats.rescored_members = len(rescored)
-        self.store.upsert_news([*stored, *rescored])
-        if touched_stories:
-            self.store.upsert_stories(touched_stories)
         self.last_stats = stats
         log.info(
             "news pipeline: received=%d new=%d stored=%d rejected=%d stories=%d rescored=%d",
             stats.received, len(todo), stats.stored, stats.rejected, stats.stories_touched, stats.rescored_members,
         )
         return stored
+
+    def _cluster_and_persist(
+        self, drafts: list[_Draft], now: datetime
+    ) -> tuple[list[NewsItem], list[Story], list[NewsItem]]:
+        stored, touched_stories, rescored = self._cluster_and_score(drafts, now)
+        self.store.upsert_news([*stored, *rescored])
+        if touched_stories:
+            self.store.upsert_stories(touched_stories)
+        return stored, touched_stories, rescored
 
     async def recluster(self, *, hours: int | None = None) -> int:
         """Re-run story clustering over the recent window (after a rule change or at startup).
@@ -274,7 +281,7 @@ class NewsPipeline:
         story or score changed.
         """
         async with self._lock:
-            return await asyncio.to_thread(self._recluster_sync, hours or self.settings.cluster_window_hours * 2)
+            return await asyncio.to_thread(self._recluster_sync, min(hours or 24, 24))
 
     async def reenrich(self, *, hours: int = 96) -> int:
         """Re-run entities, taxonomy, sentiment, quality and importance over stored recent items."""
@@ -308,7 +315,7 @@ class NewsPipeline:
     def _recluster_sync(self, hours: int) -> int:
         now = self._now()
         items = [
-            i for i in self.store.recent_news(now - timedelta(hours=hours), min_quality="low", limit=20000)
+            i for i in self.store.recent_news(now - timedelta(hours=hours), min_quality="low", limit=3000)
             if i.quality_label != "rejected"
         ]
         items.sort(key=lambda i: (i.published_at, i.id))
@@ -411,7 +418,7 @@ class NewsPipeline:
             and not d.publisher.paywalled
             and d.publisher.tier <= 3
             and not d.item.body_text
-            and d.item.url.startswith("http")
+            and self._own_host(d)
         ]
         if not eligible:
             return 0
@@ -454,6 +461,7 @@ class NewsPipeline:
         targets = [
             d for d in drafts
             if d.timestamp_source == "fetched" and d.publisher is not None and d.publisher.tier <= 3
+            and self._own_host(d)
         ][:40]
         if not targets:
             return 0
@@ -474,6 +482,37 @@ class NewsPipeline:
             return True
 
         return sum(1 for ok in await asyncio.gather(*(one(d) for d in targets)) if ok)
+
+    def _own_host(self, d: _Draft) -> bool:
+        """Fetch article pages only on the publisher's own (public) host — never a feed-supplied
+        third-party or internal address."""
+        url = d.item.url
+        if not url.startswith(("http://", "https://")) or d.publisher is None:
+            return False
+        host_pub = self.registry.by_domain(url)
+        if host_pub is None or host_pub.id != d.publisher.id:
+            return False
+        try:
+            from awareness.sources.feeds import is_public_fetch_url
+
+            return bool(is_public_fetch_url(url))
+        except Exception:  # helper unavailable: host check above already limits the target
+            return True
+
+    def _score_many(self, texts: list[str], languages: list[str]) -> list[SentimentScore]:
+        """Language-aware scoring when the scorer supports it (FinBERT is English-only)."""
+        try:
+            return self.scorer.score_many(texts, languages=languages)  # type: ignore[call-arg]
+        except TypeError:
+            return self.scorer.score_many(texts)
+
+    def _entity_sentiment(self, d: _Draft, relevant: list[EntityRef]) -> dict[str, SentimentScore]:
+        try:
+            return self.scorer.entity_sentiment(  # type: ignore[call-arg]
+                d.item.title, d.text_for_nlp or None, relevant, language=d.item.language
+            )
+        except TypeError:
+            return self.scorer.entity_sentiment(d.item.title, d.text_for_nlp or None, relevant)
 
     @staticmethod
     def _relevance_floor(d: _Draft, relevance: float) -> float:
@@ -499,8 +538,10 @@ class NewsPipeline:
                 feed_categories=list(d.raw.categories),
             )
             d.content_type_hint = getattr(tax, "content_type_hint", None)
-            symbols = [e.id for e in entities if e.type in FILTER_ENTITY_TYPES]
-            countries = [e.id for e in entities if e.type == "country"]
+            # Filters/aggregates use only SALIENT entities (title mention or repeated body mention);
+            # tangential mentions stay in `entities` for display only.
+            symbols = [e.id for e in entities if e.type in FILTER_ENTITY_TYPES and e.salience >= SALIENT]
+            countries = [e.id for e in entities if e.type == "country" and e.salience >= 0.5]
             d.item = d.item.model_copy(
                 update={
                     "entities": entities,
@@ -508,19 +549,21 @@ class NewsPipeline:
                     "countries": list(dict.fromkeys(countries)),
                     "asset_classes": list(getattr(tax, "asset_classes", []) or []),
                     "topics": list(getattr(tax, "topics", []) or []),
-                    "finance_relevance": self._relevance_floor(
-                        d, float(getattr(tax, "finance_relevance", 0.0) or 0.0)
-                    ),
+                    "finance_relevance": float(getattr(tax, "finance_relevance", 0.0) or 0.0),
                 }
             )
             lead = d.item.title if not d.item.summary else f"{d.item.title}. {d.item.summary[:400]}"
             texts.append(lead)
-        scores = self.scorer.score_many(texts) if texts else []
+        languages = [d.item.language for d in drafts]
+        scores = self._score_many(texts, languages) if texts else []
         for d, score in zip(drafts, scores, strict=True):
             ent_sent: dict[str, SentimentScore] = {}
-            relevant = [e for e in d.item.entities if e.type in FILTER_ENTITY_TYPES or e.type == "central_bank"]
+            relevant = [
+                e for e in d.item.entities
+                if (e.type in FILTER_ENTITY_TYPES or e.type == "central_bank") and e.salience >= SALIENT
+            ]
             if relevant:
-                ent_sent = self.scorer.entity_sentiment(d.item.title, d.text_for_nlp or None, relevant)
+                ent_sent = self._entity_sentiment(d, relevant)
             d.item = d.item.model_copy(update={"sentiment": score, "entity_sentiment": ent_sent})
             self._apply_quality(d, now, corroboration=1)
 
@@ -548,9 +591,7 @@ class NewsPipeline:
         self, drafts: list[_Draft], now: datetime
     ) -> tuple[list[NewsItem], list[Story], list[NewsItem]]:
         window = timedelta(hours=self.settings.cluster_window_hours)
-        pool: list[NewsItem] = [
-            n for n in self.store.recent_news(now - window - timedelta(hours=12), min_quality="low") if n.story_id
-        ]
+        pool: list[NewsItem] = self.store.cluster_candidates(now - window, limit=3000)
         members: dict[str, dict[str, NewsItem]] = {}
         for n in pool:
             members.setdefault(n.story_id or n.id, {})[n.id] = n
