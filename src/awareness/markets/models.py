@@ -89,7 +89,8 @@ class FeedSpec(_Model):
     # "browser" for publishers that refuse non-browser user agents (verified per feed).
     profile: Literal["bot", "browser"] = "bot"
     # False for a mixed "economy" section of a general outlet (soft features alongside market news):
-    # its items get no finance-feed relevance floor and must earn relevance from their content.
+    # its items get no finance-feed relevance floor and no feed-category prior; they earn relevance
+    # from their content.
     relevance_floor: bool = True
 
 

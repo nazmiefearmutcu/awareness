@@ -76,7 +76,11 @@ class FakeTax:
 
 
 class FakeTaxonomy:
-    def classify(self, title: str, text: str | None, entities: list[EntityRef], **_: Any) -> FakeTax:
+    def __init__(self) -> None:
+        self.feed_categories: dict[str, list[str]] = {}
+
+    def classify(self, title: str, text: str | None, entities: list[EntityRef], **kw: Any) -> FakeTax:
+        self.feed_categories[title] = list(kw.get("feed_categories") or [])
         if "celebrity" in title.lower():
             return FakeTax(finance_relevance=0.05)
         if "greenhouse" in title.lower():  # a soft feature: no topic, no asset class, no finance entity
@@ -224,6 +228,7 @@ def test_feed_can_opt_out_of_the_finance_feed_floor(markets_settings: MarketsSet
     pipe = _pipeline(markets_settings, store)
     items = asyncio.run(pipe.process([_raw(13, "Acme Holding plans a new plant", "wire_tr", categories=["economy"])]))
     assert items[0].finance_relevance == pytest.approx(0.3)
+    assert pipe.taxonomy.feed_categories["Acme Holding plans a new plant"] == []  # no category prior either
 
 
 # ── runner ────────────────────────────────────────────────────────────────

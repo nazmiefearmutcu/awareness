@@ -45,7 +45,7 @@ FINANCE_FEED_CATEGORIES = {
 EXCERPT_CHARS = 400
 # Bump when entity/taxonomy/sentiment/quality rules change: the service then re-enriches the
 # recent window once at startup so stored items follow the current rules.
-NLP_VERSION = "2026-11-08.10"
+NLP_VERSION = "2026-11-08.11"
 
 
 # ── component protocols (implemented in nlp/, news/quality.py, news/cluster.py) ──
@@ -137,6 +137,15 @@ def _excerpt(body: str | None, summary: str | None) -> str | None:
     cut = source[:EXCERPT_CHARS]
     space = cut.rfind(" ")
     return (cut[:space] if space > EXCERPT_CHARS * 0.6 else cut).rstrip(" ,.;:") + "…"
+
+
+def _feed_floor_allowed(d: _Draft) -> bool:
+    """False for a feed marked ``relevance_floor: false`` (a mixed economy section of a general outlet)."""
+    pub = d.publisher
+    if pub is None:
+        return True
+    feed = next((f for f in pub.feeds if f.id == d.raw.feed_id), None)
+    return feed is None or feed.relevance_floor
 
 
 class NewsPipeline:
@@ -533,8 +542,7 @@ class NewsPipeline:
         finance_feed = bool(set(d.raw.categories) & FINANCE_FEED_CATEGORIES)
         if negative_hit or pub is None or not evidence:
             return relevance
-        feed = next((f for f in pub.feeds if f.id == d.raw.feed_id), None)
-        if feed is not None and not feed.relevance_floor:
+        if not _feed_floor_allowed(d):
             return relevance
         if pub.kind in {"wire", "financial_press", "specialist"} and finance_feed:
             return max(relevance, 0.5)
@@ -551,7 +559,8 @@ class NewsPipeline:
                 d.text_for_nlp or None,
                 entities,
                 publisher=d.publisher,
-                feed_categories=list(d.raw.categories),
+                # A feed that opted out of the finance-feed floor gives no category prior either.
+                feed_categories=list(d.raw.categories) if _feed_floor_allowed(d) else [],
             )
             d.content_type_hint = getattr(tax, "content_type_hint", None)
             # Filters/aggregates use only SALIENT entities (title mention or repeated body mention);
