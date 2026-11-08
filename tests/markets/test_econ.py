@@ -719,6 +719,32 @@ def test_nasdaq_actual_overrides_ff_actual() -> None:
     assert current.status == "released"
 
 
+@pytest.mark.parametrize("fed_first", [True, False])
+def test_timed_ff_minutes_beats_all_day_fed_minutes(fed_first: bool) -> None:
+    """Only rate decisions let the central bank set the time; minutes keep the timed value."""
+    day = datetime(2026, 12, 1, 0, 0, tzinfo=UTC)
+    fed = EconEvent(
+        id=event_id("US", "FOMC Minutes", day),
+        country="US", currency="USD", title="FOMC Minutes", category="central_bank",
+        scheduled_at=day, all_day=True, importance=3,
+        sources=[ProviderRef(provider="fed", url="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+                             fetched_at=NOW, basis="native")],
+    )
+    ff = parse_forexfactory(
+        [{"title": "FOMC Meeting Minutes", "country": "USD", "date": "2026-12-01T14:00:00-05:00",
+          "impact": "High", "forecast": "", "previous": ""}],
+        fetched_at=NOW,
+    )[0]
+    assert ff.scheduled_at == datetime(2026, 12, 1, 19, 0, tzinfo=UTC)
+    incoming = [fed, ff] if fed_first else [ff, fed]
+    changed = merge_econ_events([], incoming, now=NOW)
+    assert len(changed) == 1
+    ev = changed[0]
+    assert ev.all_day is False
+    assert ev.scheduled_at == datetime(2026, 12, 1, 19, 0, tzinfo=UTC)
+    assert {s.provider for s in ev.sources} == {"fed", "forexfactory"}
+
+
 @pytest.mark.parametrize("cb_first", [True, False])
 def test_all_day_boj_decision_keeps_its_date_when_merged_with_ff_rate(cb_first: bool) -> None:
     at = datetime(2026, 12, 18, 0, 0, tzinfo=UTC)

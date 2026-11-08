@@ -151,14 +151,25 @@ def _is_official(event: EconEvent) -> bool:
     return event.category == "central_bank" and bool(_providers(event) & CENTRAL_PROVIDERS)
 
 
-def _official_side(old: EconEvent, new: EconEvent) -> EconEvent | None:
-    """The central-bank side of a decision/ForexFactory-rate pair, or None.
+def _is_unmerged_rate_row(event: EconEvent) -> bool:
+    """A ForexFactory policy-rate row that has not been merged with a central-bank source yet."""
+    return (
+        event.category == "central_bank"
+        and _providers(event) == {"forexfactory"}
+        and is_rate_decision_title(event.title)
+    )
 
-    Works for merged rows too: an already-merged row still counts as official.
+
+def _official_side(old: EconEvent, new: EconEvent) -> EconEvent | None:
+    """The central-bank side of a rate-decision pair, or None.
+
+    Only policy-rate rows qualify (the ruling): a Fed all-day FOMC Minutes row is not a
+    rate decision, so a timed ForexFactory minutes row keeps its time. An already-merged
+    central-bank row still counts as official.
     """
-    if _is_official(old) and "forexfactory" in _providers(new) and new.category == "central_bank":
+    if _is_official(old) and _is_unmerged_rate_row(new):
         return old
-    if _is_official(new) and "forexfactory" in _providers(old) and old.category == "central_bank":
+    if _is_official(new) and _is_unmerged_rate_row(old):
         return new
     return None
 
