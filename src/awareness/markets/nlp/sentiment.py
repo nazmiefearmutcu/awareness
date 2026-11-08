@@ -36,10 +36,10 @@ MIN_BODY_SENTENCE_WORDS = 4
 MAX_INFERENCE_FAILURES = 3
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|\n+")
-# Strong clause boundaries only. Commas are deliberately excluded so appositives such as
-# "Nvidia, the chipmaker, soars" stay whole.
-_STRONG_BOUNDARY_RE = re.compile(
-    r";|:|\bwhile\b|\bwhereas\b|\bbut\b|\balthough\b|\bthough\b|\bhowever\b|\bmeanwhile\b",
+# Connectors that split the text between two entity mentions (see _regions).
+_CONNECTOR_RE = re.compile(
+    r"[,;:]|\b(?:as|while|after|but|and|whereas|although|though|however|meanwhile|because|since"
+    r"|amid|yet|ama|iken|ve|fakat)\b",
     re.IGNORECASE,
 )
 
@@ -130,26 +130,61 @@ def _surface_pattern(entity: EntityRef) -> re.Pattern[str] | None:
     return re.compile(r"(?<![\w$])\$?(?:" + "|".join(parts) + r")(?!\w)")
 
 
-def _snippet_for(sentence: str, pattern: re.Pattern[str], others: Sequence[re.Pattern[str]]) -> str:
-    """Text attributed to the entity inside one sentence.
+def _mentions(sentence: str, patterns: dict[str, re.Pattern[str] | None]) -> list[tuple[int, int, str]]:
+    """Non-overlapping entity mentions in a sentence, sorted by position."""
+    found: list[tuple[int, int, str]] = []
+    for eid, pattern in patterns.items():
+        if pattern is None:
+            continue
+        found.extend((m.start(), m.end(), eid) for m in pattern.finditer(sentence))
+    found.sort()
+    kept: list[tuple[int, int, str]] = []
+    for start, end, eid in found:
+        if kept and start < kept[-1][1]:
+            continue
+        kept.append((start, end, eid))
+    return kept
 
-    With no other requested entity in the sentence, the whole sentence is used. Otherwise each
-    mention takes the text from the nearest cut before it (a strong clause boundary or another
-    entity's mention, or the sentence start) to the nearest cut after it (or the sentence end).
-    Commas are not cuts, so appositives such as "Nvidia, the chipmaker, soars" stay whole.
+
+def _regions(sentence: str, mentions: list[tuple[int, int, str]]) -> list[tuple[str, str]]:
+    """Partition a multi-entity sentence so every word belongs to exactly one mention.
+
+    The text between two adjacent mentions is split at its last connector (a comma, ``;``,
+    ``:``, ``as``, ``while``, ``after``, ``but``, ``and``, ...). Text before the split belongs to
+    the left mention, text after it to the right mention. With no connector, the whole gap goes
+    to the nearest preceding mention. Text before the first mention goes to the first mention,
+    and text after the last mention goes to the last one.
     """
-    if not any(other.search(sentence) for other in others):
-        return sentence
-    cuts = [m.span() for m in _STRONG_BOUNDARY_RE.finditer(sentence)]
-    cuts += [m.span() for other in others for m in other.finditer(sentence)]
-    pieces: list[str] = []
-    for own in pattern.finditer(sentence):
-        start = max((end for _, end in cuts if end <= own.start()), default=0)
-        end = min((begin for begin, _ in cuts if begin >= own.end()), default=len(sentence))
-        piece = sentence[start:end].strip()
-        if piece and piece not in pieces:
-            pieces.append(piece)
-    return " ".join(pieces) if pieces else sentence
+    count = len(mentions)
+    cuts: list[tuple[int, int]] = [(0, 0)] * count  # cuts[i] sits between mention i-1 and i
+    for i in range(1, count):
+        gap_start, gap_end = mentions[i - 1][1], mentions[i][0]
+        connectors = list(_CONNECTOR_RE.finditer(sentence, gap_start, gap_end))
+        cuts[i] = (connectors[-1].start(), connectors[-1].end()) if connectors else (gap_end, gap_end)
+    regions: list[tuple[str, str]] = []
+    for i, (_, _, eid) in enumerate(mentions):
+        lo = 0 if i == 0 else cuts[i][1]
+        hi = len(sentence) if i == count - 1 else cuts[i + 1][0]
+        regions.append((eid, sentence[lo:hi].strip()))
+    return regions
+
+
+def _sentence_pieces(sentence: str, patterns: dict[str, re.Pattern[str] | None]) -> dict[str, str]:
+    """Text attributed to each entity mentioned in one sentence.
+
+    A sentence that mentions only one entity is attributed whole. Otherwise the sentence is
+    partitioned by ``_regions``, so no word counts for two entities.
+    """
+    mentions = _mentions(sentence, patterns)
+    if not mentions:
+        return {}
+    if len({eid for _, _, eid in mentions}) == 1:
+        return {mentions[0][2]: sentence}
+    pieces: dict[str, list[str]] = defaultdict(list)
+    for eid, text in _regions(sentence, mentions):
+        if text:
+            pieces[eid].append(text)
+    return {eid: " ".join(parts) for eid, parts in pieces.items()}
 
 
 def _combine(items: Sequence[SentimentScore]) -> SentimentScore:
@@ -323,17 +358,13 @@ class SentimentScorer:
             return {}
 
         selected: list[tuple[str, str]] = []
-        for eid, pattern in patterns.items():
-            if pattern is None:
-                continue
-            others = [p for oid, p in patterns.items() if oid != eid and p is not None]
-            picked = 0
-            for sentence in sentences:
-                if picked >= max_sentences_per_entity:
-                    break
-                if pattern.search(sentence):
-                    selected.append((eid, _snippet_for(sentence, pattern, others)))
-                    picked += 1
+        picked: dict[str, int] = defaultdict(int)
+        for sentence in sentences:
+            for eid, piece in _sentence_pieces(sentence, patterns).items():
+                if picked[eid] >= max_sentences_per_entity:
+                    continue
+                picked[eid] += 1
+                selected.append((eid, piece))
         if not selected:
             return {}
 
