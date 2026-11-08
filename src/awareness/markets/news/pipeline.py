@@ -44,7 +44,7 @@ FINANCE_FEED_CATEGORIES = {
 EXCERPT_CHARS = 400
 # Bump when entity/taxonomy/sentiment/quality rules change: the service then re-enriches the
 # recent window once at startup so stored items follow the current rules.
-NLP_VERSION = "2026-11-08.6"
+NLP_VERSION = "2026-11-08.7"
 
 
 # ── component protocols (implemented in nlp/, news/quality.py, news/cluster.py) ──

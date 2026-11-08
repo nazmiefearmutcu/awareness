@@ -259,10 +259,38 @@ class QualityGate:
         ):
             label = "standard"
             reasons.append("official_floor")
+        label = self._tier_cap(label, publisher, item, content_type, reasons)
         return QualityVerdict(
             score=score, label=label, reasons=reasons,
             content_type=content_type, hard_reject=False,
         )
+
+    @staticmethod
+    def _tier_cap(
+        label: QualityLabel, publisher: Publisher, item: NewsItem, content_type: str, reasons: list[str]
+    ) -> QualityLabel:
+        """Default views show tier 1-3 newsrooms only.
+
+        Tier 4 (aggregators, promo-prone platforms, PR wires) is capped at ``low`` — except a press
+        release whose issuer is a salient entity of the item (a primary source), capped at
+        ``standard``. Tier 5 (community/social) is always ``low``. Users can still opt into
+        low-quality items through the quality floor.
+        """
+        if publisher.tier >= 5 and label in ("premium", "standard"):
+            reasons.append("tier5_cap")
+            return "low"
+        if publisher.tier == 4 and label in ("premium", "standard"):
+            primary_release = content_type == "press_release" and any(
+                e.type == "equity" and e.salience >= 1.0 for e in item.entities
+            )
+            if primary_release:
+                if label == "premium":
+                    reasons.append("tier4_release_cap")
+                    return "standard"
+                return label
+            reasons.append("tier4_cap")
+            return "low"
+        return label
 
     # ── hard rejects ────────────────────────────────────────────────────
 

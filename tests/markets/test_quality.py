@@ -498,3 +498,25 @@ def test_shipped_clickbait_rules_contain_no_backspace_characters() -> None:
 
     walk(rules)
     assert not [r for r in flat if "\x08" in r]
+
+
+def test_tier4_promo_platforms_never_reach_the_default_view() -> None:
+    now = datetime(2026, 11, 8, 12, tzinfo=UTC)
+    fool = Publisher(id="motley_fool", name="The Motley Fool", domain="fool.com", tier=4, kind="aggregator")
+    prn = Publisher(id="prnewswire", name="PR Newswire", domain="prnewswire.com", tier=4, kind="press_release")
+    nvda = EntityRef(type="equity", id="NVDA", name="Nvidia", confidence=0.95, salience=1.0)
+
+    def item(pub: Publisher, title: str) -> NewsItem:
+        url = f"https://{pub.domain}/{abs(hash(title))}"
+        return NewsItem(id=NewsItem.id_for_url(url), url=url, title=title, summary="x" * 200, publisher_id=pub.id,
+                        publisher_name=pub.name, publisher_domain=pub.domain, publisher_tier=pub.tier, author="A",
+                        published_at=now - timedelta(hours=1), first_seen_at=now, feed_id="f", entities=[nvda],
+                        symbols=["NVDA"], topics=["earnings"])
+
+    gate = QualityGate()
+    v = gate.evaluate(item(fool, "Nvidia Just Reported Earnings: 3 Key Takeaways for Long-Term Investors"), fool,
+                      now=now, finance_relevance=0.9)
+    assert v.label == "low" and "tier4_cap" in v.reasons
+    r = gate.evaluate(item(prn, "Nvidia Announces Financial Results for Third Quarter Fiscal 2027"), prn,
+                      now=now, finance_relevance=0.9)
+    assert r.label in ("standard", "low") and r.label != "premium"
