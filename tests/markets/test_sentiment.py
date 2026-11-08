@@ -261,6 +261,20 @@ def test_mention_order_attribution_without_clause_break() -> None:
     assert out["NVDA"].label == "positive"
 
 
+@pytest.mark.parametrize(
+    ("headline", "nvda_label", "intc_label"),
+    [
+        ("Nvidia soars on record revenue while Intel slumps after weak outlook.", "positive", "negative"),
+        ("Analysts cut Intel rating while Nvidia rallies.", "positive", "negative"),
+        ("Weak outlook hits Intel while Nvidia rallies.", "positive", "negative"),
+    ],
+)
+def test_predicate_on_either_side_of_mention_is_kept(headline: str, nvda_label: str, intc_label: str) -> None:
+    out = SentimentScorer("lexicon").entity_sentiment(headline, None, [_nvda(), _intc()])
+    assert out["NVDA"].label == nvda_label
+    assert out["INTC"].label == intc_label
+
+
 # ── entity sentiment ──────────────────────────────────────────────────────
 
 

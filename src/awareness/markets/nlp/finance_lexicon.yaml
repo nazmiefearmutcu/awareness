@@ -163,6 +163,7 @@ negative:
   "loss|losses": -1.5
   "lost|losing": -1
   "downgrade|downgrades|downgraded|downgrading": -1.5
+  "cut rating|cuts rating|cutting rating|lowered rating|lowers rating|cut target|cuts target|lowered target|lowers target|cut price target|cuts price target|lowered price target|lowers price target": -1.5
   "underperform|underperforms|underperformed|underperforming|underweight": -1
   "bearish|pessimistic|pessimism": -1.5
   "worst|worse|worsen|worsens|worsened|worsening": -1
@@ -194,6 +195,16 @@ negative:
   "uyarı|uyardı|uyarısında": -1
   "siber saldırı|saldırıya uğradı": -1.5
   "erteleme|ertelendi": -1
+
+# Gapped pairs: a "first" word followed by a "second" word with at most two tokens between
+# them, in the same clause (for example "Analysts cut Intel rating"). The span is one hit.
+gapped:
+  - first: "cut|cuts|cutting|lowered|lowers|lowering|slashed|slashes|trimmed|trims"
+    second: "rating|ratings|target"
+    weight: -1.5
+  - first: "raised|raises|raising|lifted|lifts|boosted|boosts"
+    second: "rating|ratings|target"
+    weight: 1.5
 
 negators:
   - not

@@ -173,7 +173,8 @@ def summarize_entity_sentiment(
     """Summarise one entity's sentiment rows over ``[now - window, now]``.
 
     ``baseline_rows`` (typically the preceding 30 days for the same entity) feed the
-    momentum z-score. Rows for other entities are ignored.
+    momentum z-score. Rows for other entities are ignored. ``entity_id`` is matched
+    case-insensitively and reported in uppercase. Naive datetimes are treated as UTC.
     """
     if bucket not in ("1h", "1d"):
         raise ValueError(f"bucket must be '1h' or '1d', got {bucket!r}")
@@ -182,7 +183,7 @@ def summarize_entity_sentiment(
     wanted = entity_id.upper()
 
     scoped = [r for r in rows if r.entity_id.upper() == wanted and _as_utc(r.published_at) <= now_utc]
-    entity_rows = _dedupe(sorted(scoped, key=lambda r: r.published_at))
+    entity_rows = _dedupe(sorted(scoped, key=lambda r: _as_utc(r.published_at)))
     in_window = [r for r in entity_rows if _as_utc(r.published_at) >= window_start]
     report = EntitySentimentReport(
         entity_id=wanted,

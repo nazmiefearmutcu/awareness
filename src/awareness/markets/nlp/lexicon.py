@@ -38,6 +38,7 @@ LEXICON_PATH = Path(__file__).resolve().parent / "finance_lexicon.yaml"
 POSITIVE_THRESHOLD = 0.15
 NEGATIVE_THRESHOLD = -0.15
 NEGATION_WINDOW = 3
+GAP_MAX = 2  # tokens allowed between the two words of a gapped rule
 INTENSIFIER_WINDOW = 2
 NEGATION_FACTOR = -0.6
 INTENSIFIER_FACTOR = 1.4
@@ -72,6 +73,15 @@ def label_for_score(score: float) -> SentimentLabel:
 
 
 @dataclass(frozen=True)
+class GappedRule:
+    """A ``first`` word and a ``second`` word separated by at most GAP_MAX tokens."""
+
+    first: frozenset[str]
+    second: frozenset[str]
+    weight: float
+
+
+@dataclass(frozen=True)
 class Lexicon:
     """Compiled lexicon. Keys are token tuples; values are weights."""
 
@@ -82,6 +92,7 @@ class Lexicon:
     negators: frozenset[str]
     failure_words: frozenset[str]
     intensifiers: frozenset[str]
+    gapped: tuple[GappedRule, ...] = ()
     table: dict[Term, float] = field(init=False, repr=False)
     max_len: int = field(init=False, repr=False)
 
@@ -131,7 +142,19 @@ def load_lexicon(path: Path = LEXICON_PATH) -> Lexicon:
         negators=frozenset(str(w).lower() for w in raw.get("negators") or []),
         failure_words=frozenset(str(w).lower() for w in raw.get("failure_words") or []),
         intensifiers=frozenset(str(w).lower() for w in raw.get("intensifiers") or []),
+        gapped=tuple(_parse_gapped(raw.get("gapped") or [])),
     )
+
+
+def _parse_gapped(entries: list[dict[str, Any]]) -> list[GappedRule]:
+    rules: list[GappedRule] = []
+    for entry in entries:
+        first = frozenset(w for w in (tokenize(p)[0] for p in str(entry["first"]).split("|") if p.strip()) if w)
+        second = frozenset(w for w in (tokenize(p)[0] for p in str(entry["second"]).split("|") if p.strip()) if w)
+        if not first or not second:
+            raise ValueError(f"gapped rule needs non-empty first and second words: {entry!r}")
+        rules.append(GappedRule(first=first, second=second, weight=float(entry["weight"])))
+    return rules
 
 
 class LexiconScorer:
@@ -152,6 +175,8 @@ class LexiconScorer:
         i = 0
         while i < len(tokens):
             matched_len, weight = self._match_at(tokens, i)
+            if matched_len == 0:
+                matched_len, weight = self._match_gapped(tokens, i)
             if matched_len == 0:
                 i += 1
                 continue
@@ -176,6 +201,18 @@ class LexiconScorer:
             term = tuple(tokens[start : start + length])
             if term in table:
                 return length, table[term]
+        return 0, 0.0
+
+    def _match_gapped(self, tokens: list[str], start: int) -> tuple[int, float]:
+        """A gapped rule whose first word is at ``start``. Returns (span length, weight) or (0, 0.0)."""
+        for rule in self._lex.gapped:
+            if tokens[start] not in rule.first:
+                continue
+            for j in range(start + 1, min(len(tokens), start + GAP_MAX + 2)):
+                if tokens[j] == CLAUSE_BOUNDARY:
+                    break
+                if tokens[j] in rule.second:
+                    return j - start + 1, rule.weight
         return 0, 0.0
 
     def _modifier(self, tokens: list[str], index: int) -> float:

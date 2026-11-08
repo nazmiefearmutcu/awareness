@@ -285,6 +285,25 @@ def test_naive_published_at_does_not_raise() -> None:
     assert report.latest_at == datetime(2026, 11, 8, 11, 0, tzinfo=UTC)
 
 
+def test_mixed_naive_and_aware_rows_sort_without_error() -> None:
+    aware = _row("aware", NOW - timedelta(hours=2), score=0.2)
+    naive = EntitySentimentRow(
+        news_id="naive",
+        entity_id="NVDA",
+        score=0.4,
+        label="positive",
+        confidence=0.8,
+        published_at=datetime(2026, 11, 8, 11, 0),  # naive, assumed UTC
+        quality_score=1.0,
+        publisher_id="reuters",
+    )
+    report = summarize_entity_sentiment(
+        [aware, naive], entity_id="NVDA", now=NOW, window=timedelta(days=1), bucket="1h"
+    )
+    assert report.count == 2
+    assert report.latest_at == datetime(2026, 11, 8, 11, 0, tzinfo=UTC)
+
+
 def test_invalid_bucket_raises() -> None:
     with pytest.raises(ValueError, match="bucket"):
         summarize_entity_sentiment(
