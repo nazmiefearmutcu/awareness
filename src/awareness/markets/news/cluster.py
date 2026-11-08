@@ -1,17 +1,23 @@
-"""Story clustering: collapse syndicated and paraphrased copies into one story.
+"""Story clustering: collapse syndicated, paraphrased and same-event copies into one story.
 
-Two items belong to the same story when:
+``find_story`` matches a candidate when any of these holds (all within the time window, in the
+same language family, and with no conflicting numbers in the titles):
 
-* their normalised title shingles overlap with Jaccard >= ``jaccard_threshold``; or
-* they share a high-confidence entity and the Jaccard is >= ``entity_jaccard_threshold``; or
-* they share a high-confidence entity and the title+summary simhashes are within
+* (a) folded title Jaccard >= ``jaccard_threshold`` (default 0.5);
+* (c) event key: both items share a salient entity (salience >= 0.9, confidence >= 0.8, equity,
+  crypto, central bank, index or commodity), share at least one topic, and were published within
+  18 hours of each other;
+* (d) fallback for items with no topics on either side: shared salient entity, folded Jaccard
+  >= 0.25 and published within 12 hours of each other;
+* (b) simhash path: a shared entity with confidence >= 0.8 and a title+summary simhash within
   ``simhash_threshold`` bits.
 
-Matching is restricted to a time window and to items in the same language family, and two
-items whose titles carry different numbers never match (different figures are different
-events). Title normalisation maps common finance verbs and nouns to canonical forms
-(``beats``/``tops`` to ``beat``, ``soars``/``surges`` to ``rise``) and applies light stemming,
-so paraphrased wire headlines reach the same shingles.
+Under-merging the same event is worse for the reader than merging two angles of one company
+event, so the event-key rules are deliberately generous within a company's news.
+
+Title folding maps finance verbs and nouns to canonical forms (beats/tops to beat, soars/surges to
+rise, buys back/buybacks/repurchases to buyback, profits to earning, $9.6 billion/9.6bn to 9p6b),
+applies light stemming, and drops stopwords, so paraphrased headlines share shingles.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from itertools import pairwise
 
 from awareness.markets.models import (
     NewsItem,
+    Publisher,
     SentimentLabel,
     SentimentScore,
     Story,
@@ -52,35 +59,6 @@ _STOPWORDS: frozenset[str] = frozenset(
 # Words that end in "s" but are not plurals; light stemming leaves them alone.
 _NO_STEM: frozenset[str] = frozenset({"news", "bias", "crisis", "virus", "status", "bonus"})
 
-
-def _synonym_map() -> dict[str, str]:
-    groups: dict[str, tuple[str, ...]] = {
-        "beat": ("beats", "beat", "beaten", "beating", "tops", "topped", "topping",
-                 "exceeds", "exceeded", "exceeding"),
-        "miss": ("misses", "missed", "missing", "miss"),
-        "rise": ("soars", "soar", "soared", "soaring", "surges", "surge", "surged", "surging",
-                 "jumps", "jump", "jumped", "jumping", "rallies", "rally", "rallied", "rallying"),
-        "fall": ("plunges", "plunge", "plunged", "plunging", "slumps", "slump", "slumped",
-                 "slumping", "tumbles", "tumble", "tumbled", "tumbling", "sinks", "sink",
-                 "sank", "sinking"),
-        "estimate": ("estimates", "estimate", "forecasts", "forecast", "expectations",
-                     "expectation"),
-    }
-    return {form: canonical for canonical, forms in groups.items() for form in forms}
-
-
-_SYNONYMS: dict[str, str] = _synonym_map()
-_DATACENTER = re.compile(r"\bdata[\s-]*cent(?:er|re)s?\b")
-_FELL_SHORT = re.compile(r"\b(?:falls?|fell|falling)\s+short\b")
-_TOKEN_SPLIT = re.compile(r"[\W_]+", re.UNICODE)
-_NUMBER = re.compile(r"\d+")
-_PUBLISHER_SEPARATOR = re.compile("\\s+[-|\u2013\u2014]\\s+")
-_MIN_UNIGRAM_LEN = 4
-_HIGH_CONFIDENCE = 0.8
-_SENTIMENT_BAND = 0.15
-_MAX_CORROBORATION_TIER = 3
-
-
 # (suffix, minimum length, replacement) tried in order; the first match wins.
 _STEM_RULES: tuple[tuple[str, int, str], ...] = (
     ("ies", 4, "y"),
@@ -92,6 +70,46 @@ _STEM_RULES: tuple[tuple[str, int, str], ...] = (
     ("xes", 3, "x"),
     ("zes", 3, "z"),
 )
+
+
+def _synonym_map() -> dict[str, str]:
+    groups: dict[str, tuple[str, ...]] = {
+        "beat": ("beats", "beat", "beaten", "beating", "tops", "topped", "topping",
+                 "exceeds", "exceeded", "exceeding"),
+        "miss": ("misses", "missed", "missing", "miss"),
+        "rise": ("soars", "soar", "soared", "soaring", "surges", "surge", "surged", "surging",
+                 "jumps", "jump", "jumped", "jumping", "rallies", "rally", "rallied", "rallying"),
+        "fall": ("plunges", "plunge", "plunged", "plunging", "slumps", "slump", "slumped",
+                 "slumping", "tumbles", "tumble", "tumbled", "tumbling", "sinks", "sink",
+                 "sank", "sinking"),
+        "estimate": ("estimates", "estimate", "estimated", "estimating", "forecasts", "forecast",
+                     "expectations", "expectation"),
+        "buyback": ("buyback", "buybacks", "repurchase", "repurchases", "repurchased",
+                    "repurchasing"),
+        "earning": ("earnings", "earning", "profit", "profits"),
+    }
+    return {form: canonical for canonical, forms in groups.items() for form in forms}
+
+
+_SYNONYMS: dict[str, str] = _synonym_map()
+_DATACENTER = re.compile(r"\bdata[\s-]*cent(?:er|re)s?\b")
+_FELL_SHORT = re.compile(r"\b(?:falls?|fell|falling)\s+short\b")
+_BUY_BACK = re.compile(r"\bbuy(?:s|ing)?\s+back\b")
+# "$9.6 billion", "9.6bn" and "$9.6B" all fold to the token "9p6b" (a decimal point would split).
+_AMOUNT = re.compile(r"(\d+(?:\.\d+)?)\s*(billion|bn|b|million|mn|m)\b")
+_AMOUNT_UNITS = {"billion": "b", "bn": "b", "b": "b", "million": "m", "mn": "m", "m": "m"}
+_TOKEN_SPLIT = re.compile(r"[\W_]+", re.UNICODE)
+_PUBLISHER_SEPARATOR = re.compile("\\s+[-|\u2013\u2014]\\s+")
+_MIN_UNIGRAM_LEN = 4
+_HIGH_CONFIDENCE = 0.8
+_KEY_SALIENCE = 0.9
+_KEY_ENTITY_TYPES = frozenset({"equity", "crypto", "central_bank", "index", "commodity"})
+_TITLE_JACCARD = 0.5
+_FALLBACK_JACCARD = 0.25
+_EVENT_WINDOW = timedelta(hours=18)
+_FALLBACK_WINDOW = timedelta(hours=12)
+_SENTIMENT_BAND = 0.15
+_MAX_CORROBORATION_TIER = 3
 
 
 def _light_stem(token: str) -> str:
@@ -106,11 +124,18 @@ def _light_stem(token: str) -> str:
     return token
 
 
+def _fold_amount(match: re.Match[str]) -> str:
+    number = match.group(1).replace(".", "p")
+    return f" {number}{_AMOUNT_UNITS[match.group(2)]} "
+
+
 def _normalise_tokens(text: str) -> list[str]:
-    """Lower-case, fold phrases and synonyms, split on punctuation, stem, drop stopwords."""
+    """Lower-case, fold phrases, amounts and synonyms, split on punctuation, stem, drop stopwords."""
     folded = unicodedata.normalize("NFKC", text).replace("\u0130", "i").lower()
     folded = _DATACENTER.sub(" datacenter ", folded)
     folded = _FELL_SHORT.sub(" miss ", folded)
+    folded = _BUY_BACK.sub(" buyback ", folded)
+    folded = _AMOUNT.sub(_fold_amount, folded)
     tokens: list[str] = []
     for raw in _TOKEN_SPLIT.split(folded):
         if not raw or raw in _STOPWORDS:
@@ -119,6 +144,23 @@ def _normalise_tokens(text: str) -> list[str]:
         if canonical and canonical not in _STOPWORDS:
             tokens.append(canonical)
     return tokens
+
+
+def _names(publisher_names: Iterable[str] | None) -> frozenset[str]:
+    return frozenset(n.strip().lower() for n in (publisher_names or ()) if n.strip())
+
+
+def publisher_names_from(publishers: Iterable[Publisher]) -> frozenset[str]:
+    """Names and aliases of the given publishers, for ``StoryClusterer(publisher_names=...)``.
+
+    Pass ``registry.all()`` from the publisher registry. Only a trailing title segment that
+    equals one of these names is stripped as a publisher suffix.
+    """
+    names: set[str] = set()
+    for publisher in publishers:
+        names.add(publisher.name)
+        names.update(publisher.aliases)
+    return frozenset(n for n in names if n.strip())
 
 
 def _strip_publisher_suffix(title: str, publisher_names: frozenset[str]) -> str:
@@ -131,25 +173,28 @@ def _strip_publisher_suffix(title: str, publisher_names: frozenset[str]) -> str:
     return title
 
 
-def _names(publisher_names: Iterable[str] | None) -> frozenset[str]:
-    return frozenset(n.strip().lower() for n in (publisher_names or ()) if n.strip())
+def _title_tokens(title: str, publisher_names: frozenset[str]) -> list[str]:
+    return _normalise_tokens(_strip_publisher_suffix(title, publisher_names))
 
 
-def title_shingles(title: str, publisher_names: Iterable[str] | None = None) -> set[str]:
-    """Normalised title shingles: word bigrams plus unigrams of length >= 4.
-
-    Publisher suffixes are removed only when they match one of ``publisher_names`` (the
-    registry's names and aliases). Numbers are kept. Synonyms, light stemming and English and
-    Turkish stopword removal are applied before shingling.
-    """
-    tokens = _normalise_tokens(_strip_publisher_suffix(title, _names(publisher_names)))
+def _shingles_from(tokens: list[str]) -> set[str]:
     shingles = {f"{a} {b}" for a, b in pairwise(tokens)}
     shingles.update(t for t in tokens if len(t) >= _MIN_UNIGRAM_LEN)
     return shingles
 
 
-def _numbers(title: str) -> frozenset[str]:
-    return frozenset(_NUMBER.findall(title))
+def title_shingles(title: str, publisher_names: Iterable[str] | None = None) -> set[str]:
+    """Folded title shingles: word bigrams plus unigrams of length >= 4.
+
+    Publisher suffixes are removed only when they match one of ``publisher_names``. Numbers are
+    folded into amount tokens (for example ``9p6b``), and synonyms, light stemming and English
+    and Turkish stopword removal are applied before shingling.
+    """
+    return _shingles_from(_title_tokens(title, _names(publisher_names)))
+
+
+def _numeric_tokens(tokens: list[str]) -> frozenset[str]:
+    return frozenset(t for t in tokens if any(ch.isdigit() for ch in t))
 
 
 def _jaccard(a: set[str], b: set[str]) -> float:
@@ -170,6 +215,16 @@ def _high_confidence_entities(item: NewsItem) -> set[str]:
     return {e.id for e in item.entities if e.confidence >= _HIGH_CONFIDENCE}
 
 
+def _key_entities(item: NewsItem) -> set[str]:
+    return {
+        e.id
+        for e in item.entities
+        if e.type in _KEY_ENTITY_TYPES
+        and e.salience >= _KEY_SALIENCE
+        and e.confidence >= _HIGH_CONFIDENCE
+    }
+
+
 def _label_for_score(score: float) -> SentimentLabel:
     if score >= _SENTIMENT_BAND:
         return "positive"
@@ -179,35 +234,36 @@ def _label_for_score(score: float) -> SentimentLabel:
 
 
 class StoryClusterer:
-    """Assigns items to stories and builds story records from clustered items."""
+    """Assigns items to stories and builds story records from clustered items.
+
+    ``publisher_names`` enables publisher-suffix stripping. Build it from the registry with
+    ``publisher_names_from(registry.all())``. When omitted, no title suffix is ever stripped.
+    """
 
     def __init__(
         self,
         *,
         window_hours: int = 36,
-        jaccard_threshold: float = 0.5,
+        jaccard_threshold: float = _TITLE_JACCARD,
         simhash_threshold: int = 10,
-        entity_jaccard_threshold: float = 0.3,
         publisher_names: Iterable[str] | None = None,
     ) -> None:
         self._window = timedelta(hours=window_hours)
         self._jaccard_threshold = jaccard_threshold
         self._simhash_threshold = simhash_threshold
-        self._entity_jaccard_threshold = entity_jaccard_threshold
         self._publisher_names = _names(publisher_names)
 
     def find_story(self, item: NewsItem, candidates: list[NewsItem]) -> str | None:
         """Return the ``story_id`` of the best matching candidate, or ``None``.
 
-        A candidate matches when its title Jaccard is >= ``jaccard_threshold``; or when it
-        shares a high-confidence entity and the Jaccard is >= ``entity_jaccard_threshold``; or
-        when it shares a high-confidence entity and the title+summary simhash is within
-        ``simhash_threshold`` bits. Candidates whose titles contain different numbers never
-        match. The highest-Jaccard match wins.
+        Rules (a), (b), (c) and (d) are described in the module docstring. Candidates whose
+        titles contain different amounts or numbers never match. The highest-Jaccard match wins.
         """
-        item_shingles = title_shingles(item.title, self._publisher_names)
-        item_numbers = _numbers(item.title)
-        item_entities = _high_confidence_entities(item)
+        item_tokens = _title_tokens(item.title, self._publisher_names)
+        item_shingles = _shingles_from(item_tokens)
+        item_numbers = _numeric_tokens(item_tokens)
+        item_key = _key_entities(item)
+        item_conf = _high_confidence_entities(item)
         item_sig: int | None = None  # computed lazily: only needed for entity-sharing pairs
         best_story: str | None = None
         best_jaccard = -1.0
@@ -216,17 +272,20 @@ class StoryClusterer:
                 continue
             if _language_family(cand) != _language_family(item):
                 continue
-            if abs(cand.published_at - item.published_at) > self._window:
+            delta = abs(cand.published_at - item.published_at)
+            if delta > self._window:
                 continue
-            cand_numbers = _numbers(cand.title)
+            cand_tokens = _title_tokens(cand.title, self._publisher_names)
+            cand_numbers = _numeric_tokens(cand_tokens)
             if item_numbers and cand_numbers and item_numbers != cand_numbers:
                 continue
-            jaccard = _jaccard(item_shingles, title_shingles(cand.title, self._publisher_names))
-            shared = item_entities & _high_confidence_entities(cand)
-            matched = jaccard >= self._jaccard_threshold or (
-                bool(shared) and jaccard >= self._entity_jaccard_threshold
+            jaccard = _jaccard(item_shingles, _shingles_from(cand_tokens))
+            shared_key = item_key & _key_entities(cand)
+            matched = jaccard >= self._jaccard_threshold or self._event_match(
+                item, cand, jaccard, shared_key, delta
             )
-            if not matched and shared:
+            shared_conf = item_conf & _high_confidence_entities(cand)
+            if not matched and shared_conf:
                 if item_sig is None:
                     item_sig = simhash64(_sim_text(item))
                 matched = hamming64(item_sig, simhash64(_sim_text(cand))) <= self._simhash_threshold
@@ -234,6 +293,17 @@ class StoryClusterer:
                 best_story = cand.story_id
                 best_jaccard = jaccard
         return best_story
+
+    @staticmethod
+    def _event_match(
+        item: NewsItem, cand: NewsItem, jaccard: float, shared_key: set[str], delta: timedelta
+    ) -> bool:
+        """Rules (c) and (d): same company event, judged by a shared salient entity."""
+        if not shared_key:
+            return False
+        if item.topics and cand.topics:
+            return bool(set(item.topics) & set(cand.topics)) and delta <= _EVENT_WINDOW
+        return jaccard >= _FALLBACK_JACCARD and delta <= _FALLBACK_WINDOW
 
     def new_story_id(self, item: NewsItem) -> str:
         """Deterministic story id for an item that starts a new story."""
