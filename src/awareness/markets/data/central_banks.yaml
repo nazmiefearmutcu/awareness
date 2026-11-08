@@ -1,0 +1,17 @@
+# Hand-maintained central-bank decision schedules for banks whose official
+# calendar is not machine-reachable (see load_curated_schedules).
+#
+# Each entry needs: provider, country, currency, title, date (YYYY-MM-DD),
+# time (HH:MM local, or null for an all-day event), tz (IANA zone),
+# source_url (the official page the date was read from) and verified_on
+# (YYYY-MM-DD, the day the date was checked against that page).
+# Only add a date after checking it on the official page. Never extrapolate.
+#
+# TCMB (Turkey, PPK): intentionally EMPTY. The official tcmb.gov.tr pages
+# (PPK/2026, PPK/2027, Duyurular/Takvim) list pairs of dates about a week
+# apart (for example 22 Ocak / 29 Ocak 2026) but do not label which date of a
+# pair is the rate decision and which is the summary release, and the policy
+# text PDF could not be read to confirm it. Dates are added here only after
+# that is verified. Decision time per the TCMB policy text is 14:00 Europe/Istanbul.
+
+entries: []

@@ -1,0 +1,83 @@
+# Economic-event importance and category rules (matched case-insensitively).
+#
+# Rules are evaluated top to bottom; the FIRST matching rule wins.
+# importance: 1 (low) .. 3 (high). A rule with `chair_importance` raises the
+# importance to that value when the event title names one of `chair_names`.
+# Final importance = max(provider impact, rule importance) when both exist.
+# Anything that matches no rule gets `default` (importance 1, category other).
+#
+# Patterns are Python regular expressions (re.IGNORECASE).
+
+chair_names:
+  - Powell
+  - Lagarde
+  - Bailey
+  - Ueda
+  - Karahan
+
+rules:
+  # Speeches come before central-bank patterns so "FOMC Member X Speaks"
+  # is classified as a speech, not as an FOMC decision.
+  - pattern: "speaks|speech|testimony"
+    importance: 2
+    chair_importance: 3
+    category: speech
+
+  - pattern: "non-?farm payrolls|nonfarm payrolls|unemployment rate"
+    importance: 3
+    category: employment
+  - pattern: "\bcpi\b|consumer price"
+    importance: 3
+    category: inflation
+  - pattern: "core pce|pce price|personal income and outlays"
+    importance: 3
+    category: inflation
+  - pattern: "\bgdp\b|gross domestic product"
+    importance: 3
+    category: growth
+  - pattern: "interest rate decision|rate statement|monetary policy (decision|statement)|fomc"
+    importance: 3
+    category: central_bank
+  - pattern: "retail sales"
+    importance: 3
+    category: consumer
+  - pattern: "ism (manufacturing|services)"
+    importance: 3
+    category: pmi
+  - pattern: "\bism\b|\bpmi\b"
+    importance: 2
+    category: pmi
+  - pattern: "\bppi\b|producer price"
+    importance: 2
+    category: inflation
+  - pattern: "jobless claims|unemployment claims|initial claims"
+    importance: 2
+    category: employment
+  - pattern: "\bjolts\b"
+    importance: 2
+    category: employment
+  - pattern: "durable goods|industrial production"
+    importance: 2
+    category: growth
+  - pattern: "consumer confidence|consumer sentiment|michigan"
+    importance: 2
+    category: sentiment
+  - pattern: "housing starts|building permits|existing home sales|new home sales"
+    importance: 2
+    category: housing
+  - pattern: "trade balance|international trade"
+    importance: 2
+    category: trade
+  - pattern: "crude oil inventories"
+    importance: 2
+    category: energy
+  - pattern: "\bzew\b|\bifo\b"
+    importance: 2
+    category: sentiment
+  - pattern: "auction"
+    importance: 1
+    category: auction
+
+default:
+  importance: 1
+  category: other
