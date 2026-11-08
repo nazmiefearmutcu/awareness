@@ -360,3 +360,16 @@ def test_api_key_guard(markets_settings: MarketsSettings) -> None:
 def test_holiday_model_date_field() -> None:
     h = Holiday(id="x", date=date(2026, 1, 1), name="New Year", source=ProviderRef(provider="nager", fetched_at=NOW))
     assert h.date.year == 2026
+
+
+def test_sessions_endpoint_tokyo_lunch_break_and_nyse_early_close(client: TestClient) -> None:
+    tokyo = client.get("/v1/markets/calendar/sessions", params={"exchange": "XTKS", "from": "2026-11-09", "to": "2026-11-13"}).json()
+    rows = tokyo["data"]["sessions"]
+    assert rows and tokyo["data"]["timezone"] == "Asia/Tokyo"
+    assert rows[0]["open_local"] == "09:00" and rows[0]["break_local"] is not None
+    nyse = client.get("/v1/markets/calendar/sessions", params={"exchange": "xnys", "from": "2026-11-23", "to": "2026-11-30"}).json()
+    by_day = {r["date"]: r for r in nyse["data"]["sessions"]}
+    assert "2026-11-26" not in by_day  # Thanksgiving closed
+    assert by_day["2026-11-27"]["early_close"] is True and by_day["2026-11-27"]["close_local"] == "13:00"
+    assert by_day["2026-11-24"]["close_local"] == "16:00" and by_day["2026-11-24"]["break_local"] is None
+    assert client.get("/v1/markets/calendar/sessions", params={"exchange": "NOPE"}).status_code == 404

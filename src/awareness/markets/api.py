@@ -445,6 +445,30 @@ def create_markets_router(api: MarketsAPI, *, prefix: str = "/v1/markets") -> AP
             notes=[] if rows else ["no holidays in range for the filters"],
         )
 
+    @router.get("/calendar/sessions")
+    def sessions(
+        exchange: str,
+        from_: Annotated[str | None, Query(alias="from")] = None,
+        to: str | None = None,
+    ) -> dict[str, Any]:
+        from awareness.markets.calendar.sessions import exchange_sessions
+
+        today = api.now().date()
+        start = _parse_day(from_, today)
+        end = _parse_day(to, start + timedelta(days=14))
+        if (end - start).days > 400:
+            raise HTTPException(status_code=422, detail="window too large (max 400 days)")
+        try:
+            data = exchange_sessions(exchange, start, end)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return api.envelope(
+            data,
+            filters={"exchange": exchange.upper(), "from": start.isoformat(), "to": end.isoformat()},
+            count=len(data["sessions"]),
+            notes=["computed offline from exchange_calendars rule sets"],
+        )
+
     @router.get("/filings")
     def filings(
         symbols: str | None = None,
