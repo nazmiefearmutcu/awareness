@@ -56,9 +56,11 @@ Envelope `{"data": …, "meta": {generated_at, count, providers[{provider,status
 | `GET /calendar/corporate` | `from, to, types (earnings,dividend,split,ipo,filing), symbols` |
 | `GET /calendar/holidays` | `from, to, countries, exchanges` |
 | `GET /calendar/sessions` | `exchange (MIC), from, to` — open/close/lunch break, early closes |
-| `GET /filings` | `symbols, forms, days, material_only` |
+| `GET /filings` | `symbols, forms, days (1–400), material_only` — with `symbols`, backfills each company's own SEC submissions history first (see below) |
 | `GET /sources`, `GET /health` | registry with per-feed health; provider freshness, counts, runner state |
 | `GET/POST /watchlist`, `POST /collect/{name}` | watchlist drives Google News / GDELT; manual collector trigger |
+
+**Filing history per symbol.** The EDGAR "latest filings" feed only holds what the service has seen since it started. When `/filings` is called with `symbols`, Awareness also fetches each company's `data.sec.gov/submissions` JSON (keyless, SEC user agent, at most 10 companies per request, sequential) and stores its last 400 days of tracked forms (the `FORMS` list plus `/A` amendments), with 8-K items decoded the same way. Each CIK is refetched at most every 6 hours, and the two sources share event ids so they de-duplicate. Symbols without a CIK, and failed fetches, are reported in `meta.notes`; the health of this backfill is the `corp.sec_submissions` provider. Calls without `symbols` fetch nothing.
 
 ## Honesty rules
 

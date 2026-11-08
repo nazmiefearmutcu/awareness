@@ -14,8 +14,10 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 
+from awareness.markets.calendar.sec_submissions import ensure_symbol_filings
 from awareness.markets.config import MarketsSettings
 from awareness.markets.health import HealthTracker
+from awareness.markets.http import Fetcher
 from awareness.markets.models import QUALITY_ORDER, NewsItem, ProviderHealth
 from awareness.markets.sources.registry import PublisherRegistry
 from awareness.markets.store import MarketsStore, NewsQuery
@@ -25,7 +27,7 @@ log = logging.getLogger(__name__)
 NEWS_PROVIDERS = ["news.feeds", "news.gnews"]
 ECON_PROVIDERS = ["econ.nasdaq", "econ.forexfactory", "econ.bea", "econ.central_banks"]
 CORP_PROVIDERS = ["corp.nasdaq"]
-FILING_PROVIDERS = ["corp.sec_filings"]
+FILING_PROVIDERS = ["corp.sec_filings", "corp.sec_submissions"]
 HOLIDAY_PROVIDERS = ["holidays.public", "holidays.exchanges"]
 MARKET_SENT_PROVIDERS = ["sent.cnn_fng", "sent.crypto_fng", "sent.cboe_vix", "sent.apewisdom"]
 SOCIAL_PROVIDERS = ["sent.apewisdom", "news.feeds"]
@@ -85,12 +87,14 @@ class MarketsAPI:
         get_store: Callable[[], MarketsStore],
         get_registry: Callable[[], PublisherRegistry],
         get_runner: Callable[[], Any] | None = None,
+        get_fetcher: Callable[[], Fetcher | None] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.settings = settings
         self.get_store = get_store
         self.get_registry = get_registry
         self.get_runner = get_runner or (lambda: None)
+        self.get_fetcher = get_fetcher or (lambda: None)
         self.now = now or (lambda: datetime.now(UTC))
 
     def providers(self, names: Sequence[str]) -> list[dict[str, Any]]:
@@ -470,16 +474,28 @@ def create_markets_router(api: MarketsAPI, *, prefix: str = "/v1/markets") -> AP
         )
 
     @router.get("/filings")
-    def filings(
+    async def filings(
         symbols: str | None = None,
         forms: str | None = None,
-        days: int = Query(default=7, ge=1, le=90),
+        days: int = Query(default=7, ge=1, le=400),
         material_only: bool = False,
         limit: int = Query(default=200, ge=1, le=1000),
     ) -> dict[str, Any]:
         today = api.now().date()
+        notes: list[str] = []
+        tickers = [t.replace(".", "-") for t in _csv(symbols, upper=True)]  # BRK.B is stored as BRK-B
+        if tickers:
+            fetcher = api.get_fetcher()
+            if fetcher is None:
+                notes.append("SEC submissions backfill skipped: no fetcher configured")
+            else:
+                notes.extend(
+                    await ensure_symbol_filings(
+                        store=api.get_store(), fetcher=fetcher, settings=api.settings, symbols=tickers, now=api.now()
+                    )
+                )
         events = api.get_store().query_corp(
-            today - timedelta(days=days), today, types=["filing"], symbols=_csv(symbols, upper=True), limit=5000
+            today - timedelta(days=days), today, types=["filing"], symbols=tickers, limit=5000
         )
         wanted_forms = {f.upper() for f in _csv(forms)}
         out = []
@@ -492,7 +508,12 @@ def create_markets_router(api: MarketsAPI, *, prefix: str = "/v1/markets") -> AP
             out.append(e.model_dump(mode="json"))
             if len(out) >= limit:
                 break
-        return api.envelope(out, providers=FILING_PROVIDERS, filters={"symbols": symbols, "forms": forms, "days": days, "material_only": material_only})
+        return api.envelope(
+            out,
+            providers=FILING_PROVIDERS,
+            filters={"symbols": symbols, "forms": forms, "days": days, "material_only": material_only},
+            notes=notes,
+        )
 
     # ── operations ────────────────────────────────────────────────────────
 

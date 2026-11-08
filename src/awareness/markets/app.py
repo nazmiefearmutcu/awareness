@@ -172,6 +172,7 @@ def create_app(
         get_store=lambda: service().store,
         get_registry=lambda: service().registry,
         get_runner=lambda: service().runner,
+        get_fetcher=lambda: service().fetcher,
     )
     app.include_router(create_markets_router(api))
 
