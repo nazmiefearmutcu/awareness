@@ -19,20 +19,44 @@ from awareness.markets.models import FeedSpec, Publisher
 _MULTI_PART_SUFFIXES = {
     "co.uk", "com.tr", "org.uk", "com.au", "co.jp", "com.hk", "co.in", "com.br", "co.kr",
     "com.cn", "com.sg", "co.nz", "co.za", "gov.uk", "gov.tr", "org.tr", "net.tr", "ac.uk",
+    "gov.au", "net.au", "org.au", "or.jp", "ne.jp", "go.jp", "europa.eu", "gc.ca", "gov.in",
 }
+_TLD_EXTRACT = None
+
+
+def _tld_extractor():  # type: ignore[no-untyped-def]
+    """Offline public-suffix extractor (bundled snapshot, never fetches the PSL)."""
+    global _TLD_EXTRACT  # noqa: PLW0603 - lazy module singleton
+    if _TLD_EXTRACT is None:
+        try:
+            import tldextract
+
+            _TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
+        except Exception:  # tldextract missing/broken: fall back to the static table
+            _TLD_EXTRACT = False
+    return _TLD_EXTRACT
+
+
+def _host(value: str) -> str:
+    raw = value.strip().lower()
+    host = urlsplit(raw).hostname if "://" in raw else raw.split("/")[0]
+    host = (host or "").strip(".")
+    return host[4:] if host.startswith("www.") else host
 
 
 def registered_domain(value: str | None) -> str | None:
-    """``https://www.markets.ft.com/x`` → ``ft.com``; handles ``co.uk``-style suffixes."""
+    """``https://www.markets.ft.com/x`` → ``ft.com`` (public-suffix aware, offline)."""
     if not value:
         return None
-    raw = value.strip().lower()
-    host = urlsplit(raw).hostname if "://" in raw else raw.split("/")[0]
+    host = _host(value)
     if not host:
         return None
-    host = host.strip(".")
-    if host.startswith("www."):
-        host = host[4:]
+    extractor = _tld_extractor()
+    if extractor:
+        result = extractor(host)
+        top = getattr(result, "top_domain_under_public_suffix", None) or getattr(result, "registered_domain", "")
+        if top:
+            return str(top)
     parts = host.split(".")
     if len(parts) <= 2:
         return host
@@ -52,11 +76,8 @@ class PublisherRegistry:
                 raise ValueError(f"duplicate publisher id: {pub.id}")
             self._by_id[pub.id] = pub
             for dom in [pub.domain, *pub.aliases]:
-                key = registered_domain(dom) or dom.lower()
-                if "." in dom and key not in self._by_domain:
-                    self._by_domain[key] = pub
                 if "." in dom:
-                    self._by_domain.setdefault(dom.lower().removeprefix("www."), pub)
+                    self._by_domain.setdefault(_host(dom), pub)
             for name in [pub.name, *[a for a in pub.aliases if "." not in a]]:
                 self._by_name.setdefault(name.strip().lower(), pub)
         feed_ids = [f.id for p in self._by_id.values() for f in p.feeds]
@@ -77,21 +98,16 @@ class PublisherRegistry:
         return self._by_id.get(publisher_id)
 
     def by_domain(self, domain_or_url: str | None) -> Publisher | None:
+        """Exact registered host or any subdomain of it (``feeds.a.dj.com`` → alias ``dj.com``)."""
         if not domain_or_url:
             return None
-        raw = domain_or_url.strip().lower()
-        host = urlsplit(raw).hostname if "://" in raw else raw.split("/")[0]
-        host = (host or "").removeprefix("www.")
-        if host in self._by_domain:
-            return self._by_domain[host]
-        # walk up subdomains: a.b.example.com → b.example.com → example.com
+        host = _host(domain_or_url)
         parts = host.split(".")
-        for i in range(1, max(1, len(parts) - 1)):
+        for i in range(max(0, len(parts) - 1)):
             candidate = ".".join(parts[i:])
             if candidate in self._by_domain:
                 return self._by_domain[candidate]
-        reg = registered_domain(host)
-        return self._by_domain.get(reg) if reg else None
+        return None
 
     def by_name(self, name: str | None) -> Publisher | None:
         if not name:

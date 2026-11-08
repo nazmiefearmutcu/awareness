@@ -77,7 +77,7 @@ def exchange_holidays(mic: str, start: date, end: date, *, fetched_at: datetime)
     Raises ``exchange_calendars`` errors for an unknown MIC. Dates outside the
     calendar's supported range are clipped rather than guessed.
     """
-    import exchange_calendars as xcals  # noqa: PLC0415 - pandas-backed, loaded only when needed
+    import exchange_calendars as xcals
 
     calendar = xcals.get_calendar(mic)
     lo = max(start, calendar.first_session.date())

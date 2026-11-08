@@ -21,6 +21,7 @@ from awareness.markets.models import (
     NewsItem,
     ProviderHealth,
     ProviderRef,
+    Publisher,
     SentimentScore,
     Story,
     stable_id,
@@ -292,3 +293,18 @@ def test_fetcher_retries_and_conditional(markets_settings: MarketsSettings) -> N
 
     asyncio.run(run())
     assert len(calls) == 4
+
+
+def test_registry_never_over_attributes_shared_suffixes() -> None:
+    reg = PublisherRegistry(
+        [
+            Publisher(id="ecb", name="ECB", domain="ecb.europa.eu", tier=1, kind="official"),
+            Publisher(id="rba", name="RBA", domain="rba.gov.au", tier=1, kind="official"),
+            Publisher(id="bbc", name="BBC", domain="bbc.co.uk", tier=3, kind="general_press", aliases=["bbci.co.uk"]),
+        ]
+    )
+    assert reg.by_domain("https://www.ecb.europa.eu/press/x") .id == "ecb"  # type: ignore[union-attr]
+    assert reg.by_domain("ec.europa.eu") is None  # European Commission is not the ECB
+    assert reg.by_domain("abs.gov.au") is None
+    assert reg.by_domain("feeds.bbci.co.uk").id == "bbc"  # type: ignore[union-attr]
+    assert registered_domain("https://www.boj.or.jp/en/") == "boj.or.jp"

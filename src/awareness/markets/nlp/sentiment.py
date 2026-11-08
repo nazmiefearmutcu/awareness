@@ -45,8 +45,8 @@ def _load_finbert_model(model_name: str, *, local_only: bool = False) -> tuple[A
     Raises ``ImportError`` when transformers/torch are missing and ``OSError`` when the weights
     are not cached and ``local_only`` is set (or the download also fails).
     """
-    import torch  # noqa: PLC0415
-    from transformers import AutoModelForSequenceClassification, AutoTokenizer  # noqa: PLC0415
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
     try:
         tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
@@ -123,7 +123,7 @@ class _FinBertRuntime:
         self._lock = threading.Lock()
 
     def score(self, texts: Sequence[str], model_name: str) -> list[SentimentScore]:
-        import torch  # noqa: PLC0415
+        import torch
 
         results: list[SentimentScore] = []
         for start in range(0, len(texts), self._batch_size):
