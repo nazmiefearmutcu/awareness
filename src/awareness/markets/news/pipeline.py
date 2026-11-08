@@ -176,7 +176,7 @@ class NewsPipeline:
         fetcher: Fetcher | None,
     ) -> NewsPipeline:
         """Wire the production components (imports are local so a missing module fails loudly here)."""
-        from awareness.markets.news.cluster import StoryClusterer
+        from awareness.markets.news.cluster import StoryClusterer, publisher_names_from
         from awareness.markets.news.quality import QualityGate, compute_importance
         from awareness.markets.nlp.entities import EntityLinker
         from awareness.markets.nlp.sentiment import SentimentScorer
@@ -202,7 +202,10 @@ class NewsPipeline:
             taxonomy=TaxonomyClassifier(settings.config_file("taxonomy.yaml")),
             scorer=SentimentScorer(settings.sentiment_backend, model_name=settings.finbert_model),
             gate=QualityGate(max_age_days=settings.max_item_age_days, rules_path=settings.config_file("quality_rules.yaml")),
-            clusterer=StoryClusterer(window_hours=settings.cluster_window_hours),
+            clusterer=StoryClusterer(
+                window_hours=settings.cluster_window_hours,
+                publisher_names=publisher_names_from(registry.all()),
+            ),
             importance=compute_importance,
             extractor=extractor,
         )
@@ -244,6 +247,55 @@ class NewsPipeline:
             stats.received, len(todo), stats.stored, stats.rejected, stats.stories_touched, stats.rescored_members,
         )
         return stored
+
+    async def recluster(self, *, hours: int | None = None) -> int:
+        """Re-run story clustering over the recent window (after a rule change or at startup).
+
+        Items are replayed in publication order against the stories formed so far; story rows are
+        rebuilt and members re-scored for their corroboration. Returns the number of items whose
+        story or score changed.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(self._recluster_sync, hours or self.settings.cluster_window_hours * 2)
+
+    def _recluster_sync(self, hours: int) -> int:
+        now = self._now()
+        items = [
+            i for i in self.store.recent_news(now - timedelta(hours=hours), min_quality="low", limit=20000)
+            if i.quality_label != "rejected"
+        ]
+        items.sort(key=lambda i: (i.published_at, i.id))
+        processed: list[NewsItem] = []
+        assigned: dict[str, str] = {}
+        for item in items:
+            probe = item.model_copy(update={"story_id": None})
+            story_id = self.clusterer.find_story(probe, processed) or self.clusterer.new_story_id(item)
+            assigned[item.id] = story_id
+            processed.append(item.model_copy(update={"story_id": story_id}))
+        groups: dict[str, list[NewsItem]] = {}
+        for item in processed:
+            groups.setdefault(item.story_id or item.id, []).append(item)
+        changed: list[NewsItem] = []
+        stories: list[Story] = []
+        original = {i.id: i for i in items}
+        for story_id, group in groups.items():
+            corroboration = self.clusterer.corroboration(group)
+            refreshed: list[NewsItem] = []
+            for item in group:
+                base = original[item.id]
+                updated = item
+                rescored = self._rescore_existing(item, now, corroboration) if corroboration > 1 or base.story_id != story_id else None
+                if rescored is not None:
+                    updated = rescored.model_copy(update={"story_id": story_id})
+                if updated.story_id != base.story_id or updated.quality_score != base.quality_score:
+                    changed.append(updated)
+                refreshed.append(updated)
+            stories.append(self.clusterer.build_story(refreshed, story_id=story_id))
+        if changed:
+            self.store.upsert_news(changed)
+        self.store.upsert_stories(stories)
+        log.info("recluster: %d items, %d stories, %d changed", len(items), len(stories), len(changed))
+        return len(changed)
 
     # ── stages ────────────────────────────────────────────────────────────
 

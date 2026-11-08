@@ -8,6 +8,7 @@ Run: ``awareness-markets`` or ``python -m awareness.markets.app`` (127.0.0.1:808
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -40,6 +41,7 @@ class MarketsService:
         self.pipeline_error: str | None = None
         self._collectors = collectors
         self.runner: MarketsRunner | None = None
+        self._recluster_task: asyncio.Task[None] | None = None
         self.store.ensure_watchlist(settings.watchlist)
 
     def build_pipeline(self) -> None:
@@ -69,6 +71,15 @@ class MarketsService:
         collectors = list(self._collectors) if self._collectors is not None else default_collectors()
         self.runner = MarketsRunner(self.context(), collectors)
         await self.runner.start()
+        if self.pipeline is not None and hasattr(self.pipeline, "recluster"):
+            self._recluster_task = asyncio.create_task(self._recluster_once())
+
+    async def _recluster_once(self) -> None:
+        try:
+            changed = await self.pipeline.recluster()
+            log.info("startup recluster changed %d items", changed)
+        except Exception as exc:  # never block the service on maintenance
+            log.warning("startup recluster failed: %s", exc)
 
     async def close(self) -> None:
         if self.runner is not None:
