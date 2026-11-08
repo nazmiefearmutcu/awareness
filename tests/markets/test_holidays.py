@@ -54,6 +54,31 @@ def test_parse_nager_turkish_holidays(fixture_bytes: Callable[[str], bytes]) -> 
     assert [h.id for h in again] == [h.id for h in holidays]
 
 
+def test_parse_nager_rejects_non_list_body() -> None:
+    with pytest.raises(ValueError):
+        parse_nager({"message": "error"}, country="TR", fetched_at=FETCHED, url=NAGER_TR)
+
+
+def test_coverage_end_recorded(tmp_path: Path, store: MarketsStore) -> None:
+    settings = _settings(tmp_path, exchanges=["XNYS"])
+    ctx = CollectorContext(
+        settings=settings,
+        store=store,
+        http=Fetcher(settings, store, transport=httpx.MockTransport(lambda r: httpx.Response(404))),
+        registry=PublisherRegistry([]),
+        now=lambda: FETCHED,
+    )
+
+    async def run() -> None:
+        try:
+            await ExchangeHolidayCollector().run(ctx)
+        finally:
+            await ctx.http.aclose()
+
+    asyncio.run(run())
+    assert store.kv_get("holidays.coverage_end.XNYS") is not None
+
+
 def test_parse_nager_regional_rule() -> None:
     payload = [
         {"date": "2026-04-03", "name": "Regional A", "localName": "A", "global": False, "counties": ["US-TX"]},
@@ -99,11 +124,14 @@ def test_exchange_closures_xist_republic_day() -> None:
 
 
 def test_exchange_ids_are_deterministic_and_clipped() -> None:
+    import exchange_calendars  # noqa: PLC0415
+
     first = exchange_holidays("XNYS", date(2026, 11, 1), date(2026, 11, 30), fetched_at=FETCHED)
     second = exchange_holidays("XNYS", date(2026, 11, 1), date(2026, 11, 30), fetched_at=FETCHED)
     assert [h.id for h in first] == [h.id for h in second]
     far = exchange_holidays("XNYS", date(2026, 11, 1), date(2099, 1, 1), fetched_at=FETCHED)
-    assert far and max(h.date for h in far) <= date(2027, 11, 8)  # calendar's last supported session
+    last = exchange_calendars.get_calendar("XNYS").last_session.date()
+    assert far and max(h.date for h in far) <= last  # calendar's last supported session
 
 
 def test_unknown_mic_raises() -> None:
