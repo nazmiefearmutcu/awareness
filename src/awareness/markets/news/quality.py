@@ -11,11 +11,11 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, cast, get_args
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 import yaml
 
@@ -25,7 +25,6 @@ from awareness.markets.models import (
     NewsItem,
     Publisher,
     QualityLabel,
-    ensure_utc,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,6 +62,8 @@ _MAX_CORROBORATION_POINTS = 15
 _MAX_CORROBORATION_IMPORTANCE = 20
 _FUTURE_TOLERANCE = timedelta(days=1)
 _MIDNIGHT = time(0, 0)
+
+TimestampSource = Literal["feed", "article", "fetched"]
 
 _OPINION_PREFIX = re.compile(r"^(opinion|column|commentary|editorial)\s*:")
 _ANALYSIS_PREFIX = re.compile(r"^(analysis|explainer)\s*:|^q&a\b")
@@ -139,10 +140,26 @@ def _content_from_title_or_url(item: NewsItem) -> ContentType:
     return "news"
 
 
+def _split_url(url: str) -> SplitResult | None:
+    """Split a URL, or return None when it is malformed (e.g. a broken IPv6 bracket)."""
+    try:
+        return urlsplit(url)
+    except ValueError:
+        return None
+
+
 def _is_seeking_alpha_article(item: NewsItem) -> bool:
-    parts = urlsplit(item.url)
+    parts = _split_url(item.url)
+    if parts is None:
+        return False
     host = (parts.hostname or "").lower()
     return host.endswith("seekingalpha.com") and "/article/" in parts.path
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 class QualityGate:
@@ -180,8 +197,7 @@ class QualityGate:
         content_type_hint: str | None = None,
     ) -> QualityVerdict:
         """Gate one enriched item. ``item`` must already carry publisher fields and entities."""
-        now_utc = ensure_utc(now)
-        assert now_utc is not None
+        now_utc = _as_utc(now)
         content_type = self.classify_content_type(item, publisher, content_type_hint)
 
         rejects = self._hard_rejects(
@@ -193,14 +209,15 @@ class QualityGate:
                 content_type=content_type, hard_reject=True,
             )
 
-        assert publisher is not None  # guaranteed by the unknown_publisher reject
+        if publisher is None:  # unreachable: unknown_publisher is a hard reject
+            raise ValueError("publisher is required once an item passes the hard rejects")
         components = self._score_components(
             item, publisher, finance_relevance, corroboration, timestamp_source, content_type
         )
         reasons = [name for name, _ in components]
         score = _clamp(sum(delta for _, delta in components))
         label = _label_for(score)
-        if publisher.kind in _OFFICIAL_KINDS and label == "low":
+        if publisher.kind in _OFFICIAL_KINDS and publisher.tier == 1 and label == "low":
             label = "standard"
             reasons.append("official_floor")
         return QualityVerdict(
@@ -216,22 +233,21 @@ class QualityGate:
         publisher: Publisher | None,
         now: datetime,
         finance_relevance: float,
-        timestamp_source: str,
-        content_type: str,
+        timestamp_source: TimestampSource,
+        content_type: ContentType,
     ) -> list[str]:
         reasons: list[str] = []
         if publisher is None:
             reasons.append("unknown_publisher")
-        parts = urlsplit(item.url)
-        if parts.scheme not in {"http", "https"} or not parts.netloc:
+        parts = _split_url(item.url)
+        if parts is None or parts.scheme not in {"http", "https"} or not parts.netloc:
             reasons.append("missing_url")
         title = item.title.strip()
         if not title:
             reasons.append("missing_title")
         if timestamp_source == "fetched":
             reasons.append("missing_timestamp")
-        published = ensure_utc(item.published_at)
-        assert published is not None
+        published = item.published_at  # validated as UTC by NewsItem
         if published < now - self._max_age:
             reasons.append("stale")
         if published > now + _FUTURE_TOLERANCE:
@@ -242,7 +258,7 @@ class QualityGate:
         if (
             finance_relevance < 0.25
             and kind not in _OFFICIAL_KINDS
-            and content_type != "social"
+            and item.content_type != "social"
         ):
             reasons.append("non_finance")
         if kind == "community" and finance_relevance < 0.5:
@@ -257,8 +273,8 @@ class QualityGate:
         publisher: Publisher,
         finance_relevance: float,
         corroboration: int,
-        timestamp_source: str,
-        content_type: str,
+        timestamp_source: TimestampSource,
+        content_type: ContentType,
     ) -> list[tuple[str, float]]:
         out: list[tuple[str, float]] = []
         base = _TIER_BASE[publisher.tier]
@@ -269,9 +285,7 @@ class QualityGate:
 
         if item.author and item.author.strip():
             out.append(("author:+5", 5))
-        published = ensure_utc(item.published_at)
-        assert published is not None
-        if timestamp_source in {"feed", "article"} and published.time() != _MIDNIGHT:
+        if timestamp_source in {"feed", "article"} and item.published_at.time() != _MIDNIGHT:
             out.append(("time_precise:+3", 3))
 
         if any(e.confidence >= 0.8 for e in item.entities):
@@ -300,7 +314,7 @@ class QualityGate:
         return []
 
     def _penalties(
-        self, item: NewsItem, publisher: Publisher, summary: str, content_type: str
+        self, item: NewsItem, publisher: Publisher, summary: str, content_type: ContentType
     ) -> list[tuple[str, float]]:
         out: list[tuple[str, float]] = []
         title = item.title.strip()
@@ -342,7 +356,9 @@ def _topic_weight(topic: str) -> int:
 def compute_importance(item: NewsItem, *, corroboration: int = 1) -> float:
     """Deterministic 0-100 importance of a gated item.
 
-    Call after the quality label is set: ``rejected`` yields 0 and ``low`` is scaled by 0.6.
+    Preconditions for the pipeline: ``evaluate`` has set ``quality_label`` (``rejected`` yields
+    0 and ``low`` is scaled by 0.6), and ``content_type`` holds the verdict's content type
+    (``official`` earns +15). Both fields default to values that silently change the score.
     """
     if item.quality_label == "rejected":
         return 0.0

@@ -11,6 +11,7 @@ from awareness.markets.news.cluster import StoryClusterer, title_shingles
 
 NOW = datetime(2026, 11, 8, 12, 0, tzinfo=UTC)
 NVDA = EntityRef(type="equity", id="NVDA", name="NVIDIA", confidence=0.9, mentions=4, salience=1.0)
+TSLA = EntityRef(type="equity", id="TSLA", name="Tesla", confidence=0.9, mentions=2, salience=1.0)
 NVDA_WEAK = EntityRef(type="equity", id="NVDA", name="NVIDIA", confidence=0.5, mentions=1, salience=0.2)
 SUMMARY = (
     "Nvidia reported quarterly results above analyst expectations as data center sales from its "
@@ -69,15 +70,19 @@ WSJ_TITLE = "Nvidia tops estimates on data-center revenue surge"
 # ── title normalisation ───────────────────────────────────────────────────
 
 
-def test_publisher_suffix_is_stripped_from_shingles() -> None:
-    assert title_shingles("Nvidia beats estimates - Reuters") == title_shingles("Nvidia beats estimates")
-    assert title_shingles("Fed holds rates | CNBC") == title_shingles("Fed holds rates")
+def test_publisher_suffix_stripped_only_for_known_publishers() -> None:
+    assert title_shingles("Nvidia beats estimates - Reuters", ["Reuters"]) == title_shingles(
+        "Nvidia beats estimates"
+    )
+    assert title_shingles("Fed holds rates | CNBC", ["CNBC"]) == title_shingles("Fed holds rates")
+    # Without a registry name, a trailing " - X" segment is content, not a publisher.
+    assert title_shingles("Tesla recall - 2 million vehicles") != title_shingles("Tesla recall")
 
 
 def test_stopwords_english_and_turkish_removed() -> None:
     shingles = title_shingles("The Fed holds rates as inflation eases")
     assert "the" not in shingles and "as" not in shingles
-    assert "fed holds" in shingles  # bigram of kept tokens
+    assert "fed hold" in shingles  # bigram of kept tokens (holds -> hold)
     tr = title_shingles("Merkez Bankası faiz kararını ve enflasyonu açıkladı")  # noqa: RUF001
     assert "ve" not in tr
 
@@ -96,11 +101,73 @@ def test_identical_titles_produce_identical_shingles() -> None:
 # ── find_story ─────────────────────────────────────────────────────────────
 
 
-def test_syndicated_titles_match_same_story() -> None:
-    cnbc = make_news("https://cnbc.example/a", CNBC_TITLE, story_id="story-1")
+def test_paraphrased_syndicated_headlines_cluster() -> None:
+    """Regression: the brief's exact pair, with realistic different summaries.
+
+    Synonym folding (beats/tops -> beat, surge/soars -> rise), data-center folding and light
+    stemming make the two titles identical after normalisation, so they match on title
+    Jaccard alone, whatever the summaries say.
+    """
+    cnbc = make_news("https://cnbc.example/a", CNBC_TITLE, story_id="story-1",
+                     summary="CNBC: Nvidia reported quarterly results topping Wall Street's forecasts.")
     wsj = make_news("https://wsj.example/b", WSJ_TITLE, publisher_id="wsj", tier=1,
-                    published_at=NOW - timedelta(hours=2))
+                    published_at=NOW - timedelta(hours=2),
+                    summary="Shares rose after hours as the chipmaker guided higher for the next period.")
+    assert title_shingles(CNBC_TITLE) == title_shingles(WSJ_TITLE)
     assert StoryClusterer().find_story(wsj, [cnbc]) == "story-1"
+
+
+def test_unrelated_nvidia_stories_same_day_do_not_merge() -> None:
+    """Same entity, same day, different events: must stay two stories."""
+    beats = make_news("https://cnbc.example/a", CNBC_TITLE, story_id="story-1",
+                      summary="Nvidia reported quarterly results topping Wall Street's forecasts.")
+    probe = make_news("https://reuters.example/c", "Nvidia faces EU antitrust probe over chips",
+                      publisher_id="reuters", tier=1, published_at=NOW - timedelta(hours=1),
+                      summary="Brussels opened a formal investigation into the chipmaker's AI deals.")
+    assert StoryClusterer().find_story(probe, [beats]) is None
+
+
+def test_entity_sharing_pair_with_moderate_jaccard_clusters() -> None:
+    """Jaccard in [0.3, 0.5) plus a shared high-confidence entity is enough."""
+    base = make_news("https://cnbc.example/a", CNBC_TITLE, story_id="story-1",
+                     summary="Nvidia reported quarterly results topping Wall Street's forecasts.")
+    other = make_news("https://marketwatch.example/b",
+                      "Nvidia shares rally on data center revenue beat", publisher_id="marketwatch",
+                      tier=3, published_at=NOW - timedelta(hours=1),
+                      summary="Investors cheered the chipmaker's latest quarter in early trading.")
+    clusterer = StoryClusterer(simhash_threshold=0)  # isolate the entity + Jaccard path
+    assert clusterer.find_story(other, [base]) == "story-1"
+    no_entity = other.model_copy(update={"id": "no-ent", "entities": []})
+    assert clusterer.find_story(no_entity, [base]) is None
+
+
+def test_different_figures_never_cluster() -> None:
+    """Same wording, different numbers: a different event (e.g. 2 million vs 3 cars)."""
+    tesla_recall = make_news("https://a.example/1", "Tesla recall - 2 million vehicles",
+                             story_id="s1", entities=[TSLA])
+    tesla_small = make_news("https://b.example/2", "Tesla recall - 3 cars", publisher_id="wsj",
+                            tier=1, entities=[TSLA])
+    assert StoryClusterer().find_story(tesla_small, [tesla_recall]) is None
+    assert StoryClusterer().find_story(
+        make_news("https://c.example/3", "Fed raises rates by 25 bps", publisher_id="wsj", tier=1,
+                  entities=[NVDA]),
+        [make_news("https://d.example/4", "Fed raises rates by 50 bps", story_id="s2",
+                   entities=[NVDA])],
+    ) is None
+
+
+def test_synonym_and_stem_folding_aligns_paraphrases() -> None:
+    assert title_shingles("Sales fall short of estimates") == title_shingles("Sales miss estimates")
+    assert title_shingles("Chip stocks plunge after sales slump") == title_shingles(
+        "Chip stock tumbles as sales sink"
+    )
+    assert title_shingles("Analysts cut forecasts") == title_shingles("Analyst cuts forecast")
+
+
+def test_turkish_capital_dotted_i_is_normalised() -> None:
+    shingles = title_shingles("İran faiz kararı")  # noqa: RUF001
+    assert "iran faiz" in shingles  # not split into "i ran"
+    assert "iran" in shingles
 
 
 def test_unrelated_story_does_not_match() -> None:

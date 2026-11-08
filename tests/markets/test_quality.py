@@ -127,7 +127,17 @@ def test_community_low_signal_is_rejected() -> None:
                                kind="community")
     verdict = evaluate(make_item(), publisher, finance_relevance=0.3)
     assert "community_low_signal" in verdict.reasons
-    assert "non_finance" not in verdict.reasons  # social items skip the non_finance check
+    # item.content_type is "news" (the pipeline sets it from the verdict), so non_finance applies too
+    verdict_low = evaluate(make_item(), publisher, finance_relevance=0.1)
+    assert {"non_finance", "community_low_signal"} <= set(verdict_low.reasons)
+
+
+def test_social_items_are_exempt_from_non_finance() -> None:
+    publisher = make_publisher(id="reddit", name="Reddit", domain="reddit.com", tier=5,
+                               kind="community")
+    verdict = evaluate(make_item(content_type="social"), publisher, finance_relevance=0.1)
+    assert "non_finance" not in verdict.reasons
+    assert "community_low_signal" in verdict.reasons
 
 
 def test_multiple_reject_reasons_accumulate() -> None:
@@ -330,9 +340,44 @@ def test_rejected_item_has_zero_importance() -> None:
     assert compute_importance(item) == 0.0
 
 
-def test_importance_is_deterministic_and_clamped() -> None:
+def test_importance_is_clamped_to_100() -> None:
     item = _fed_item().model_copy(update={"quality_label": "premium",
                                           "topics": ["central_bank", "inflation", "employment"]})
-    value = compute_importance(item, corroboration=50)
-    assert value == compute_importance(item, corroboration=50)
-    assert 0.0 <= value <= 100.0
+    # tier 30 + official 15 + top-two topics 45 + anchor 10 + corroboration 20 = 120 -> 100
+    assert compute_importance(item, corroboration=50) == 100.0
+
+
+def test_malformed_url_is_hard_rejected_without_exception() -> None:
+    verdict = evaluate(make_item(url="https://[bad/x", id=stable_id("n", "bad")), make_publisher())
+    assert verdict.hard_reject is True
+    assert "missing_url" in verdict.reasons
+
+
+def test_official_floor_applies_only_to_tier_1() -> None:
+    tier2_official = make_publisher(id="agency", name="Agency", domain="agency.example", tier=2,
+                                    kind="official")
+    item = make_item(title="FEDERAL RESERVE ISSUES FOMC STATEMENT", summary="Statement.",
+                     entities=[], topics=[], publisher_id="agency", publisher_name="Agency",
+                     publisher_domain="agency.example", publisher_tier=2,
+                     published_at=datetime(2026, 11, 8, 0, 0, tzinfo=UTC))
+    verdict = evaluate(item, tier2_official, timestamp_source="feed")
+    assert verdict.label == "low"
+    assert "official_floor" not in verdict.reasons
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Tariff impact now showing up in CPI data",
+        "Regulators weigh contact now-or-never deadline for merger",
+    ],
+)
+def test_ordinary_now_headlines_are_not_clickbait(title: str) -> None:
+    verdict = evaluate(make_item(title=title), make_publisher())
+    assert not any(r.startswith("clickbait") for r in verdict.reasons)
+
+
+def test_buy_now_pay_later_news_is_not_clickbait() -> None:
+    verdict = evaluate(make_item(title="Buy now pay later lenders face new consumer rules"),
+                       make_publisher())
+    assert not any(r.startswith("clickbait") for r in verdict.reasons)
