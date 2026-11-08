@@ -477,3 +477,26 @@ def test_official_floor_needs_relevance_of_point_three() -> None:
     unfloored = evaluate(item, fed, timestamp_source="feed", finance_relevance=0.2)
     assert unfloored.label == "low"
     assert "official_floor" not in unfloored.reasons
+
+
+def test_shipped_clickbait_rules_contain_no_backspace_characters() -> None:
+    """Double-quoted YAML turns "\b" into a backspace; every rule must reach the regex engine intact."""
+    import yaml
+
+    from awareness.markets.config import PACKAGE_DATA_DIR
+
+    rules = yaml.safe_load((PACKAGE_DATA_DIR / "quality_rules.yaml").read_text(encoding="utf-8"))
+    flat: list[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, str):
+            flat.append(node)
+        elif isinstance(node, dict):
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(rules)
+    assert not [r for r in flat if "\x08" in r]

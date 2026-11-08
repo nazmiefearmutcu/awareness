@@ -24,9 +24,9 @@ clickbait:
     - "sending shockwaves"
     # SEO price pages / auto-generated quotes (no reporting in them)
     - "^(current|today'?s|live) price of"
-    - "price (today|prediction|forecast)\b"
+    - 'price (today|prediction|forecast)\b'
     - "^(bitcoin|ethereum|xrp|solana|dogecoin|crypto) price (today|now|live)"
-    - "\b(stock|share) price today\b"
+    - '\b(stock|share) price today\b'
     - "here['’]?s why"
     - "this (stock|crypto) could"
     - "\\btop \\d+"
