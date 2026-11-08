@@ -83,7 +83,9 @@ class MarketsRunner:
         self.health = HealthTracker(ctx.store, now=now)
         self._now = now or (lambda: datetime.now(UTC))
         self._sleep = sleep
-        self._timeout_s = timeout_s or (lambda c: float(max(90, min(1200, c.interval_s))))
+        self._timeout_s = timeout_s or (
+            lambda c: float(getattr(c, "timeout_s", None) or max(90, min(1200, c.interval_s)))
+        )
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: list[asyncio.Task[None]] = []
         self._wakeups: dict[str, asyncio.Event] = {}

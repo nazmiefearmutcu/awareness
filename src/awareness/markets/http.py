@@ -34,7 +34,7 @@ DEFAULT_HOST_INTERVALS: dict[str, float] = {
     "data.sec.gov": 0.25,
     "efts.sec.gov": 0.25,
     "api.nasdaq.com": 0.8,
-    "www.reddit.com": 3.0,
+    "www.reddit.com": 8.0,
     "news.google.com": 2.0,
     "apewisdom.io": 1.0,
     "production.dataviz.cnn.io": 2.0,
