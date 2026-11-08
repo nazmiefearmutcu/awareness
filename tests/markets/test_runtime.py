@@ -405,6 +405,19 @@ def test_reenrich_reapplies_current_rules(markets_settings: MarketsSettings, sto
     assert again.first_seen_at == stored[0].first_seen_at
 
 
+def test_reenrich_repairs_stored_replacement_characters(markets_settings: MarketsSettings, store: MarketsStore) -> None:
+    pipe = _pipeline(markets_settings, store)
+    asyncio.run(pipe.process([_raw(42, "Nvidia earnings beat estimates again", "cnbc")]))
+    stored = store.recent_news(NOW - timedelta(days=2), min_quality="rejected")[0]
+    broken = stored.model_copy(update={"title": "Nvidia�s earnings beat estimates again", "summary": "Chips � up"})
+    store.upsert_news([broken])
+    assert asyncio.run(pipe.reenrich(hours=48)) == 1
+    again = store.get_news(stored.id)
+    assert again is not None
+    assert again.title == "Nvidia’s earnings beat estimates again"
+    assert again.summary == "Chips – up"
+
+
 def test_collapsed_pagination_never_repeats_a_story(store: MarketsStore) -> None:
     base = datetime(2026, 11, 8, 10, tzinfo=UTC)
 

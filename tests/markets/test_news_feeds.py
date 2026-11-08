@@ -26,6 +26,7 @@ from awareness.markets.news.feeds import (
     google_news_url,
     parse_feed,
     parse_google_news,
+    repair_replacement_chars,
     watchlist_query,
 )
 from awareness.markets.ref.sec_tickers import cache_path
@@ -131,6 +132,20 @@ def test_clean_text_truncates_and_handles_empty() -> None:
     assert clean_text("<br/>   ") is None
     out = clean_text("word " * 50, max_len=20)
     assert out is not None and len(out) <= 20 and out.endswith("…")
+
+
+def test_clean_text_repairs_publisher_replacement_characters() -> None:
+    # Live Mint headline shipped with U+FFFD where the apostrophe was lost.
+    assert (
+        clean_text("Zen Tech - SAHI Research�s 5 stocks to buy")
+        == "Zen Tech - SAHI Research’s 5 stocks to buy"
+    )
+    assert clean_text("Investors don�t panic") == "Investors don’t panic"
+    assert clean_text("Stocks � what to watch") == "Stocks – what to watch"
+    assert clean_text("�Feeling guilty�: price hikes") == "Feeling guilty: price hikes"
+    assert clean_text("�") is None
+    assert repair_replacement_chars("plain title") == "plain title"
+    assert repair_replacement_chars(None) is None
 
 
 # ── RSS / Atom parsing against recorded payloads ────────────────────────

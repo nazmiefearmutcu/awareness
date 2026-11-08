@@ -30,6 +30,7 @@ from awareness.markets.models import (
     SentimentScore,
     Story,
 )
+from awareness.markets.news.feeds import repair_replacement_chars
 from awareness.markets.sources.registry import PublisherRegistry, registered_domain
 from awareness.markets.store import MarketsStore
 
@@ -44,7 +45,7 @@ FINANCE_FEED_CATEGORIES = {
 EXCERPT_CHARS = 400
 # Bump when entity/taxonomy/sentiment/quality rules change: the service then re-enriches the
 # recent window once at startup so stored items follow the current rules.
-NLP_VERSION = "2026-11-08.7"
+NLP_VERSION = "2026-11-08.8"
 
 
 # ── component protocols (implemented in nlp/, news/quality.py, news/cluster.py) ──
@@ -292,7 +293,14 @@ class NewsPipeline:
         now = self._now()
         items = self.store.recent_news(now - timedelta(hours=hours), min_quality="rejected", limit=20000)
         drafts: list[_Draft] = []
-        for item in items:
+        for stored in items:
+            # Stored rows predating the U+FFFD repair are cleaned on the NLP_VERSION re-run.
+            item = stored.model_copy(
+                update={
+                    "title": repair_replacement_chars(stored.title) or stored.title,
+                    "summary": repair_replacement_chars(stored.summary),
+                }
+            )
             raw = RawNewsItem(
                 url=item.url, title=item.title, summary=item.summary, published_at=item.published_at,
                 author=item.author, feed_id=item.feed_id, publisher_id=item.publisher_id,

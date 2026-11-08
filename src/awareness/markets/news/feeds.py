@@ -65,6 +65,17 @@ _BLOCK_TAG_RE = re.compile(
     r"</?(?:p|br|div|li|ul|ol|h[1-6]|tr|td|th|table|section|article|blockquote)\b[^>]*>", re.IGNORECASE
 )
 _WS_RE = re.compile(r"\s+")
+# Some publisher CMSs ship U+FFFD where a typographic character was lost
+# ("Research<U+FFFD>s 5 stocks"). Inside a contraction/possessive it was an
+# apostrophe; between spaces it was a dash; anywhere else it is dropped so the
+# terminal never shows the replacement glyph.
+_REPLACEMENT_CHAR = chr(0xFFFD)
+_APOSTROPHE = chr(0x2019)
+_EN_DASH = chr(0x2013)
+_FFFD_APOSTROPHE_RE = re.compile(
+    r"(?<=[^\W\d_])" + _REPLACEMENT_CHAR + r"(?=(?:s|t|re|ll|ve|d|m)\b)", re.IGNORECASE
+)
+_FFFD_DASH_RE = re.compile(r"(?<=\s)" + _REPLACEMENT_CHAR + r"+(?=\s)")
 
 CRYPTO_QUERIES: dict[str, str] = {
     "BTC": "Bitcoin",
@@ -108,18 +119,28 @@ def canonicalize_url(url: str) -> str:
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, "&".join(segments), ""))
 
 
+def repair_replacement_chars(text: str | None) -> str | None:
+    """Repair U+FFFD left by a publisher's broken encoding (apostrophe, dash, else dropped)."""
+    if not text or _REPLACEMENT_CHAR not in text:
+        return text
+    value = _FFFD_APOSTROPHE_RE.sub(_APOSTROPHE, text)
+    value = _FFFD_DASH_RE.sub(_EN_DASH, value)
+    return _WS_RE.sub(" ", value.replace(_REPLACEMENT_CHAR, "")).strip()
+
+
 def clean_text(text: str | None, max_len: int | None = None) -> str | None:
     """Strip markup, unescape entities, collapse whitespace. ``None`` when nothing is left.
 
     Markup is removed before unescaping, so entity-encoded or raw comparison
     operators ("&lt;5%", "< 5%") survive as text. Block tags become a space;
     inline tags are removed without one, so ``Tom<b>son</b>'s`` reads ``Tomson's``.
+    Replacement characters from a publisher's broken encoding are repaired.
     """
     if not text:
         return None
     without_comments = _COMMENT_RE.sub("", str(text))
     without_blocks = _BLOCK_TAG_RE.sub(" ", without_comments)
-    value = unescape(_TAG_RE.sub("", without_blocks))
+    value = repair_replacement_chars(unescape(_TAG_RE.sub("", without_blocks))) or ""
     value = _WS_RE.sub(" ", value).strip()
     if not value:
         return None
