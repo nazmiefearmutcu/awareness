@@ -1,0 +1,71 @@
+# Market-relevant people. type "person", id = upper-case slug.
+# links: entities a mention of this person implies (confidence given per link).
+# Surnames that are ordinary words or common names are ambiguous and need context words.
+people:
+  - id: POWELL
+    name: Jerome Powell
+    aliases:
+      - Jerome Powell
+      - {text: Powell, exclude_prev: [Colin]}
+    links:
+      - {type: central_bank, id: FED, conf: 0.8}
+  - id: LAGARDE
+    name: Christine Lagarde
+    aliases: [Christine Lagarde, Lagarde]
+    links:
+      - {type: central_bank, id: ECB, conf: 0.75}
+  - id: BAILEY
+    name: Andrew Bailey
+    aliases:
+      - Andrew Bailey
+      - {text: Bailey, ambiguous: true, context: [BoE, BOE, Bank of England, governor, sterling, Andrew, MPC]}
+    links:
+      - {type: central_bank, id: BOE, conf: 0.75}
+  - id: UEDA
+    name: Kazuo Ueda
+    aliases:
+      - Kazuo Ueda
+      - {text: Ueda, ambiguous: true, context: [BoJ, BOJ, Bank of Japan, governor, yen, Kazuo]}
+    links:
+      - {type: central_bank, id: BOJ, conf: 0.75}
+  - id: KARAHAN
+    name: Fatih Karahan
+    aliases:
+      - Fatih Karahan
+      - {text: Karahan, ambiguous: true, context: [TCMB, Merkez, Bankası, Bankasi, governor, Türkiye, faiz, lira, Fatih]}
+    links:
+      - {type: central_bank, id: TCMB, conf: 0.8}
+  - id: BESSENT
+    name: Scott Bessent
+    aliases: [Scott Bessent, Bessent]
+  - id: YELLEN
+    name: Janet Yellen
+    aliases: [Janet Yellen, Yellen]
+  - id: TRUMP
+    name: Donald Trump
+    aliases: [Donald Trump, Trump]
+  - id: XI
+    name: Xi Jinping
+    aliases:
+      - Xi Jinping
+      - {text: Xi, ambiguous: true, context: [China, Chinese, Beijing, Jinping, president, Communist]}
+  - id: MUSK
+    name: Elon Musk
+    aliases: [Elon Musk, Musk]
+    links:
+      - {type: equity, id: TSLA, conf: 0.65}
+  - id: HUANG
+    name: Jensen Huang
+    aliases: [Jensen Huang]
+    links:
+      - {type: equity, id: NVDA, conf: 0.7}
+  - id: COOK
+    name: Tim Cook
+    aliases: [Tim Cook]
+    links:
+      - {type: equity, id: AAPL, conf: 0.7}
+  - id: BUFFETT
+    name: Warren Buffett
+    aliases: [Warren Buffett, Buffett]
+    links:
+      - {type: equity, id: BRK-B, conf: 0.65}

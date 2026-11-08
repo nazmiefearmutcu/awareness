@@ -1,0 +1,123 @@
+# Equity, volatility and bond-index benchmarks.
+# "Nasdaq" alone is the exchange, so it only counts as the composite when followed by
+# index-ish words. "Dow" is ordinary (Dow Inc.), so it needs a market verb or index word after it.
+indices:
+  - id: SPX
+    name: S&P 500
+    aliases:
+      - {text: S&P 500, conf: 0.95}
+      - {text: SPX, conf: 0.9}
+      - {text: S&P, conf: 0.85, exclude_next: [global, dow, ratings, indices, capital, sustainable]}
+  - id: IXIC
+    name: Nasdaq Composite
+    aliases:
+      - {text: Nasdaq Composite, conf: 0.95}
+      - {text: Nasdaq, conf: 0.85, require_next: [composite, index, futures, rose, fell, closed, closes, rallied, slumped, jumped, tumbled, gained, slid, ended, ends, higher, lower]}
+  - id: NDX
+    name: Nasdaq-100
+    aliases:
+      - {text: Nasdaq-100, conf: 0.95}
+      - {text: Nasdaq 100, conf: 0.95}
+      - {text: NDX, conf: 0.9}
+  - id: DJI
+    name: Dow Jones Industrial Average
+    aliases:
+      - {text: Dow Jones Industrial Average, conf: 0.95}
+      - {text: Dow Jones, conf: 0.9, exclude_next: [Indices, indices, Bank, Newswires, Market, Local, Reports]}
+      - {text: DJIA, conf: 0.9}
+      - {text: Dow, conf: 0.85, require_next: [jones, points, index, futures, average, industrials, closed, closes, fell, rose, rallied, slid, slumped, jumped, tumbled, gained, lost, ended, ends, higher, lower]}
+  - id: RUT
+    name: Russell 2000
+    aliases:
+      - {text: Russell 2000, conf: 0.95}
+      - {text: RUT, conf: 0.85}
+  - id: VIX
+    name: CBOE Volatility Index
+    aliases:
+      - {text: VIX, conf: 0.9}
+      - {text: volatility index, conf: 0.85}
+  - id: SXXP
+    name: STOXX Europe 600
+    aliases:
+      - {text: Stoxx 600, conf: 0.95}
+      - {text: STOXX 600, conf: 0.95}
+      - {text: STOXX Europe 600, conf: 0.95}
+  - id: SX5E
+    name: Euro Stoxx 50
+    aliases:
+      - {text: Euro Stoxx 50, conf: 0.95}
+      - {text: EuroStoxx 50, conf: 0.95}
+  - id: DAX
+    name: DAX
+    aliases:
+      - {text: DAX, conf: 0.9}
+      - {text: DAX 40, conf: 0.95}
+  - id: UKX
+    name: FTSE 100
+    aliases:
+      - {text: FTSE 100, conf: 0.95}
+      - {text: FTSE, conf: 0.85}
+  - id: CAC
+    name: CAC 40
+    aliases:
+      - {text: CAC 40, conf: 0.95}
+      - {text: CAC, conf: 0.85}
+  - id: NKY
+    name: Nikkei 225
+    aliases:
+      - {text: Nikkei 225, conf: 0.95}
+      - {text: Nikkei, conf: 0.9}
+  - id: TPX
+    name: TOPIX
+    aliases:
+      - {text: Topix, conf: 0.9}
+  - id: HSI
+    name: Hang Seng Index
+    aliases:
+      - {text: Hang Seng, conf: 0.9}
+      - {text: HSI, conf: 0.85}
+  - id: SHCOMP
+    name: Shanghai Composite
+    aliases:
+      - {text: Shanghai Composite, conf: 0.95}
+  - id: CSI300
+    name: CSI 300
+    aliases:
+      - {text: CSI 300, conf: 0.95}
+      - {text: CSI300, conf: 0.9}
+  - id: KOSPI
+    name: KOSPI
+    aliases:
+      - {text: KOSPI, conf: 0.9}
+  - id: SENSEX
+    name: BSE Sensex
+    aliases:
+      - {text: Sensex, conf: 0.9}
+  - id: NIFTY50
+    name: Nifty 50
+    aliases:
+      - {text: Nifty 50, conf: 0.95}
+      - {text: Nifty 50 index, conf: 0.95}
+  - id: ASX200
+    name: S&P/ASX 200
+    aliases:
+      - {text: ASX 200, conf: 0.95}
+  - id: TSX
+    name: S&P/TSX Composite
+    aliases:
+      - {text: TSX Composite, conf: 0.95}
+      - {text: S&P/TSX, conf: 0.95}
+  - id: IBOV
+    name: Ibovespa
+    aliases:
+      - {text: Ibovespa, conf: 0.95}
+      - {text: Bovespa, conf: 0.95}
+  - id: XU100
+    name: BIST 100
+    aliases:
+      - {text: BIST 100, conf: 0.95}
+      - {text: BIST100, conf: 0.95}
+      - {text: BIST, conf: 0.9}
+      - {text: Borsa İstanbul, conf: 0.9}
+      - {text: Borsa Istanbul, conf: 0.9}
+      - {text: XU100, conf: 0.9}

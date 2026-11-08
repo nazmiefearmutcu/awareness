@@ -1,0 +1,45 @@
+# Large Borsa Istanbul (BIST) names. id = <code>.IS (Yahoo-style, as the terminal uses).
+# Bare upper-case codes (THYAO) count only when followed within three tokens by a Turkish
+# market word (hisse, hisseleri, pay, payları, BIST, borsa); cashtags and exchange-qualified
+# forms such as (BIST: THYAO) always count.
+issuers:
+  - {code: THYAO, name: Türk Hava Yolları, aliases: [Türk Hava Yolları, Turk Hava Yollari, Turkish Airlines, THY]}
+  - {code: ASELS, name: Aselsan, aliases: [Aselsan]}
+  - {code: GARAN, name: Garanti BBVA, aliases: [Garanti BBVA, Garanti Bankası, Garanti Bankasi]}
+  - {code: AKBNK, name: Akbank, aliases: [Akbank]}
+  - {code: ISCTR, name: Türkiye İş Bankası, aliases: [İş Bankası, Is Bankasi, Türkiye İş Bankası]}
+  - {code: YKBNK, name: Yapı ve Kredi Bankası, aliases: [Yapı Kredi, Yapi Kredi]}
+  - {code: KCHOL, name: Koç Holding, aliases: [Koç Holding, Koc Holding]}
+  - {code: SAHOL, name: Sabancı Holding, aliases: [Sabancı Holding, Sabanci Holding]}
+  - {code: BIMAS, name: BİM Birleşik Mağazalar, aliases: [BİM Mağazaları, BIM Magazalari]}
+  - {code: EREGL, name: Ereğli Demir ve Çelik, aliases: [Ereğli Demir Çelik, Eregli Demir Celik, Erdemir]}
+  - {code: TUPRS, name: Tüpraş, aliases: [Tüpraş, Tupras]}
+  - {code: FROTO, name: Ford Otosan, aliases: [Ford Otosan]}
+  - {code: TOASO, name: Tofaş, aliases: [Tofaş, Tofas]}
+  - {code: SISE, name: Şişecam, aliases: [Şişecam, Sisecam]}
+  - {code: TCELL, name: Turkcell, aliases: [Turkcell]}
+  - {code: TTKOM, name: Türk Telekom, aliases: [Türk Telekom, Turk Telekom]}
+  - {code: PGSUS, name: Pegasus Hava Taşımacılığı, aliases: [Pegasus Hava Yolları, Pegasus Airlines]}
+  - {code: ARCLK, name: Arçelik, aliases: [Arçelik, Arcelik]}
+  - {code: ENKAI, name: Enka İnşaat, aliases: [Enka İnşaat, Enka Insaat]}
+  - {code: SASA, name: SASA Polyester, aliases: [SASA Polyester]}
+  - {code: KOZAL, name: Koza Altın, aliases: [Koza Altın, Koza Altin]}
+  - {code: EKGYO, name: Emlak Konut GYO, aliases: [Emlak Konut]}
+  - {code: MGROS, name: Migros Ticaret, aliases: [Migros]}
+  - {code: TAVHL, name: TAV Havalimanları, aliases: [TAV Havalimanları, TAV Havalimanlari]}
+  - {code: ULKER, name: Ülker Bisküvi, aliases: [Ülker, Ulker]}
+  - {code: PETKM, name: Petkim, aliases: [Petkim]}
+  - {code: KRDMD, name: Kardemir, aliases: [Kardemir]}
+  - {code: VESTL, name: Vestel, aliases: [Vestel]}
+  - {code: HEKTS, name: Hektaş, aliases: [Hektaş, Hektas]}
+  - {code: ASTOR, name: Astor Enerji, aliases: [Astor Enerji]}
+  - {code: GUBRF, name: Gübre Fabrikaları, aliases: [Gübre Fabrikaları, Gubre Fabrikalari]}
+  - {code: TKFEN, name: Tekfen Holding, aliases: [Tekfen Holding]}
+  - {code: SOKM, name: Şok Marketler, aliases: [Şok Marketler, Sok Marketler]}
+  - {code: AEFES, name: Anadolu Efes, aliases: [Anadolu Efes]}
+  - {code: CCOLA, name: Coca-Cola İçecek, aliases: [Coca-Cola İçecek, Coca-Cola Icecek]}
+  - {code: HALKB, name: Türkiye Halk Bankası, aliases: [Halkbank, Halk Bankası, Halk Bankasi]}
+  - {code: VAKBN, name: Türkiye Vakıflar Bankası, aliases: [Vakıfbank, Vakifbank, Vakıflar Bankası]}
+  - {code: MAVI, name: Mavi Giyim, aliases: [Mavi Giyim]}
+  - {code: MPARK, name: MLP Sağlık, aliases: [MLP Sağlık, MLP Saglik]}
+  - {code: AKSEN, name: Aksa Enerji, aliases: [Aksa Enerji]}

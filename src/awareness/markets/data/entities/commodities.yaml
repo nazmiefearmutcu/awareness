@@ -1,0 +1,107 @@
+# Commodities. Bare words such as "oil" or "gold" are matched case-insensitively,
+# so the common non-financial senses are excluded by neighbour words.
+# Names carry conf 0.85 unless stated; generic terms (oil, crude, corn) carry 0.8.
+commodities:
+  - id: XAU
+    name: Gold
+    aliases:
+      - {text: gold, conf: 0.85, exclude_next: [medal, medals, medalist, medalists, cup, card, coast, rush, standard, fields, field, lake, star, wing]}
+      - {text: gold price, conf: 0.9}
+      - {text: XAU, conf: 0.9}
+      - {text: spot gold, conf: 0.9}
+      - {text: altın ons, conf: 0.9}
+      - {text: altın, conf: 0.85}
+      - {text: altin, conf: 0.85}
+  - id: XAG
+    name: Silver
+    aliases:
+      - {text: silver, conf: 0.85, exclude_next: [medal, medals, medalist, lake, lining, screen, spoon, jubilee, bullet]}
+      - {text: XAG, conf: 0.9}
+      - {text: gümüş, conf: 0.85}
+      - {text: gumus, conf: 0.85}
+  - id: WTI
+    name: WTI Crude
+    aliases:
+      - {text: WTI, conf: 0.9}
+      - {text: West Texas Intermediate, conf: 0.9}
+      - {text: crude oil, conf: 0.85}
+      - {text: crude, conf: 0.8}
+      - {text: oil, conf: 0.8, exclude_next: [company, companies, major, majors, giant, giants, producer, producers, shares, stock, stocks, firm, firms, tanker, tankers, spill, executive, executives, exploration]}
+      - {text: petrol, conf: 0.8}
+      - {text: ham petrol, conf: 0.85}
+  - id: BRENT
+    name: Brent Crude
+    aliases:
+      - {text: Brent crude, conf: 0.9}
+      - {text: Brent oil, conf: 0.9}
+      - {text: Brent, conf: 0.9, capital: true, exclude_next: [Thill, Hunter, Spencer, Schwartz]}
+  - id: NATGAS
+    name: Natural Gas
+    aliases:
+      - {text: natural gas, conf: 0.85}
+      - {text: doğalgaz, conf: 0.85}
+      - {text: dogalgaz, conf: 0.85}
+      - {text: Henry Hub, conf: 0.9}
+  - id: COPPER
+    name: Copper
+    aliases:
+      - {text: copper, conf: 0.85}
+      - {text: bakır, conf: 0.85}
+      - {text: bakir, conf: 0.85}
+  - id: XPT
+    name: Platinum
+    aliases:
+      - {text: platinum, conf: 0.85, exclude_next: [blonde, card, status, record]}
+      - {text: XPT, conf: 0.9}
+  - id: XPD
+    name: Palladium
+    aliases:
+      - {text: palladium, conf: 0.85}
+      - {text: XPD, conf: 0.9}
+  - id: WHEAT
+    name: Wheat
+    aliases:
+      - {text: wheat, conf: 0.85}
+      - {text: buğday, conf: 0.85}
+      - {text: bugday, conf: 0.85}
+  - id: CORN
+    name: Corn
+    aliases:
+      - {text: corn, conf: 0.8, exclude_next: [flakes, chips, on, bread, dog, starch, field]}
+      - {text: mısır, conf: 0.8}
+      - {text: misir, conf: 0.8}
+  - id: SOYBEAN
+    name: Soybeans
+    aliases:
+      - {text: soybeans, conf: 0.85}
+      - {text: soybean, conf: 0.85}
+  - id: COFFEE
+    name: Coffee
+    aliases:
+      - {text: coffee, conf: 0.8, exclude_next: [shop, shops, house, cup, cups, chain, chains, bar, bars, maker, makers, table, tables]}
+      - {text: kahve, conf: 0.8}
+  - id: SUGAR
+    name: Sugar
+    aliases:
+      - {text: sugar, conf: 0.8, exclude_next: [daddy, rush, tax, free]}
+      - {text: şeker, conf: 0.8}
+      - {text: seker, conf: 0.8}
+  - id: COCOA
+    name: Cocoa
+    aliases:
+      - {text: cocoa, conf: 0.85}
+      - {text: kakao, conf: 0.8}
+  - id: IRONORE
+    name: Iron Ore
+    aliases:
+      - {text: iron ore, conf: 0.9}
+  - id: LITHIUM
+    name: Lithium
+    aliases:
+      - {text: lithium, conf: 0.8}
+      - {text: lityum, conf: 0.8}
+  - id: URANIUM
+    name: Uranium
+    aliases:
+      - {text: uranium, conf: 0.85}
+      - {text: uranyum, conf: 0.85}

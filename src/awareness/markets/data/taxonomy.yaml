@@ -1,0 +1,164 @@
+# Rule-based finance taxonomy: asset classes, topics, negative (non-finance) classes,
+# horizon hints and content-type prefixes. Aliases are matched on folded text
+# (case-, accent- and Turkish-dotless-i-insensitive, word boundaries), so write them naturally.
+# Scoring is done in nlp/taxonomy.py: title alias = 2 x weight, body alias = 1 x weight.
+
+# Entity types that imply an asset class (entity evidence), plus alias hits per class.
+asset_classes:
+  equities:
+    entity_types: [equity]
+    aliases: [stock, stocks, shares, equity, equities, stock market, share price, hisse, hisseler, hisse senedi, borsa]
+  indices:
+    entity_types: [index]
+    aliases: [index, indices, stock index, benchmark index, endeks, endeksi, s&p 500, nasdaq composite, bist 100, dow jones, ftse, nikkei, stoxx]
+  fx:
+    entity_types: [fx]
+    aliases: [currency, currencies, forex, foreign exchange, exchange rate, dollar, euro, yen, lira, sterling, dolar, döviz, kur, avro, fx]
+  rates:
+    entity_types: [central_bank]
+    aliases: [interest rate, interest rates, rate cut, rate hike, bond yield, bond yields, treasury yield, treasuries, treasury, government bond, gilt, bund, faiz, faiz oranı, politika faizi, tahvil, bono]
+  credit:
+    entity_types: []
+    aliases: [credit spread, credit spreads, high yield, junk bond, junk bonds, corporate bond, corporate bonds, investment grade, default risk, eurobond, kredi riski]
+  commodities:
+    entity_types: [commodity]
+    aliases: [commodity, commodities, emtia, oil, crude, gold, silver, copper, natural gas, wheat, corn, metals, altın, petrol, doğalgaz, bakır, gümüş]
+  crypto:
+    entity_types: [crypto]
+    aliases: [crypto, cryptocurrency, bitcoin, ethereum, stablecoin, altcoin, token, tokens, blockchain, defi, kripto]
+  macro:
+    entity_types: []
+    aliases: [economy, economic, gdp, inflation, unemployment, recession, economic growth, ekonomi, enflasyon, büyüme, makro, macro]
+
+# Entity types that add evidence to one topic (score +1.5 when entity confidence >= 0.8).
+entity_topic_hints:
+  central_bank: central_bank
+
+# Topics: each has a weight and English + Turkish aliases.
+topics:
+  earnings:
+    weight: 1.0
+    aliases: [earnings, eps, quarterly results, quarterly profit, results beat, earnings beat, earnings miss, beats estimates, misses estimates, net income, revenue beat, q1 results, q2 results, q3 results, q4 results, kazanç, kazanc, bilanço, bilanco, net kar, çeyrek kâr]
+  guidance:
+    weight: 1.0
+    aliases: [guidance, outlook, forecast, raises forecast, cuts forecast, lowers forecast, raises outlook, cuts outlook, lowers outlook, raised guidance, cut guidance, lowered guidance, projections, öngörü, ongoru, beklenti, tahmin]
+  m_and_a:
+    weight: 1.0
+    aliases: [merger, mergers, acquisition, acquisitions, acquire, acquires, acquired, takeover, buyout, takeover bid, stake sale, divest, divestiture, spin-off, spinoff, birleşme, birlesme, satın alma, satin alma, devralma]
+  ipo:
+    weight: 1.0
+    aliases: [ipo, initial public offering, public debut, goes public, listing debut, halka arz]
+  dividends_buybacks:
+    weight: 1.0
+    aliases: [dividend, dividends, buyback, buybacks, share repurchase, special dividend, temettü, temettu, geri alım, geri alim]
+  analyst_rating:
+    weight: 1.0
+    aliases: [upgrade, upgrades, downgrade, downgrades, price target, analyst, analysts, outperform, underperform, overweight, underweight, hedef fiyat, tavsiye]
+  central_bank:
+    weight: 1.0
+    aliases: [central bank, fed, federal reserve, fomc, ecb, boe, boj, rate cut, rate cuts, rate hike, rate hikes, rate decision, interest rate decision, policy rate, rate hold, pboc, tcmb, merkez bankası, merkez bankasi, faiz kararı, faiz karari, faiz, quantitative easing, tapering]
+  inflation:
+    weight: 1.0
+    aliases: [inflation, cpi, pce, consumer prices, price pressures, enflasyon, tüfe, tufe, üfe, ufe]
+  employment:
+    weight: 1.0
+    aliases: [jobs report, nonfarm payrolls, payrolls, unemployment, jobless claims, employment, layoffs, job cuts, işsizlik, issizlik, istihdam]
+  growth_recession:
+    weight: 1.0
+    aliases: [gdp, recession, economic growth, growth slows, contraction, slowdown, economy shrinks, büyüme, buyume, resesyon, durgunluk]
+  consumer:
+    weight: 0.8
+    aliases: [retail sales, consumer spending, consumer confidence, consumer sentiment, tüketici güveni, tuketici guveni, perakende satış, perakende satis]
+  housing:
+    weight: 0.8
+    aliases: [housing, mortgage, mortgages, home sales, house prices, existing home sales, konut, ipotek]
+  trade_tariffs:
+    weight: 1.0
+    aliases: [tariff, tariffs, trade war, trade deal, import duties, export ban, ticaret savaşı, ticaret savasi, gümrük vergisi, gumruk vergisi, ihracat]
+  sanctions:
+    weight: 1.0
+    aliases: [sanction, sanctions, embargo, export controls, yaptırım, yaptirim, ambargo]
+  geopolitics:
+    weight: 1.0
+    aliases: [war, invasion, conflict, ceasefire, military, missile, troops, tensions, geopolitical, savaş, savas, çatışma, catisma, ateşkes, ateskes, jeopolitik]
+  regulation:
+    weight: 1.0
+    aliases: [regulator, regulators, regulation, regulations, rules, rulemaking, antitrust, cfpb, bddk, spk, regülasyon, regulasyon, düzenleme, duzenleme]
+  litigation:
+    weight: 1.0
+    aliases: [lawsuit, lawsuits, sues, sued, court, verdict, settlement, class action, indictment, dava, mahkeme, tazminat]
+  energy:
+    weight: 1.0
+    aliases: [oil, crude, brent, wti, opec, natural gas, lng, refinery, pipeline, petrol, energy, electricity, enerji, doğalgaz, dogalgaz, elektrik, rafineri]
+  metals:
+    weight: 1.0
+    aliases: [gold, silver, copper, platinum, nickel, aluminium, aluminum, iron ore, lithium, altın, altin, gümüş, gumus, bakır, bakir, metal]
+  crypto_market:
+    weight: 1.0
+    aliases: [bitcoin, ethereum, crypto, cryptocurrency, stablecoin, altcoin, blockchain, defi, halving, kripto]
+  funding_liquidity:
+    weight: 1.0
+    aliases: [liquidity, funding, repo, credit line, bank run, deposit outflows, likidite, fonlama, mevduat]
+  credit_stress:
+    weight: 1.0
+    aliases: [default, defaults, credit spreads, junk, distressed debt, bankruptcy, insolvency, chapter 11, restructuring, iflas, temerrüt, temerrut]
+  supply_chain:
+    weight: 1.0
+    aliases: [supply chain, shortage, shortages, chip shortage, port strike, logistics, freight, backlog, tedarik, lojistik]
+  cyber_outage:
+    weight: 1.0
+    aliases: [cyberattack, cyber attack, hack, hacked, data breach, ransomware, outage, outages, service disruption, system failure, siber saldırı, siber saldiri, veri ihlali]
+  product_launch:
+    weight: 0.8
+    aliases: [launch, launches, unveils, unveil, rolls out, new product, product launch, debuts, ürün lansmanı, urun lansmani, tanıttı, tanitti]
+  fraud_governance:
+    weight: 1.0
+    aliases: [fraud, fraudulent, accounting scandal, restatement, insider trading, money laundering, embezzlement, governance, probe into, dolandırıcılık, dolandiricilik, yolsuzluk, kara para]
+  management_change:
+    weight: 1.0
+    aliases: [ceo, steps down, step down, resigns, resignation, appoints, appointed, names new, succession, cfo, chief executive, istifa, atandı, atandi, görevden]
+  natural_disaster:
+    weight: 1.0
+    aliases: [earthquake, hurricane, flood, flooding, wildfire, typhoon, tsunami, drought, deprem, sel, yangın, yangin, kasırga, kasirga]
+  fiscal_policy:
+    weight: 1.0
+    aliases: [budget, deficit, fiscal, stimulus, tax cut, tax hike, spending bill, debt ceiling, government shutdown, bütçe, butce, açık, vergi, teşvik, tesvik]
+
+# Negative classes: non-finance subjects that subtract from finance relevance
+# (title hit -0.5, body hit -0.2 per class).
+negative:
+  sports:
+    aliases: [football, soccer, basketball, tennis, cricket, champions league, premier league, la liga, nba, nfl, mlb, world cup, olympics, olympic, goalkeeper, striker, transfer window, league match, football match, futbol, basketbol, maç, mac, şampiyonlar ligi, super lig, süper lig]
+  celebrity:
+    aliases: [celebrity, celebrities, red carpet, oscars, grammy, grammys, emmy, emmys, golden globes, actress, reality star, paparazzi, dating rumors, engaged, wedding, divorce, ünlü, magazin, evlilik, boşanma, bosanma]
+  entertainment:
+    aliases: [box office, movie, movies, album, concert, netflix series, tv show, season finale, trailer, sinema, dizi, konser, albüm]
+  lifestyle:
+    aliases: [recipe, recipes, fashion week, horoscope, horoscopes, travel tips, skincare, workout, yoga, burç, burc, yemek tarifi, moda]
+  weather:
+    aliases: [weather, forecast rain, snowfall, heatwave, thunderstorm, hava durumu, yağmur, yagmur, kar yağışı, kar yagisi]
+  crime_local:
+    aliases: [stabbed, stabbing, arrested, murder, murdered, shooting, shot dead, gunman, robbery, burglary, traffic accident, car crash, cinayet, tutuklandı, tutuklandi, gözaltı, gozalti, yaralandı, yaralandi, bıçaklandı, bicaklandi, silahlı saldırı, silahli saldiri, hırsızlık, hirsizlik]
+
+horizon:
+  # Market-moving, live language -> intraday.
+  intraday: [flash, breaking, halted, trading halt, halts trading, plunges, surges, tumbles, soars, skyrockets, live, just in, son dakika, anlık, anlik]
+  # Topics and release names that point at a one-week horizon.
+  one_week_topics: [earnings, guidance, central_bank]
+  one_week_aliases: [cpi, pce, nonfarm payrolls, jobs report, pmi, retail sales, rate decision, fomc meeting, enflasyon verisi, faiz kararı, faiz karari]
+  # Topics whose effects are long-run.
+  structural_topics: [regulation, litigation, supply_chain, geopolitics, sanctions, trade_tariffs]
+
+macro_topics: [inflation, employment, growth_recession, consumer, housing, fiscal_policy, trade_tariffs]
+
+# Publisher kinds and feed categories that raise or lower finance relevance.
+publisher_relevance:
+  boost: [official, regulator, financial_press, specialist]
+  penalty: [community]
+feed_relevance_categories: [markets, economy, earnings, crypto, central_bank]
+
+# Content-type hints taken from title prefixes (folded, case-insensitive).
+content_type:
+  opinion_prefixes: [opinion, column, commentary, editorial, letters, letter, görüş, gorus, köşe yazısı, kose yazisi]
+  analysis_prefixes: [analysis, explainer, deep dive, analiz]
+  analysis_patterns: ["^what .* means\\b"]
