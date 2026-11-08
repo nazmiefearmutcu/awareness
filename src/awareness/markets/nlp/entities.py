@@ -1,20 +1,19 @@
 """Entity linker: maps headline and body text to canonical market entities.
 
 Precision beats recall: a false ticker on a headline is worse than a missed one, so
-bare words only count with supporting context (see the module constants below).
-
-Recognisers, in scan order per text segment:
+bare words only count with supporting context. Recognisers, in scan order per segment:
 
 1. Exchange-qualified tickers ``(NASDAQ: NVDA)``, ``NYSE American: XYZ``, ``(BIST: THYAO)``.
+   Unparenthesised forms must also be known SEC or BIST issuers.
 2. Cashtags ``$AAPL`` (known SEC/BIST issuers) and ``$BTC`` (known crypto symbols).
 3. FX pairs ``EUR/USD``, ``EURUSD``, ``dolar/TL``.
-4. Dictionary aliases (longest match first, up to five tokens): curated companies, SEC
-   titles for the largest issuers, crypto, FX, commodities, indices, countries,
-   central banks, people and BIST names, all from ``data/entities/*.yaml``.
+4. Dictionary aliases, longest match first (up to five tokens), from ``data/entities/*.yaml``.
 5. Bare upper-case SEC tickers and BIST codes, only in parentheses or near context words.
 
+Each alias candidate is gated by case (capitalised or upper-case surfaces), neighbour words,
+optional context words within a token window (or the whole sentence), and exclusion words.
 Confidence is attached per hit; entities are de-duplicated per (type, id) and kept at or
-above :data:`MIN_CONFIDENCE`. Salience is 1.0 when the entity is in the title and otherwise
+above :data:`MIN_CONFIDENCE`. Salience is 1.0 when in the title, otherwise
 ``min(0.9, 0.3 + 0.15 * mentions)``; implied country entities of central banks are halved.
 """
 
@@ -22,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +38,7 @@ MIN_CONFIDENCE = 0.6
 MAX_NGRAM = 5
 DEFAULT_TOP_ISSUERS = 1500
 ENTITY_DIR = "entities"
+COMPANY_WINDOW = 4
 
 CASHTAG_CONF = 0.99
 QUALIFIED_CONF = 0.99
@@ -47,15 +47,19 @@ SEC_ALIAS_CONF = 0.8
 DEFAULT_ALIAS_CONF = 0.9
 AMBIGUOUS_ALIAS_CONF = 0.8
 TITLE_COUNTRY_CONF = 0.95
+PAIR_CONF = 0.95
 
-# Ordinary words and abbreviations that are never bare tickers (even when they are issuers).
+# Tickers that are ordinary words or time-zone, finance and org abbreviations.
 STOP_TICKERS = frozenset(
     """A I AN ALL ARE BE CAN CEO CFO COO IT ON ONE OR SO AT BY FOR GO HAS NOW OUT SEE TWO KEY
     CAT CAR FAST LOW HUGE PLAY REAL MAIN GOOD FUN TRUE OPEN EDIT BIG NEXT LIFE USA AI EV ETF
-    IPO GDP CPI PMI FOMC ECB SEC FDA US UK EU UN NATO IMF OPEC NYSE NASDAQ AMEX BIST EPS
-    WTI FED BOE BOJ PBOC TCMB ABD AB BUY SELL HOLD ALSO NEW OLD TOP BEST UP DOWN USD EUR GBP
-    JPY TRY CNY IN OF TO AS IS IF OR NO YES MY ME WE HE SHE HIM HER HIS OUR YOU ALL ANY
-    NOT BUT ARE WAS HAS HAD OUT DAY PAY TAX YEAR ONLY MORE MOST SOME EACH SAYS SAID""".split()
+    IPO GDP CPI PMI PPI PCE FOMC ECB SEC FDA US UK EU UN NATO IMF OPEC NYSE NASDAQ AMEX BIST
+    EPS WTI FED BOE BOJ PBOC TCMB ABD AB BUY SELL HOLD ALSO NEW OLD TOP BEST UP DOWN USD EUR
+    GBP JPY TRY CNY IN OF TO AS IS IF NO YES MY ME WE HE SHE HIM HER HIS OUR YOU ANY NOT BUT
+    WAS HAD DAY PAY TAX YEAR ONLY MORE MOST SOME EACH SAYS SAID
+    ET EST EDT PT PST PDT CT CST CDT MT MST MDT GMT UTC CET CEST BST JST IST AM PM PE
+    YOY QOQ MOM ATH ATL ROE ROI EBITDA FCF DCF IRS LLC AUM NAV OTC FX ER TV ESG ADR SA NA OK
+    PR HQ VP MD DEX NFT""".split()
 )
 
 BARE_CONTEXT = frozenset(
@@ -65,26 +69,18 @@ BARE_CONTEXT = frozenset(
 BIST_CONTEXT = frozenset({"hisse", "hisseleri", "hisselerinde", "pay", "paylari", "bist", "borsa"})
 CRYPTO_CONTEXT = frozenset(
     {"crypto", "token", "tokens", "coin", "coins", "blockchain", "defi", "etf", "stablecoin",
-     "altcoin", "btc", "eth", "bitcoin", "ethereum", "cryptocurrency"}
+     "altcoin", "btc", "eth", "bitcoin", "ethereum", "cryptocurrency", "kripto"}
 )
 DEFAULT_COMPANY_CONTEXT = frozenset(
     {"shares", "stock", "stocks", "inc", "corp", "ceo", "earnings", "company", "retailer",
-     "bank", "brand", "maker"}
-)
-# Single-word auto aliases from SEC titles that are English words or generic prefixes.
-AUTO_ALIAS_STOP = frozenset(
-    """target visa apple meta oracle intel ford snap match block gap shell strategy general
-    universal western global american national first united standard pacific atlantic capital
-    security mining energy resources financial trust realty systems software technologies
-    brands foods holdings group company international bancorp dollar delta amazon nordstrom
-    chipotle ally carnival""".split()
+     "bank", "brand"}
 )
 
 _QUALIFIED_RE = re.compile(
     r"\(\s*(?P<ex1>NASDAQ|Nasdaq|NYSE American|NYSE Arca|NYSE|AMEX|BIST)\s*:\s*"
-    r"(?P<t1>[A-Z][A-Z0-9]*(?:[.\-][A-Z0-9]+)?)\s*\)"
+    r"(?P<t1>[A-Z]{1,5}(?:[.\-][A-Z]{1,2})?)\s*\)"
     r"|\b(?P<ex2>NASDAQ|Nasdaq|NYSE American|NYSE Arca|NYSE|AMEX|BIST)\s*:\s*"
-    r"(?P<t2>[A-Z][A-Z0-9]*(?:[.\-][A-Z0-9]+)?)\b"
+    r"(?P<t2>[A-Z]{1,5}(?:[.\-][A-Z]{1,2})?)\b"
 )
 _TICKER_RE = re.compile(r"[A-Z][A-Z0-9]*(?:[.\-][A-Z0-9]+)?")
 _SUFFIX_WORDS = frozenset(
@@ -95,7 +91,7 @@ _SUFFIX_WORDS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class _Cand:
-    """One alias candidate: what it resolves to and the rules that gate it."""
+    """One alias candidate and the gates that decide whether a token span matches it."""
 
     etype: EntityType
     eid: str
@@ -104,9 +100,13 @@ class _Cand:
     capital: bool = False
     upper: bool = False
     context: frozenset[str] | None = None
+    require_context: bool = False
+    start_needs_context: bool = False
+    window: int | None = None  # None: whole sentence; N: N tokens either side
     require_next: frozenset[str] = frozenset()
     exclude_next: frozenset[str] = frozenset()
     exclude_prev: frozenset[str] = frozenset()
+    exclude_context: frozenset[str] = frozenset()
     dampen: bool = False
     links: tuple[_Cand, ...] = ()
 
@@ -123,7 +123,6 @@ class _Acc:
     title: bool = False
     mentions: int = 0
     text_mentions: int = 0
-    _names: list[str] = field(default_factory=list)
 
 
 class _Sink:
@@ -174,31 +173,38 @@ def _frozen(values: list[Any] | None) -> frozenset[str]:
 
 
 def _make_cand(
-    etype: EntityType, eid: str, name: str, spec: dict[str, Any], *, default_conf: float,
-    default_capital: bool, default_context: frozenset[str] | None = None,
+    etype: EntityType,
+    eid: str,
+    name: str,
+    spec: dict[str, Any],
+    *,
+    default_conf: float,
+    default_capital: bool,
+    default_context: frozenset[str] | None = None,
+    default_window: int | None = None,
 ) -> tuple[str, _Cand]:
+    """Build the lookup key and candidate for one alias spec from a YAML dictionary."""
     text = str(spec["text"])
     ambiguous = bool(spec.get("ambiguous", False))
-    context = default_context
-    if "context" in spec:
-        context = _frozen(spec["context"])
+    context = _frozen(spec["context"]) if "context" in spec else default_context
     if ambiguous and context is None:
         context = DEFAULT_COMPANY_CONTEXT
-    conf = float(spec.get("conf", AMBIGUOUS_ALIAS_CONF if ambiguous else default_conf))
     letters = [ch for ch in text if ch.isalpha()]
-    upper = len(letters) >= 2 and text == text.upper()
-    capital = bool(spec.get("capital", default_capital))
     cand = _Cand(
         etype=etype,
         eid=eid,
         name=name,
-        conf=conf,
-        capital=capital,
-        upper=upper,
-        context=context if ambiguous or "context" in spec else None,
+        conf=float(spec.get("conf", AMBIGUOUS_ALIAS_CONF if ambiguous else default_conf)),
+        capital=bool(spec.get("capital", default_capital)),
+        upper=len(letters) >= 2 and text == text.upper(),
+        context=context,
+        require_context=ambiguous,
+        start_needs_context=bool(spec.get("start_needs_context", False)),
+        window=spec.get("window", default_window),
         require_next=_frozen(spec.get("require_next")),
         exclude_next=_frozen(spec.get("exclude_next")),
         exclude_prev=_frozen(spec.get("exclude_prev")),
+        exclude_context=_frozen(spec.get("exclude_context")),
         dampen=bool(spec.get("dampen", False)),
     )
     return phrase_key(text), cand
@@ -210,7 +216,7 @@ def _clean_title(title: str) -> list[str]:
     cleaned = re.sub(r"\bClass\s+[A-Za-z]\b", " ", cleaned, flags=re.IGNORECASE)
     words = [w.strip(".,") for w in cleaned.split()]
     words = [w for w in words if w]
-    while words and phrase_key(words[-1]) in _SUFFIX_WORDS | {"&"}:
+    while words and phrase_key(words[-1]) in _SUFFIX_WORDS:
         words.pop()
     if words and words[0].lower() == "the":
         words.pop(0)
@@ -267,11 +273,12 @@ class EntityLinker:
         for row in _load_yaml(base, "company_aliases.yaml").get("companies", []):
             eid, name = str(row["id"]), str(row.get("name", row["id"]))
             self._names[("equity", eid)] = name
+            row_context = _frozen(row.get("context")) or None
             for spec in _alias_specs(row.get("aliases")):
                 key, cand = _make_cand(
                     "equity", eid, name, spec, default_conf=DEFAULT_ALIAS_CONF,
-                    default_capital=True,
-                    default_context=_frozen(row.get("context")) or None,
+                    default_capital=True, default_context=row_context,
+                    default_window=COMPANY_WINDOW,
                 )
                 self._put(key, cand)
 
@@ -284,12 +291,15 @@ class EntityLinker:
             sym_context = CRYPTO_CONTEXT if coin.get("ambiguous_symbol") else None
             self._put(
                 phrase_key(symbol),
-                _Cand("crypto", symbol, names[0], 0.85, upper=True, context=sym_context),
+                _Cand("crypto", symbol, names[0], 0.85, upper=True,
+                      context=sym_context, require_context=bool(coin.get("ambiguous_symbol"))),
             )
             for name in names:
                 key, cand = _make_cand(
-                    "crypto", symbol, names[0], {"text": name, "capital": coin.get("capital", False)},
-                    default_conf=DEFAULT_ALIAS_CONF, default_capital=False,
+                    "crypto", symbol, names[0],
+                    {"text": name, "ambiguous": bool(coin.get("ambiguous_names", False))},
+                    default_conf=DEFAULT_ALIAS_CONF, default_capital=True,
+                    default_context=CRYPTO_CONTEXT,
                 )
                 self._put(key, cand)
 
@@ -330,11 +340,10 @@ class EntityLinker:
     def _load_countries(self, base: Path) -> None:
         for row in _load_yaml(base, "countries.yaml").get("countries", []):
             eid = str(row["id"])
-            name = eid
-            self._names[("country", eid)] = name
+            self._names[("country", eid)] = eid
             for spec in _alias_specs(row.get("aliases")):
                 key, cand = _make_cand(
-                    "country", eid, name, spec, default_conf=0.85, default_capital=True,
+                    "country", eid, eid, spec, default_conf=0.85, default_capital=True,
                 )
                 self._put(key, cand)
 
@@ -344,30 +353,26 @@ class EntityLinker:
             country = str(row["country"]).upper()
             self._names[("central_bank", eid)] = eid
             link = _Cand("country", country, country, 0.7, dampen=True)
-            for alias in row.get("aliases", []):
-                for spec in _alias_specs([alias]):
-                    key, cand = _make_cand(
-                        "central_bank", eid, eid, spec, default_conf=0.95, default_capital=True,
-                    )
-                    cand = _with_links(cand, (link,))
-                    self._put(key, cand)
+            for spec in _alias_specs(row.get("aliases")):
+                key, cand = _make_cand(
+                    "central_bank", eid, eid, spec, default_conf=0.95, default_capital=True,
+                )
+                self._put(key, replace(cand, links=(link,)))
 
     def _load_people(self, base: Path) -> None:
         for row in _load_yaml(base, "people.yaml").get("people", []):
             eid, name = str(row["id"]), str(row.get("name", row["id"]))
             self._names[("person", eid)] = name
             links = tuple(
-                _Cand(
-                    str(link["type"]), str(link["id"]), str(link["id"]),  # type: ignore[arg-type]
-                    float(link["conf"]),
-                )
+                _Cand(str(link["type"]), str(link["id"]), str(link["id"]),  # type: ignore[arg-type]
+                      float(link["conf"]))
                 for link in row.get("links", [])
             )
             for spec in _alias_specs(row.get("aliases")):
                 key, cand = _make_cand(
                     "person", eid, name, spec, default_conf=0.85, default_capital=True,
                 )
-                self._put(key, _with_links(cand, links))
+                self._put(key, replace(cand, links=links))
 
     def _load_bist(self, base: Path) -> None:
         for row in _load_yaml(base, "bist.yaml").get("issuers", []):
@@ -384,17 +389,16 @@ class EntityLinker:
                 self._put(key, cand)
 
     def _add_auto_aliases(self, issuers: list[SecIssuer], top: int) -> None:
-        """Alias the largest SEC issuers by their cleaned title (curated keys win)."""
+        """Alias the largest SEC issuers by cleaned multi-word title (curated keys win).
+
+        Single-word titles are never auto-aliased: they are overwhelmingly ordinary English
+        words (Southern, Booking, Waters, Progressive), and precision comes first.
+        """
         for issuer in sorted(issuers, key=lambda i: i.rank)[:top]:
             words = _clean_title(issuer.title)
-            if not words:
+            if len(words) < 2:
                 continue
-            name = " ".join(words)
-            if len(words) == 1:
-                letters = sum(ch.isalpha() for ch in words[0])
-                if letters < 6 or phrase_key(words[0]) in AUTO_ALIAS_STOP:
-                    continue
-            key = phrase_key(name)
+            key = phrase_key(" ".join(words))
             if not key or key in self._aliases:
                 continue
             display = self._names.get(("equity", issuer.ticker), issuer.title)
@@ -407,7 +411,7 @@ class EntityLinker:
 
         ``language`` is a hint only: both English and Turkish dictionaries are always scanned.
         """
-        del language  # both languages are always scanned
+        del language
         sink = _Sink()
         self._scan(title or "", True, sink)
         if text:
@@ -464,12 +468,22 @@ class EntityLinker:
     def _scan_qualified(self, text: str, in_title: bool, sink: _Sink) -> list[tuple[int, int]]:
         spans: list[tuple[int, int]] = []
         for match in _QUALIFIED_RE.finditer(text):
+            parenthesised = match.group("t1") is not None
             exchange = match.group("ex1") or match.group("ex2")
-            ticker = (match.group("t1") or match.group("t2")).replace(".", "-")
+            raw_ticker = match.group("t1") or match.group("t2")
+            if raw_ticker.endswith(".") or (
+                "." in raw_ticker and text[match.end(): match.end() + 1] == "."
+            ):
+                continue
+            ticker = raw_ticker.replace(".", "-")
+            if ticker in STOP_TICKERS:
+                continue
             if exchange == "BIST":
                 eid = self._bist.get(ticker, f"{ticker}.IS")
             else:
                 eid = ticker
+                if not parenthesised and ticker not in self._sec:
+                    continue
             name = self._names.get(("equity", eid), eid)
             sink.add("equity", eid, name, QUALIFIED_CONF, in_title=in_title)
             spans.append(match.span())
@@ -484,7 +498,8 @@ class EntityLinker:
             sink.add("equity", symbol, name, CASHTAG_CONF, in_title=in_title)
         elif symbol in self._bist:
             eid = self._bist[symbol]
-            sink.add("equity", eid, self._names.get(("equity", eid), eid), CASHTAG_CONF, in_title=in_title)
+            sink.add("equity", eid, self._names.get(("equity", eid), eid), CASHTAG_CONF,
+                     in_title=in_title)
         elif symbol in self._crypto:
             sink.add("crypto", symbol, self._crypto[symbol], CASHTAG_CONF, in_title=in_title)
 
@@ -496,17 +511,15 @@ class EntityLinker:
                 return False
             left, right = self._currency(parts[0]), self._currency(parts[1])
             if left and right and left != right:
-                return self._emit_pair(left, right, in_title, sink)
+                sink.add("fx", f"{left}{right}", f"{left}/{right}", PAIR_CONF, in_title=in_title)
+                return True
             return False
         if len(raw) == 6 and raw.isupper():
             left, right = raw[:3], raw[3:]
             if left in self._currency_codes and right in self._currency_codes and left != right:
-                return self._emit_pair(left, right, in_title, sink)
+                sink.add("fx", f"{left}{right}", f"{left}/{right}", PAIR_CONF, in_title=in_title)
+                return True
         return False
-
-    def _emit_pair(self, left: str, right: str, in_title: bool, sink: _Sink) -> bool:
-        sink.add("fx", f"{left}{right}", f"{left}/{right}", 0.95, in_title=in_title)
-        return True
 
     def _currency(self, word: str) -> str | None:
         if word.isupper() and word in self._currency_codes:
@@ -526,7 +539,11 @@ class EntityLinker:
             cands = self._aliases.get(key)
             if not cands:
                 continue
-            accepted = [c for c in cands if _accept(c, tokens, i, i + width - 1, sent_ranges)]
+            accepted = [
+                c for c in cands
+                if _accept(c, tokens, i, i + width - 1, sent_ranges)
+                and not (c.etype == "crypto" and c.upper and c.eid in self._sec)
+            ]
             if not accepted:
                 continue
             for cand in accepted:
@@ -558,20 +575,10 @@ class EntityLinker:
                 name = self._names.get(("equity", symbol), self._sec[symbol].title)
                 sink.add("equity", symbol, name, BARE_TICKER_CONF, in_title=in_title)
             return
-        code = raw
-        if code in self._bist and _near(tokens, i, BIST_CONTEXT, 3, both_sides=False):
-            eid = self._bist[code]
+        if raw in self._bist and _near(tokens, i, BIST_CONTEXT, 3, both_sides=False):
+            eid = self._bist[raw]
             sink.add("equity", eid, self._names.get(("equity", eid), eid), BARE_TICKER_CONF,
                      in_title=in_title)
-
-
-def _with_links(cand: _Cand, links: tuple[_Cand, ...]) -> _Cand:
-    return _Cand(
-        etype=cand.etype, eid=cand.eid, name=cand.name, conf=cand.conf, capital=cand.capital,
-        upper=cand.upper, context=cand.context, require_next=cand.require_next,
-        exclude_next=cand.exclude_next, exclude_prev=cand.exclude_prev, dampen=cand.dampen,
-        links=links,
-    )
 
 
 def _inside(tok: Token, spans: list[tuple[int, int]]) -> bool:
@@ -590,38 +597,45 @@ def _sentence_ranges(tokens: list[Token]) -> list[tuple[int, int]]:
     return ranges
 
 
+def _first_letter(raw: str) -> str:
+    return next((ch for ch in raw if ch.isalpha()), "")
+
+
 def _accept(
     cand: _Cand, tokens: list[Token], a: int, b: int, sent_ranges: list[tuple[int, int]],
 ) -> bool:
-    """Apply the case, neighbour and context gates of one candidate to a token span."""
-    if cand.capital and not tokens[a].raw[:1].isupper():
+    """Apply the case, neighbour, context and exclusion gates of one candidate to a span."""
+    letter = _first_letter(tokens[a].raw)
+    nxt = tokens[b + 1].key if b + 1 < len(tokens) else ""
+    prv = tokens[a - 1].key if a > 0 else ""
+    if cand.capital and (not letter or not letter.isupper()):
         return False
     if cand.upper and not all(tokens[j].raw.upper() == tokens[j].raw for j in range(a, b + 1)):
         return False
-    nxt = tokens[b + 1].key if b + 1 < len(tokens) else ""
-    prv = tokens[a - 1].key if a > 0 else ""
-    neighbours_ok = (
-        (not cand.require_next or nxt in cand.require_next)
-        and nxt not in cand.exclude_next
-        and prv not in cand.exclude_prev
+    neighbour_ok = (not cand.require_next or nxt in cand.require_next) and (
+        nxt not in cand.exclude_next and prv not in cand.exclude_prev
     )
-    if not neighbours_ok:
+    if not neighbour_ok:
         return False
-    if cand.context is None:
-        return True
     lo, hi = sent_ranges[a]
-    return any(tokens[j].key in cand.context for j in range(lo, hi + 1) if not a <= j <= b)
+    left, right = (lo, hi) if cand.window is None else (max(lo, a - cand.window), min(hi, b + cand.window))
+    needs = cand.require_context or (cand.start_needs_context and a == lo)
+    if not needs and not cand.exclude_context:
+        return True
+    words = {tokens[j].key for j in range(left, right + 1) if not a <= j <= b}
+    if cand.exclude_context and words & cand.exclude_context:
+        return False
+    return not needs or (cand.context is not None and bool(words & cand.context))
 
 
 def _near(
     tokens: list[Token], i: int, words: frozenset[str], window: int, *, both_sides: bool = True,
 ) -> bool:
     """True when a context word sits within ``window`` tokens before (and after) index ``i``."""
-    lo = max(0, i - window)
-    hi = min(len(tokens), i + window + 1) if both_sides else i
-    if not both_sides:
-        lo = i + 1
-        hi = min(len(tokens), i + window + 1)
+    if both_sides:
+        lo, hi = max(0, i - window), min(len(tokens), i + window + 1)
+    else:
+        lo, hi = i + 1, min(len(tokens), i + window + 1)
     return any(tokens[j].key in words for j in range(lo, hi) if j != i)
 
 

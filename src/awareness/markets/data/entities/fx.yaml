@@ -17,9 +17,9 @@ currencies:
       - {text: avro, conf: 0.8}
   GBP:
     aliases:
-      - {text: sterling, conf: 0.85}
+      - {text: sterling, conf: 0.85, ambiguous: true, window: 4, context: [pound, pounds, GBP, dollar, euro, rate, rates, BoE, against, versus, vs, currency]}
       - {text: pound sterling, conf: 0.85}
-      - {text: pound, conf: 0.8}
+      - {text: pound, conf: 0.8, ambiguous: true, window: 4, context: [sterling, GBP, dollar, euro, rate, rates, BoE, against, versus, currency]}
       - {text: sterlin, conf: 0.8}
   JPY:
     aliases:

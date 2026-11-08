@@ -130,3 +130,29 @@ def test_feed_category_adds_relevance(clf: TaxonomyClassifier) -> None:
     plain = clf.classify("Quiet day in town", None, [])
     marked = clf.classify("Quiet day in town", None, [], feed_categories=["markets"])
     assert marked.finance_relevance > plain.finance_relevance
+
+
+@pytest.mark.parametrize(
+    ("headline", "etype", "eid"),
+    [
+        ("Apple Mac sales surge as shares rise", "equity", "AAPL"),
+        ("Olympic Steel raises guidance as shares rise", "equity", "SOS"),
+        ("Divorce of two funds pressures shares of Meta", "equity", "META"),
+        ("Company engaged in merger talks, shares jump", "equity", "XYZ"),
+    ],
+)
+def test_negative_words_do_not_suppress_real_finance_items(
+    clf: TaxonomyClassifier, headline: str, etype: str, eid: str,
+) -> None:
+    result = clf.classify(headline, None, [_ent(etype, eid, 0.95)])
+    assert result.finance_relevance >= 0.4, headline
+
+
+def test_fed_up_is_not_a_central_bank_topic(clf: TaxonomyClassifier) -> None:
+    result = clf.classify("Fed up with delays: shares fall", None, [])
+    assert "central_bank" not in result.topics
+
+
+def test_real_negative_still_suppresses_without_finance_entity(clf: TaxonomyClassifier) -> None:
+    result = clf.classify("Taylor Swift attends the Oscars red carpet", None, [])
+    assert result.finance_relevance == 0.0

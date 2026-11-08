@@ -6,7 +6,11 @@
 #   - {text, exclude_next: [...]} / {text, exclude_prev: [...]} -> reject when a neighbour matches
 # Entries are hand-maintained, so provenance is "curated".
 companies:
-  - {id: AAPL, name: Apple Inc., aliases: [Apple Inc, Apple]}
+  - id: AAPL
+    name: Apple Inc.
+    aliases:
+      - Apple Inc
+      - {text: Apple, exclude_next: [pie, pies, juice, cider, sauce, cake, cakes, seeds, orchard, orchards]}
   - {id: MSFT, name: Microsoft Corp, aliases: [Microsoft, Microsoft Corp]}
   - {id: NVDA, name: NVIDIA Corp, aliases: [Nvidia, NVIDIA Corp]}
   - {id: GOOGL, name: Alphabet Inc., aliases: [Alphabet, Google]}
@@ -108,6 +112,8 @@ companies:
   - {id: BABA, name: Alibaba Group, aliases: [Alibaba, Alibaba Group]}
   - {id: JD, name: JD.com Inc., aliases: [JD.com]}
   - {id: TCEHY, name: Tencent Holdings, aliases: [Tencent]}
+  - {id: BRK-B, name: Berkshire Hathaway Inc., aliases: [Berkshire Hathaway]}
+  - {id: SO, name: Southern Co, aliases: ["Southern Co", "Southern Company"]}
   - {id: BIDU, name: Baidu Inc., aliases: [Baidu]}
   - {id: PDD, name: PDD Holdings, aliases: [PDD Holdings]}
   - {id: XPEV, name: XPeng Inc., aliases: [XPeng]}
@@ -120,7 +126,7 @@ companies:
   - id: TGT
     name: Target Corp
     aliases:
-      - {text: Target, ambiguous: true, context: [shares, stock, stocks, retailer, retailers, Corp, Inc, CEO, earnings, company, stores, store]}
+      - {text: Target, ambiguous: true, context: [shares, stock, stocks, retailer, retailers, Corp, Inc, CEO, earnings, company, stores, store], exclude_next: [price, prices], exclude_prev: [price, prices]}
   - {id: DG, name: Dollar General, aliases: [Dollar General]}
   - {id: DLTR, name: Dollar Tree, aliases: [Dollar Tree]}
   - {id: ROST, name: Ross Stores, aliases: [Ross Stores]}
@@ -197,7 +203,7 @@ companies:
     name: Strategy Inc
     aliases:
       - MicroStrategy
-      - {text: Strategy, ambiguous: true, context: [MicroStrategy, bitcoin, shares, stock, Saylor, Inc, company, earnings, btc]}
+      - {text: Strategy, ambiguous: true, context: [MicroStrategy, bitcoin, Saylor, btc, Inc]}
   - id: XYZ
     name: Block Inc.
     aliases:

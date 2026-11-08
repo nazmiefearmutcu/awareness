@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 
+from awareness.markets.config import MarketsSettings
 from awareness.markets.models import EntityRef
 from awareness.markets.nlp.entities import EntityLinker
 from awareness.markets.ref.sec_tickers import SecIssuer, parse_company_tickers
@@ -120,7 +122,7 @@ def test_auto_alias_from_sec_title_resolves(issuers: list[SecIssuer]) -> None:
     assert _find(refs, "equity", "SKHY") is not None
 
 
-def test_auto_alias_eli_lilly_resolves(issuers: list[SecIssuer]) -> None:
+def test_curated_eli_lilly_alias_resolves(issuers: list[SecIssuer]) -> None:
     refs = EntityLinker(issuers).link("Eli Lilly raises 2027 revenue view")
     assert _find(refs, "equity", "LLY") is not None
 
@@ -269,3 +271,118 @@ def test_linker_builds_without_issuers() -> None:
 
 def test_capitalised_fed_up_is_not_the_fed(linker: EntityLinker) -> None:
     assert _find(linker.link("Fed up with delays on the bridge"), "central_bank", "FED") is None
+
+
+# ── fix round 1: precision regression suite ──────────────────────────────
+
+FALSE_POSITIVES: list[tuple[str, set[tuple[str, str]]]] = [
+    # I-1 / I-2 crypto words and symbol collisions
+    ("Consumer optimism rises as jobs data beats expectations", {("crypto", "OP")}),
+    ("Stacks of cash pile up in Treasury vaults", {("crypto", "STX")}),
+    ("Traders say the two sides are in harmony on tariffs", {("crypto", "ONE")}),
+    ("Did Apple Just Get a Boost From Democrats? Could Benefit the iPhone Maker",
+     {("crypto", "MKR")}),
+    ("The DASH pricing plan shares rise", {("crypto", "DASH")}),
+    ("HYPE cycle fades as shares fall", {("crypto", "HYPE")}),
+    ("Optimism grows as shares of Walmart rise", {("crypto", "OP")}),
+    # I-3 time zones and abbreviations
+    ("Stocks fell at 9 AM ET as yields jumped", {("equity", "ET")}),
+    ("STOCKS RISE AS ET SHARES JUMP", {("equity", "ET")}),
+    ("Stocks rally at 4 PM ET as shares of banks rise", {("equity", "PM"), ("equity", "ET")}),
+    # I-4 single-word automatic aliases
+    ("Southern Europe shares slide as energy costs rise", {("equity", "SO")}),
+    ("Booking revenue jumps at Expedia", {("equity", "BKNG")}),
+    ("Waters rose along the coast as shares fall", {("equity", "WAT")}),
+    ("Progressive lawmakers push new tax plan; shares fall", {("equity", "PGR")}),
+    # I-5 Target price and sentence-wide context
+    ("Analyst raises Target price on Apple shares", {("equity", "TGT")}),
+    ("Target sets $200 price target for Nvidia shares", {("equity", "TGT")}),
+    ("Strategy shifts as shares slide for banks", {("equity", "MSTR")}),
+    # I-6 currency words that are company names
+    ("Sterling Infrastructure shares surge on data center deal", {("fx", "GBP")}),
+    ("Sterling infrastructure STRL", {("fx", "GBP")}),
+    # I-7 S&P sub-indices and bare CAC
+    ("James Hardie Industries Set to Join S&P MidCap 400", {("index", "SPX")}),
+    ("S&P SmallCap 600 names new members", {("index", "SPX")}),
+    ("Stocks stuck in a rut as CAC payback worsens", {("index", "CAC")}),
+    # I-8 Turkish M\u0131s\u0131r (Egypt vs corn)
+    ("M\u0131s\u0131r, bölgesel gerilimlerin ekonomik etkilerine karş\u0131 kamu harcamalar\u0131n\u0131 k\u0131s\u0131tlamaya haz\u0131rlan\u0131yor",
+     {("country", "EG"), ("commodity", "CORN")}),
+    ("M\u0131s\u0131r fiyatlar\u0131 yükseldi, ticaret sürüyor", {("country", "EG")}),
+    # I-9 exchange qualifiers
+    ("Nasdaq: U.S. stocks climb as yields ease", {("equity", "U-S")}),
+    ("NYSE: TODAY rises", {("equity", "TODAY")}),
+    # M-1 / M-4 neighbour exclusions
+    ("Apple pie prices rise as shares of food firms fall", {("equity", "AAPL")}),
+    ("Olive oil prices rise on harvest worries", {("commodity", "WTI")}),
+    # M-9 "Fed up"
+    ("Fed up with delays: shares fall", {("central_bank", "FED")}),
+]
+
+
+@pytest.mark.parametrize(("headline", "forbidden"), FALSE_POSITIVES)
+def test_false_positive_class_is_not_linked(
+    linker: EntityLinker, headline: str, forbidden: set[tuple[str, str]],
+) -> None:
+    got = _ids(linker.link(headline))
+    assert not (got & forbidden), f"unexpected {sorted(got & forbidden)} in {headline!r}"
+
+
+POSITIVE_CONTROLS: list[tuple[str, tuple[str, str]]] = [
+    ("Sterling falls against the dollar as BoE holds", ("fx", "GBP")),
+    ("M\u0131s\u0131r fiyatlar\u0131 yükseldi, ticaret sürüyor", ("commodity", "CORN")),
+    ("Türkiye'nin M\u0131s\u0131r ihracat\u0131 artt\u0131; m\u0131s\u0131r hasad\u0131 rekor", ("commodity", "CORN")),
+    ("Berkshire Hathaway adds to its stake in insurers", ("equity", "BRK-B")),
+    ("Southern Company raises dividend for shareholders", ("equity", "SO")),
+    ("Dividend Roundup: Apple, 3M raise payouts", ("equity", "MMM")),
+    ("Ethereum staking inflows hit a record", ("crypto", "ETH")),
+    ("S&P 500 closes higher as tech rallies", ("index", "SPX")),
+    ("Nasdaq: NVDA rises after earnings beat", ("equity", "NVDA")),
+    ("Optimism token rallies as crypto traders return", ("crypto", "OP")),
+]
+
+
+@pytest.mark.parametrize(("headline", "expected"), POSITIVE_CONTROLS)
+def test_true_positive_controls(
+    linker: EntityLinker, headline: str, expected: tuple[str, str],
+) -> None:
+    assert expected in _ids(linker.link(headline)), headline
+
+
+def test_fixture_headlines_have_no_wrong_title_entities(linker: EntityLinker) -> None:
+    """Real recorded headlines from the fixtures: the known wrong salience-1.0 hits stay gone."""
+    titles: list[str] = []
+    for name in ("rss_aa_ekonomi.xml", "rss_prnewswire_fin.xml", "rss_yahoo_aapl.xml"):
+        root = ET.parse(FIXTURES / name).getroot()  # noqa: S314 - recorded local fixture
+        titles.extend(el.text or "" for el in root.iter("title"))
+    atom = ET.parse(FIXTURES / "reddit_stocks_new.atom").getroot()  # noqa: S314 - local fixture
+    ns = "{http://www.w3.org/2005/Atom}"
+    titles.extend(el.text or "" for el in atom.iter(f"{ns}title"))
+    forbidden = {
+        "iPhone Maker": ("crypto", "MKR"),
+        "S&P MidCap 400": ("index", "SPX"),
+        "Sterling infrastructure": ("fx", "GBP"),
+    }
+    checked = 0
+    for title in titles:
+        for marker, (etype, eid) in forbidden.items():
+            if marker in title:
+                checked += 1
+                refs = linker.link(title)
+                assert not any(r.type == etype and r.id == eid and r.salience >= 1.0 for r in refs), title
+    assert checked >= 3
+
+
+def test_eth_and_brk_cross_check(linker: EntityLinker) -> None:
+    assert _find(linker.link("Berkshire Hathaway earnings beat"), "equity", "BRK-B") is not None
+
+
+def test_from_settings_reads_sec_cache(tmp_path: Path, issuers: list[SecIssuer]) -> None:
+    ref = tmp_path / "markets" / "ref"
+    ref.mkdir(parents=True)
+    (ref / "company_tickers.json").write_text(
+        (FIXTURES / "sec_company_tickers.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    settings = MarketsSettings(data_dir=tmp_path / "markets", autostart_runner=False)
+    linker = EntityLinker.from_settings(settings)
+    assert _find(linker.link("SK hynix posts record quarterly profit"), "equity", "SKHY") is not None

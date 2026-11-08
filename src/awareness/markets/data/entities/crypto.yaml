@@ -1,63 +1,66 @@
 # Crypto assets. id = symbol (BTC, ETH, SOL ...).
-# ambiguous_symbol: the ticker is also an ordinary word or abbreviation, so the bare
-#   upper-case symbol needs a crypto context word in the same sentence (or a cashtag).
-# capital: the full name is a common English word, so it must be capitalised in the text.
-# Full names match at 0.9; upper-case symbols at 0.85 (cashtags always 0.99).
+# Names are proper nouns: matched only when capitalised (default for every coin).
+# ambiguous_names: the name is also an ordinary word or a brand, so it needs a crypto context
+#   word in the same sentence ("optimism", "Stacks of cash", "Dash" pricing).
+# ambiguous_symbol: the upper-case ticker collides with an ordinary abbreviation or an equity
+#   ticker, so the bare symbol needs crypto context in the same sentence (a cashtag always works).
+# Full names match at 0.9; upper-case symbols at 0.85 (cashtags always 0.99). A symbol that is
+# also a known SEC ticker never yields a crypto hit without a cashtag.
 coins:
-  - {symbol: BTC, names: [Bitcoin], capital: false}
-  - {symbol: ETH, names: [Ethereum, Ether], capital: false}
+  - {symbol: BTC, names: [Bitcoin]}
+  - {symbol: ETH, names: [Ethereum, Ether]}
   - {symbol: SOL, names: [Solana], ambiguous_symbol: true}
-  - {symbol: XRP, names: [XRP, Ripple], capital: true}
+  - {symbol: XRP, names: [XRP, Ripple], ambiguous_names: true}
   - {symbol: BNB, names: [BNB, Binance Coin]}
-  - {symbol: ADA, names: [Cardano]}
+  - {symbol: ADA, names: [Cardano], ambiguous_names: true}
   - {symbol: DOGE, names: [Dogecoin]}
-  - {symbol: TRX, names: [Tron], capital: true}
+  - {symbol: TRX, names: [Tron], ambiguous_names: true, ambiguous_symbol: true}
   - {symbol: TON, names: [Toncoin], ambiguous_symbol: true}
   - {symbol: LINK, names: [Chainlink], ambiguous_symbol: true}
   - {symbol: DOT, names: [Polkadot], ambiguous_symbol: true}
-  - {symbol: AVAX, names: [Avalanche], capital: true}
-  - {symbol: MATIC, names: [Polygon], capital: true}
-  - {symbol: XLM, names: [Stellar], capital: true}
+  - {symbol: AVAX, names: [Avalanche]}
+  - {symbol: MATIC, names: [Polygon], ambiguous_names: true}
+  - {symbol: XLM, names: [Stellar], ambiguous_names: true}
   - {symbol: LTC, names: [Litecoin]}
   - {symbol: BCH, names: [Bitcoin Cash]}
-  - {symbol: ETC, names: [Ethereum Classic]}
+  - {symbol: ETC, names: [Ethereum Classic], ambiguous_symbol: true}
   - {symbol: XMR, names: [Monero]}
-  - {symbol: ATOM, names: [Cosmos], ambiguous_symbol: true, capital: true}
+  - {symbol: ATOM, names: [Cosmos], ambiguous_symbol: true, ambiguous_names: true}
   - {symbol: UNI, names: [Uniswap], ambiguous_symbol: true}
-  - {symbol: NEAR, names: [NEAR Protocol], ambiguous_symbol: true}
-  - {symbol: APT, names: [Aptos]}
-  - {symbol: SUI, names: [Sui], capital: true}
-  - {symbol: ARB, names: [Arbitrum], ambiguous_symbol: true}
-  - {symbol: OP, names: [Optimism], ambiguous_symbol: true}
-  - {symbol: HBAR, names: [Hedera]}
-  - {symbol: FIL, names: [Filecoin]}
-  - {symbol: ICP, names: [Internet Computer]}
-  - {symbol: AAVE, names: [Aave]}
-  - {symbol: MKR, names: [Maker], capital: true}
-  - {symbol: PEPE, names: [Pepe]}
-  - {symbol: BONK, names: [Bonk]}
-  - {symbol: WIF, names: [dogwifhat]}
-  - {symbol: INJ, names: [Injective]}
-  - {symbol: SEI, names: [Sei], capital: true}
-  - {symbol: RNDR, names: [Render Network], capital: true}
-  - {symbol: IMX, names: [Immutable X]}
-  - {symbol: CRO, names: [Cronos], capital: true, ambiguous_symbol: true}
-  - {symbol: ALGO, names: [Algorand]}
-  - {symbol: VET, names: [VeChain]}
-  - {symbol: STX, names: [Stacks]}
-  - {symbol: KAS, names: [Kaspa]}
-  - {symbol: SAND, names: [The Sandbox], ambiguous_symbol: true}
-  - {symbol: APE, names: [ApeCoin], ambiguous_symbol: true}
-  - {symbol: XTZ, names: [Tezos]}
-  - {symbol: EOS, names: [EOS]}
-  - {symbol: NEO, names: [Neo], capital: true}
-  - {symbol: DASH, names: [Dash], capital: true}
-  - {symbol: USDT, names: [Tether]}
+  - {symbol: NEAR, names: [NEAR Protocol], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: APT, names: [Aptos], ambiguous_symbol: true}
+  - {symbol: SUI, names: [Sui], ambiguous_names: true}
+  - {symbol: ARB, names: [Arbitrum], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: OP, names: [Optimism], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: HBAR, names: [Hedera], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: FIL, names: [Filecoin], ambiguous_symbol: true}
+  - {symbol: ICP, names: [Internet Computer], ambiguous_symbol: true}
+  - {symbol: AAVE, names: [Aave], ambiguous_names: true}
+  - {symbol: MKR, names: [MakerDAO], ambiguous_symbol: true}
+  - {symbol: PEPE, names: [Pepe], ambiguous_names: true}
+  - {symbol: BONK, names: [Bonk], ambiguous_names: true}
+  - {symbol: WIF, names: [dogwifhat], ambiguous_symbol: true}
+  - {symbol: INJ, names: [Injective], ambiguous_symbol: true}
+  - {symbol: SEI, names: [Sei], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: RNDR, names: [Render Network], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: IMX, names: [Immutable X], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: CRO, names: [Cronos], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: ALGO, names: [Algorand], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: VET, names: [VeChain], ambiguous_symbol: true}
+  - {symbol: STX, names: [Stacks], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: KAS, names: [Kaspa], ambiguous_symbol: true}
+  - {symbol: SAND, names: [The Sandbox], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: APE, names: [ApeCoin], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: XTZ, names: [Tezos], ambiguous_symbol: true}
+  - {symbol: EOS, names: [EOS], ambiguous_symbol: true}
+  - {symbol: NEO, names: [Neo], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: DASH, names: [Dash], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: USDT, names: [Tether], ambiguous_names: true}
   - {symbol: USDC, names: [USD Coin]}
-  - {symbol: DAI, names: [Dai], capital: true}
-  - {symbol: HYPE, names: [Hyperliquid]}
+  - {symbol: DAI, names: [Dai], ambiguous_symbol: true, ambiguous_names: true}
+  - {symbol: HYPE, names: [Hyperliquid], ambiguous_symbol: true}
   - {symbol: TAO, names: [Bittensor], ambiguous_symbol: true}
   - {symbol: SHIB, names: [Shiba Inu]}
-  - {symbol: FLOKI, names: [Floki]}
+  - {symbol: FLOKI, names: [Floki], ambiguous_names: true}
   - {symbol: GAS, names: [Neo Gas], ambiguous_symbol: true}
-  - {symbol: ONE, names: [Harmony], ambiguous_symbol: true}
+  - {symbol: ONE, names: [Harmony], ambiguous_symbol: true, ambiguous_names: true}

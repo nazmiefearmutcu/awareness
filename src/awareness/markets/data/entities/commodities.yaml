@@ -26,7 +26,7 @@ commodities:
       - {text: West Texas Intermediate, conf: 0.9}
       - {text: crude oil, conf: 0.85}
       - {text: crude, conf: 0.8}
-      - {text: oil, conf: 0.8, exclude_next: [company, companies, major, majors, giant, giants, producer, producers, shares, stock, stocks, firm, firms, tanker, tankers, spill, executive, executives, exploration]}
+      - {text: oil, conf: 0.8, exclude_prev: [olive, palm, castor, fish, essential, motor, engine, cooking, sunflower, vegetable], exclude_next: [company, companies, major, majors, giant, giants, producer, producers, shares, stock, stocks, firm, firms, tanker, tankers, spill, executive, executives, exploration]}
       - {text: petrol, conf: 0.8}
       - {text: ham petrol, conf: 0.85}
   - id: BRENT
@@ -68,8 +68,8 @@ commodities:
     name: Corn
     aliases:
       - {text: corn, conf: 0.8, exclude_next: [flakes, chips, on, bread, dog, starch, field]}
-      - {text: mısır, conf: 0.8}
-      - {text: misir, conf: 0.8}
+      - {text: mısır, conf: 0.8, ambiguous: true, window: 4, context: [fiyat, fiyati, fiyatlari, fiyatlar, hasat, hasadi, bugday, tahil, ton, tonu, tonluk, ekim, tarim, urun, rekolte, ihracat, ihracati, uretim, uretimi]}
+      - {text: misir, conf: 0.8, ambiguous: true, window: 4, context: [fiyat, fiyati, fiyatlari, fiyatlar, hasat, hasadi, bugday, tahil, ton, tonu, tonluk, ekim, tarim, urun, rekolte, ihracat, ihracati, uretim, uretimi]}
   - id: SOYBEAN
     name: Soybeans
     aliases:

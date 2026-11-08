@@ -75,7 +75,12 @@ countries:
   - {id: PH, aliases: [Philippines, Filipino, Filipinler]}
   - {id: ZA, aliases: [South Africa, South African, Güney Afrika, Guney Afrika]}
   - {id: NG, aliases: [Nigeria, Nigerian, Nijerya]}
-  - {id: EG, aliases: [Egypt, Egyptian, Mısır, Misir]}
+  - id: EG
+    aliases:
+      - Egypt
+      - Egyptian
+      - {text: Mısır, start_needs_context: true, context: [Kahire, Kairo, Cairo, Sisi, Nil, Cumhurbaşkanı, Cumhurbaskani, Egypt, Egyptian], exclude_context: [fiyat, fiyati, fiyatlari, fiyatlar, hasat, hasadi, bugday, tahil, ton, tonu, tonluk, ekim, tarim, urun, rekolte, ihracat, ihracati, uretim, uretimi]}
+      - {text: Misir, start_needs_context: true, context: [Kahire, Kairo, Cairo, Sisi, Nil, Cumhurbaşkanı, Cumhurbaskani, Egypt, Egyptian], exclude_context: [fiyat, fiyati, fiyatlari, fiyatlar, hasat, hasadi, bugday, tahil, ton, tonu, tonluk, ekim, tarim, urun, rekolte, ihracat, ihracati, uretim, uretimi]}
   - {id: KE, aliases: [Kenya, Kenyan]}
   - {id: MA, aliases: [Morocco, Moroccan, Fas]}
   - {id: SA, aliases: [Saudi Arabia, Saudi, Suudi Arabistan, Suudi]}
