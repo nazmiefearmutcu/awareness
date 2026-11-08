@@ -26,14 +26,14 @@ clickbait:
     - "you won['’]?t believe"
     - "the next (nvidia|amazon|tesla)"
     - "\\bsoar(ing)? \\d{2,}%"
-    - "\\bbuy (now(?! pay)|before)\\b"
+    - "\\bbuy (now(?!,? pay)|before)\\b"
   summary:
     - "millionaire"
     - "could make you rich"
     - "\\bact now\\b"
     - "sponsored"
     - "you won['’]?t believe"
-    - "\\bbuy (now(?! pay)|before)\\b"
+    - "\\bbuy (now(?!,? pay)|before)\\b"
 
 mega_cap_equities:
   - AAPL

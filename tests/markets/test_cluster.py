@@ -6,8 +6,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from awareness.markets.models import EntityRef, NewsItem, SentimentScore
-from awareness.markets.news.cluster import StoryClusterer, title_shingles
+from awareness.markets.models import EntityRef, NewsItem, Publisher, SentimentScore
+from awareness.markets.news.cluster import StoryClusterer, publisher_names_from, title_shingles
 
 NOW = datetime(2026, 11, 8, 12, 0, tzinfo=UTC)
 NVDA = EntityRef(type="equity", id="NVDA", name="NVIDIA", confidence=0.9, mentions=4, salience=1.0)
@@ -52,7 +52,7 @@ def make_news(
         feed_id=f"{publisher_id}_feed",
         language=language,
         entities=entities if entities is not None else [NVDA],
-        topics=topics or ["earnings"],
+        topics=topics if topics is not None else ["earnings"],
         symbols=symbols or [],
         countries=countries or [],
         story_id=story_id,
@@ -118,27 +118,45 @@ def test_paraphrased_syndicated_headlines_cluster() -> None:
 
 
 def test_unrelated_nvidia_stories_same_day_do_not_merge() -> None:
-    """Same entity, same day, different events: must stay two stories."""
-    beats = make_news("https://cnbc.example/a", CNBC_TITLE, story_id="story-1",
+    """Same entity, same day, different angles: earnings vs regulation must stay apart."""
+    beats = make_news("https://cnbc.example/a", CNBC_TITLE, story_id="story-1", topics=["earnings"],
                       summary="Nvidia reported quarterly results topping Wall Street's forecasts.")
     probe = make_news("https://reuters.example/c", "Nvidia faces EU antitrust probe over chips",
                       publisher_id="reuters", tier=1, published_at=NOW - timedelta(hours=1),
+                      topics=["regulation", "litigation"],
                       summary="Brussels opened a formal investigation into the chipmaker's AI deals.")
     assert StoryClusterer().find_story(probe, [beats]) is None
 
 
-def test_entity_sharing_pair_with_moderate_jaccard_clusters() -> None:
-    """Jaccard in [0.3, 0.5) plus a shared high-confidence entity is enough."""
-    base = make_news("https://cnbc.example/a", CNBC_TITLE, story_id="story-1",
-                     summary="Nvidia reported quarterly results topping Wall Street's forecasts.")
-    other = make_news("https://marketwatch.example/b",
-                      "Nvidia shares rally on data center revenue beat", publisher_id="marketwatch",
-                      tier=3, published_at=NOW - timedelta(hours=1),
-                      summary="Investors cheered the chipmaker's latest quarter in early trading.")
-    clusterer = StoryClusterer(simhash_threshold=0)  # isolate the entity + Jaccard path
-    assert clusterer.find_story(other, [base]) == "story-1"
-    no_entity = other.model_copy(update={"id": "no-ent", "entities": []})
-    assert clusterer.find_story(no_entity, [base]) is None
+def test_round1_entity_band_no_longer_over_merges() -> None:
+    """Round-1 rule (shared entity + Jaccard >= 0.3) is removed.
+
+    Pairs sharing a salient entity merge only under rule (c) (shared topic, within 18 h) or
+    rule (d) (a side without topics). Pairs with different topics stay separate.
+    """
+    clusterer = StoryClusterer(simhash_threshold=0)
+
+    tesla_rally_beat = make_news("https://t.example/1", "Tesla shares rally after delivery beat",
+                                 story_id="t1", topics=["earnings"], entities=[TSLA],
+                                 summary="Tesla shares climbed after the delivery report.")
+    tesla_robotaxi = make_news("https://t.example/2", "Tesla shares rally on robotaxi hopes",
+                               publisher_id="wsj", tier=1, topics=["product_launch"],
+                               entities=[TSLA], summary="Investors bet on autonomous rides.")
+    assert clusterer.find_story(tesla_robotaxi, [tesla_rally_beat]) is None
+
+    nvda_saudi = make_news("https://n.example/3", "Nvidia stock rallies on Saudi AI deal",
+                           story_id="n3", topics=["geopolitics"], summary="A Gulf AI data deal.")
+    nvda_beat = make_news("https://n.example/4", "Nvidia stock rallies after earnings beat",
+                          story_id="n4", topics=["earnings"], summary="Quarterly beat lifted shares.")
+    assert clusterer.find_story(nvda_saudi, [nvda_beat]) is None
+
+    nvda_gaming = make_news("https://n.example/5", "Nvidia misses gaming revenue estimates",
+                            story_id="n5", topics=["earnings"], summary="Gaming sales lagged.")
+    nvda_dc = make_news("https://n.example/6", "Nvidia beats data center revenue estimates",
+                        story_id="n6", topics=["earnings"], summary="Data center sales beat.",
+                        published_at=NOW - timedelta(hours=2))
+    # Same company, same day, same topic: intended to merge under rule (c).
+    assert clusterer.find_story(nvda_dc, [nvda_gaming]) == "n5"
 
 
 def test_different_figures_never_cluster() -> None:
@@ -209,11 +227,12 @@ def test_best_jaccard_candidate_wins() -> None:
 
 
 def test_simhash_path_needs_shared_high_confidence_entity() -> None:
-    # Titles share nothing, so only the simhash path (title+summary) can match.
+    # Titles share nothing and the topics differ, so only the simhash path (title+summary) can
+    # match. Same-topic pairs with a shared key entity are covered by rule (c) instead.
     a = make_news("https://cnbc.example/a", "Chipmaker posts record revenue", story_id="s1",
-                  summary=SUMMARY)
+                  summary=SUMMARY, topics=["earnings"])
     b_same_entity = make_news("https://wsj.example/b", "Semiconductor firm reports strong sales",
-                              publisher_id="wsj", tier=1, summary=SUMMARY)
+                              publisher_id="wsj", tier=1, summary=SUMMARY, topics=["product_launch"])
     b_no_entity = b_same_entity.model_copy(update={
         "id": "other", "entities": [NVDA_WEAK]})  # confidence < 0.8: no shared high-conf entity
     # The two title+summary simhashes differ by 14 bits: inside a looser threshold only.
@@ -222,9 +241,6 @@ def test_simhash_path_needs_shared_high_confidence_entity() -> None:
     assert strict.find_story(b_same_entity, [a]) is None  # bit distance above threshold
     assert loose.find_story(b_same_entity, [a]) == "s1"
     assert loose.find_story(b_no_entity, [a]) is None  # no shared high-confidence entity
-
-
-# ── build_story and corroboration ─────────────────────────────────────────
 
 
 def test_build_story_picks_best_tier_lead_and_counts_distinct_tier_le_3() -> None:
@@ -289,3 +305,85 @@ def test_new_story_id_is_stable() -> None:
     clusterer = StoryClusterer()
     assert clusterer.new_story_id(item) == clusterer.new_story_id(item)
     assert clusterer.new_story_id(item) != clusterer.new_story_id(make_news("https://b.example/2", CNBC_TITLE))
+
+
+BRK = EntityRef(type="equity", id="BRK-B", name="Berkshire Hathaway", confidence=0.9, mentions=3,
+                salience=1.0)
+BERKSHIRE_HEADLINES = [
+    ("https://bloomberg.example/brk", "Berkshire Hathaway's Operating Earnings Fall, Buybacks Rise",
+     "bloomberg", 1, ["earnings", "dividends_buybacks"]),
+    ("https://cnbc.example/brk",
+     "Berkshire Hathaway more than doubles buybacks in third quarter as earnings decline",
+     "cnbc", 2, ["dividends_buybacks"]),
+    ("https://wsj.example/brk", "Berkshire Hathaway's Quarterly Profit Falls After Investment Gains Shrink",
+     "wsj", 1, ["earnings"]),
+    ("https://reuters.example/brk", "Berkshire Hathaway speeds up stock buybacks, though profit falls",
+     "reuters", 1, ["earnings", "dividends_buybacks"]),
+    ("https://ap.example/brk",
+     "Berkshire Hathaway buys back $9.6 billion of its own stock but its profits decline",
+     "ap", 1, []),  # no topics: exercises rule (d)
+    ("https://ft.example/brk", "Berkshire Hathaway steps up share buybacks with $9.6bn of purchases",
+     "ft", 1, ["dividends_buybacks"]),
+]
+
+
+def cluster_in_order(items: list[NewsItem]) -> list[str]:
+    """Assign story ids the way the pipeline does: find_story against earlier items, else new."""
+    clusterer = StoryClusterer(publisher_names=["Reuters", "CNBC", "Bloomberg", "AP", "WSJ", "FT"])
+    assigned: list[NewsItem] = []
+    story_ids: list[str] = []
+    for item in items:
+        story_id = clusterer.find_story(item, assigned) or clusterer.new_story_id(item)
+        assigned.append(item.model_copy(update={"story_id": story_id}))
+        story_ids.append(story_id)
+    return story_ids
+
+
+def test_berkshire_six_outlets_cluster_into_one_story() -> None:
+    items = []
+    for offset, (url, title, publisher, tier, topics) in enumerate(BERKSHIRE_HEADLINES):
+        items.append(make_news(url, title, publisher_id=publisher, tier=tier, topics=topics,
+                               entities=[BRK], published_at=NOW - timedelta(hours=6 - offset),
+                               summary=f"Berkshire Hathaway quarterly update from {publisher}."))
+    story_ids = cluster_in_order(items)
+    assert len(set(story_ids)) == 1, story_ids
+
+
+def test_microsoft_oracle_deal_headlines_cluster() -> None:
+    msft = EntityRef(type="equity", id="MSFT", name="Microsoft", confidence=0.9, mentions=2, salience=1.0)
+    orcl = EntityRef(type="equity", id="ORCL", name="Oracle", confidence=0.9, mentions=2, salience=1.0)
+    reuters = make_news("https://reuters.example/msft",
+                        "Microsoft is winding down Oracle deal to rent AI cloud capacity, Bloomberg News reports",
+                        publisher_id="reuters", tier=1, topics=["m_and_a"], entities=[msft, orcl],
+                        published_at=NOW - timedelta(hours=5))
+    barrons = make_news("https://barrons.example/msft",
+                        "Microsoft Won't Renew Deal for Renting AI Cloud Capacity From Oracle: Report",
+                        publisher_id="barrons", tier=3, topics=["m_and_a"], entities=[msft, orcl],
+                        published_at=NOW - timedelta(hours=3))
+    assert len(set(cluster_in_order([reuters, barrons]))) == 1
+
+
+def test_find_story_strips_publisher_suffix_only_for_known_names() -> None:
+    """Suffix restriction at the find_story level, with no digits and no shared entity."""
+    cand = make_news("https://a.example/1", "Oil slips", story_id="s1", entities=[], topics=[])
+    item = make_news("https://b.example/2", "Oil slips - Wall Street Journal", entities=[], topics=[])
+    assert StoryClusterer().find_story(item, [cand]) is None
+    named = StoryClusterer(publisher_names=["Wall Street Journal"])
+    assert named.find_story(item, [cand]) == "s1"
+
+
+def test_publisher_names_from_registry_publishers() -> None:
+    wsj = Publisher(id="wsj", name="Wall Street Journal", domain="wsj.com", tier=1,
+                    kind="financial_press", aliases=["WSJ"])
+    names = publisher_names_from([wsj])
+    assert "Wall Street Journal" in names and "WSJ" in names
+
+
+def test_amount_and_synonym_folding() -> None:
+    base = title_shingles("Berkshire buys back $9.6 billion of stock")
+    assert base == title_shingles("Berkshire buys back $9.6bn of stock")
+    assert base == title_shingles("Berkshire buys back $9.6B of stock")
+    assert title_shingles("Nvidia estimated revenue") == title_shingles("Nvidia estimate revenue")
+    assert title_shingles("Firm repurchases stock") == title_shingles("Firm buyback stock")
+    assert title_shingles("Company profits fall") == title_shingles("Company earnings fall")
+    assert title_shingles("Fed hikes by 25 bps") != title_shingles("Fed hikes by 50 bps")

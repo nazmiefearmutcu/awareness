@@ -381,3 +381,16 @@ def test_buy_now_pay_later_news_is_not_clickbait() -> None:
     verdict = evaluate(make_item(title="Buy now pay later lenders face new consumer rules"),
                        make_publisher())
     assert not any(r.startswith("clickbait") for r in verdict.reasons)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Buy now, pay later lenders face new consumer rules",
+        "Buy now pay later lenders face new consumer rules",
+    ],
+)
+def test_buy_now_pay_later_news_is_not_clickbait_with_comma(title: str) -> None:
+    verdict = evaluate(make_item(title=title), make_publisher())
+    assert not any(r.startswith("clickbait") for r in verdict.reasons)
+
