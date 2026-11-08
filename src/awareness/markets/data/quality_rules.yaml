@@ -1,0 +1,64 @@
+# Quality-gate rules (read by awareness.markets.news.quality).
+#
+# Patterns are Python regular expressions, matched case-insensitively with re.search.
+# Escape backslashes inside double-quoted YAML strings (write \\d for \d).
+#
+# clickbait.title   : checked against the item title (clickbait/promo penalty, -25).
+# clickbait.summary : checked against the summary as well (subset of the title list).
+# mega_cap_equities : equity ids that count as a salient anchor for importance (+10).
+# key_countries     : ISO-2 country ids that count as a salient anchor for importance (+10).
+
+clickbait:
+  title:
+    - "should you buy"
+    - "is it too late to buy"
+    - "\\d+ (stocks?|cryptos?) to (buy|watch)"
+    - "millionaire"
+    - "could make you rich"
+    - "^prediction:"
+    - "here.?s why"
+    - "this (stock|crypto) could"
+    - "\\btop \\d+"
+    - "best .* to buy"
+    - "don.?t miss"
+    - "act now"
+    - "sponsored"
+    - "you won.?t believe"
+    - "the next (nvidia|amazon|tesla)"
+    - "\\bsoar(ing)? \\d{2,}%"
+    - "buy (now|before)"
+  summary:
+    - "millionaire"
+    - "could make you rich"
+    - "act now"
+    - "sponsored"
+    - "you won.?t believe"
+    - "buy (now|before)"
+
+mega_cap_equities:
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - GOOGL
+  - GOOG
+  - META
+  - TSLA
+  - AVGO
+  - BRK-B
+  - JPM
+  - LLY
+  - V
+  - MA
+  - XOM
+  - WMT
+  - UNH
+
+key_countries:
+  - US
+  - CN
+  - EU
+  - JP
+  - GB
+  - DE
+  - TR
