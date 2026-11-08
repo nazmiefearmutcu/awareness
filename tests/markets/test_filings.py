@@ -283,11 +283,20 @@ def test_sc13d_keeps_subject_company() -> None:
     assert event.fields["party"] == "Subject"
 
 
-def test_issuer_side_form_falls_back_when_no_issuer_entry() -> None:
+def test_issuer_side_form_skips_when_no_issuer_entry() -> None:
+    """Never show the insider as the company: a Reporting-only Form 4 yields no filing."""
     content = _feed(_entry("4 - Insider Jane (0001111111) (Reporting)", "0000000003-26-000003"))
-    (event,) = _parse(content, "4")
-    assert event.company == "Insider Jane"
-    assert event.fields["party"] == "Reporting"
+    skipped: list[str] = []
+    events = parse_sec_current_atom(
+        content, form="4", fetched_at=FETCHED, issuers_by_cik={}, url=FEED_URL, skipped=skipped
+    )
+    assert events == []
+    assert skipped == ["0000000003-26-000003"]
+
+
+def test_sc13d_filer_only_is_skipped_not_shown_as_company() -> None:
+    content = _feed(_entry("SC 13D - Holder Fund (0003333333) (Filer)", "0000000007-26-000007"))
+    assert _parse(content, "SC 13D") == []
 
 
 def test_filing_form_drops_reporting_only_entries() -> None:

@@ -76,7 +76,10 @@ def test_coverage_end_recorded(tmp_path: Path, store: MarketsStore) -> None:
             await ctx.http.aclose()
 
     asyncio.run(run())
-    assert store.kv_get("holidays.coverage_end.XNYS") is not None
+    import exchange_calendars  # noqa: PLC0415
+
+    expected = exchange_calendars.get_calendar("XNYS").last_session.date().isoformat()
+    assert store.kv_get("holidays.coverage_end.XNYS") == expected
 
 
 def test_parse_nager_regional_rule() -> None:

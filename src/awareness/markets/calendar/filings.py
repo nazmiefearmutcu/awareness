@@ -171,22 +171,29 @@ def _wants_issuer_side(form: str) -> bool:
     return upper == "4" or upper.startswith("SC 13D") or upper.startswith("SC 13G")
 
 
-def _pick(records: list[_Entry], issuer_side: bool) -> list[_Entry]:
-    """One entry per accession. Filing forms keep the ``Filer`` view only; issuer-side forms
-    keep the ``Issuer``/``Subject`` view and fall back to whatever entry exists."""
+def _pick(records: list[_Entry], issuer_side: bool) -> tuple[list[_Entry], list[str]]:
+    """One entry per accession, plus the accessions skipped for lacking the expected party.
+
+    Filing forms keep the ``Filer`` view only. Issuer-side forms keep only the ``Issuer``/``Subject``
+    view: an accession without one is skipped, so the insider or holder is never shown as the company.
+    """
     groups: dict[str, list[_Entry]] = {}
     for record in records:
         groups.setdefault(record.accession, []).append(record)
     picked: list[_Entry] = []
-    for group in groups.values():
+    skipped: list[str] = []
+    for accession, group in groups.items():
         if issuer_side:
             preferred = [r for r in group if r.role in ("Issuer", "Subject")]
-            picked.append(preferred[0] if preferred else group[0])
+            if preferred:
+                picked.append(preferred[0])
+            else:
+                skipped.append(accession)
         else:
             filers = [r for r in group if r.role == "Filer"]
             if filers:
                 picked.append(filers[0])
-    return picked
+    return picked, skipped
 
 
 def parse_sec_current_atom(
@@ -196,8 +203,11 @@ def parse_sec_current_atom(
     fetched_at: datetime,
     issuers_by_cik: Mapping[int, SecIssuer],
     url: str,
+    skipped: list[str] | None = None,
 ) -> list[CorpEvent]:
     """Filings from an EDGAR "Latest Filings" Atom feed as ``filing`` corporate events.
+
+    Accessions skipped because the expected issuer/subject entry is absent are appended to ``skipped``.
 
     ``form`` is the requested form type; item codes are decoded for 8-K requests only.
     The event id is keyed on the accession number alone, so it does not change when
@@ -209,7 +219,10 @@ def parse_sec_current_atom(
     issuer_side = _wants_issuer_side(form)
     records = [r for r in (_entry_record(entry) for entry in feed.entries) if r is not None]
     events: list[CorpEvent] = []
-    for rec in _pick(records, issuer_side):
+    picked, skipped_accessions = _pick(records, issuer_side)
+    if skipped is not None:
+        skipped.extend(skipped_accessions)
+    for rec in picked:
         issuer = issuers_by_cik.get(rec.cik)
         symbol = issuer.ticker if issuer else None
         fields: dict[str, object] = {
@@ -259,6 +272,7 @@ class SecFilingsCollector:
         events: list[CorpEvent] = []
         errors: list[str] = []
         notes: list[str] = []
+        skipped_accessions: list[str] = []
         for form in FORMS:
             url = current_filings_url(form)
             try:
@@ -270,6 +284,7 @@ class SecFilingsCollector:
                         fetched_at=result.fetched_at,
                         issuers_by_cik=issuers,
                         url=url,
+                        skipped=skipped_accessions,
                     )
                 )
             except (FetchError, ValueError) as exc:
@@ -279,5 +294,7 @@ class SecFilingsCollector:
             raise RuntimeError(f"all {len(FORMS)} SEC current-filings requests failed; last: {errors[-1]}")
         if errors:
             notes.append(f"{len(errors)} of {len(FORMS)} form requests failed")
+        if skipped_accessions:
+            notes.append(f"{len(skipped_accessions)} issuer-side filings skipped: no Issuer/Subject entry")
         upserted = ctx.store.upsert_corp_events(events)
         return CollectorResult(items=upserted, notes=notes)

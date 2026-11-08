@@ -165,8 +165,13 @@ def parse_nasdaq_earnings(payload: dict[str, Any], *, day: date, fetched_at: dat
     return events
 
 
-def parse_nasdaq_dividends(payload: dict[str, Any], *, fetched_at: datetime, url: str) -> list[CorpEvent]:
-    """Dividends keyed by ex-dividend date. The amount is part of the id (special dividends)."""
+def parse_nasdaq_dividends(
+    payload: dict[str, Any], *, fetched_at: datetime, url: str, skipped: list[str] | None = None
+) -> list[CorpEvent]:
+    """Dividends keyed by ex-dividend date. The amount is part of the id (special dividends).
+
+    Rows without an amount are not stored; their symbols are appended to ``skipped`` when given.
+    """
     provider = _provider(url, fetched_at)
     events: list[CorpEvent] = []
     for row in _rows(_dig(payload, "data", "calendar")):
@@ -177,6 +182,8 @@ def parse_nasdaq_dividends(payload: dict[str, Any], *, fetched_at: datetime, url
             continue
         amount = _money(row.get("dividend_Rate"))
         if amount is None:  # identity includes the amount, so a row without one is not stored
+            if skipped is not None:
+                skipped.append(symbol)
             continue
         events.append(
             CorpEvent(
@@ -313,8 +320,8 @@ def _parse_earnings_result(result: FetchResult, *, day: date, url: str) -> list[
     return parse_nasdaq_earnings(result.json(), day=day, fetched_at=result.fetched_at, url=url)
 
 
-def _parse_dividends_result(result: FetchResult, *, url: str) -> list[CorpEvent]:
-    return parse_nasdaq_dividends(result.json(), fetched_at=result.fetched_at, url=url)
+def _parse_dividends_result(result: FetchResult, *, url: str, skipped: list[str]) -> list[CorpEvent]:
+    return parse_nasdaq_dividends(result.json(), fetched_at=result.fetched_at, url=url, skipped=skipped)
 
 
 def _parse_splits_result(result: FetchResult, *, url: str) -> list[CorpEvent]:
@@ -337,12 +344,13 @@ class NasdaqCorporateCollector:
         settings = ctx.settings
         notes: list[str] = []
         jobs: list[tuple[str, ParseFn]] = []
+        dividend_skips: list[str] = []
         for offset in range(-settings.corp_days_back, settings.corp_days_ahead + 1):
             day = today + timedelta(days=offset)
             earnings_url = f"{NASDAQ_CALENDAR_URL}/earnings?date={day.isoformat()}"
             dividends_url = f"{NASDAQ_CALENDAR_URL}/dividends?date={day.isoformat()}"
             jobs.append((earnings_url, partial(_parse_earnings_result, day=day, url=earnings_url)))
-            jobs.append((dividends_url, partial(_parse_dividends_result, url=dividends_url)))
+            jobs.append((dividends_url, partial(_parse_dividends_result, url=dividends_url, skipped=dividend_skips)))
         splits_url = f"{NASDAQ_CALENDAR_URL}/splits?date={today.isoformat()}"
         jobs.append((splits_url, partial(_parse_splits_result, url=splits_url)))
         for month in (today.replace(day=1), _month_after(today)):
@@ -350,5 +358,7 @@ class NasdaqCorporateCollector:
             jobs.append((month_url, partial(_parse_ipos_result, url=month_url)))
 
         events = await _run_jobs(ctx, jobs, notes)
+        if dividend_skips:
+            notes.append(f"{len(dividend_skips)} dividend rows without an amount were not stored")
         upserted = ctx.store.upsert_corp_events(events)
         return CollectorResult(items=upserted, notes=notes)
