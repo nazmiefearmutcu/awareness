@@ -505,7 +505,7 @@ class GoogleNewsCollector:
     timeout_s = 900
     lock_group: str | None = None
 
-    async def run(self, ctx: CollectorContext) -> CollectorResult:  # noqa: PLR0912 - linear poll/ingest loop
+    async def run(self, ctx: CollectorContext) -> CollectorResult:
         if ctx.pipeline is None:
             raise RuntimeError("news.gnews requires a news pipeline")
         pipeline = ctx.pipeline
