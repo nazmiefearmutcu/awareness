@@ -8,6 +8,9 @@ __pycache__/
 
 # Project data — never commit captured corpus
 data/
+# ...but the markets package ships its static YAML configuration as package data.
+!src/awareness/markets/data/
+!src/awareness/markets/data/**
 
 # Large local promo-video generator (503MB) — do not commit
 videos/
