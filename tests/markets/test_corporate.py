@@ -158,7 +158,12 @@ def test_special_dividend_on_same_day_is_distinct() -> None:
 
 def test_dividend_without_amount_is_not_stored() -> None:
     row = {"companyName": "No Amount Corp", "symbol": "NAC", "dividend_Ex_Date": "11/09/2026", "dividend_Rate": "N/A"}
-    assert parse_nasdaq_dividends({"data": {"calendar": {"rows": [row]}}}, fetched_at=FETCHED, url=URL) == []
+    skipped: list[str] = []
+    events = parse_nasdaq_dividends(
+        {"data": {"calendar": {"rows": [row]}}}, fetched_at=FETCHED, url=URL, skipped=skipped
+    )
+    assert events == []
+    assert skipped == ["NAC"]
 
 
 def test_ipo_same_deal_across_buckets_is_one_row() -> None:
