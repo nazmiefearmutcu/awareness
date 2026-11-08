@@ -14,6 +14,7 @@ import asyncio
 import logging
 import random
 import re
+import time
 import zlib
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -422,7 +423,7 @@ class FeedCollector:
     timeout_s = 900
     lock_group: str | None = None
 
-    async def run(self, ctx: CollectorContext) -> CollectorResult:
+    async def run(self, ctx: CollectorContext) -> CollectorResult:  # noqa: PLR0912 - linear poll/ingest loop
         if ctx.pipeline is None:
             raise RuntimeError("news.feeds requires a news pipeline")
         pipeline = ctx.pipeline
@@ -449,10 +450,18 @@ class FeedCollector:
         tasks = [asyncio.ensure_future(fetch(p, f)) for _, p, f in batch]
         stored = 0
         failed = 0
+        processed = 0
+        budget_hit = False
         seen: set[str] = set()
+        started = time.monotonic()
+        budget = self.timeout_s * 0.6
         try:
             for finished in asyncio.as_completed(tasks):
+                if time.monotonic() - started > budget:
+                    budget_hit = True  # unprocessed feeds stay due and run next cycle
+                    break
                 polled = await finished
+                processed += 1
                 if polled.ok:
                     stored += await _ingest(ctx, pipeline, polled.raws, seen)
                 else:
@@ -461,12 +470,12 @@ class FeedCollector:
         finally:
             for task in tasks:
                 task.cancel()
-        if failed == len(batch):
+        if processed and failed == processed:
             raise RuntimeError("all feeds failed")
-        return CollectorResult(
-            items=stored,
-            notes=[f"feeds_due={len(batch)}", f"feeds_failed={failed}", f"feeds_deferred={deferred}"],
-        )
+        notes = [f"feeds_due={len(batch)}", f"feeds_failed={failed}", f"feeds_deferred={deferred}"]
+        if budget_hit:
+            notes.append(f"time_budget_reached: {len(batch) - processed} feeds carried to next run")
+        return CollectorResult(items=stored, notes=notes)
 
     async def _poll(self, ctx: CollectorContext, publisher: Publisher, feed: FeedSpec) -> _Polled:
         """Fetch and parse one feed and record its health. Scheduling happens after ingestion."""
@@ -496,7 +505,7 @@ class GoogleNewsCollector:
     timeout_s = 900
     lock_group: str | None = None
 
-    async def run(self, ctx: CollectorContext) -> CollectorResult:
+    async def run(self, ctx: CollectorContext) -> CollectorResult:  # noqa: PLR0912 - linear poll/ingest loop
         if ctx.pipeline is None:
             raise RuntimeError("news.gnews requires a news pipeline")
         pipeline = ctx.pipeline

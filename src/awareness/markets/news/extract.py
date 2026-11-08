@@ -206,10 +206,33 @@ async def fetch_and_extract(
     return extract_from_html(result.text, url=url)
 
 
+async def fetch_published_date(
+    fetcher: Fetcher,
+    url: str,
+    *,
+    robots: RobotsChecker | None = None,
+    user_agent: str = "",
+) -> datetime | None:
+    """Publication time from the publisher's own page markup (meta/JSON-LD), or ``None``.
+
+    Used for feed items that arrive without a date: the timestamp then comes from the article
+    page itself, never from the time we happened to see the item. Works on paywalled pages,
+    whose <head> still carries the publication time.
+    """
+    if robots is not None and not await robots.allowed(fetcher, url, user_agent):
+        return None
+    try:
+        result = await fetcher.get(url, profile="bot", max_retries=1)
+    except FetchError:
+        return None
+    return _published_from_markup(result.text[:400_000])
+
+
 __all__ = [
     "MIN_WORDS",
     "ExtractedArticle",
     "RobotsChecker",
     "extract_from_html",
     "fetch_and_extract",
+    "fetch_published_date",
 ]

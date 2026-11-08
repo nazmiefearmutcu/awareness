@@ -36,6 +36,10 @@ from awareness.markets.store import MarketsStore
 log = logging.getLogger(__name__)
 
 FILTER_ENTITY_TYPES = {"equity", "crypto", "fx", "commodity", "index"}
+FINANCE_FEED_CATEGORIES = {
+    "markets", "economy", "earnings", "business", "crypto", "central_bank", "rates",
+    "equities", "commodities",
+}
 EXCERPT_CHARS = 400
 
 
@@ -147,6 +151,7 @@ class NewsPipeline:
         clusterer: _Clusterer,
         importance: Callable[..., float],
         extractor: Extractor | None = None,
+        date_fetcher: Extractor | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.settings = settings
@@ -160,6 +165,7 @@ class NewsPipeline:
         self.clusterer = clusterer
         self.importance = importance
         self.extractor = extractor
+        self.date_fetcher = date_fetcher
         self._now = now or (lambda: datetime.now(UTC))
         self._lock = asyncio.Lock()
         self.last_stats = PipelineStats()
@@ -183,15 +189,22 @@ class NewsPipeline:
         from awareness.markets.nlp.taxonomy import TaxonomyClassifier
 
         extractor: Extractor | None = None
-        if settings.fulltext and fetcher is not None:
-            from awareness.markets.news.extract import RobotsChecker, fetch_and_extract
+        date_fetcher: Extractor | None = None
+        if fetcher is not None:
+            from awareness.markets.news.extract import RobotsChecker, fetch_and_extract, fetch_published_date
 
             robots = RobotsChecker()
 
-            async def _extract(f: Fetcher, url: str) -> Any:
-                return await fetch_and_extract(f, url, robots=robots, user_agent=settings.bot_user_agent)
+            async def _dated(f: Fetcher, url: str) -> Any:
+                return await fetch_published_date(f, url, robots=robots, user_agent=settings.bot_user_agent)
 
-            extractor = _extract
+            date_fetcher = _dated
+            if settings.fulltext:
+
+                async def _extract(f: Fetcher, url: str) -> Any:
+                    return await fetch_and_extract(f, url, robots=robots, user_agent=settings.bot_user_agent)
+
+                extractor = _extract
 
         return cls(
             settings=settings,
@@ -208,6 +221,7 @@ class NewsPipeline:
             ),
             importance=compute_importance,
             extractor=extractor,
+            date_fetcher=date_fetcher,
         )
 
     # ── public API ────────────────────────────────────────────────────────
@@ -231,6 +245,7 @@ class NewsPipeline:
 
         drafts = [self._draft(item_id, raw, now) for item_id, raw in todo]
         stats.extracted = await self._extract_fulltext(drafts)
+        await self._date_undated(drafts)
         await asyncio.to_thread(self._enrich, drafts, now)
 
         stored, touched_stories, rescored = self._cluster_and_score(drafts, now)
@@ -399,6 +414,45 @@ class NewsPipeline:
         results = await asyncio.gather(*(one(d) for d in eligible))
         return sum(1 for r in results if r)
 
+    async def _date_undated(self, drafts: list[_Draft]) -> int:
+        """Undated feed items from registered tier 1-3 publishers: read the publication time from
+        the publisher's own page (meta tags). Items that stay undated are rejected by the gate."""
+        if self.date_fetcher is None or self.fetcher is None:
+            return 0
+        targets = [
+            d for d in drafts
+            if d.timestamp_source == "fetched" and d.publisher is not None and d.publisher.tier <= 3
+        ][:40]
+        if not targets:
+            return 0
+        sem = asyncio.Semaphore(max(1, self.settings.fulltext_concurrency))
+        fetcher, date_fetcher = self.fetcher, self.date_fetcher
+
+        async def one(d: _Draft) -> bool:
+            async with sem:
+                try:
+                    published = await date_fetcher(fetcher, d.item.url)
+                except Exception as exc:  # best effort
+                    log.debug("date fetch failed for %s: %s", d.item.url, exc)
+                    return False
+            if published is None:
+                return False
+            d.item = d.item.model_copy(update={"published_at": published})
+            d.timestamp_source = "article"
+            return True
+
+        return sum(1 for ok in await asyncio.gather(*(one(d) for d in targets)) if ok)
+
+    @staticmethod
+    def _relevance_floor(d: _Draft, relevance: float) -> float:
+        """Wires, financial press and specialists on finance-section feeds are business coverage by
+        construction; keyword relevance alone must not hard-reject them (they are still scored)."""
+        pub = d.publisher
+        finance_feed = bool(set(d.raw.categories) & FINANCE_FEED_CATEGORIES)
+        if pub is not None and pub.kind in {"wire", "financial_press", "specialist"} and finance_feed:
+            return max(relevance, 0.3)
+        return relevance
+
     def _enrich(self, drafts: list[_Draft], now: datetime) -> None:
         texts: list[str] = []
         for d in drafts:
@@ -422,7 +476,9 @@ class NewsPipeline:
                     "countries": list(dict.fromkeys(countries)),
                     "asset_classes": list(getattr(tax, "asset_classes", []) or []),
                     "topics": list(getattr(tax, "topics", []) or []),
-                    "finance_relevance": float(getattr(tax, "finance_relevance", 0.0) or 0.0),
+                    "finance_relevance": self._relevance_floor(
+                        d, float(getattr(tax, "finance_relevance", 0.0) or 0.0)
+                    ),
                 }
             )
             lead = d.item.title if not d.item.summary else f"{d.item.title}. {d.item.summary[:400]}"
