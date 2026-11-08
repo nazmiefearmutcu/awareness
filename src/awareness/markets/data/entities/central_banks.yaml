@@ -1,0 +1,59 @@
+# Central banks. Each one also emits its home country as an implied, dampened country entity
+# (confidence 0.7, salience x0.5 when the country is only implied).
+banks:
+  - id: FED
+    country: US
+    aliases:
+      - Federal Reserve
+      - {text: Fed, exclude_next: [up, down]}
+      - FOMC
+      - Federal Open Market Committee
+  - id: ECB
+    country: EU
+    aliases: [European Central Bank, ECB]
+  - id: BOE
+    country: GB
+    aliases: [Bank of England, BoE, BOE]
+  - id: BOJ
+    country: JP
+    aliases: [Bank of Japan, BoJ, BOJ]
+  - id: PBOC
+    country: CN
+    aliases: ["People's Bank of China", PBOC, PBoC]
+  - id: SNB
+    country: CH
+    aliases: [Swiss National Bank, SNB]
+  - id: BOC
+    country: CA
+    aliases: [Bank of Canada, BoC]
+  - id: RBA
+    country: AU
+    aliases: [Reserve Bank of Australia, RBA]
+  - id: RBNZ
+    country: NZ
+    aliases: [Reserve Bank of New Zealand, RBNZ]
+  - id: RIKSBANK
+    country: SE
+    aliases: [Riksbank]
+  - id: NORGES
+    country: NO
+    aliases: [Norges Bank]
+  - id: RBI
+    country: IN
+    aliases: [Reserve Bank of India, RBI]
+  - id: TCMB
+    country: TR
+    aliases:
+      - Central Bank of the Republic of Turkey
+      - Central Bank of Turkey
+      - CBRT
+      - TCMB
+      - Merkez Bankası
+      - Merkez Bankasi
+      - Türkiye Cumhuriyet Merkez Bankası
+  - id: BANXICO
+    country: MX
+    aliases: [Banxico, Bank of Mexico]
+  - id: BCB
+    country: BR
+    aliases: [Central Bank of Brazil, BCB]

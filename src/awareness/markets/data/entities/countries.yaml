@@ -1,0 +1,99 @@
+# Countries (ISO-3166 alpha-2). EU = euro area / European Union (not an ISO country; used as
+# the id the spec asks for). Aliases cover English names, demonyms, short forms and Turkish names.
+# Acronyms (US, UK, EU, AB) only match in upper case; every country name must be capitalised
+# (so lowercase 'turkey' or 'china' porcelain never match). Title matches get 0.95, body 0.85.
+countries:
+  - id: US
+    aliases:
+      - United States
+      - United States of America
+      - {text: U.S., conf: 0.85}
+      - {text: US, conf: 0.85}
+      - {text: USA, conf: 0.85}
+      - {text: U.S.A., conf: 0.85}
+      - {text: America, conf: 0.8, exclude_prev: [latin, south, north, central]}
+      - {text: American, conf: 0.8}
+      - {text: ABD, conf: 0.85}
+      - {text: Amerika, conf: 0.85}
+      - {text: Birleşik Devletler, conf: 0.85}
+  - {id: CN, aliases: [China, Chinese, PRC, {text: Çin, conf: 0.85}, Cin]}
+  - {id: JP, aliases: [Japan, Japanese, Japonya, Japon]}
+  - {id: DE, aliases: [Germany, German, Almanya, Alman]}
+  - id: GB
+    aliases:
+      - United Kingdom
+      - {text: UK, conf: 0.85}
+      - {text: U.K., conf: 0.85}
+      - Britain
+      - Great Britain
+      - British
+      - {text: İngiltere, conf: 0.85}
+      - {text: Ingiltere, conf: 0.85}
+  - {id: FR, aliases: [France, French, Fransa, Fransız]}
+  - {id: IT, aliases: [Italy, Italian, İtalya, Italya]}
+  - {id: ES, aliases: [Spain, Spanish, İspanya, Ispanya]}
+  - {id: NL, aliases: [Netherlands, Dutch, Hollanda]}
+  - {id: BE, aliases: [Belgium, Belgian, Belçika, Belcika]}
+  - {id: CH, aliases: [Switzerland, Swiss, İsviçre, Isvicre]}
+  - {id: AT, aliases: [Austria, Austrian, Avusturya]}
+  - {id: IE, aliases: [Ireland, Irish, İrlanda, Irlanda]}
+  - {id: PT, aliases: [Portugal, Portuguese, Portekiz]}
+  - {id: GR, aliases: [Greece, Greek, Yunanistan]}
+  - {id: SE, aliases: [Sweden, Swedish, İsveç, Isvec]}
+  - {id: NO, aliases: [Norway, Norwegian, Norveç, Norvec]}
+  - {id: DK, aliases: [Denmark, Danish, Danimarka]}
+  - {id: FI, aliases: [Finland, Finnish, Finlandiya]}
+  - {id: PL, aliases: [Poland, {text: Polish, capital: true}, Polonya]}
+  - {id: CZ, aliases: [Czech Republic, Czechia, Czech, Çekya, Cekya]}
+  - {id: HU, aliases: [Hungary, Hungarian, Macaristan]}
+  - {id: RO, aliases: [Romania, Romanian, Romanya]}
+  - {id: BG, aliases: [Bulgaria, Bulgarian, Bulgaristan]}
+  - {id: UA, aliases: [Ukraine, Ukrainian, Ukrayna]}
+  - {id: RU, aliases: [Russia, Russian, Rusya]}
+  - {id: KZ, aliases: [Kazakhstan, Kazakh, Kazakistan]}
+  - {id: CA, aliases: [Canada, Canadian, Kanada]}
+  - {id: MX, aliases: [Mexico, Mexican, Meksika]}
+  - {id: BR, aliases: [Brazil, Brazilian, Brezilya]}
+  - {id: AR, aliases: [Argentina, Argentine, Arjantin]}
+  - {id: CL, aliases: [Chile, Chilean, Şili, Sili]}
+  - {id: CO, aliases: [Colombia, Colombian, Kolombiya]}
+  - {id: PE, aliases: [Peru, Peruvian]}
+  - {id: VE, aliases: [Venezuela, Venezuelan]}
+  - {id: AU, aliases: [Australia, Australian, Avustralya]}
+  - {id: NZ, aliases: [New Zealand, Yeni Zelanda]}
+  - {id: IN, aliases: [India, Indian, Hindistan]}
+  - {id: PK, aliases: [Pakistan, Pakistani]}
+  - {id: BD, aliases: [Bangladesh, Bangladeshi, Bangladeş, Banglades]}
+  - {id: KR, aliases: [South Korea, Korea, Korean, Güney Kore, Guney Kore]}
+  - {id: TW, aliases: [Taiwan, Taiwanese, Tayvan]}
+  - {id: HK, aliases: [Hong Kong, Hong Kong's]}
+  - {id: SG, aliases: [Singapore, Singaporean, Singapur]}
+  - {id: ID, aliases: [Indonesia, Indonesian, Endonezya]}
+  - {id: TH, aliases: [Thailand, Thai, Tayland]}
+  - {id: VN, aliases: [Vietnam, Vietnamese]}
+  - {id: MY, aliases: [Malaysia, Malaysian, Malezya]}
+  - {id: PH, aliases: [Philippines, Filipino, Filipinler]}
+  - {id: ZA, aliases: [South Africa, South African, Güney Afrika, Guney Afrika]}
+  - {id: NG, aliases: [Nigeria, Nigerian, Nijerya]}
+  - {id: EG, aliases: [Egypt, Egyptian, Mısır, Misir]}
+  - {id: KE, aliases: [Kenya, Kenyan]}
+  - {id: MA, aliases: [Morocco, Moroccan, Fas]}
+  - {id: SA, aliases: [Saudi Arabia, Saudi, Suudi Arabistan, Suudi]}
+  - {id: AE, aliases: [United Arab Emirates, Birleşik Arap Emirlikleri]}
+  - {id: QA, aliases: [Qatar, Katar]}
+  - {id: IL, aliases: [Israel, Israeli, İsrail, Israil]}
+  - {id: IR, aliases: [Iran, Iranian, İran]}
+  - {id: IQ, aliases: [Iraq, Iraqi, Irak]}
+  - {id: TR, aliases: [Turkey, Türkiye, Turkiye, Turkish]}
+  - id: EU
+    aliases:
+      - {text: EU, conf: 0.85}
+      - European Union
+      - Euro zone
+      - Eurozone
+      - Euro area
+      - Euro Bölgesi
+      - Avro Bölgesi
+      - {text: AB, conf: 0.8}
+      - Avrupa Birliği
+      - Avrupa Birligi

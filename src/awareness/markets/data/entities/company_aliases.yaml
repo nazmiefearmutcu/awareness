@@ -1,0 +1,233 @@
+# Curated company names -> US ticker (SEC convention: dots become dashes).
+# Alias forms:
+#   - plain string              -> unambiguous name, 0.9 confidence, capitalised surface form required
+#   - {text, ambiguous: true}   -> ordinary word; needs a context word in the same sentence, 0.8
+#   - {text, context: [...]}    -> overrides the default context list for that alias
+#   - {text, exclude_next: [...]} / {text, exclude_prev: [...]} -> reject when a neighbour matches
+# Entries are hand-maintained, so provenance is "curated".
+companies:
+  - {id: AAPL, name: Apple Inc., aliases: [Apple Inc, Apple]}
+  - {id: MSFT, name: Microsoft Corp, aliases: [Microsoft, Microsoft Corp]}
+  - {id: NVDA, name: NVIDIA Corp, aliases: [Nvidia, NVIDIA Corp]}
+  - {id: GOOGL, name: Alphabet Inc., aliases: [Alphabet, Google]}
+  - id: AMZN
+    name: Amazon.com Inc.
+    aliases:
+      - Amazon.com
+      - {text: Amazon, ambiguous: true, context: [shares, stock, stocks, Inc, Prime, AWS, earnings, CEO, company, retail, Jassy, Web Services]}
+  - id: META
+    name: Meta Platforms Inc.
+    aliases:
+      - Meta Platforms
+      - Facebook
+      - {text: Meta, ambiguous: true, context: [Platforms, shares, stock, Inc, CEO, earnings, Facebook, Zuckerberg, company]}
+  - {id: TSLA, name: Tesla Inc., aliases: [Tesla, Tesla Inc]}
+  - {id: AVGO, name: Broadcom Inc., aliases: [Broadcom]}
+  - {id: JPM, name: JPMorgan Chase & Co., aliases: [JPMorgan Chase, JPMorgan, JP Morgan, J.P. Morgan]}
+  - {id: GS, name: Goldman Sachs Group, aliases: [Goldman Sachs, Goldman]}
+  - {id: MS, name: Morgan Stanley, aliases: [Morgan Stanley]}
+  - {id: BAC, name: Bank of America Corp, aliases: [Bank of America, BofA]}
+  - id: C
+    name: Citigroup Inc.
+    aliases:
+      - Citigroup
+      - {text: Citi, ambiguous: true, context: [shares, stock, bank, Inc, Group, earnings, CEO, company]}
+  - {id: WFC, name: Wells Fargo & Co, aliases: [Wells Fargo]}
+  - {id: BLK, name: BlackRock Inc., aliases: [BlackRock]}
+  - {id: SCHW, name: Charles Schwab Corp, aliases: [Charles Schwab]}
+  - {id: AXP, name: American Express Co, aliases: [American Express, Amex]}
+  - id: V
+    name: Visa Inc.
+    aliases:
+      - {text: Visa, ambiguous: true, context: [shares, stock, Inc, card, cards, payments, network, earnings, CEO, company, Mastercard]}
+  - {id: MA, name: Mastercard Inc., aliases: [Mastercard, Master Card]}
+  - {id: PYPL, name: PayPal Holdings Inc., aliases: [PayPal]}
+  - {id: NFLX, name: Netflix Inc., aliases: [Netflix]}
+  - {id: DIS, name: Walt Disney Co, aliases: [Disney, Walt Disney]}
+  - {id: CMCSA, name: Comcast Corp, aliases: [Comcast]}
+  - {id: VZ, name: Verizon Communications, aliases: [Verizon]}
+  - {id: T, name: AT&T Inc., aliases: [AT&T]}
+  - {id: TMUS, name: T-Mobile US, aliases: [T-Mobile]}
+  - id: ORCL
+    name: Oracle Corp
+    aliases:
+      - {text: Oracle, ambiguous: true, context: [shares, stock, Inc, Corp, CEO, earnings, database, cloud, company, guidance]}
+  - {id: CRM, name: Salesforce Inc., aliases: [Salesforce]}
+  - {id: ADBE, name: Adobe Inc., aliases: [Adobe]}
+  - {id: NOW, name: ServiceNow Inc., aliases: [ServiceNow]}
+  - {id: INTU, name: Intuit Inc., aliases: [Intuit]}
+  - {id: IBM, name: International Business Machines, aliases: [IBM, International Business Machines]}
+  - {id: AMD, name: Advanced Micro Devices, aliases: [AMD, Advanced Micro Devices]}
+  - id: INTC
+    name: Intel Corp
+    aliases:
+      - {text: Intel, ambiguous: true, context: [shares, stock, chip, chipmaker, chips, processor, foundry, Corp, Inc, CEO, earnings, company]}
+  - {id: QCOM, name: Qualcomm Inc., aliases: [Qualcomm]}
+  - {id: MU, name: Micron Technology, aliases: [Micron, Micron Technology]}
+  - {id: AMAT, name: Applied Materials, aliases: [Applied Materials]}
+  - {id: LRCX, name: Lam Research, aliases: [Lam Research]}
+  - {id: TXN, name: Texas Instruments, aliases: [Texas Instruments]}
+  - {id: TSM, name: Taiwan Semiconductor, aliases: [TSMC, Taiwan Semiconductor, Taiwan Semiconductor Manufacturing]}
+  - {id: ASML, name: ASML Holding, aliases: [ASML]}
+  - {id: XOM, name: Exxon Mobil Corp, aliases: [Exxon, ExxonMobil, Exxon Mobil]}
+  - {id: CVX, name: Chevron Corp, aliases: [Chevron]}
+  - {id: COP, name: ConocoPhillips, aliases: [ConocoPhillips]}
+  - {id: OXY, name: Occidental Petroleum, aliases: [Occidental Petroleum]}
+  - {id: SLB, name: Schlumberger, aliases: [Schlumberger]}
+  - {id: BA, name: Boeing Co, aliases: [Boeing]}
+  - {id: CAT, name: Caterpillar Inc., aliases: [Caterpillar]}
+  - {id: DE, name: Deere & Co, aliases: [Deere, John Deere]}
+  - {id: GE, name: GE Aerospace, aliases: [GE Aerospace, General Electric]}
+  - {id: HON, name: Honeywell International, aliases: [Honeywell]}
+  - {id: MMM, name: 3M Co, aliases: [3M]}
+  - {id: LMT, name: Lockheed Martin, aliases: [Lockheed Martin]}
+  - {id: NOC, name: Northrop Grumman, aliases: [Northrop Grumman]}
+  - {id: GD, name: General Dynamics, aliases: [General Dynamics]}
+  - {id: RTX, name: RTX Corp, aliases: [Raytheon, RTX Corp]}
+  - {id: UPS, name: United Parcel Service, aliases: [UPS, United Parcel Service]}
+  - {id: FDX, name: FedEx Corp, aliases: [FedEx]}
+  - {id: UAL, name: United Airlines Holdings, aliases: [United Airlines]}
+  - {id: DAL, name: Delta Air Lines, aliases: [Delta Air Lines]}
+  - {id: AAL, name: American Airlines Group, aliases: [American Airlines]}
+  - {id: LUV, name: Southwest Airlines, aliases: [Southwest Airlines]}
+  - id: F
+    name: Ford Motor Co
+    aliases:
+      - Ford Motor
+      - {text: Ford, ambiguous: true, context: [shares, stock, Motor, automaker, automakers, earnings, CEO, Inc, company, recall, Farley]}
+  - id: GM
+    name: General Motors Co
+    aliases:
+      - General Motors
+      - {text: GM, ambiguous: true, context: [shares, stock, automaker, Motors, earnings, Detroit, Inc, company]}
+  - {id: TM, name: Toyota Motor, aliases: [Toyota]}
+  - {id: HMC, name: Honda Motor, aliases: [Honda]}
+  - {id: RIVN, name: Rivian Automotive, aliases: [Rivian]}
+  - {id: LCID, name: Lucid Group, aliases: [Lucid Motors, Lucid Group]}
+  - {id: NIO, name: NIO Inc., aliases: [NIO]}
+  - {id: BABA, name: Alibaba Group, aliases: [Alibaba, Alibaba Group]}
+  - {id: JD, name: JD.com Inc., aliases: [JD.com]}
+  - {id: TCEHY, name: Tencent Holdings, aliases: [Tencent]}
+  - {id: BIDU, name: Baidu Inc., aliases: [Baidu]}
+  - {id: PDD, name: PDD Holdings, aliases: [PDD Holdings]}
+  - {id: XPEV, name: XPeng Inc., aliases: [XPeng]}
+  - {id: LI, name: Li Auto, aliases: [Li Auto]}
+  - {id: SONY, name: Sony Group, aliases: [Sony]}
+  - {id: WMT, name: Walmart Inc., aliases: [Walmart, Wal-Mart]}
+  - {id: COST, name: Costco Wholesale, aliases: [Costco]}
+  - {id: HD, name: Home Depot, aliases: [Home Depot]}
+  - {id: LOW, name: Lowe's Companies, aliases: [Lowe's]}
+  - id: TGT
+    name: Target Corp
+    aliases:
+      - {text: Target, ambiguous: true, context: [shares, stock, stocks, retailer, retailers, Corp, Inc, CEO, earnings, company, stores, store]}
+  - {id: DG, name: Dollar General, aliases: [Dollar General]}
+  - {id: DLTR, name: Dollar Tree, aliases: [Dollar Tree]}
+  - {id: ROST, name: Ross Stores, aliases: [Ross Stores]}
+  - {id: BBY, name: Best Buy, aliases: [Best Buy]}
+  - {id: EBAY, name: eBay Inc., aliases: [eBay]}
+  - {id: ETSY, name: Etsy Inc., aliases: [Etsy]}
+  - {id: W, name: Wayfair Inc., aliases: [Wayfair]}
+  - {id: LULU, name: lululemon athletica, aliases: [Lululemon]}
+  - {id: TJX, name: TJX Companies, aliases: [TJX Companies]}
+  - id: GAP
+    name: Gap Inc.
+    aliases:
+      - {text: Gap, ambiguous: true, context: [shares, stock, Inc, retailer, apparel, Old Navy, earnings, CEO, company, stores]}
+  - {id: NKE, name: Nike Inc., aliases: [Nike]}
+  - {id: SBUX, name: Starbucks Corp, aliases: [Starbucks]}
+  - {id: MCD, name: McDonald's Corp, aliases: ["McDonald's", McDonalds]}
+  - {id: CMG, name: Chipotle Mexican Grill, aliases: [Chipotle]}
+  - {id: YUM, name: Yum! Brands, aliases: [Yum Brands]}
+  - {id: DRI, name: Darden Restaurants, aliases: [Darden Restaurants]}
+  - {id: DPZ, name: Domino's Pizza, aliases: [Domino's Pizza]}
+  - {id: KO, name: Coca-Cola Co, aliases: [Coca-Cola, Coca Cola]}
+  - {id: PEP, name: PepsiCo Inc., aliases: [PepsiCo]}
+  - {id: PG, name: Procter & Gamble, aliases: [Procter & Gamble, P&G]}
+  - {id: CL, name: Colgate-Palmolive, aliases: [Colgate-Palmolive]}
+  - {id: KHC, name: Kraft Heinz, aliases: [Kraft Heinz]}
+  - {id: MDLZ, name: Mondelez International, aliases: [Mondelez]}
+  - {id: GIS, name: General Mills, aliases: [General Mills]}
+  - {id: HSY, name: Hershey Co, aliases: [Hershey]}
+  - {id: KMB, name: Kimberly-Clark, aliases: [Kimberly-Clark]}
+  - {id: MO, name: Altria Group, aliases: [Altria]}
+  - {id: PM, name: Philip Morris International, aliases: [Philip Morris]}
+  - {id: BTI, name: British American Tobacco, aliases: [British American Tobacco]}
+  - {id: UNH, name: UnitedHealth Group, aliases: [UnitedHealth, United Health]}
+  - {id: CVS, name: CVS Health, aliases: [CVS Health]}
+  - {id: CI, name: Cigna Group, aliases: [Cigna]}
+  - {id: ELV, name: Elevance Health, aliases: [Elevance Health]}
+  - id: LLY
+    name: Eli Lilly and Co
+    aliases:
+      - Eli Lilly
+      - {text: Lilly, ambiguous: true, context: [Eli, shares, stock, drug, pharma, Inc, earnings, obesity, Zepbound, Mounjaro, company]}
+  - {id: NVO, name: Novo Nordisk, aliases: [Novo Nordisk]}
+  - {id: PFE, name: Pfizer Inc., aliases: [Pfizer]}
+  - {id: MRK, name: Merck & Co, aliases: [Merck]}
+  - {id: JNJ, name: Johnson & Johnson, aliases: [Johnson & Johnson, J&J]}
+  - {id: ABBV, name: AbbVie Inc., aliases: [AbbVie]}
+  - {id: AMGN, name: Amgen Inc., aliases: [Amgen]}
+  - {id: GILD, name: Gilead Sciences, aliases: [Gilead Sciences, Gilead]}
+  - {id: BMY, name: Bristol-Myers Squibb, aliases: [Bristol-Myers Squibb, Bristol Myers Squibb]}
+  - {id: REGN, name: Regeneron Pharmaceuticals, aliases: [Regeneron]}
+  - {id: VRTX, name: Vertex Pharmaceuticals, aliases: [Vertex Pharmaceuticals]}
+  - {id: MRNA, name: Moderna Inc., aliases: [Moderna]}
+  - {id: BNTX, name: BioNTech SE, aliases: [BioNTech]}
+  - {id: TMO, name: Thermo Fisher Scientific, aliases: [Thermo Fisher]}
+  - {id: ABT, name: Abbott Laboratories, aliases: [Abbott Laboratories]}
+  - {id: MDT, name: Medtronic plc, aliases: [Medtronic]}
+  - {id: ISRG, name: Intuitive Surgical, aliases: [Intuitive Surgical]}
+  - {id: NVS, name: Novartis AG, aliases: [Novartis]}
+  - {id: AZN, name: AstraZeneca PLC, aliases: [AstraZeneca]}
+  - {id: GSK, name: GSK plc, aliases: [GSK, GlaxoSmithKline]}
+  - {id: SNY, name: Sanofi, aliases: [Sanofi]}
+  - {id: BAYRY, name: Bayer AG, aliases: [Bayer]}
+  - {id: SHOP, name: Shopify Inc., aliases: [Shopify]}
+  - {id: SPOT, name: Spotify Technology, aliases: [Spotify]}
+  - {id: PLTR, name: Palantir Technologies, aliases: [Palantir]}
+  - {id: UBER, name: Uber Technologies, aliases: [Uber]}
+  - {id: ABNB, name: Airbnb Inc., aliases: [Airbnb]}
+  - {id: BKNG, name: Booking Holdings, aliases: [Booking Holdings, Booking.com]}
+  - {id: EXPE, name: Expedia Group, aliases: [Expedia]}
+  - {id: MAR, name: Marriott International, aliases: [Marriott]}
+  - {id: HLT, name: Hilton Worldwide, aliases: [Hilton Worldwide]}
+  - {id: COIN, name: Coinbase Global, aliases: [Coinbase]}
+  - id: MSTR
+    name: Strategy Inc
+    aliases:
+      - MicroStrategy
+      - {text: Strategy, ambiguous: true, context: [MicroStrategy, bitcoin, shares, stock, Saylor, Inc, company, earnings, btc]}
+  - id: XYZ
+    name: Block Inc.
+    aliases:
+      - {text: Block, ambiguous: true, context: [shares, stock, Inc, Square, Cash App, payments, CEO, earnings, company]}
+  - id: SNAP
+    name: Snap Inc.
+    aliases:
+      - {text: Snap, ambiguous: true, context: [shares, stock, Inc, Snapchat, Spiegel, earnings, company, CEO]}
+  - id: MTCH
+    name: Match Group
+    aliases:
+      - Match Group
+      - {text: Match, ambiguous: true, context: [Tinder, shares, stock, Inc, Group, earnings, company, Hinge]}
+  - {id: DOW, name: Dow Inc., aliases: [Dow Inc]}
+  - {id: BP, name: BP plc, aliases: [BP plc]}
+  - {id: SHEL, name: Shell plc, aliases: [Shell plc]}
+  - {id: TTE, name: TotalEnergies, aliases: [TotalEnergies]}
+  - {id: PBR, name: Petroleo Brasileiro, aliases: [Petrobras, Petroleo Brasileiro]}
+  - {id: VALE, name: Vale S.A., aliases: [Vale S.A.]}
+  - {id: RIO, name: Rio Tinto, aliases: [Rio Tinto]}
+  - {id: BHP, name: BHP Group, aliases: [BHP, BHP Group]}
+  - {id: NEM, name: Newmont Corp, aliases: [Newmont]}
+  - {id: FCX, name: Freeport-McMoRan, aliases: [Freeport-McMoRan]}
+  - {id: HSBC, name: HSBC Holdings, aliases: [HSBC]}
+  - {id: UBS, name: UBS Group, aliases: [UBS Group]}
+  - {id: DB, name: Deutsche Bank, aliases: [Deutsche Bank]}
+  - {id: BCS, name: Barclays PLC, aliases: [Barclays]}
+  - {id: SAN, name: Banco Santander, aliases: [Santander]}
+  - {id: BBVA, name: Banco Bilbao Vizcaya Argentaria, aliases: [BBVA]}
+  - {id: RY, name: Royal Bank of Canada, aliases: [Royal Bank of Canada, RBC]}
+  - {id: TD, name: Toronto-Dominion Bank, aliases: [Toronto-Dominion Bank, TD Bank]}
+  - {id: NSRGY, name: Nestle SA, aliases: [Nestle, Nestlé]}
+  - {id: ADP, name: Automatic Data Processing, aliases: [Automatic Data Processing]}

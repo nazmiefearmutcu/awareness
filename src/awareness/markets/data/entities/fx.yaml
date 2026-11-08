@@ -1,0 +1,92 @@
+# Currencies (ISO-4217 codes) and the words used for them in English and Turkish.
+# Currency words -> fx entity with the currency code as id (USD, TRY ...).
+# Pairs (EUR/USD, EURUSD, dolar/TL) are resolved in code from the codes listed here
+# and produce a pair id: EURUSD, USDTRY. Turkish words carry conf 0.8, English 0.85.
+# The bare ISO code itself is always accepted (upper-case only) at 0.9.
+currencies:
+  USD:
+    aliases:
+      - {text: US dollar, conf: 0.85}
+      - {text: dollar, conf: 0.85}
+      - {text: greenback, conf: 0.85}
+      - {text: dolar, conf: 0.8}
+      - {text: ABD dolari, conf: 0.8}
+  EUR:
+    aliases:
+      - {text: euro, conf: 0.85}
+      - {text: avro, conf: 0.8}
+  GBP:
+    aliases:
+      - {text: sterling, conf: 0.85}
+      - {text: pound sterling, conf: 0.85}
+      - {text: pound, conf: 0.8}
+      - {text: sterlin, conf: 0.8}
+  JPY:
+    aliases:
+      - {text: yen, conf: 0.85}
+  CNY:
+    aliases:
+      - {text: yuan, conf: 0.85}
+      - {text: renminbi, conf: 0.85}
+      - {text: Chinese yuan, conf: 0.9}
+  CHF:
+    aliases:
+      - {text: Swiss franc, conf: 0.9}
+  TRY:
+    aliases:
+      - {text: Turkish lira, conf: 0.9}
+      - {text: lira, conf: 0.8}
+      - {text: Türk lirası, conf: 0.85}
+      - {text: TL, conf: 0.8}
+  INR:
+    aliases:
+      - {text: rupee, conf: 0.85}
+      - {text: Indian rupee, conf: 0.9}
+  KRW:
+    aliases:
+      - {text: South Korean won, conf: 0.9}
+      - {text: Korean won, conf: 0.9}
+      - {text: won, conf: 0.8, ambiguous: true, context: [Korean, Korea, Seoul, KRW, South]}
+  BRL:
+    aliases:
+      - {text: Brazilian real, conf: 0.9}
+  RUB:
+    aliases:
+      - {text: ruble, conf: 0.85}
+      - {text: rouble, conf: 0.85}
+  MXN:
+    aliases:
+      - {text: Mexican peso, conf: 0.9}
+  CAD:
+    aliases:
+      - {text: Canadian dollar, conf: 0.9}
+  AUD:
+    aliases:
+      - {text: Australian dollar, conf: 0.9}
+  NZD:
+    aliases:
+      - {text: New Zealand dollar, conf: 0.9}
+  SEK:
+    aliases:
+      - {text: Swedish krona, conf: 0.9}
+  NOK:
+    aliases:
+      - {text: Norwegian krone, conf: 0.9}
+  ZAR:
+    aliases:
+      - {text: rand, conf: 0.8, ambiguous: true, context: [South, Africa, Johannesburg, JSE, ZAR]}
+  SGD:
+    aliases:
+      - {text: Singapore dollar, conf: 0.9}
+  HKD:
+    aliases:
+      - {text: Hong Kong dollar, conf: 0.9}
+  ILS:
+    aliases:
+      - {text: shekel, conf: 0.85}
+  SAR:
+    aliases:
+      - {text: Saudi riyal, conf: 0.9}
+  PLN:
+    aliases:
+      - {text: zloty, conf: 0.85}
