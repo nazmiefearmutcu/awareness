@@ -212,3 +212,81 @@ def test_to_dict_is_json_ready() -> None:
     assert encoded["series"][0]["ts"].endswith("+00:00")
     assert encoded["count"] == 1
     assert encoded["bucket"] == "1h"
+
+
+def _baseline_pm(prefix: str, days_ago: int = 3, entity: str = "NVDA") -> list[EntitySentimentRow]:
+    """Ten rows at +0.1 and ten at -0.1 (mean 0, population stdev 0.1)."""
+    start = NOW - timedelta(days=days_ago)
+    return [
+        _row(f"{prefix}{i}", start + timedelta(hours=i), score=(0.1 if i % 2 else -0.1), entity=entity)
+        for i in range(20)
+    ]
+
+
+def test_momentum_uses_last_24h_even_when_window_is_short() -> None:
+    rows = [_row("r1", NOW - timedelta(minutes=30), score=0.3), _row("r2", NOW - timedelta(hours=10), score=0.3)]
+    report = summarize_entity_sentiment(
+        rows,
+        entity_id="NVDA",
+        now=NOW,
+        window=timedelta(hours=1),
+        bucket="1h",
+        baseline_rows=_baseline_pm("b"),
+    )
+    assert report.count == 1  # only the 30-minute-old row is in the 1 h window
+    assert report.momentum_z == pytest.approx(3.0)  # both recent rows count for momentum
+
+
+def test_baseline_rows_for_other_entities_are_ignored() -> None:
+    rows = [_row("r1", NOW - timedelta(hours=1), score=0.3)]
+    base = _baseline_pm("b")
+    other = [
+        _row(f"x{i}", NOW - timedelta(days=3, hours=i), score=0.9, entity="INTC") for i in range(20)
+    ]
+    alone = summarize_entity_sentiment(
+        rows, entity_id="NVDA", now=NOW, window=timedelta(days=1), bucket="1h", baseline_rows=base
+    )
+    mixed = summarize_entity_sentiment(
+        rows, entity_id="NVDA", now=NOW, window=timedelta(days=1), bucket="1h", baseline_rows=base + other
+    )
+    assert mixed.momentum_z == pytest.approx(alone.momentum_z)
+    assert alone.momentum_z == pytest.approx(3.0)
+
+
+def test_duplicate_baseline_news_ids_count_once() -> None:
+    rows = [_row("r1", NOW - timedelta(hours=1), score=0.3)]
+    base = _baseline_pm("b")
+    duplicated = [*base, base[0], base[2], base[4]]  # extra copies of +0.1 rows only
+    clean = summarize_entity_sentiment(
+        rows, entity_id="NVDA", now=NOW, window=timedelta(days=1), bucket="1h", baseline_rows=base
+    )
+    dupes = summarize_entity_sentiment(
+        rows, entity_id="NVDA", now=NOW, window=timedelta(days=1), bucket="1h", baseline_rows=duplicated
+    )
+    assert dupes.momentum_z == pytest.approx(clean.momentum_z)
+
+
+def test_naive_published_at_does_not_raise() -> None:
+    naive = EntitySentimentRow(
+        news_id="n",
+        entity_id="NVDA",
+        score=0.4,
+        label="positive",
+        confidence=0.8,
+        published_at=datetime(2026, 11, 8, 11, 0),  # naive, assumed UTC
+        quality_score=1.0,
+        publisher_id="reuters",
+    )
+    report = summarize_entity_sentiment(
+        [naive], entity_id="NVDA", now=NOW, window=timedelta(days=1), bucket="1h",
+        baseline_rows=_baseline_pm("b"),
+    )
+    assert report.count == 1
+    assert report.latest_at == datetime(2026, 11, 8, 11, 0, tzinfo=UTC)
+
+
+def test_invalid_bucket_raises() -> None:
+    with pytest.raises(ValueError, match="bucket"):
+        summarize_entity_sentiment(
+            [], entity_id="NVDA", now=NOW, window=timedelta(days=1), bucket="5m"  # type: ignore[arg-type]
+        )

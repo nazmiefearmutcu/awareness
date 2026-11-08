@@ -1,13 +1,17 @@
 """Financial sentiment scorer: FinBERT (``ProsusAI/finbert``) with a deterministic lexicon fallback.
 
-``SentimentScorer(backend)`` resolves its backend once, at construction:
+``SentimentScorer(backend)`` picks its backend at construction:
 
 * ``"lexicon"`` always uses :class:`~awareness.markets.nlp.lexicon.LexiconScorer`.
-* ``"finbert"`` loads the transformer or raises :class:`RuntimeError`.
-* ``"auto"`` tries FinBERT and falls back to the lexicon, logging one warning.
+* ``"finbert"`` loads the transformer or raises :class:`RuntimeError`. Inference errors raise too.
+* ``"auto"`` tries FinBERT at load time and falls back to the lexicon, logging one warning.
+  An inference error falls back to the lexicon for that call. After
+  ``MAX_INFERENCE_FAILURES`` consecutive inference failures the scorer switches to the lexicon
+  permanently.
 
-The ``model`` property always names the backend that is actually active, for example
-``finbert:ProsusAI/finbert`` or ``lexicon:aw-fin-1``.
+The ``model`` property names the backend that is active now, for example
+``finbert:ProsusAI/finbert`` or ``lexicon:aw-fin-1``. Every returned score carries the model
+name that actually produced it.
 
 ``transformers`` and ``torch`` are imported lazily, so importing this module stays cheap.
 """
@@ -29,14 +33,20 @@ log = logging.getLogger(__name__)
 
 DEFAULT_FINBERT_MODEL = "ProsusAI/finbert"
 MIN_BODY_SENTENCE_WORDS = 4
+MAX_INFERENCE_FAILURES = 3
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|\n+")
-_CLAUSE_SPLIT_RE = re.compile(
-    r",|;|:|\bwhile\b|\bwhereas\b|\bbut\b|\balthough\b|\bthough\b|\bhowever\b|\bmeanwhile\b",
+# Strong clause boundaries only. Commas are deliberately excluded so appositives such as
+# "Nvidia, the chipmaker, soars" stay whole.
+_STRONG_BOUNDARY_RE = re.compile(
+    r";|:|\bwhile\b|\bwhereas\b|\bbut\b|\balthough\b|\bthough\b|\bhowever\b|\bmeanwhile\b",
     re.IGNORECASE,
 )
 
 Backend = Literal["auto", "finbert", "lexicon"]
+
+_FINBERT_CACHE: dict[str, tuple[Any, Any]] = {}
+_FINBERT_CACHE_LOCK = threading.Lock()
 
 
 def _load_finbert_model(model_name: str, *, local_only: bool = False) -> tuple[Any, Any]:
@@ -61,8 +71,32 @@ def _load_finbert_model(model_name: str, *, local_only: bool = False) -> tuple[A
     return tokenizer, model
 
 
+def _get_finbert_model(model_name: str) -> tuple[Any, Any]:
+    """Process-wide cache so repeated scorers do not reload the weights."""
+    with _FINBERT_CACHE_LOCK:
+        cached = _FINBERT_CACHE.get(model_name)
+        if cached is None:
+            cached = _load_finbert_model(model_name, local_only=False)
+            _FINBERT_CACHE[model_name] = cached
+        return cached
+
+
+def clear_finbert_cache() -> None:
+    """Drop cached FinBERT weights (used by tests)."""
+    with _FINBERT_CACHE_LOCK:
+        _FINBERT_CACHE.clear()
+
+
 def _clamp(value: float) -> float:
     return max(-1.0, min(1.0, value))
+
+
+def _as_label(name: str) -> SentimentLabel:
+    if name == "positive":
+        return "positive"
+    if name == "negative":
+        return "negative"
+    return "neutral"
 
 
 def _split_sentences(title: str | None, text: str | None) -> list[str]:
@@ -78,25 +112,50 @@ def _split_sentences(title: str | None, text: str | None) -> list[str]:
 
 
 def _surface_pattern(entity: EntityRef) -> re.Pattern[str] | None:
-    """Case-insensitive word-boundary pattern for the entity name, id and (for equities) $TICKER."""
-    forms = {f.strip() for f in (entity.name, entity.id) if f and len(f.strip()) >= 2}
-    if not forms:
+    """Mention pattern for an entity.
+
+    Names match case-insensitively on word boundaries. Ids (tickers, codes such as ``ON``,
+    ``IT``, ``US``) match case-sensitively, so ordinary words like "on" or "it" never count as
+    mentions. An optional ``$`` prefix is accepted.
+    """
+    names = sorted({n.strip() for n in (entity.name,) if n and len(n.strip()) >= 2}, key=len, reverse=True)
+    ids = sorted({i.strip() for i in (entity.id,) if i and len(i.strip()) >= 2}, key=len, reverse=True)
+    if not names and not ids:
         return None
-    alternatives = "|".join(re.escape(f) for f in sorted(forms, key=len, reverse=True))
-    return re.compile(rf"(?<![\w$])\$?(?:{alternatives})(?!\w)", re.IGNORECASE)
+    parts: list[str] = []
+    if names:
+        parts.append("(?i:" + "|".join(re.escape(n) for n in names) + ")")
+    if ids:
+        parts.append("(?-i:" + "|".join(re.escape(i) for i in ids) + ")")
+    return re.compile(r"(?<![\w$])\$?(?:" + "|".join(parts) + r")(?!\w)")
 
 
-def _clause_for(sentence: str, pattern: re.Pattern[str], others: Sequence[re.Pattern[str]]) -> str:
-    """Narrow a sentence to the clauses that mention the entity when other entities co-occur."""
+def _snippet_for(sentence: str, pattern: re.Pattern[str], others: Sequence[re.Pattern[str]]) -> str:
+    """Text attributed to the entity inside one sentence.
+
+    With no other requested entity in the sentence, the whole sentence is used. Otherwise each
+    mention takes the text that follows it up to the next strong clause boundary or the next
+    other-entity mention.
+    """
     if not any(other.search(sentence) for other in others):
         return sentence
-    clauses = [c.strip() for c in _CLAUSE_SPLIT_RE.split(sentence) if c and c.strip()]
-    kept = [c for c in clauses if pattern.search(c)]
-    return " ".join(kept) if kept else sentence
+    cuts = [m.span() for m in _STRONG_BOUNDARY_RE.finditer(sentence)]
+    cuts += [m.span() for other in others for m in other.finditer(sentence)]
+    pieces: list[str] = []
+    for own in pattern.finditer(sentence):
+        end = min((start for start, _ in cuts if start >= own.end()), default=len(sentence))
+        piece = sentence[own.start() : end].strip()
+        if piece and piece not in pieces:
+            pieces.append(piece)
+    return " ".join(pieces) if pieces else sentence
 
 
-def _combine(items: Sequence[SentimentScore], model: str) -> SentimentScore:
-    """Confidence-weighted mean of sentence scores for one entity."""
+def _combine(items: Sequence[SentimentScore]) -> SentimentScore:
+    """Confidence-weighted mean of the sentence scores for one entity.
+
+    All items come from one ``score_many`` call, so they share a model name.
+    """
+    model = items[0].model
     total_weight = sum(s.confidence for s in items)
     if total_weight > 0:
         score = sum(s.score * s.confidence for s in items) / total_weight
@@ -123,6 +182,7 @@ class _FinBertRuntime:
         self._lock = threading.Lock()
 
     def score(self, texts: Sequence[str], model_name: str) -> list[SentimentScore]:
+        """Score texts in batches. Raises whatever the model raises (RuntimeError, ...)."""
         import torch
 
         results: list[SentimentScore] = []
@@ -146,10 +206,8 @@ class _FinBertRuntime:
         positive = by_label.get("positive", 0.0)
         negative = by_label.get("negative", 0.0)
         top_index = max(range(len(row)), key=lambda i: row[i])
-        top_label = self._labels.get(top_index, "neutral")
-        label: SentimentLabel = top_label if top_label in ("positive", "negative", "neutral") else "neutral"  # type: ignore[assignment]
         return SentimentScore(
-            label=label,
+            label=_as_label(self._labels.get(top_index, "neutral")),
             score=_clamp(positive - negative),
             confidence=max(0.0, min(1.0, float(row[top_index]))),
             model=model_name,
@@ -169,12 +227,15 @@ class SentimentScorer:
     ) -> None:
         if backend not in ("auto", "finbert", "lexicon"):
             raise ValueError(f"unknown sentiment backend {backend!r}")
+        self._requested = backend
         self._model_name = model_name
         self._lexicon = LexiconScorer()
         self._finbert: _FinBertRuntime | None = None
+        self._inference_failures = 0
+        self._warned_inference = False
         if backend != "lexicon":
             try:
-                tokenizer, model = _load_finbert_model(model_name, local_only=False)
+                tokenizer, model = _get_finbert_model(model_name)
                 self._finbert = _FinBertRuntime(
                     tokenizer, model, max_length=max_length, batch_size=max(1, batch_size)
                 )
@@ -185,7 +246,7 @@ class SentimentScorer:
 
     @property
     def model(self) -> str:
-        """Name of the active backend, e.g. ``finbert:ProsusAI/finbert`` or ``lexicon:aw-fin-1``."""
+        """Active backend name, e.g. ``finbert:ProsusAI/finbert`` or ``lexicon:aw-fin-1``."""
         if self._finbert is not None:
             return f"finbert:{self._model_name}"
         return LEXICON_MODEL
@@ -210,13 +271,34 @@ class SentimentScorer:
                 pending_index.append(index)
                 pending_text.append(text)
         if pending_text:
-            if self._finbert is not None:
-                scored = self._finbert.score(pending_text, self.model)
-            else:
-                scored = [self._lexicon.score(t) for t in pending_text]
-            for index, result in zip(pending_index, scored, strict=True):
+            for index, result in zip(pending_index, self._score_pending(pending_text), strict=True):
                 results[index] = result
         return [r for r in results if r is not None]
+
+    def _score_pending(self, texts: list[str]) -> list[SentimentScore]:
+        """Run FinBERT when active. In auto mode an inference error falls back for this call."""
+        if self._finbert is None:
+            return [self._lexicon.score(t) for t in texts]
+        try:
+            scored = self._finbert.score(texts, self.model)
+        except (ImportError, OSError, RuntimeError) as exc:
+            if self._requested == "finbert":
+                raise
+            self._inference_failures += 1
+            if not self._warned_inference:
+                log.warning("FinBERT inference failed (%s); using lexicon for this call", exc)
+                self._warned_inference = True
+            else:
+                log.debug("FinBERT inference failed again (%s); using lexicon", exc)
+            if self._inference_failures >= MAX_INFERENCE_FAILURES:
+                log.warning(
+                    "FinBERT failed %d times in a row; switching to lexicon permanently",
+                    self._inference_failures,
+                )
+                self._finbert = None
+            return [self._lexicon.score(t) for t in texts]
+        self._inference_failures = 0
+        return scored
 
     def entity_sentiment(
         self,
@@ -248,7 +330,7 @@ class SentimentScorer:
                 if picked >= max_sentences_per_entity:
                     break
                 if pattern.search(sentence):
-                    selected.append((eid, _clause_for(sentence, pattern, others)))
+                    selected.append((eid, _snippet_for(sentence, pattern, others)))
                     picked += 1
         if not selected:
             return {}
@@ -257,4 +339,4 @@ class SentimentScorer:
         grouped: dict[str, list[SentimentScore]] = defaultdict(list)
         for (eid, _), result in zip(selected, scores, strict=True):
             grouped[eid].append(result)
-        return {eid: _combine(items, self.model) for eid, items in grouped.items()}
+        return {eid: _combine(items) for eid, items in grouped.items()}
