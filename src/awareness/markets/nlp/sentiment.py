@@ -118,15 +118,15 @@ def _surface_pattern(entity: EntityRef) -> re.Pattern[str] | None:
     ``IT``, ``US``) match case-sensitively, so ordinary words like "on" or "it" never count as
     mentions. An optional ``$`` prefix is accepted.
     """
-    names = sorted({n.strip() for n in (entity.name,) if n and len(n.strip()) >= 2}, key=len, reverse=True)
-    ids = sorted({i.strip() for i in (entity.id,) if i and len(i.strip()) >= 2}, key=len, reverse=True)
-    if not names and not ids:
-        return None
+    name = entity.name.strip() if entity.name else ""
+    ticker = entity.id.strip() if entity.id else ""
     parts: list[str] = []
-    if names:
-        parts.append("(?i:" + "|".join(re.escape(n) for n in names) + ")")
-    if ids:
-        parts.append("(?-i:" + "|".join(re.escape(i) for i in ids) + ")")
+    if len(name) >= 2:
+        parts.append("(?i:" + re.escape(name) + ")")
+    if len(ticker) >= 2:
+        parts.append("(?-i:" + re.escape(ticker) + ")")
+    if not parts:
+        return None
     return re.compile(r"(?<![\w$])\$?(?:" + "|".join(parts) + r")(?!\w)")
 
 
@@ -134,8 +134,9 @@ def _snippet_for(sentence: str, pattern: re.Pattern[str], others: Sequence[re.Pa
     """Text attributed to the entity inside one sentence.
 
     With no other requested entity in the sentence, the whole sentence is used. Otherwise each
-    mention takes the text that follows it up to the next strong clause boundary or the next
-    other-entity mention.
+    mention takes the text from the nearest cut before it (a strong clause boundary or another
+    entity's mention, or the sentence start) to the nearest cut after it (or the sentence end).
+    Commas are not cuts, so appositives such as "Nvidia, the chipmaker, soars" stay whole.
     """
     if not any(other.search(sentence) for other in others):
         return sentence
@@ -143,8 +144,9 @@ def _snippet_for(sentence: str, pattern: re.Pattern[str], others: Sequence[re.Pa
     cuts += [m.span() for other in others for m in other.finditer(sentence)]
     pieces: list[str] = []
     for own in pattern.finditer(sentence):
-        end = min((start for start, _ in cuts if start >= own.end()), default=len(sentence))
-        piece = sentence[own.start() : end].strip()
+        start = max((end for _, end in cuts if end <= own.start()), default=0)
+        end = min((begin for begin, _ in cuts if begin >= own.end()), default=len(sentence))
+        piece = sentence[start:end].strip()
         if piece and piece not in pieces:
             pieces.append(piece)
     return " ".join(pieces) if pieces else sentence
