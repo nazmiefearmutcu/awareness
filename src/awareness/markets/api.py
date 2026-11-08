@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 
-from awareness.markets.calendar.sec_submissions import ensure_symbol_filings
+from awareness.markets.calendar.sec_submissions import ensure_symbol_filings, sibling_tickers
 from awareness.markets.config import MarketsSettings
 from awareness.markets.health import HealthTracker
 from awareness.markets.http import Fetcher
@@ -494,8 +494,10 @@ def create_markets_router(api: MarketsAPI, *, prefix: str = "/v1/markets") -> AP
                         store=api.get_store(), fetcher=fetcher, settings=api.settings, symbols=tickers, now=api.now()
                     )
                 )
+        # Share classes (GOOG/GOOGL) share a CIK and so the same stored filings.
+        query_symbols = sibling_tickers(api.settings, tickers) if tickers else []
         events = api.get_store().query_corp(
-            today - timedelta(days=days), today, types=["filing"], symbols=tickers, limit=5000
+            today - timedelta(days=days), today, types=["filing"], symbols=query_symbols, limit=5000
         )
         wanted_forms = {f.upper() for f in _csv(forms)}
         out = []
@@ -510,7 +512,8 @@ def create_markets_router(api: MarketsAPI, *, prefix: str = "/v1/markets") -> AP
                 break
         return api.envelope(
             out,
-            providers=FILING_PROVIDERS,
+            # The on-demand submissions provider only speaks for symbol requests.
+            providers=FILING_PROVIDERS if tickers else FILING_PROVIDERS[:1],
             filters={"symbols": symbols, "forms": forms, "days": days, "material_only": material_only},
             notes=notes,
         )

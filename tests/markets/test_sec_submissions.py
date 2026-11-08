@@ -21,6 +21,7 @@ from awareness.markets.calendar.sec_submissions import (
     decode_items,
     ensure_symbol_filings,
     parse_submissions,
+    sibling_tickers,
 )
 from awareness.markets.config import MarketsSettings
 from awareness.markets.http import Fetcher
@@ -353,3 +354,65 @@ def test_filings_days_limit_is_400(store: MarketsStore, markets_settings: Market
     with _api_client(store, markets_settings, None) as client:
         assert client.get("/v1/markets/filings", params={"days": 400}).status_code == 200
         assert client.get("/v1/markets/filings", params={"days": 401}).status_code == 422
+
+
+# ── share classes and provider scoping ────────────────────────────────────
+
+
+def _settings_with_share_classes(tmp_path: Path) -> MarketsSettings:
+    settings = MarketsSettings(
+        data_dir=tmp_path / "markets", autostart_runner=False, sentiment_backend="lexicon"
+    )
+    settings.ref_dir.mkdir(parents=True, exist_ok=True)
+    tickers = {
+        "0": {"cik_str": 1652044, "ticker": "GOOGL", "title": "Alphabet Inc."},
+        "1": {"cik_str": 1652044, "ticker": "GOOG", "title": "Alphabet Inc."},
+        "2": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+    }
+    (settings.ref_dir / "company_tickers.json").write_text(json.dumps(tickers), encoding="utf-8")
+    return settings
+
+
+def test_sibling_tickers_expand_share_classes_and_keep_unknowns(tmp_path: Path) -> None:
+    settings = _settings_with_share_classes(tmp_path)
+    assert sibling_tickers(settings, ["goog"]) == ["GOOG", "GOOGL"]
+    assert sibling_tickers(settings, ["AAPL", "ZZZZ"]) == ["AAPL", "ZZZZ"]
+
+
+def test_filings_for_one_share_class_include_rows_stored_under_the_other(
+    tmp_path: Path, store: MarketsStore
+) -> None:
+    settings = _settings_with_share_classes(tmp_path)
+    issuer = SecIssuer(cik=1652044, ticker="GOOGL", title="Alphabet Inc.", rank=0)
+    payload = json.dumps({
+        "cik": "1652044",
+        "name": "Alphabet Inc.",
+        "filings": {"recent": {
+            "form": ["8-K"],
+            "filingDate": ["2026-10-29"],
+            "acceptanceDateTime": ["2026-10-29T20:05:00.000Z"],
+            "accessionNumber": ["0001652044-26-000099"],
+            "primaryDocument": ["goog-8k.htm"],
+            "items": ["2.02,9.01"],
+        }},
+    }).encode("utf-8")
+    store.upsert_corp_events(
+        parse_submissions(payload, issuer=issuer, fetched_at=FIXED_NOW, url="u", since=SINCE)
+    )
+    store.kv_set("sec.submissions.fetched:1652044", FIXED_NOW.isoformat())  # fresh: no fetch
+    with _api_client(store, settings, None) as client:
+        body = client.get(
+            "/v1/markets/filings", params={"symbols": "GOOG", "forms": "8-K", "days": 365}
+        ).json()
+    assert [r["fields"]["accession"] for r in body["data"]] == ["0001652044-26-000099"]
+
+
+def test_symbol_less_filings_do_not_report_the_on_demand_provider(
+    tmp_path: Path, store: MarketsStore, fixture_bytes: Callable[[str], bytes]
+) -> None:
+    settings = _settings(tmp_path, fixture_bytes)
+    with _api_client(store, settings, None) as client:
+        body = client.get("/v1/markets/filings", params={"forms": "8-K"}).json()
+    providers = [p["provider"] for p in body["meta"]["providers"]]
+    assert providers == ["corp.sec_filings"]
+    assert not any("corp.sec_submissions" in n for n in body["meta"]["notes"])

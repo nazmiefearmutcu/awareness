@@ -29,6 +29,9 @@ PROVIDER = "corp.sec_submissions"
 SOURCE = "sec.submissions"
 LOOKBACK_DAYS = 400
 KV_PREFIX = "sec.submissions.fetched:"
+# On-demand provider: it is healthy for weeks without a request, so health uses a long interval
+# instead of the 6 h refresh ttl (which made an idle week read as "down").
+HEALTH_INTERVAL_S = 7 * 24 * 3600
 
 
 def _column(recent: dict[str, Any], key: str) -> list[Any]:
@@ -163,6 +166,26 @@ def _normalise_ticker(raw: str) -> str:
     return raw.strip().upper().replace(".", "-")
 
 
+def sibling_tickers(settings: MarketsSettings, symbols: Sequence[str]) -> list[str]:
+    """Requested tickers plus every ticker sharing their CIK (GOOG/GOOGL, BRK-A/BRK-B).
+
+    A filing is stored once per accession under one ticker, so a share-class sibling must be
+    included in the symbol filter or its filings disappear. Unknown tickers are kept as given.
+    """
+    requested = [t for t in (_normalise_ticker(s) for s in symbols) if t]
+    try:
+        issuers = load_issuers(settings.ref_dir)
+    except Exception:  # the plain ticker filter still works without the reference file
+        return requested
+    by_ticker = ticker_to_issuer(issuers)
+    ciks = {by_ticker[t].cik for t in requested if t in by_ticker}
+    out = list(requested)
+    for issuer in issuers:
+        if issuer.cik in ciks and issuer.ticker not in out:
+            out.append(issuer.ticker)
+    return out
+
+
 def _is_fresh(store: MarketsStore, key: str, now: datetime, ttl: timedelta) -> bool:
     raw = store.kv_get(key)
     if not isinstance(raw, str):
@@ -194,7 +217,7 @@ async def ensure_symbol_filings(
     notes: list[str] = []
     issuers = ticker_to_issuer(load_issuers(settings.ref_dir))
     health = HealthTracker(store, now=lambda: now)
-    interval_s = int(ttl.total_seconds())
+    interval_s = HEALTH_INTERVAL_S
     since = now.date() - timedelta(days=LOOKBACK_DAYS)
 
     requested: list[str] = []
