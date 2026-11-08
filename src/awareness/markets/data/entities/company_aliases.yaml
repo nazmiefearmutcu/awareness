@@ -24,7 +24,7 @@ companies:
     aliases:
       - Meta Platforms
       - Facebook
-      - {text: Meta, ambiguous: true, context: [Platforms, shares, stock, Inc, CEO, earnings, Facebook, Zuckerberg, company]}
+      - {text: Meta, ambiguous: true, context: [Platforms, shares, stock, Inc, CEO, earnings, Facebook, Zuckerberg, company, Apple, Alphabet, Google, Amazon, Microsoft, Nvidia, Tesla, Netflix]}
   - {id: TSLA, name: Tesla Inc., aliases: [Tesla, Tesla Inc]}
   - {id: AVGO, name: Broadcom Inc., aliases: [Broadcom]}
   - {id: JPM, name: JPMorgan Chase & Co., aliases: [JPMorgan Chase, JPMorgan, JP Morgan, J.P. Morgan]}
@@ -112,7 +112,7 @@ companies:
   - {id: BABA, name: Alibaba Group, aliases: [Alibaba, Alibaba Group]}
   - {id: JD, name: JD.com Inc., aliases: [JD.com]}
   - {id: TCEHY, name: Tencent Holdings, aliases: [Tencent]}
-  - {id: BRK-B, name: Berkshire Hathaway Inc., aliases: [Berkshire Hathaway]}
+  - {id: BRK-B, name: Berkshire Hathaway Inc., aliases: [Berkshire Hathaway, {text: Berkshire, conf: 0.85}]}
   - {id: SO, name: Southern Co, aliases: ["Southern Co", "Southern Company"]}
   - {id: BIDU, name: Baidu Inc., aliases: [Baidu]}
   - {id: PDD, name: PDD Holdings, aliases: [PDD Holdings]}

@@ -38,6 +38,7 @@ MIN_CONFIDENCE = 0.6
 MAX_NGRAM = 5
 DEFAULT_TOP_ISSUERS = 1500
 ENTITY_DIR = "entities"
+PERSON_LINK_CAP = 0.5  # person-implied company links never outrank an explicit mention
 COMPANY_WINDOW = 4
 
 CASHTAG_CONF = 0.99
@@ -108,6 +109,9 @@ class _Cand:
     exclude_prev: frozenset[str] = frozenset()
     exclude_context: frozenset[str] = frozenset()
     dampen: bool = False
+    cap: float | None = None  # salience ceiling (person-implied links)
+    person_implied: bool = False
+    unless: frozenset[str] = frozenset()  # title words that cancel a person-implied link
     links: tuple[_Cand, ...] = ()
 
 
@@ -123,24 +127,30 @@ class _Acc:
     title: bool = False
     mentions: int = 0
     text_mentions: int = 0
+    cap: float | None = None
+    person_only: bool = True
 
 
 class _Sink:
     def __init__(self) -> None:
         self.acc: dict[tuple[str, str], _Acc] = {}
+        self.item = ""  # folded title+body token phrase, space-padded
 
     def add(
         self, etype: EntityType, eid: str, name: str, conf: float, *, in_title: bool,
-        dampen: bool = False,
+        dampen: bool = False, cap: float | None = None, person_implied: bool = False,
     ) -> None:
         key = (etype, eid)
         acc = self.acc.get(key)
         if acc is None:
-            acc = _Acc(etype, eid, name, conf, dampen)
+            acc = _Acc(etype, eid, name, conf, dampen, person_only=person_implied)
             self.acc[key] = acc
         else:
             acc.conf = max(acc.conf, conf)
             acc.dampen = acc.dampen and dampen
+            acc.person_only = acc.person_only and person_implied
+        if cap is not None:
+            acc.cap = cap if acc.cap is None else min(acc.cap, cap)
         acc.mentions += 1
         if in_title:
             acc.title = True
@@ -208,6 +218,14 @@ def _make_cand(
         dampen=bool(spec.get("dampen", False)),
     )
     return phrase_key(text), cand
+
+
+def _item_phrase(title: str, text: str | None) -> str:
+    """Space-padded folded token phrase of the whole item, for whole-word checks."""
+    keys = [tok.key for tok in tokenize(title)]
+    if text:
+        keys.extend(tok.key for tok in tokenize(text))
+    return " " + " ".join(keys) + " "
 
 
 def _clean_title(title: str) -> list[str]:
@@ -363,9 +381,12 @@ class EntityLinker:
         for row in _load_yaml(base, "people.yaml").get("people", []):
             eid, name = str(row["id"]), str(row.get("name", row["id"]))
             self._names[("person", eid)] = name
+            unless = _frozen(row.get("unless_mention"))
             links = tuple(
                 _Cand(str(link["type"]), str(link["id"]), str(link["id"]),  # type: ignore[arg-type]
-                      float(link["conf"]))
+                      float(link["conf"]),
+                      cap=PERSON_LINK_CAP if link["type"] == "equity" else None,
+                      person_implied=link["type"] == "equity", unless=unless)
                 for link in row.get("links", [])
             )
             for spec in _alias_specs(row.get("aliases")):
@@ -413,14 +434,22 @@ class EntityLinker:
         """
         del language
         sink = _Sink()
+        sink.item = _item_phrase(title or "", text)
         self._scan(title or "", True, sink)
         if text:
             self._scan(text, False, sink)
+        explicit_equities = {
+            acc.eid for acc in sink.acc.values() if acc.etype == "equity" and not acc.person_only
+        }
         out: list[EntityRef] = []
         for acc in sink.acc.values():
             if acc.conf < MIN_CONFIDENCE:
                 continue
+            if acc.person_only and explicit_equities - {acc.eid}:
+                continue  # the item names a different company explicitly
             base = 1.0 if acc.title else min(0.9, 0.3 + 0.15 * acc.text_mentions)
+            if acc.cap is not None:
+                base = min(base, acc.cap)
             salience = base * 0.5 if acc.dampen else base
             out.append(
                 EntityRef(
@@ -557,8 +586,11 @@ class EntityLinker:
             conf = max(conf, TITLE_COUNTRY_CONF)
         sink.add(cand.etype, cand.eid, cand.name, conf, in_title=in_title, dampen=cand.dampen)
         for link in cand.links:
+            if link.unless and any(f" {word} " in sink.item for word in link.unless):
+                continue
             sink.add(link.etype, link.eid, self._names.get((link.etype, link.eid), link.eid),
-                     link.conf, in_title=in_title, dampen=link.dampen)
+                     link.conf, in_title=in_title, dampen=link.dampen, cap=link.cap,
+                     person_implied=link.person_implied)
 
     def _bare_ticker(
         self, tokens: list[Token], i: int, text: str, in_title: bool, sink: _Sink,
