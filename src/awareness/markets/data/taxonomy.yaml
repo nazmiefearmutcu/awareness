@@ -25,7 +25,7 @@ asset_classes:
     aliases: [commodity, commodities, emtia, oil, crude, gold, silver, copper, natural gas, wheat, corn, metals, altın, petrol, doğalgaz, bakır, gümüş]
   crypto:
     entity_types: [crypto]
-    aliases: [crypto, cryptocurrency, bitcoin, ethereum, stablecoin, altcoin, token, tokens, blockchain, defi, kripto]
+    aliases: [crypto, cryptocurrency, bitcoin, ethereum, stablecoin, altcoin, blockchain, defi, kripto]
   macro:
     entity_types: []
     aliases: [economy, economic, gdp, inflation, unemployment, recession, economic growth, ekonomi, enflasyon, büyüme, makro, macro]
@@ -56,7 +56,7 @@ topics:
     aliases: [upgrade, upgrades, downgrade, downgrades, price target, analyst, analysts, outperform, underperform, overweight, underweight, hedef fiyat, tavsiye]
   central_bank:
     weight: 1.0
-    aliases: [central bank, fed, federal reserve, fomc, ecb, boe, boj, rate cut, rate cuts, rate hike, rate hikes, rate decision, interest rate decision, policy rate, rate hold, pboc, tcmb, merkez bankası, merkez bankasi, faiz kararı, faiz karari, faiz, quantitative easing, tapering]
+    aliases: [central bank, federal reserve, fomc, ecb, boe, boj, rate cut, rate cuts, rate hike, rate hikes, rate decision, interest rate decision, policy rate, rate hold, pboc, tcmb, merkez bankası, merkez bankasi, faiz kararı, faiz karari, faiz, quantitative easing, tapering]
   inflation:
     weight: 1.0
     aliases: [inflation, cpi, pce, consumer prices, price pressures, enflasyon, tüfe, tufe, üfe, ufe]
@@ -80,10 +80,10 @@ topics:
     aliases: [sanction, sanctions, embargo, export controls, yaptırım, yaptirim, ambargo]
   geopolitics:
     weight: 1.0
-    aliases: [war, invasion, conflict, ceasefire, military, missile, troops, tensions, geopolitical, savaş, savas, çatışma, catisma, ateşkes, ateskes, jeopolitik]
+    aliases: [invasion, conflict, ceasefire, military, missile, troops, tensions, geopolitical, savaş, savas, çatışma, catisma, ateşkes, ateskes, jeopolitik]
   regulation:
     weight: 1.0
-    aliases: [regulator, regulators, regulation, regulations, rules, rulemaking, antitrust, cfpb, bddk, spk, regülasyon, regulasyon, düzenleme, duzenleme]
+    aliases: [regulator, regulators, regulation, regulations, rulemaking, antitrust, cfpb, bddk, spk, regülasyon, regulasyon, düzenleme, duzenleme]
   litigation:
     weight: 1.0
     aliases: [lawsuit, lawsuits, sues, sued, court, verdict, settlement, class action, indictment, dava, mahkeme, tazminat]
@@ -101,7 +101,7 @@ topics:
     aliases: [liquidity, funding, repo, credit line, bank run, deposit outflows, likidite, fonlama, mevduat]
   credit_stress:
     weight: 1.0
-    aliases: [default, defaults, credit spreads, junk, distressed debt, bankruptcy, insolvency, chapter 11, restructuring, iflas, temerrüt, temerrut]
+    aliases: [defaults, credit spreads, junk, distressed debt, bankruptcy, insolvency, chapter 11, restructuring, iflas, temerrüt, temerrut]
   supply_chain:
     weight: 1.0
     aliases: [supply chain, shortage, shortages, chip shortage, port strike, logistics, freight, backlog, tedarik, lojistik]
@@ -122,15 +122,15 @@ topics:
     aliases: [earthquake, hurricane, flood, flooding, wildfire, typhoon, tsunami, drought, deprem, sel, yangın, yangin, kasırga, kasirga]
   fiscal_policy:
     weight: 1.0
-    aliases: [budget, deficit, fiscal, stimulus, tax cut, tax hike, spending bill, debt ceiling, government shutdown, bütçe, butce, açık, vergi, teşvik, tesvik]
+    aliases: [budget, deficit, fiscal, stimulus, tax cut, tax hike, spending bill, debt ceiling, government shutdown, bütçe, butce, vergi, teşvik, tesvik]
 
 # Negative classes: non-finance subjects that subtract from finance relevance
 # (title hit -0.5, body hit -0.2 per class).
 negative:
   sports:
-    aliases: [football, soccer, basketball, tennis, cricket, champions league, premier league, la liga, nba, nfl, mlb, world cup, olympics, olympic, goalkeeper, striker, transfer window, league match, football match, futbol, basketbol, maç, mac, şampiyonlar ligi, super lig, süper lig]
+    aliases: [football, soccer, basketball, tennis, cricket, champions league, premier league, la liga, nba, nfl, mlb, world cup, olympics, goalkeeper, striker, transfer window, league match, football match, futbol, basketbol, maç, şampiyonlar ligi, super lig, süper lig]
   celebrity:
-    aliases: [celebrity, celebrities, red carpet, oscars, grammy, grammys, emmy, emmys, golden globes, actress, reality star, paparazzi, dating rumors, engaged, wedding, divorce, ünlü, magazin, evlilik, boşanma, bosanma]
+    aliases: [celebrity, celebrities, red carpet, oscars, grammy, grammys, emmy, emmys, golden globes, actress, reality star, paparazzi, dating rumors, celebrity wedding, celebrity divorce, ünlü, magazin, evlilik, boşanma, bosanma]
   entertainment:
     aliases: [box office, movie, movies, album, concert, netflix series, tv show, season finale, trailer, sinema, dizi, konser, albüm]
   lifestyle:

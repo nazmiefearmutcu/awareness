@@ -71,6 +71,13 @@ def _matches(pattern: re.Pattern[str] | None, text: str) -> set[str]:
     return {m.group(0) for m in pattern.finditer(text)}
 
 
+def _has_finance_entity(entities: list[EntityRef]) -> bool:
+    """A confident market entity outweighs non-finance vocabulary in the same item."""
+    return any(
+        e.type in FINANCE_ENTITY_TYPES and e.confidence >= ENTITY_EVIDENCE_CONF for e in entities
+    )
+
+
 class TaxonomyClassifier:
     """Scores a headline (and optional body) against the taxonomy in ``taxonomy.yaml``."""
 
@@ -137,7 +144,7 @@ class TaxonomyClassifier:
         topic_scores, topic_in_title = self._score_topics(ft, fb, entities)
         topics = self._select_topics(topic_scores, topic_in_title)
         asset_classes = self._asset_classes(ft, fb, entities, topics)
-        negatives = self._negative_hits(ft, fb)
+        negatives = 0.0 if _has_finance_entity(entities) else self._negative_hits(ft, fb)
         relevance = self._relevance(entities, topics, negatives, publisher, feed_categories)
         return TaxonomyResult(
             asset_classes=asset_classes,
@@ -215,9 +222,7 @@ class TaxonomyClassifier:
         feed_categories: list[str] | None,
     ) -> float:
         score = 0.0
-        if any(
-            e.type in FINANCE_ENTITY_TYPES and e.confidence >= ENTITY_EVIDENCE_CONF for e in entities
-        ):
+        if _has_finance_entity(entities):
             score += ENTITY_EVIDENCE_BONUS
         score += min(TOPIC_EVIDENCE_CAP, TOPIC_EVIDENCE_STEP * len(topics))
         if publisher is not None:

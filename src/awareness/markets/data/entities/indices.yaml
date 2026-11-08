@@ -7,12 +7,12 @@ indices:
     aliases:
       - {text: S&P 500, conf: 0.95}
       - {text: SPX, conf: 0.9}
-      - {text: S&P, conf: 0.85, exclude_next: [global, dow, ratings, indices, capital, sustainable]}
+      - {text: S&P, conf: 0.85, exclude_next: [global, dow, ratings, indices, capital, sustainable, midcap, smallcap, mid, small, largecap, 400, 600]}
   - id: IXIC
     name: Nasdaq Composite
     aliases:
       - {text: Nasdaq Composite, conf: 0.95}
-      - {text: Nasdaq, conf: 0.85, require_next: [composite, index, futures, rose, fell, closed, closes, rallied, slumped, jumped, tumbled, gained, slid, ended, ends, higher, lower]}
+      - {text: Nasdaq, conf: 0.85, require_next: [composite, index, futures, rose, fell, closed, closes, rallied, slumped, jumped, tumbled, gained, slid, ended, ends, higher, lower, rallies, slides]}
   - id: NDX
     name: Nasdaq-100
     aliases:
@@ -61,7 +61,6 @@ indices:
     name: CAC 40
     aliases:
       - {text: CAC 40, conf: 0.95}
-      - {text: CAC, conf: 0.85}
   - id: NKY
     name: Nikkei 225
     aliases:
