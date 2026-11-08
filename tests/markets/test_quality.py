@@ -6,7 +6,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+import yaml
 
+from awareness.markets.config import PACKAGE_DATA_DIR
 from awareness.markets.models import EntityRef, NewsItem, Publisher, stable_id
 from awareness.markets.news.quality import QualityGate, compute_importance
 
@@ -481,10 +483,6 @@ def test_official_floor_needs_relevance_of_point_three() -> None:
 
 def test_shipped_clickbait_rules_contain_no_backspace_characters() -> None:
     """Double-quoted YAML turns "\b" into a backspace; every rule must reach the regex engine intact."""
-    import yaml
-
-    from awareness.markets.config import PACKAGE_DATA_DIR
-
     rules = yaml.safe_load((PACKAGE_DATA_DIR / "quality_rules.yaml").read_text(encoding="utf-8"))
     flat: list[str] = []
 
