@@ -1,15 +1,19 @@
 """Deterministic finance lexicon scorer (``lexicon:aw-fin-1``).
 
-The word lists live in ``awareness/markets/data/finance_lexicon.yaml`` and were written
-for this project (English and Turkish). Scoring rules:
+The word lists live in ``nlp/finance_lexicon.yaml`` and were written for this project
+(English and Turkish). Scoring rules:
 
-* Text is lower-cased (Turkish dotted capital I handled) and tokenised on word characters,
-  keeping internal hyphens and apostrophes (``sell-off``, ``didn't``).
+* Text is lower-cased and tokenised on word characters, keeping internal hyphens and
+  apostrophes (``sell-off``, ``didn't``). Punctuation (``, ; : . ! ?``) and the conjunctions
+  ``but``/``ama``/``fakat`` become clause boundaries that no phrase spans.
 * Phrases are matched greedily, longest first, so a phrase entry overrides its words.
   Weight-0 phrases (``by default``) are blockers: they consume tokens without a hit.
-* A hit is negated when a negator occurs within the 3 tokens before it (``fails to``
-  counts too). Negation multiplies the weight by -0.6. An intensifier within the 2 tokens
-  before it multiplies the weight by 1.4.
+* A hit is negated when a negator occurs within the 3 tokens before it, without crossing a
+  clause boundary (``fails to`` counts too). Negation multiplies the weight by -0.6. An
+  intensifier within the 2 tokens before it, same clause only, multiplies the weight by 1.4.
+* Known limitations: Turkish suffixal negation (``yükselmedi``, ``düşmedi``) is not
+  recognised; ASCII uppercase ``I`` is not folded to Turkish dotless i, so ALL-CAPS Turkish
+  headlines containing ``I`` may miss terms.
 * Document score = ``tanh(sum(weights) / sqrt(hits + 1))`` clamped to [-1, 1].
   Label: positive if >= 0.15, negative if <= -0.15, otherwise neutral.
   Confidence = ``min(0.9, 0.35 + 0.1 * hits)``; with no hits it is 0.3 and the label neutral.
@@ -29,7 +33,7 @@ import yaml
 from awareness.markets.models import SentimentLabel, SentimentScore
 
 LEXICON_MODEL = "lexicon:aw-fin-1"
-LEXICON_PATH = Path(__file__).resolve().parents[1] / "data" / "finance_lexicon.yaml"
+LEXICON_PATH = Path(__file__).resolve().parent / "finance_lexicon.yaml"
 
 POSITIVE_THRESHOLD = 0.15
 NEGATIVE_THRESHOLD = -0.15
@@ -39,14 +43,23 @@ NEGATION_FACTOR = -0.6
 INTENSIFIER_FACTOR = 1.4
 NO_HIT_CONFIDENCE = 0.3
 
-_TOKEN_RE = re.compile(r"[^\W_]+(?:['\-][^\W_]+)*")
+_TOKEN_RE = re.compile(r"[^\W_]+(?:['\-][^\W_]+)*|[,;:.!?]")
+_PUNCTUATION = frozenset({",", ";", ":", ".", "!", "?"})
+_CLAUSE_WORDS = frozenset({"but", "ama", "fakat"})
+CLAUSE_BOUNDARY = "|"  # sentinel token; never a lexicon term
 Term = tuple[str, ...]
 
 
 def tokenize(text: str) -> list[str]:
-    """Lower-case word tokens. Handles the Turkish dotted capital I and curly apostrophes."""
+    """Lower-case word tokens. Clause punctuation and clause conjunctions become CLAUSE_BOUNDARY."""
     normalized = text.replace("İ", "i").replace("’", "'").lower()  # noqa: RUF001
-    return _TOKEN_RE.findall(normalized)
+    out: list[str] = []
+    for token in _TOKEN_RE.findall(normalized):
+        if token in _PUNCTUATION or token in _CLAUSE_WORDS:
+            out.append(CLAUSE_BOUNDARY)
+        else:
+            out.append(token)
+    return out
 
 
 def label_for_score(score: float) -> SentimentLabel:
@@ -168,18 +181,32 @@ class LexiconScorer:
     def _modifier(self, tokens: list[str], index: int) -> float:
         """Combined negation and intensifier factor for the hit starting at ``index``."""
         factor = 1.0
-        if self._negated(tokens, max(0, index - NEGATION_WINDOW), index):
+        if self._negated(tokens, index):
             factor *= NEGATION_FACTOR
-        if any(t in self._lex.intensifiers for t in tokens[max(0, index - INTENSIFIER_WINDOW) : index]):
+        if any(t in self._lex.intensifiers for t in _same_clause_before(tokens, index, INTENSIFIER_WINDOW)):
             factor *= INTENSIFIER_FACTOR
         return factor
 
-    def _negated(self, tokens: list[str], start: int, end: int) -> bool:
+    def _negated(self, tokens: list[str], index: int) -> bool:
+        """True when a negator sits in the same clause, within NEGATION_WINDOW tokens before ``index``."""
         negators = self._lex.negators
         failures = self._lex.failure_words
-        for k in range(start, end):
-            if tokens[k] in negators:
+        for k in range(index - 1, max(-1, index - NEGATION_WINDOW - 1), -1):
+            word = tokens[k]
+            if word == CLAUSE_BOUNDARY:
+                break
+            if word in negators:
                 return True
-            if tokens[k] == "to" and k > 0 and tokens[k - 1] in failures:
+            if word == "to" and k > 0 and tokens[k - 1] in failures:
                 return True
         return False
+
+
+def _same_clause_before(tokens: list[str], index: int, size: int) -> list[str]:
+    """Up to ``size`` tokens before ``index`` that stay inside the same clause."""
+    out: list[str] = []
+    for k in range(index - 1, max(-1, index - size - 1), -1):
+        if tokens[k] == CLAUSE_BOUNDARY:
+            break
+        out.append(tokens[k])
+    return out

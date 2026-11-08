@@ -126,17 +126,31 @@ def _bucket_summary(ts: datetime, rows: list[EntitySentimentRow]) -> SentimentBu
 
 
 def _momentum_z(
-    in_window: list[EntitySentimentRow],
+    entity_rows: list[EntitySentimentRow],
     baseline_rows: list[EntitySentimentRow] | None,
     now: datetime,
+    wanted: str,
 ) -> float | None:
-    """(mean of last 24 h - baseline mean) / baseline population stdev."""
+    """(mean of last 24 h - baseline mean) / baseline population stdev.
+
+    ``entity_rows`` are the deduplicated rows up to ``now``, independent of the report window.
+    Baseline rows are scoped to the entity, deduplicated by news_id, and limited to before the
+    last 24 h.
+    """
     recent_start = now - MOMENTUM_WINDOW
-    recent = [r for r in in_window if r.published_at >= recent_start]
+    recent = [r for r in entity_rows if recent_start <= _as_utc(r.published_at) <= now]
     if not recent or not baseline_rows:
         return None
-    recent_ids = {r.news_id for r in recent}
-    baseline = [r.score for r in baseline_rows if r.news_id not in recent_ids]
+    seen: set[str] = set()
+    baseline: list[float] = []
+    for row in baseline_rows:
+        if row.entity_id.upper() != wanted or row.news_id in seen:
+            continue
+        published = _as_utc(row.published_at)
+        if published >= recent_start or published > now:
+            continue
+        seen.add(row.news_id)
+        baseline.append(row.score)
     if len(baseline) < MIN_BASELINE_ROWS:
         return None
     base_mean = sum(baseline) / len(baseline)
@@ -161,17 +175,15 @@ def summarize_entity_sentiment(
     ``baseline_rows`` (typically the preceding 30 days for the same entity) feed the
     momentum z-score. Rows for other entities are ignored.
     """
+    if bucket not in ("1h", "1d"):
+        raise ValueError(f"bucket must be '1h' or '1d', got {bucket!r}")
     now_utc = _as_utc(now)
     window_start = now_utc - window
     wanted = entity_id.upper()
 
-    scoped = [r for r in rows if r.entity_id.upper() == wanted]
-    in_window = _dedupe(
-        sorted(
-            (r for r in scoped if window_start <= _as_utc(r.published_at) <= now_utc),
-            key=lambda r: r.published_at,
-        )
-    )
+    scoped = [r for r in rows if r.entity_id.upper() == wanted and _as_utc(r.published_at) <= now_utc]
+    entity_rows = _dedupe(sorted(scoped, key=lambda r: r.published_at))
+    in_window = [r for r in entity_rows if _as_utc(r.published_at) >= window_start]
     report = EntitySentimentReport(
         entity_id=wanted,
         window_start=window_start,
@@ -196,5 +208,5 @@ def summarize_entity_sentiment(
     report.dispersion = _pstdev(scores) if total >= 2 else None
     report.latest_at = _as_utc(in_window[-1].published_at)
     report.publishers = len({r.publisher_id for r in in_window})
-    report.momentum_z = _momentum_z(in_window, baseline_rows, now_utc)
+    report.momentum_z = _momentum_z(entity_rows, baseline_rows, now_utc, wanted)
     return report

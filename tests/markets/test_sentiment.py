@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 
 import pytest
 
@@ -39,8 +40,18 @@ def test_lexicon_negative_headline() -> None:
 
 
 def test_negation_flips_and_dampens() -> None:
-    s = LEX.score("Shares did not plunge")
-    assert s.label != "negative"
+    negated = LEX.score("Shares did not plunge")
+    plain = LEX.score("Shares plunge")
+    assert negated.score > 0  # flipped: a negative hit becomes positive
+    assert abs(negated.score) < abs(plain.score)  # dampened by x0.6
+
+
+def test_negation_does_not_cross_comma() -> None:
+    assert LEX.score("Stock is not a bargain, layoffs announced").label == "negative"
+
+
+def test_negation_does_not_cross_but() -> None:
+    assert LEX.score("Not a bargain but layoffs announced").label == "negative"
 
 
 def test_fails_to_negates_following_hit() -> None:
@@ -114,10 +125,41 @@ def test_lexicon_score_many_matches_single() -> None:
     assert scorer.score_many(texts) == [scorer.score(t) for t in texts]
 
 
-def test_auto_backend_returns_valid_model_name() -> None:
+class _FakeConfig:
+    def __init__(self) -> None:
+        self.id2label = {0: "positive", 1: "negative", 2: "neutral"}
+
+
+class _FakeModel:
+    def __init__(self) -> None:
+        self.config = _FakeConfig()
+
+    def eval(self) -> _FakeModel:
+        return self
+
+
+@pytest.fixture(autouse=True)
+def _fresh_finbert_cache() -> Iterator[None]:
+    """Keep monkeypatched FinBERT loaders from leaking through the process-wide cache."""
+    sentiment_mod.clear_finbert_cache()
+    yield
+    sentiment_mod.clear_finbert_cache()
+
+
+def _fake_finbert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand-in for the real loader: no weights, no network, no torch."""
+    monkeypatch.setattr(sentiment_mod, "_load_finbert_model", lambda _name, **_kw: (None, _FakeModel()))
+
+
+def _oom(self: object, texts: object, model_name: str) -> None:
+    raise RuntimeError("CUDA out of memory")
+
+
+def test_auto_uses_finbert_when_loadable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_finbert(monkeypatch)
     scorer = SentimentScorer("auto")
-    assert scorer.model in {"finbert:ProsusAI/finbert", "lexicon:aw-fin-1"}
-    assert scorer.backend_name == ("finbert" if scorer.model.startswith("finbert") else "lexicon")
+    assert scorer.backend_name == "finbert"
+    assert scorer.model == "finbert:ProsusAI/finbert"
 
 
 def test_auto_falls_back_to_lexicon_when_finbert_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,6 +180,85 @@ def test_finbert_backend_raises_when_unavailable(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(sentiment_mod, "_load_finbert_model", _missing)
     with pytest.raises(RuntimeError):
         SentimentScorer("finbert")
+
+
+def test_auto_inference_error_falls_back_for_that_call(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _fake_finbert(monkeypatch)
+    monkeypatch.setattr(sentiment_mod._FinBertRuntime, "score", _oom)
+    scorer = SentimentScorer("auto")
+    with caplog.at_level("WARNING"):
+        first = scorer.score("Apple beats estimates")
+        second = scorer.score("Apple beats estimates")
+    assert first.model == "lexicon:aw-fin-1"
+    assert first.label == "positive"
+    assert second.model == "lexicon:aw-fin-1"
+    # One failure is not permanent, and the warning is logged once.
+    assert scorer.backend_name == "finbert"
+    warnings = [r for r in caplog.records if "inference failed" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+def test_auto_switches_to_lexicon_after_three_inference_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_finbert(monkeypatch)
+    monkeypatch.setattr(sentiment_mod._FinBertRuntime, "score", _oom)
+    scorer = SentimentScorer("auto")
+    for _ in range(3):
+        assert scorer.score("Bank faces fraud probe").model == "lexicon:aw-fin-1"
+    assert scorer.backend_name == "lexicon"
+    assert scorer.model == "lexicon:aw-fin-1"
+
+
+def test_finbert_mode_raises_on_inference_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_finbert(monkeypatch)
+    monkeypatch.setattr(sentiment_mod._FinBertRuntime, "score", _oom)
+    scorer = SentimentScorer("finbert")
+    with pytest.raises(RuntimeError, match="out of memory"):
+        scorer.score("Apple beats estimates")
+
+
+# ── entity surface forms and clause attribution ───────────────────────────
+
+
+def test_lowercase_ticker_word_is_not_an_entity_mention() -> None:
+    on = EntityRef(type="equity", id="ON", name="ON Semiconductor", confidence=0.9)
+    out = SentimentScorer("lexicon").entity_sentiment("Markets rally on strong data", None, [on])
+    assert "ON" not in out
+
+
+def test_pronoun_it_is_not_a_ticker_mention() -> None:
+    it = EntityRef(type="equity", id="IT", name="Gartner", confidence=0.9)
+    out = SentimentScorer("lexicon").entity_sentiment(
+        "Shares plunge after weak outlook",
+        "It is a bankruptcy risk for many firms today.",
+        [it],
+    )
+    assert "IT" not in out
+
+
+def test_name_mention_is_case_insensitive() -> None:
+    on = EntityRef(type="equity", id="ON", name="ON Semiconductor", confidence=0.9)
+    out = SentimentScorer("lexicon").entity_sentiment("on semiconductor beats estimates", None, [on])
+    assert out["ON"].label == "positive"
+
+
+def test_comma_appositive_keeps_the_predicate() -> None:
+    out = SentimentScorer("lexicon").entity_sentiment(
+        "Nvidia, the chipmaker, soars while Intel slumps after weak outlook.",
+        None,
+        [_nvda(), _intc()],
+    )
+    assert out["NVDA"].label == "positive"
+    assert out["INTC"].label == "negative"
+
+
+def test_mention_order_attribution_without_clause_break() -> None:
+    out = SentimentScorer("lexicon").entity_sentiment(
+        "Intel slumps after Nvidia record revenue beats.", None, [_nvda(), _intc()]
+    )
+    assert out["INTC"].label == "negative"
+    assert out["NVDA"].label == "positive"
 
 
 # ── entity sentiment ──────────────────────────────────────────────────────
@@ -182,8 +303,10 @@ def test_entity_sentiment_is_json_safe() -> None:
 def _finbert_cached() -> bool:
     pytest.importorskip("torch")
     pytest.importorskip("transformers")
+    from transformers import AutoConfig  # noqa: PLC0415
+
     try:
-        sentiment_mod._load_finbert_model("ProsusAI/finbert", local_only=True)
+        AutoConfig.from_pretrained("ProsusAI/finbert", local_files_only=True)
     except OSError:
         return False
     return True
