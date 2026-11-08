@@ -11,7 +11,7 @@ countries:
       - {text: US, conf: 0.85}
       - {text: USA, conf: 0.85}
       - {text: U.S.A., conf: 0.85}
-      - {text: America, conf: 0.8, exclude_prev: [latin, south, north, central]}
+      - {text: America, conf: 0.8, exclude_prev: [latin, south, north, central, corporate, big, wall, old]}
       - {text: American, conf: 0.8}
       - {text: ABD, conf: 0.85}
       - {text: Amerika, conf: 0.85}

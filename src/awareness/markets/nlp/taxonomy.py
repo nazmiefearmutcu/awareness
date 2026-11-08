@@ -54,6 +54,7 @@ class _Pattern:
     name: str
     regex: re.Pattern[str]
     weight: float = 1.0
+    strip: re.Pattern[str] | None = None  # topic-specific false phrases, removed first
 
 
 def _compile(aliases: list[str]) -> re.Pattern[str] | None:
@@ -92,6 +93,7 @@ class TaxonomyClassifier:
                 (name, frozenset(spec.get("entity_types") or []), _Pattern(name, pattern))
             )
         self._hints: dict[str, str] = dict(data.get("entity_topic_hints") or {})
+        exclusions = data.get("topic_exclusions") or {}
         self._topics: dict[str, _Pattern] = {}
         self._topic_weight: dict[str, float] = {}
         for name, raw in (data.get("topics") or {}).items():
@@ -99,7 +101,8 @@ class TaxonomyClassifier:
             weight = float(spec.get("weight", 1.0))
             self._topic_weight[name] = weight
             pattern = _compile(list(spec.get("aliases") or [])) or re.compile(r"(?!x)x")
-            self._topics[name] = _Pattern(name, pattern, weight)
+            strip = _compile(list(exclusions.get(name) or []))
+            self._topics[name] = _Pattern(name, pattern, weight, strip)
         self._negative: dict[str, _Pattern] = {}
         for name, raw in (data.get("negative") or {}).items():
             pattern = _compile(list((raw or {}).get("aliases") or []))
@@ -163,8 +166,12 @@ class TaxonomyClassifier:
         scores: dict[str, float] = {}
         in_title: set[str] = set()
         for name, pattern in self._topics.items():
-            title_hits = _matches(pattern.regex, ft)
-            body_hits = _matches(pattern.regex, fb) - title_hits
+            title_text, body_text = ft, fb
+            if pattern.strip is not None:
+                title_text = pattern.strip.sub(" ", ft)
+                body_text = pattern.strip.sub(" ", fb)
+            title_hits = _matches(pattern.regex, title_text)
+            body_hits = _matches(pattern.regex, body_text) - title_hits
             score = pattern.weight * (TITLE_WEIGHT * len(title_hits) + BODY_WEIGHT * len(body_hits))
             if title_hits:
                 in_title.add(name)

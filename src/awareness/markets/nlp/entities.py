@@ -108,6 +108,7 @@ class _Cand:
     exclude_next: frozenset[str] = frozenset()
     exclude_prev: frozenset[str] = frozenset()
     exclude_context: frozenset[str] = frozenset()
+    next_not_capital: bool = False
     dampen: bool = False
     cap: float | None = None  # salience ceiling (person-implied links)
     person_implied: bool = False
@@ -215,6 +216,7 @@ def _make_cand(
         exclude_next=_frozen(spec.get("exclude_next")),
         exclude_prev=_frozen(spec.get("exclude_prev")),
         exclude_context=_frozen(spec.get("exclude_context")),
+        next_not_capital=bool(spec.get("next_not_capital", False)),
         dampen=bool(spec.get("dampen", False)),
     )
     return phrase_key(text), cand
@@ -448,7 +450,7 @@ class EntityLinker:
             if acc.person_only and explicit_equities - {acc.eid}:
                 continue  # the item names a different company explicitly
             base = 1.0 if acc.title else min(0.9, 0.3 + 0.15 * acc.text_mentions)
-            if acc.cap is not None:
+            if acc.cap is not None and acc.person_only:
                 base = min(base, acc.cap)
             salience = base * 0.5 if acc.dampen else base
             out.append(
@@ -640,14 +642,17 @@ def _accept(
     letter = _first_letter(tokens[a].raw)
     nxt = tokens[b + 1].key if b + 1 < len(tokens) else ""
     prv = tokens[a - 1].key if a > 0 else ""
-    if cand.capital and (not letter or not letter.isupper()):
-        return False
-    if cand.upper and not all(tokens[j].raw.upper() == tokens[j].raw for j in range(a, b + 1)):
+    shape_ok = (not cand.capital or (bool(letter) and letter.isupper())) and (
+        not cand.upper or all(tokens[j].raw.upper() == tokens[j].raw for j in range(a, b + 1))
+    )
+    if not shape_ok:
         return False
     neighbour_ok = (not cand.require_next or nxt in cand.require_next) and (
         nxt not in cand.exclude_next and prv not in cand.exclude_prev
     )
     if not neighbour_ok:
+        return False
+    if cand.next_not_capital and b + 1 < len(tokens) and _first_letter(tokens[b + 1].raw).isupper():
         return False
     lo, hi = sent_ranges[a]
     left, right = (lo, hi) if cand.window is None else (max(lo, a - cand.window), min(hi, b + cand.window))

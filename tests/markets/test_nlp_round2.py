@@ -136,7 +136,7 @@ def test_person_link_dropped_when_item_names_other_company(linker: EntityLinker)
 
 
 def test_bare_berkshire_links_brk_b(linker: EntityLinker) -> None:
-    ref = _get(linker.link("Berkshire Doubles Stock Buyback"), "equity", "BRK-B")
+    ref = _get(linker.link("Berkshire doubles its stock buyback"), "equity", "BRK-B")
     assert ref is not None
     assert ref.confidence == pytest.approx(0.85)
 
