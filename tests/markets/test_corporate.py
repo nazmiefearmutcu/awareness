@@ -156,6 +156,33 @@ def test_special_dividend_on_same_day_is_distinct() -> None:
     assert events[0].id != events[1].id
 
 
+def test_dividend_without_amount_is_not_stored() -> None:
+    row = {"companyName": "No Amount Corp", "symbol": "NAC", "dividend_Ex_Date": "11/09/2026", "dividend_Rate": "N/A"}
+    assert parse_nasdaq_dividends({"data": {"calendar": {"rows": [row]}}}, fetched_at=FETCHED, url=URL) == []
+
+
+def test_ipo_same_deal_across_buckets_is_one_row() -> None:
+    deal = "1407089-119692"
+    filed = {"companyName": "Rezera Inc.", "proposedTickerSymbol": None, "dealID": deal, "filedDate": "11/02/2026"}
+    upcoming = {
+        "companyName": "Rezera Inc.", "proposedTickerSymbol": "RZRA", "dealID": deal,
+        "proposedSharePrice": "11.00-13.00", "expectedPriceDate": "11/12/2026",
+    }
+    priced = {
+        "companyName": "Rezera Inc.", "proposedTickerSymbol": "RZRA", "dealID": deal,
+        "proposedSharePrice": "12.00", "pricedDate": "11/12/2026",
+    }
+    def payload(bucket: str, row: dict) -> dict:
+        return {"data": {bucket: {"rows": [row]} if bucket != "upcoming" else {"upcomingTable": {"rows": [row]}}}}
+    ids = set()
+    for bucket, row in (("filed", filed), ("upcoming", upcoming), ("priced", priced)):
+        (event,) = parse_nasdaq_ipos(payload(bucket, row), fetched_at=FETCHED, url=URL)
+        ids.add(event.id)
+        last = event
+    assert len(ids) == 1
+    assert last.status == "priced" and last.date == date(2026, 11, 12) and last.symbol == "RZRA"
+
+
 def test_splits_fixture(fixture_bytes: Callable[[str], bytes]) -> None:
     payload = _load(fixture_bytes, "nasdaq_splits.json")
     events = parse_nasdaq_splits(payload, fetched_at=FETCHED, url=URL)
@@ -164,10 +191,10 @@ def test_splits_fixture(fixture_bytes: Callable[[str], bytes]) -> None:
     assert sndk.type == "split" and sndk.date == date(2026, 11, 20)
     assert sndk.status == "scheduled"
     assert sndk.fields["ratio"] == "8:1"
-    assert sndk.fields["ratio_from"] == 8.0 and sndk.fields["ratio_to"] == 1.0
+    assert sndk.fields["ratio_first"] == 8.0 and sndk.fields["ratio_second"] == 1.0
     assert sndk.fields["payable_date"] is None
     bito = next(e for e in events if e.symbol == "BITO")
-    assert bito.fields["ratio_from"] == 1.0 and bito.fields["ratio_to"] == 2.0
+    assert bito.fields["ratio_first"] == 1.0 and bito.fields["ratio_second"] == 2.0
 
 
 def test_split_status_completed_when_effective_date_passed() -> None:
