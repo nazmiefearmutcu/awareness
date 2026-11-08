@@ -53,7 +53,7 @@ Term = tuple[str, ...]
 
 def tokenize(text: str) -> list[str]:
     """Lower-case word tokens. Clause punctuation and clause conjunctions become CLAUSE_BOUNDARY."""
-    normalized = text.replace("İ", "i").replace("’", "'").lower()  # noqa: RUF001
+    normalized = text.replace("İ", "i").replace("’", "'").lower()
     out: list[str] = []
     for token in _TOKEN_RE.findall(normalized):
         if token in _PUNCTUATION or token in _CLAUSE_WORDS:
