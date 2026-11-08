@@ -11,6 +11,8 @@ from typing import Any
 import httpx
 import pytest
 
+from awareness.markets.calendar.econ_common import classify
+from awareness.markets.calendar.econ_merge import MergeState
 from awareness.markets.calendar.economic import (
     BeaCollector,
     ForexFactoryCollector,
@@ -23,6 +25,7 @@ from awareness.markets.calendar.economic import (
     parse_forexfactory,
     parse_nasdaq_econ,
     parse_value,
+    store_merge,
 )
 from awareness.markets.collectors.base import CollectorContext
 from awareness.markets.config import MarketsSettings
@@ -471,3 +474,196 @@ async def test_ff_and_bea_collectors_store_events(
     assert BeaCollector.interval_s == 86400
     assert NasdaqEconCollector.interval_s == 1800
     assert all(c.lock_group == "econ" for c in (NasdaqEconCollector, ForexFactoryCollector, BeaCollector))
+
+
+# ── fix round 1 ───────────────────────────────────────────────────────────
+
+AT = datetime(2026, 11, 13, 13, 30, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("title", "importance", "category"),
+    [
+        ("CPI m/m", 3, "inflation"),
+        ("CPI Flash Estimate y/y", 3, "inflation"),
+        ("Core CPI", 3, "inflation"),
+        ("GDP q/q", 3, "growth"),
+        ("GDP Growth Rate", 3, "growth"),
+        ("Manufacturing PMI", 2, "pmi"),
+        ("PPI m/m", 2, "inflation"),
+        ("JOLTS Job Openings", 2, "employment"),
+        ("ZEW Economic Sentiment", 2, "sentiment"),
+        ("Nonfarm Payrolls", 3, "employment"),
+        ("Non-Farm Payrolls", 3, "employment"),
+        ("Federal Funds Rate", 3, "central_bank"),
+        ("MPC Official Bank Rate Votes", 1, "other"),
+    ],
+)
+def test_rule_table_regexes_take_effect(title: str, importance: int, category: str) -> None:
+    assert classify(title) == (importance, category)
+
+
+def _snap(
+    provider: str,
+    *,
+    fetched: datetime = NOW,
+    forecast: str | None = None,
+    actual: str | None = None,
+    previous: str | None = None,
+    title: str = "CPI m/m",
+    country: str = "US",
+) -> EconEvent:
+    return EconEvent(
+        id=event_id(country, title, AT),
+        country=country,
+        title=title,
+        scheduled_at=AT,
+        forecast=forecast,
+        forecast_value=parse_value(forecast)[0],
+        actual=actual,
+        actual_value=parse_value(actual)[0],
+        previous=previous,
+        previous_value=parse_value(previous)[0],
+        sources=[ProviderRef(provider=provider, url=f"https://{provider}.example/", fetched_at=fetched)],
+    )
+
+
+def _stored(events: list[EconEvent]) -> EconEvent:
+    assert len(events) == 1
+    return events[0]
+
+
+def test_same_provider_refresh_replaces_forecast() -> None:
+    state = MergeState()
+    first = _stored(merge_econ_events([], [_snap("forexfactory", forecast="0.3%")], now=NOW, state=state))
+    later = NOW + timedelta(hours=1)
+    changed = merge_econ_events(
+        [first], [_snap("forexfactory", forecast="0.4%", fetched=later)], now=later, state=state
+    )
+    assert _stored(changed).forecast == "0.4%"
+    assert _stored(changed).forecast_value == pytest.approx(0.4)
+
+
+def test_higher_ranked_provider_replaces_forecast() -> None:
+    state = MergeState()
+    first = _stored(merge_econ_events([], [_snap("forexfactory", forecast="0.3%")], now=NOW, state=state))
+    changed = merge_econ_events([first], [_snap("nasdaq", forecast="0.5%")], now=NOW, state=state)
+    ev = _stored(changed)
+    assert ev.forecast == "0.5%"
+    assert ev.forecast_value == pytest.approx(0.5)
+    assert {s.provider for s in ev.sources} == {"forexfactory", "nasdaq"}
+
+
+def test_same_provider_revision_replaces_actual() -> None:
+    state = MergeState()
+    first = _stored(merge_econ_events([], [_snap("nasdaq", actual="0.2%")], now=NOW, state=state))
+    later = NOW + timedelta(hours=1)
+    changed = merge_econ_events([first], [_snap("nasdaq", actual="0.25%", fetched=later)], now=later, state=state)
+    assert _stored(changed).actual == "0.25%"
+    assert _stored(changed).actual_value == pytest.approx(0.25)
+
+
+def test_lower_ranked_provider_fills_only_empty_fields() -> None:
+    state = MergeState()
+    first = _stored(merge_econ_events([], [_snap("nasdaq", forecast="0.5%")], now=NOW, state=state))
+    changed = merge_econ_events(
+        [first], [_snap("forexfactory", forecast="0.9%", actual="0.4%")], now=NOW, state=state
+    )
+    ev = _stored(changed)
+    assert ev.forecast == "0.5%"  # Nasdaq value kept
+    assert ev.actual == "0.4%"  # empty field filled from ForexFactory
+
+
+def test_scheduled_becomes_released_with_two_nasdaq_fetches() -> None:
+    state = MergeState()
+    first = _stored(merge_econ_events([], [_snap("nasdaq", forecast="0.3%")], now=NOW, state=state))
+    assert first.status == "scheduled"
+    assert first.surprise is None
+    later = NOW + timedelta(hours=1)
+    changed = merge_econ_events(
+        [first], [_snap("nasdaq", forecast="0.3%", actual="0.35%", fetched=later)], now=later, state=state
+    )
+    ev = _stored(changed)
+    assert ev.status == "released"
+    assert ev.surprise == pytest.approx(0.05)
+    assert ev.surprise_direction == "above"
+
+
+def test_fuzzy_pair_second_run_is_empty_and_store_keeps_one_row(
+    markets_settings: MarketsSettings, store: MarketsStore
+) -> None:
+    at = datetime(2026, 11, 6, 13, 30, tzinfo=UTC)
+    nas = _event("Retail Sales ex Autos m/m", "US", at, "nasdaq")
+    ff = _event("Retail Sales m/m", "US", at + timedelta(minutes=30), "forexfactory", importance=3)
+    ctx = CollectorContext(settings=markets_settings, store=store, http=None, registry=None,  # type: ignore[arg-type]
+                           now=lambda: NOW)
+    start, end = datetime(2026, 11, 1, tzinfo=UTC), datetime(2026, 11, 30, tzinfo=UTC)
+    first = store_merge(ctx, [nas, ff], start, end, NOW)
+    assert len(first) == 1
+    assert len(store.query_econ(start, end)) == 1
+    assert store_merge(ctx, [nas, ff], start, end, NOW + timedelta(hours=1)) == []
+    assert store_merge(ctx, [nas], start, end, NOW + timedelta(hours=2)) == []
+    assert store_merge(ctx, [ff], start, end, NOW + timedelta(hours=3)) == []
+    rows = store.query_econ(start, end)
+    assert len(rows) == 1
+    assert rows[0].importance == 3
+
+
+def test_ff_euro_rows_take_member_country_from_title() -> None:
+    rows = [
+        {"title": "German Retail Sales m/m", "country": "EUR", "date": "2026-11-10T03:00:00+01:00",
+         "impact": "Low", "forecast": "0.4%", "previous": "1.3%"},
+        {"title": "Final Manufacturing PMI", "country": "EUR", "date": "2026-11-10T10:00:00+01:00",
+         "impact": "Low", "forecast": "52.4", "previous": "52.4"},
+        {"title": "ECB President Lagarde Speaks", "country": "EUR", "date": "2026-11-10T14:00:00+01:00",
+         "impact": "Medium", "forecast": "", "previous": ""},
+    ]
+    events = {e.title: e for e in parse_forexfactory(rows, fetched_at=NOW)}
+    de = events["German Retail Sales m/m"]
+    assert de.country == "DE" and de.currency == "EUR"
+    assert events["Final Manufacturing PMI"].country == "EU"
+    assert events["ECB President Lagarde Speaks"].country == "EU"
+
+
+def test_ff_german_row_merges_with_nasdaq_de_row(fixture_path: Callable[[str], Path]) -> None:
+    payload: dict[str, Any] = json.loads(fixture_path("nasdaq_econ_2026-11-10.json").read_text(encoding="utf-8"))
+    nasdaq = next(e for e in parse_nasdaq_econ(payload, day=NASDAQ_DAY, fetched_at=NOW)
+                  if e.title == "German Trade Balance")
+    ff = parse_forexfactory(
+        [{"title": "German Trade Balance", "country": "EUR", "date": "2026-11-10T03:00:00+01:00",
+          "impact": "Medium", "forecast": "19.0B", "previous": "19.5B"}],
+        fetched_at=NOW,
+    )[0]
+    assert nasdaq.country == "DE" and ff.country == "DE"
+    changed = merge_econ_events([nasdaq], [ff], now=NOW)
+    assert len(changed) == 1
+    assert {s.provider for s in changed[0].sources} == {"nasdaq", "forexfactory"}
+    assert changed[0].forecast == "19.2B"  # Nasdaq consensus kept over ForexFactory
+
+
+def test_central_bank_decision_merges_with_ff_rate_row_in_either_order() -> None:
+    at = datetime(2026, 12, 9, 19, 0, tzinfo=UTC)
+    cb = EconEvent(
+        id=event_id("US", "FOMC Interest Rate Decision", at),
+        country="US", currency="USD", title="FOMC Interest Rate Decision", category="central_bank",
+        scheduled_at=at, importance=3,
+        sources=[ProviderRef(provider="fed", url="https://www.federalreserve.gov/", fetched_at=NOW, basis="native")],
+    )
+    ff = parse_forexfactory(
+        [{"title": "Federal Funds Rate", "country": "USD", "date": "2026-12-09T14:00:00-05:00",
+          "impact": "High", "forecast": "3.75%", "previous": "3.50%"}],
+        fetched_at=NOW,
+    )[0]
+    for incoming in ([cb, ff], [ff, cb]):
+        changed = merge_econ_events([], incoming, now=NOW)
+        assert len(changed) == 1
+        ev = changed[0]
+        assert ev.title == "FOMC Interest Rate Decision"
+        assert ev.scheduled_at == at
+        assert ev.forecast == "3.75%" and ev.forecast_value == pytest.approx(3.75)
+        assert {s.provider for s in ev.sources} == {"fed", "forexfactory"}
+
+
+def test_nasdaq_rejects_non_object_payload() -> None:
+    with pytest.raises(ValueError):
+        parse_nasdaq_econ([], day=NASDAQ_DAY, fetched_at=NOW)  # type: ignore[arg-type]

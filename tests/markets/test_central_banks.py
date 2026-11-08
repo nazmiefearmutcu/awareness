@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 
 import httpx
@@ -158,6 +158,7 @@ def boj_events(fixture_path: Callable[[str], Path]) -> list[EconEvent]:
 def test_boj_last_day_all_day(boj_events: list[EconEvent]) -> None:
     assert len(boj_events) == 16
     assert all(e.all_day for e in boj_events)
+    assert len([e for e in boj_events if e.scheduled_at > NOW]) >= 4
     assert _at(boj_events, datetime(2026, 1, 23, 0, 0, tzinfo=UTC))  # "Jan. 22, 23"
     assert _at(boj_events, datetime(2026, 12, 18, 0, 0, tzinfo=UTC))  # "Dec. 17, 18"
     assert _at(boj_events, datetime(2027, 1, 22, 0, 0, tzinfo=UTC))  # "Jan. 21, 22"
@@ -171,8 +172,23 @@ def test_boj_last_day_all_day(boj_events: list[EconEvent]) -> None:
 # ── curated ───────────────────────────────────────────────────────────────
 
 
-def test_packaged_curated_file_holds_no_unverified_dates(markets_settings: MarketsSettings) -> None:
-    assert load_curated_schedules(markets_settings.config_file("central_banks.yaml"), fetched_at=NOW) == []
+def test_packaged_tcmb_schedule_is_verified_and_complete(markets_settings: MarketsSettings) -> None:
+    events = load_curated_schedules(markets_settings.config_file("central_banks.yaml"), fetched_at=NOW)
+    decisions = [e for e in events if e.title == "TCMB Interest Rate Decision"]
+    summaries = [e for e in events if e.title == "TCMB MPC Summary"]
+    assert len(decisions) == 12
+    assert len(summaries) == 12
+    # Turkiye is UTC+3 all year: 14:00 Istanbul = 11:00 UTC.
+    assert all(e.scheduled_at.timetz().replace(tzinfo=None) == time(11, 0) for e in decisions)
+    assert decisions[0].scheduled_at == datetime(2026, 1, 22, 11, 0, tzinfo=UTC)
+    assert decisions[-1].scheduled_at == datetime(2027, 6, 10, 11, 0, tzinfo=UTC)
+    for event in decisions:
+        assert event.country == "TR" and event.currency == "TRY"
+        assert event.importance == 3 and event.category == "central_bank"
+        assert event.sources[0].provider == "tcmb" and event.sources[0].basis == "curated"
+        assert event.sources[0].url.endswith("2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES")
+        assert event.description and "2026-11-08" in event.description
+    assert all(e.all_day and e.importance == 2 for e in summaries)
 
 
 def test_curated_entry_needs_source_and_verification(tmp_path: Path) -> None:
@@ -265,7 +281,7 @@ async def test_central_bank_collector_stores_all_pages(
     assert result.items > 0
     stored = store.query_econ(datetime(2023, 1, 1, tzinfo=UTC), datetime(2028, 12, 31, tzinfo=UTC))
     providers = {s.provider for e in stored for s in e.sources}
-    assert providers == {"fed", "ecb", "boe", "boj"}
+    assert providers == {"fed", "ecb", "boe", "boj", "tcmb"}
     assert CentralBankCollector.name == "econ.central_banks"
     assert CentralBankCollector.interval_s == 86400
 
@@ -297,3 +313,25 @@ async def test_central_bank_collector_raises_when_all_pages_fail(
             await CentralBankCollector().run(_ctx(markets_settings, store, http))
     finally:
         await http.aclose()
+
+
+async def test_empty_page_body_is_skipped_and_collector_continues(
+    markets_settings: MarketsSettings, store: MarketsStore, fixture_path: Callable[[str], Path]
+) -> None:
+    pages = _pages(fixture_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "www.bankofengland.co.uk":
+            return httpx.Response(200, content=b"   \n")  # 200 with an empty body
+        return pages(request)
+
+    http = _fetcher(markets_settings, handler)
+    try:
+        result = await CentralBankCollector().run(_ctx(markets_settings, store, http))
+    finally:
+        await http.aclose()
+    assert result.items > 0
+    stored = store.query_econ(datetime(2023, 1, 1, tzinfo=UTC), datetime(2028, 12, 31, tzinfo=UTC))
+    providers = {s.sources[0].provider for s in stored}
+    assert "boe" not in providers
+    assert {"fed", "ecb", "boj", "tcmb"} <= providers
