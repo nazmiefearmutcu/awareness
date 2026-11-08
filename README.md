@@ -19,6 +19,12 @@ Awareness builds a searchable local collection of public web text. Backfill an a
 
 The FastAPI dashboard and Typer CLI share the same storage and processing modules. SMTP delivery, webhooks, GDELT comparison and Hugging Face publishing are explicit outbound integrations; local storage does not imply that every operation is offline.
 
+## Markets layer (showme data backbone)
+
+`awareness.markets` serves showme's news, sentiment, economic/corporate calendars, holidays, trading
+sessions, SEC filings and market-sentiment indicators — sourced, quality-gated and keyless. Run
+`python -m awareness.markets.app` (http://127.0.0.1:8086). Details: [docs/markets.md](docs/markets.md).
+
 ## Quick start
 
 Requires **Python 3.11+**. From a terminal:
