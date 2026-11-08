@@ -1,0 +1,20 @@
+{
+  "query_details": {
+    "title": "nvidia",
+    "date_resolution": "hour"
+  },
+  "timeline": [
+    {
+      "series": "Average Tone",
+      "data": [
+        {"date": "20261103T020000Z", "value": -0.42},
+        {"date": "20261103T030000Z", "value": 0.18},
+        {"date": "20261103T040000Z", "value": -1.07},
+        {"date": "20261103T050000Z", "value": -0.25},
+        {"date": "20261103T060000Z", "value": 0.61},
+        {"date": "20261103T070000Z", "value": 0.33},
+        {"date": "20261103T080000Z", "value": -0.09}
+      ]
+    }
+  ]
+}
