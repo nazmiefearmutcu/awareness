@@ -13,6 +13,7 @@ import pytest
 
 from awareness.markets.calendar.econ_common import classify
 from awareness.markets.calendar.econ_merge import MergeState
+from awareness.markets.calendar.econ_variants import VariantRow, variant_suffixes
 from awareness.markets.calendar.economic import (
     BeaCollector,
     ForexFactoryCollector,
@@ -846,13 +847,21 @@ def test_duplicate_rows_with_different_unit_pattern_get_unit_labels() -> None:
     assert [e.title for e in events] == ["Leading Index (%)", "Leading Index (level)"]
 
 
-def test_identical_duplicate_rows_fall_back_to_ordinal_labels() -> None:
+def test_identical_duplicate_rows_are_told_apart() -> None:
+    # clearly separated % magnitudes → monthly vs annual (0.3%/0.1% vs -3.1%)
     rows = [
         _row("18:30", "Japan", "Household Spending", consensus="0.3%", previous="0.1%"),
         _row("18:30", "Japan", "Household Spending", previous="-3.1%"),
     ]
     events = parse_nasdaq_econ(_payload(rows), day=date(2026, 11, 10), fetched_at=NOW)
-    assert [e.title for e in events] == ["Household Spending (1 of 2)", "Household Spending (2 of 2)"]
+    assert [e.title for e in events] == ["Household Spending (m/m)", "Household Spending (y/y)"]
+    # nothing distinguishes the rows → ordinal labels
+    rows = [
+        _row("18:30", "Japan", "Leading Index", previous="1.2%"),
+        _row("18:30", "Japan", "Leading Index", previous="1.4%"),
+    ]
+    events = parse_nasdaq_econ(_payload(rows), day=date(2026, 11, 10), fetched_at=NOW)
+    assert [e.title for e in events] == ["Leading Index (1 of 2)", "Leading Index (2 of 2)"]
 
 
 def test_single_row_title_is_not_labelled() -> None:
@@ -916,8 +925,6 @@ async def test_nasdaq_collector_requests_the_day_after_each_target_day(markets_s
 
 
 def test_same_title_percent_rows_are_labelled_by_magnitude() -> None:
-    from awareness.markets.calendar.econ_variants import VariantRow, variant_suffixes
-
     core = [VariantRow(description=None, values=(None, "0.2%", "0.3%")), VariantRow(description=None, values=(None, None, "2.6%"))]
     assert variant_suffixes(core) == ["m/m", "y/y"]
     headline = [VariantRow(description=None, values=(None, None, "3.7%")), VariantRow(description=None, values=(None, "0.3%", "0.6%"))]
