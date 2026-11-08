@@ -387,3 +387,27 @@ def test_amount_and_synonym_folding() -> None:
     assert title_shingles("Firm repurchases stock") == title_shingles("Firm buyback stock")
     assert title_shingles("Company profits fall") == title_shingles("Company earnings fall")
     assert title_shingles("Fed hikes by 25 bps") != title_shingles("Fed hikes by 50 bps")
+
+
+def test_promo_price_pages_never_join_stories_via_entity_rules() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from awareness.markets.models import EntityRef, NewsItem
+    from awareness.markets.news.cluster import StoryClusterer
+
+    now = datetime(2026, 11, 6, 12, tzinfo=UTC)
+    eth = EntityRef(type="crypto", id="ETH", name="Ethereum", confidence=0.95, salience=1.0)
+
+    def mk(title: str, pub: str, hours: float, reasons: list[str]) -> NewsItem:
+        url = f"https://{pub}.example/{abs(hash(title))}"
+        return NewsItem(
+            id=NewsItem.id_for_url(url), url=url, title=title, publisher_id=pub, publisher_name=pub,
+            publisher_domain=f"{pub}.example", publisher_tier=3, published_at=now + timedelta(hours=hours),
+            first_seen_at=now, feed_id="f", entities=[eth], symbols=["ETH"], topics=["crypto_market"],
+            quality_label="standard", quality_reasons=reasons, story_id="s-real",
+        )
+
+    real = mk("Robinhood's crypto chain out-earned Ethereum last quarter", "coindesk", 0, ["tier3:+28"])
+    promo = mk("Current price of Ethereum for November 6, 2026", "fortune", 13.7, ["tier3:+28", "clickbait:-25"])
+    promo = promo.model_copy(update={"story_id": None})
+    assert StoryClusterer().find_story(promo, [real]) is None

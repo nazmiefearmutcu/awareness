@@ -571,6 +571,16 @@ class MarketsStore:
             )
         return len(stories)
 
+    def delete_orphan_stories(self, since: datetime | None = None) -> int:
+        """Delete story rows no news item points at any more (e.g. after a recluster)."""
+        sql = "DELETE FROM stories WHERE id NOT IN (SELECT DISTINCT story_id FROM news WHERE story_id IS NOT NULL)"
+        params: list[Any] = []
+        if since is not None:
+            sql += " AND last_updated_at >= ?"
+            params.append(ts(since))
+        with self._tx() as conn:
+            return conn.execute(sql, params).rowcount
+
     def get_story(self, story_id: str) -> Story | None:
         row = self._conn().execute("SELECT doc FROM stories WHERE id = ?", (story_id,)).fetchone()
         return Story.model_validate_json(row["doc"]) if row else None

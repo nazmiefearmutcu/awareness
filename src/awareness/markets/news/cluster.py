@@ -233,6 +233,12 @@ def _label_for_score(score: float) -> SentimentLabel:
     return "neutral"
 
 
+def _is_promo(item: NewsItem) -> bool:
+    """True when the quality gate flagged the item as clickbait/promo (see ``quality_rules.yaml``)."""
+    return any(str(reason).startswith("clickbait") for reason in item.quality_reasons)
+
+
+
 class StoryClusterer:
     """Assigns items to stories and builds story records from clustered items.
 
@@ -298,8 +304,13 @@ class StoryClusterer:
     def _event_match(
         item: NewsItem, cand: NewsItem, jaccard: float, shared_key: set[str], delta: timedelta
     ) -> bool:
-        """Rules (c) and (d): same company event, judged by a shared salient entity."""
-        if not shared_key:
+        """Rules (c) and (d): same company event, judged by a shared salient entity.
+
+        Promo / evergreen items (anything the quality gate penalised as clickbait, e.g. SEO
+        "current price of …" pages) never join a story through these entity rules — they carry
+        no event, so sharing an entity with real reporting means nothing.
+        """
+        if not shared_key or _is_promo(item) or _is_promo(cand):
             return False
         if item.topics and cand.topics:
             return bool(set(item.topics) & set(cand.topics)) and delta <= _EVENT_WINDOW

@@ -294,7 +294,11 @@ class NewsPipeline:
         if changed:
             self.store.upsert_news(changed)
         self.store.upsert_stories(stories)
-        log.info("recluster: %d items, %d stories, %d changed", len(items), len(stories), len(changed))
+        orphans = self.store.delete_orphan_stories()
+        log.info(
+            "recluster: %d items, %d stories, %d changed, %d orphan stories removed",
+            len(items), len(stories), len(changed), orphans,
+        )
         return len(changed)
 
     # ── stages ────────────────────────────────────────────────────────────

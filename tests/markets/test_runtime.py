@@ -373,3 +373,16 @@ def test_sessions_endpoint_tokyo_lunch_break_and_nyse_early_close(client: TestCl
     assert by_day["2026-11-27"]["early_close"] is True and by_day["2026-11-27"]["close_local"] == "13:00"
     assert by_day["2026-11-24"]["close_local"] == "16:00" and by_day["2026-11-24"]["break_local"] is None
     assert client.get("/v1/markets/calendar/sessions", params={"exchange": "NOPE"}).status_code == 404
+
+
+def test_orphan_stories_are_removed(store: MarketsStore) -> None:
+    now = datetime.now(UTC)
+    s_live = Story(id="live", title="t", lead_item_id="x", corroboration=1, first_seen_at=now, last_updated_at=now)
+    s_orphan = Story(id="orphan", title="t", lead_item_id="y", corroboration=1, first_seen_at=now, last_updated_at=now)
+    store.upsert_stories([s_live, s_orphan])
+    url = "https://www.cnbc.com/z"
+    store.upsert_news([NewsItem(id=NewsItem.id_for_url(url), url=url, title="Some market story title", publisher_id="cnbc",
+                                publisher_name="CNBC", publisher_domain="cnbc.com", publisher_tier=2, published_at=now,
+                                first_seen_at=now, feed_id="cnbc.top", quality_label="standard", story_id="live")])
+    assert store.delete_orphan_stories() == 1
+    assert store.get_story("live") is not None and store.get_story("orphan") is None

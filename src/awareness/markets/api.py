@@ -281,8 +281,8 @@ def create_markets_router(api: MarketsAPI, *, prefix: str = "/v1/markets") -> AP
         out = []
         for s in stories:
             lead = leads.get(s.lead_item_id)
-            if lead is None or QUALITY_ORDER[lead.quality_label] < QUALITY_ORDER["standard"]:
-                continue
+            if lead is None or lead.story_id != s.id or QUALITY_ORDER[lead.quality_label] < QUALITY_ORDER["standard"]:
+                continue  # stale story row (lead re-clustered elsewhere) or hidden lead
             row = s.model_dump(mode="json")
             row["lead"] = _news_dict(lead)
             out.append(row)
