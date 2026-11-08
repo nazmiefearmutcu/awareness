@@ -86,6 +86,8 @@ class FeedSpec(_Model):
     poll_seconds: int = 180
     kind: Literal["rss", "atom", "gnews"] = "rss"
     language: str | None = None
+    # "browser" for publishers that refuse non-browser user agents (verified per feed).
+    profile: Literal["bot", "browser"] = "bot"
 
 
 class Publisher(_Model):
