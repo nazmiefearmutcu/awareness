@@ -32,7 +32,10 @@ _DATE_META_KEYS = frozenset(
     }
 )
 # A publish date must carry a full calendar date; a bare year parses to a fabricated day.
-_FULL_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}|[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}[./]\d{1,2}[./]\d{4}")
+# ISO dates and month-name dates only: "05/06/2026" is ambiguous (day-first or month-first).
+_FULL_DATE_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}|[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+[A-Za-z]{3,9}\.?,?\s+\d{4}"
+)
 _JSONLD_DATE_RE = re.compile(r'"datePublished"\s*:\s*"([^"]+)"')
 
 
@@ -144,8 +147,10 @@ _DISALLOW_ALL = _Rules("disallow_all")
 class RobotsChecker:
     """Per-origin robots.txt cache.
 
-    404/410 → allow all; 401/403 → disallow all; network or server errors → allow
-    (logged once per origin), so a flaky robots endpoint does not block extraction.
+    Definitive answers are cached: 200 → parsed rules; 404/410 → allow all;
+    401/403 → disallow all. Transient failures (5xx, 429, network) allow the current
+    page only and are not cached, so the next page re-reads robots.txt and a
+    temporary outage cannot disable the check for the life of the process.
     """
 
     def __init__(self) -> None:
@@ -157,13 +162,17 @@ class RobotsChecker:
         if parts.scheme not in ("http", "https") or not parts.netloc:
             return False
         origin = f"{parts.scheme}://{parts.netloc}"
-        rules = self._cache.get(origin)
+        agent = user_agent or ROBOT_PRODUCT_NAME
+        cached = self._cache.get(origin)
+        if cached is not None:
+            return cached.allows(url, agent)
+        rules = await self._load(fetcher, origin)
         if rules is None:
-            rules = await self._load(fetcher, origin)
-            self._cache[origin] = rules
-        return rules.allows(url, user_agent or ROBOT_PRODUCT_NAME)
+            return True  # transient failure: allow this page, do not cache
+        self._cache[origin] = rules
+        return rules.allows(url, agent)
 
-    async def _load(self, fetcher: Fetcher, origin: str) -> _Rules:
+    async def _load(self, fetcher: Fetcher, origin: str) -> _Rules | None:
         try:
             result = await fetcher.get(f"{origin}/robots.txt", profile="bot", max_retries=1)
         except FetchError as exc:
@@ -173,8 +182,8 @@ class RobotsChecker:
                 return _DISALLOW_ALL
             if origin not in self._warned:
                 self._warned.add(origin)
-                log.warning("robots.txt unavailable for %s (%s); allowing", origin, exc.message)
-            return _ALLOW_ALL
+                log.warning("robots.txt unavailable for %s (%s); allowing for now", origin, exc.message)
+            return None
         parser = RobotFileParser()
         parser.parse(result.text.splitlines())
         return _Rules("rules", parser)
