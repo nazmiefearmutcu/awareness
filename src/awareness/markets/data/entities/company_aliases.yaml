@@ -112,7 +112,7 @@ companies:
   - {id: BABA, name: Alibaba Group, aliases: [Alibaba, Alibaba Group]}
   - {id: JD, name: JD.com Inc., aliases: [JD.com]}
   - {id: TCEHY, name: Tencent Holdings, aliases: [Tencent]}
-  - {id: BRK-B, name: Berkshire Hathaway Inc., aliases: [Berkshire Hathaway, {text: Berkshire, conf: 0.85}]}
+  - {id: BRK-B, name: Berkshire Hathaway Inc., aliases: [Berkshire Hathaway, {text: Berkshire, conf: 0.85, next_not_capital: true}]}
   - {id: SO, name: Southern Co, aliases: ["Southern Co", "Southern Company"]}
   - {id: BIDU, name: Baidu Inc., aliases: [Baidu]}
   - {id: PDD, name: PDD Holdings, aliases: [PDD Holdings]}

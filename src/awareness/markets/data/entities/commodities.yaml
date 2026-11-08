@@ -27,11 +27,12 @@ commodities:
       - {text: crude oil, conf: 0.85}
       - {text: crude, conf: 0.8}
       - {text: oil, conf: 0.8, exclude_prev: [olive, palm, castor, fish, essential, motor, engine, cooking, sunflower, vegetable], exclude_next: [company, companies, major, majors, giant, giants, producer, producers, shares, stock, stocks, firm, firms, tanker, tankers, spill, executive, executives, exploration]}
-      - {text: petrol, conf: 0.8}
-      - {text: ham petrol, conf: 0.85}
   - id: BRENT
     name: Brent Crude
     aliases:
+      # Turkish media quote Brent as "petrol", but only with price or market context;
+      # company names (Petrol Ofisi, TPAO, Türkiye Petrolleri) never count.
+      - {text: petrol, conf: 0.8, ambiguous: true, window: 4, exclude_next: [ofisi, ofis, istasyonu], context: [fiyat, fiyati, fiyatlari, varil, brent, piyasa, ham, barel]}
       - {text: Brent crude, conf: 0.9}
       - {text: Brent oil, conf: 0.9}
       - {text: Brent, conf: 0.9, capital: true, exclude_next: [Thill, Hunter, Spencer, Schwartz]}

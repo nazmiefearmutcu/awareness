@@ -22,13 +22,17 @@ asset_classes:
     aliases: [credit spread, credit spreads, high yield, junk bond, junk bonds, corporate bond, corporate bonds, investment grade, default risk, eurobond, kredi riski]
   commodities:
     entity_types: [commodity]
-    aliases: [commodity, commodities, emtia, oil, crude, gold, silver, copper, natural gas, wheat, corn, metals, altın, petrol, doğalgaz, bakır, gümüş]
+    aliases: [commodity, commodities, emtia, oil, crude, gold, silver, copper, natural gas, wheat, corn, metals, altın, doğalgaz, bakır, gümüş]
   crypto:
     entity_types: [crypto]
     aliases: [crypto, cryptocurrency, bitcoin, ethereum, stablecoin, altcoin, blockchain, defi, kripto]
   macro:
     entity_types: []
     aliases: [economy, economic, gdp, inflation, unemployment, recession, economic growth, ekonomi, enflasyon, büyüme, makro, macro]
+
+# Phrases that look like a topic but are not (removed from that topic's text only).
+topic_exclusions:
+  dividends_buybacks: [repurchase agreement, repurchase agreements, repo, repos]
 
 # Entity types that add evidence to one topic (score +1.5 when entity confidence >= 0.8).
 entity_topic_hints:
@@ -89,7 +93,7 @@ topics:
     aliases: [lawsuit, lawsuits, sues, sued, court, verdict, settlement, class action, indictment, dava, mahkeme, tazminat]
   energy:
     weight: 1.0
-    aliases: [oil, crude, brent, wti, opec, natural gas, lng, refinery, pipeline, petrol, energy, electricity, enerji, doğalgaz, dogalgaz, elektrik, rafineri]
+    aliases: [oil, crude, brent, wti, opec, natural gas, lng, refinery, pipeline, energy, electricity, enerji, doğalgaz, dogalgaz, elektrik, rafineri]
   metals:
     weight: 1.0
     aliases: [gold, silver, copper, platinum, nickel, aluminium, aluminum, iron ore, lithium, altın, altin, gümüş, gumus, bakır, bakir, metal]
