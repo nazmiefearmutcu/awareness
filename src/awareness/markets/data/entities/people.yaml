@@ -51,19 +51,23 @@ people:
       - {text: Xi, ambiguous: true, context: [China, Chinese, Beijing, Jinping, president, Communist]}
   - id: MUSK
     name: Elon Musk
-    aliases: [Elon Musk, Musk]
+    # A title naming his other companies does not imply Tesla; "Musk cos." is a group, not a person.
+    unless_mention: [SpaceX, xAI, X]
+    aliases:
+      - Elon Musk
+      - {text: Musk, exclude_next: [cos, co, companies, empire, group]}
     links:
       - {type: equity, id: TSLA, conf: 0.65}
   - id: HUANG
     name: Jensen Huang
     aliases: [Jensen Huang]
     links:
-      - {type: equity, id: NVDA, conf: 0.7}
+      - {type: equity, id: NVDA, conf: 0.65}
   - id: COOK
     name: Tim Cook
     aliases: [Tim Cook]
     links:
-      - {type: equity, id: AAPL, conf: 0.7}
+      - {type: equity, id: AAPL, conf: 0.65}
   - id: BUFFETT
     name: Warren Buffett
     aliases: [Warren Buffett, Buffett]

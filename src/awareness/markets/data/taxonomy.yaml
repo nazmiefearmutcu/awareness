@@ -38,7 +38,7 @@ entity_topic_hints:
 topics:
   earnings:
     weight: 1.0
-    aliases: [earnings, eps, quarterly results, quarterly profit, results beat, earnings beat, earnings miss, beats estimates, misses estimates, net income, revenue beat, q1 results, q2 results, q3 results, q4 results, kazanç, kazanc, bilanço, bilanco, net kar, çeyrek kâr]
+    aliases: [earnings, eps, quarterly results, quarterly profit, operating earnings, earnings fall, earnings fell, earnings decline, earnings declined, net profit, profit falls, profits fall, profit fell, profits fell, profit declines, profits decline, profit declined, profits declined, profit drops, profits drop, profit dropped, profits dropped, profit slips, profits slip, profit rises, profits rise, profit rose, profits rose, profit jumps, profits jump, profit jumped, profits jumped, profit surges, profits surge, profit surged, profits surged, kar düştü, kar dustu, kar arttı, kar artti, kari dustu, kari artti, results beat, earnings beat, earnings miss, beats estimates, misses estimates, net income, revenue beat, q1 results, q2 results, q3 results, q4 results, kazanç, kazanc, bilanço, bilanco, net kar, çeyrek kâr]
   guidance:
     weight: 1.0
     aliases: [guidance, outlook, forecast, raises forecast, cuts forecast, lowers forecast, raises outlook, cuts outlook, lowers outlook, raised guidance, cut guidance, lowered guidance, projections, öngörü, ongoru, beklenti, tahmin]
@@ -50,7 +50,7 @@ topics:
     aliases: [ipo, initial public offering, public debut, goes public, listing debut, halka arz]
   dividends_buybacks:
     weight: 1.0
-    aliases: [dividend, dividends, buyback, buybacks, share repurchase, special dividend, temettü, temettu, geri alım, geri alim]
+    aliases: [dividend, dividends, buyback, buybacks, stock buyback, stock buybacks, share buyback, share buybacks, buys back, buy back, buying back, bought back, repurchase, repurchases, repurchased, share repurchase, special dividend, temettü, temettu, geri alım, geri alim]
   analyst_rating:
     weight: 1.0
     aliases: [upgrade, upgrades, downgrade, downgrades, price target, analyst, analysts, outperform, underperform, overweight, underweight, hedef fiyat, tavsiye]
