@@ -7,13 +7,43 @@ Tokyo and Hong Kong.
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
+from collections.abc import Iterable
 from datetime import UTC, date, datetime
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 SUPPORTED_HINT = (
     "XNYS XNAS XIST XLON XETR XPAR XTKS XHKG XSHG XTSE XASX XSWX XAMS XMIL XMAD XKRX XBOM"
 )
+# showme's TRDH default exchange set. The cold ``exchange_calendars`` import alone takes ~5 s, longer
+# than showme's 6 s client timeout once three exchanges are asked for at once, so the service warms
+# these at startup.
+WARM_MICS = ("XNYS", "XNAS", "XLON", "XFRA", "XTKS", "XHKG", "XASX", "XIST")
+
+
+def warm_calendars(mics: Iterable[str] = WARM_MICS) -> int:
+    """Import ``exchange_calendars`` and build (and cache) each calendar; returns how many are ready.
+
+    Never raises: an unknown MIC is skipped (the endpoint answers 404 for it) and a failed import
+    leaves the endpoint to report its own error.
+    """
+    try:
+        import exchange_calendars as xcals
+    except Exception as exc:  # warm-up only
+        log.warning("exchange_calendars import failed: %s", exc)
+        return 0
+    ready = 0
+    for mic in mics:
+        try:
+            xcals.get_calendar(mic.strip().upper())
+        except Exception as exc:  # warm-up only
+            log.debug("calendar warm-up skipped %s: %s", mic, exc)
+            continue
+        ready += 1
+    return ready
 
 
 def _to_utc(ts: Any) -> datetime | None:

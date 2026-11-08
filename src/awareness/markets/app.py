@@ -43,6 +43,7 @@ class MarketsService:
         self._collectors = collectors
         self.runner: MarketsRunner | None = None
         self._recluster_task: asyncio.Task[None] | None = None
+        self._warm_task: asyncio.Task[None] | None = None
         self.store.ensure_watchlist(settings.watchlist)
 
     def build_pipeline(self) -> None:
@@ -66,7 +67,18 @@ class MarketsService:
             now=lambda: datetime.now(UTC),
         )
 
+    async def _warm_sessions(self) -> None:
+        """Pre-load exchange calendars so the first /calendar/sessions call after a restart is fast."""
+        try:
+            from awareness.markets.calendar import sessions
+
+            ready = await asyncio.to_thread(sessions.warm_calendars)
+            log.info("exchange calendars warmed: %d", ready)
+        except Exception as exc:  # warm-up only
+            log.warning("exchange calendar warm-up failed: %s", exc)
+
     async def start_runner(self) -> None:
+        self._warm_task = asyncio.create_task(self._warm_sessions())
         if self.pipeline is None and self.pipeline_error is None:
             await asyncio.to_thread(self.build_pipeline)  # FinBERT load must not block HTTP
         collectors = list(self._collectors) if self._collectors is not None else default_collectors()
@@ -122,6 +134,10 @@ class MarketsService:
             log.warning("startup maintenance failed: %s", exc)
 
     async def close(self) -> None:
+        if self._warm_task is not None and not self._warm_task.done():
+            self._warm_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._warm_task
         if self._recluster_task is not None and not self._recluster_task.done():
             self._recluster_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):

@@ -11,7 +11,9 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from awareness.markets.app import create_app
+from awareness.markets.app import MarketsService, create_app
+from awareness.markets.calendar import sessions
+from awareness.markets.calendar.sessions import WARM_MICS, warm_calendars
 from awareness.markets.collectors.base import CollectorContext, CollectorResult
 from awareness.markets.config import MarketsSettings
 from awareness.markets.http import Fetcher, FetchError
@@ -376,6 +378,32 @@ def test_sessions_endpoint_tokyo_lunch_break_and_nyse_early_close(client: TestCl
     assert by_day["2026-11-27"]["early_close"] is True and by_day["2026-11-27"]["close_local"] == "13:00"
     assert by_day["2026-11-24"]["close_local"] == "16:00" and by_day["2026-11-24"]["break_local"] is None
     assert client.get("/v1/markets/calendar/sessions", params={"exchange": "NOPE"}).status_code == 404
+
+
+def test_warm_calendars_builds_known_and_skips_unknown() -> None:
+    assert warm_calendars([" xnys ", "NOPE"]) == 1
+    assert {"XNYS", "XTKS", "XHKG", "XIST"} <= set(WARM_MICS)
+
+
+def test_start_runner_warms_exchange_calendars(markets_settings: MarketsSettings, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_warm(mics: tuple[str, ...] = sessions.WARM_MICS) -> int:
+        calls.append(tuple(mics))
+        return len(mics)
+
+    monkeypatch.setattr(sessions, "warm_calendars", fake_warm)
+
+    async def run() -> None:
+        svc = MarketsService(markets_settings, collectors=[])
+        svc.pipeline = object()  # keeps FinBERT out of the test
+        await svc.start_runner()
+        assert svc._warm_task is not None
+        await svc._warm_task
+        await svc.close()
+
+    asyncio.run(run())
+    assert calls == [sessions.WARM_MICS]
 
 
 def test_orphan_stories_are_removed(store: MarketsStore) -> None:
