@@ -913,3 +913,14 @@ async def test_nasdaq_collector_requests_the_day_after_each_target_day(markets_s
     assert requested == ["2026-11-10"]
     stored = store.query_econ(datetime(2026, 11, 9, tzinfo=UTC), datetime(2026, 11, 9, 23, 59, tzinfo=UTC))
     assert stored and all(e.scheduled_at.date().isoformat() in ("2026-11-09", "2026-11-10") for e in stored)
+
+
+def test_same_title_percent_rows_are_labelled_by_magnitude() -> None:
+    from awareness.markets.calendar.econ_variants import VariantRow, variant_suffixes
+
+    core = [VariantRow(description=None, values=(None, "0.2%", "0.3%")), VariantRow(description=None, values=(None, None, "2.6%"))]
+    assert variant_suffixes(core) == ["m/m", "y/y"]
+    headline = [VariantRow(description=None, values=(None, None, "3.7%")), VariantRow(description=None, values=(None, "0.3%", "0.6%"))]
+    assert variant_suffixes(headline) == ["y/y", "m/m"]
+    unclear = [VariantRow(description=None, values=(None, None, "1.2%")), VariantRow(description=None, values=(None, None, "1.4%"))]
+    assert variant_suffixes(unclear) == ["1 of 2", "2 of 2"]
