@@ -1,8 +1,102 @@
 # Curated publisher registry (allowlist) for awareness.markets.
 # Tier: 1 official + top wires · 2 major financial press · 3 quality general/regional/specialist
-#       4 aggregators, PR wires, opinion platforms · 5 community/social
-# Seed list (T0). Task T1 expands it; every feed URL here answered 200 on 2026-11-08.
+#       4 aggregators, PR wires, opinion/contributor platforms · 5 community/social
+# Every feed URL below was fetched live on 2026-11-08 and returned >= 1 entry with link + title.
+# `profile: browser` is used only where the bot user agent was refused.
+# Publishers with `feeds: []` are allowlisted origins for Google News only (no public RSS).
 publishers:
+  # ── tier 1: official sources and top wires ───────────────────────────
+  - id: federal_reserve
+    name: Federal Reserve
+    domain: federalreserve.gov
+    tier: 1
+    kind: official
+    region: US
+    fetch_fulltext: true
+    feeds:
+      - {id: fed.press_all, url: "https://www.federalreserve.gov/feeds/press_all.xml", categories: [central_bank, rates], poll_seconds: 300}
+      - {id: fed.speeches, url: "https://www.federalreserve.gov/feeds/speeches.xml", categories: [central_bank], poll_seconds: 600}
+  - id: ecb
+    name: European Central Bank
+    domain: ecb.europa.eu
+    tier: 1
+    kind: official
+    region: EU
+    fetch_fulltext: true
+    feeds:
+      - {id: ecb.press, url: "https://www.ecb.europa.eu/rss/press.html", categories: [central_bank, rates], poll_seconds: 300}
+  - id: bank_of_england
+    name: Bank of England
+    domain: bankofengland.co.uk
+    tier: 1
+    kind: official
+    region: GB
+    fetch_fulltext: true
+    feeds:
+      - {id: boe.news, url: "https://www.bankofengland.co.uk/rss/news", categories: [central_bank, rates], poll_seconds: 300}
+  - id: bank_of_japan
+    name: Bank of Japan
+    domain: boj.or.jp
+    tier: 1
+    kind: official
+    region: JP
+    fetch_fulltext: false
+    feeds:
+      - {id: boj.whatsnew, url: "https://www.boj.or.jp/en/rss/whatsnew.xml", categories: [central_bank], poll_seconds: 600}
+  - id: rba
+    name: Reserve Bank of Australia
+    domain: rba.gov.au
+    tier: 1
+    kind: official
+    region: AU
+    fetch_fulltext: false
+    feeds:
+      - {id: rba.media, url: "https://www.rba.gov.au/rss/rss-cb-media-releases.xml", categories: [central_bank], poll_seconds: 600}
+  - id: bank_of_canada
+    name: Bank of Canada
+    domain: bankofcanada.ca
+    tier: 1
+    kind: official
+    region: CA
+    fetch_fulltext: false
+    feeds:
+      - {id: boc.news, url: "https://www.bankofcanada.ca/feed/", categories: [central_bank], poll_seconds: 600}
+  - id: bis
+    name: Bank for International Settlements
+    domain: bis.org
+    tier: 1
+    kind: official
+    region: GLOBAL
+    fetch_fulltext: false
+    feeds:
+      - {id: bis.speeches, url: "https://www.bis.org/doclist/cbspeeches.rss", categories: [central_bank], poll_seconds: 600}
+  - id: sec
+    name: U.S. Securities and Exchange Commission
+    domain: sec.gov
+    tier: 1
+    kind: regulator
+    region: US
+    fetch_fulltext: false
+    feeds:
+      - {id: sec.press, url: "https://www.sec.gov/news/pressreleases.rss", categories: [regulation], poll_seconds: 300}
+  - id: bea
+    name: U.S. Bureau of Economic Analysis
+    domain: bea.gov
+    tier: 1
+    kind: official
+    region: US
+    fetch_fulltext: false
+    feeds:
+      - {id: bea.news, url: "https://apps.bea.gov/rss/rss.xml", categories: [economy], poll_seconds: 900}
+  - id: us_treasury
+    name: U.S. Department of the Treasury
+    domain: treasury.gov
+    tier: 1
+    kind: official
+    region: US
+    fetch_fulltext: false
+    feeds:
+      - {id: treasury.news, url: "https://home.treasury.gov/rss.xml", categories: [economy, regulation], poll_seconds: 600}
   - id: bloomberg
     name: Bloomberg
     domain: bloomberg.com
@@ -13,15 +107,26 @@ publishers:
     fetch_fulltext: false
     feeds:
       - {id: bloomberg.markets, url: "https://feeds.bloomberg.com/markets/news.rss", categories: [markets], poll_seconds: 120}
-  - id: federal_reserve
-    name: Federal Reserve
-    domain: federalreserve.gov
+      - {id: bloomberg.economics, url: "https://feeds.bloomberg.com/economics/news.rss", categories: [economy], poll_seconds: 300}
+      - {id: bloomberg.technology, url: "https://feeds.bloomberg.com/technology/news.rss", categories: [business], poll_seconds: 300}
+  - id: reuters
+    name: Reuters
+    domain: reuters.com
     tier: 1
-    kind: official
-    region: US
-    fetch_fulltext: true
-    feeds:
-      - {id: fed.press_all, url: "https://www.federalreserve.gov/feeds/press_all.xml", categories: [central_bank, rates], poll_seconds: 300}
+    kind: wire
+    region: GLOBAL
+    fetch_fulltext: false
+    feeds: []
+  - id: ap
+    name: Associated Press
+    domain: apnews.com
+    tier: 1
+    kind: wire
+    region: GLOBAL
+    fetch_fulltext: false
+    feeds: []
+
+  # ── tier 2: major financial press ────────────────────────────────────
   - id: wsj
     name: The Wall Street Journal
     domain: wsj.com
@@ -32,6 +137,9 @@ publishers:
     aliases: [dj.com]
     feeds:
       - {id: wsj.markets, url: "https://feeds.a.dj.com/rss/RSSMarketsMain.xml", categories: [markets], poll_seconds: 180}
+      - {id: wsj.world, url: "https://feeds.a.dj.com/rss/RSSWorldNews.xml", categories: [world, economy], poll_seconds: 300}
+      - {id: wsj.us_business, url: "https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml", categories: [business], poll_seconds: 300}
+      - {id: wsj.tech, url: "https://feeds.a.dj.com/rss/RSSWSJD.xml", categories: [technology], poll_seconds: 300}
   - id: cnbc
     name: CNBC
     domain: cnbc.com
@@ -41,6 +149,12 @@ publishers:
     fetch_fulltext: true
     feeds:
       - {id: cnbc.top, url: "https://www.cnbc.com/id/100003114/device/rss/rss.html", categories: [markets, business], poll_seconds: 120}
+      - {id: cnbc.economy, url: "https://www.cnbc.com/id/20910258/device/rss/rss.html", categories: [economy], poll_seconds: 180}
+      - {id: cnbc.finance, url: "https://www.cnbc.com/id/10000664/device/rss/rss.html", categories: [markets], poll_seconds: 180}
+      - {id: cnbc.earnings, url: "https://www.cnbc.com/id/15839135/device/rss/rss.html", categories: [earnings], poll_seconds: 180}
+      - {id: cnbc.technology, url: "https://www.cnbc.com/id/19854910/device/rss/rss.html", categories: [technology], poll_seconds: 240}
+      - {id: cnbc.world, url: "https://www.cnbc.com/id/100727362/device/rss/rss.html", categories: [world], poll_seconds: 240}
+      - {id: cnbc.investing, url: "https://www.cnbc.com/id/15839069/device/rss/rss.html", categories: [markets], poll_seconds: 240}
   - id: marketwatch
     name: MarketWatch
     domain: marketwatch.com
@@ -50,6 +164,9 @@ publishers:
     aliases: [content.dowjones.io]
     feeds:
       - {id: marketwatch.top, url: "https://feeds.content.dowjones.io/public/rss/mw_topstories", categories: [markets], poll_seconds: 180}
+      - {id: marketwatch.realtime, url: "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines", categories: [markets], poll_seconds: 180}
+      - {id: marketwatch.marketpulse, url: "https://feeds.content.dowjones.io/public/rss/mw_marketpulse", categories: [markets, economy], poll_seconds: 240}
+      - {id: marketwatch.bulletins, url: "https://feeds.content.dowjones.io/public/rss/mw_bulletins", categories: [markets], poll_seconds: 300}
   - id: ft
     name: Financial Times
     domain: ft.com
@@ -59,6 +176,38 @@ publishers:
     paywalled: true
     feeds:
       - {id: ft.home, url: "https://www.ft.com/rss/home", categories: [markets, business], poll_seconds: 240}
+      - {id: ft.markets, url: "https://www.ft.com/markets?format=rss", categories: [markets], poll_seconds: 240}
+      - {id: ft.global_economy, url: "https://www.ft.com/global-economy?format=rss", categories: [economy], poll_seconds: 300}
+  - id: economist
+    name: The Economist
+    domain: economist.com
+    tier: 2
+    kind: financial_press
+    region: GB
+    paywalled: true
+    feeds:
+      - {id: economist.finance, url: "https://www.economist.com/finance-and-economics/rss.xml", categories: [markets, economy], poll_seconds: 600}
+      - {id: economist.business, url: "https://www.economist.com/business/rss.xml", categories: [business], poll_seconds: 600}
+  - id: barrons
+    name: Barron's
+    domain: barrons.com
+    tier: 2
+    kind: financial_press
+    region: US
+    paywalled: true
+    fetch_fulltext: false
+    feeds: []
+  - id: nikkei
+    name: Nikkei Asia
+    domain: asia.nikkei.com
+    tier: 2
+    kind: financial_press
+    region: JP
+    paywalled: true
+    feeds:
+      - {id: nikkei.asia, url: "https://asia.nikkei.com/rss/feed/nar", categories: [markets, economy], poll_seconds: 300}
+
+  # ── tier 3: quality general, regional and specialist ─────────────────
   - id: bbc
     name: BBC News
     domain: bbc.co.uk
@@ -69,6 +218,216 @@ publishers:
     aliases: [bbc.com]
     feeds:
       - {id: bbc.business, url: "https://feeds.bbci.co.uk/news/business/rss.xml", categories: [business], poll_seconds: 240}
+  - id: guardian
+    name: The Guardian
+    domain: theguardian.com
+    tier: 3
+    kind: general_press
+    region: GB
+    fetch_fulltext: true
+    feeds:
+      - {id: guardian.business, url: "https://www.theguardian.com/uk/business/rss", categories: [business], poll_seconds: 240}
+      - {id: guardian.economics, url: "https://www.theguardian.com/business/economics/rss", categories: [economy], poll_seconds: 300}
+  - id: nyt
+    name: The New York Times
+    domain: nytimes.com
+    tier: 3
+    kind: general_press
+    region: US
+    paywalled: true
+    feeds:
+      - {id: nyt.business, url: "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", categories: [business], poll_seconds: 240}
+      - {id: nyt.economy, url: "https://rss.nytimes.com/services/xml/rss/nyt/Economy.xml", categories: [economy], poll_seconds: 300}
+      - {id: nyt.dealbook, url: "https://rss.nytimes.com/services/xml/rss/nyt/Dealbook.xml", categories: [business, markets], poll_seconds: 300}
+  - id: npr
+    name: NPR
+    domain: npr.org
+    tier: 3
+    kind: general_press
+    region: US
+    fetch_fulltext: true
+    feeds:
+      - {id: npr.business, url: "https://feeds.npr.org/1006/rss.xml", categories: [business], poll_seconds: 300}
+  - id: cbs_news
+    name: CBS News
+    domain: cbsnews.com
+    tier: 3
+    kind: general_press
+    region: US
+    fetch_fulltext: true
+    feeds:
+      - {id: cbs.moneywatch, url: "https://www.cbsnews.com/latest/rss/moneywatch", categories: [business, economy], poll_seconds: 300}
+  - id: washington_post
+    name: The Washington Post
+    domain: washingtonpost.com
+    tier: 3
+    kind: general_press
+    region: US
+    paywalled: true
+    feeds:
+      - {id: wapo.business, url: "https://feeds.washingtonpost.com/rss/business", categories: [business], poll_seconds: 300}
+  - id: la_times
+    name: Los Angeles Times
+    domain: latimes.com
+    tier: 3
+    kind: general_press
+    region: US
+    paywalled: true
+    feeds:
+      - {id: latimes.business, url: "https://www.latimes.com/business/rss2.0.xml", categories: [business], poll_seconds: 600}
+  - id: fox_business
+    name: Fox Business
+    domain: foxbusiness.com
+    tier: 3
+    kind: general_press
+    region: US
+    feeds:
+      - {id: foxbiz.markets, url: "https://moxie.foxbusiness.com/google-publisher/markets.xml", categories: [markets], poll_seconds: 300}
+  - id: cbc
+    name: CBC News
+    domain: cbc.ca
+    tier: 3
+    kind: general_press
+    region: CA
+    fetch_fulltext: true
+    feeds:
+      - {id: cbc.business, url: "https://www.cbc.ca/cmlink/rss-business", categories: [business], poll_seconds: 300, profile: browser}
+  - id: globe_and_mail
+    name: The Globe and Mail
+    domain: theglobeandmail.com
+    tier: 3
+    kind: general_press
+    region: CA
+    paywalled: true
+    feeds:
+      - {id: globemail.business, url: "https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/business/", categories: [business], poll_seconds: 300}
+  - id: dw
+    name: Deutsche Welle
+    domain: dw.com
+    tier: 3
+    kind: general_press
+    region: DE
+    fetch_fulltext: true
+    feeds:
+      - {id: dw.business, url: "https://rss.dw.com/rdf/rss-en-bus", categories: [business, economy], poll_seconds: 300}
+  - id: spiegel
+    name: Der Spiegel
+    domain: spiegel.de
+    tier: 3
+    kind: general_press
+    region: DE
+    languages: [de]
+    paywalled: true
+    feeds:
+      - {id: spiegel.wirtschaft, url: "https://www.spiegel.de/wirtschaft/index.rss", categories: [economy], poll_seconds: 300, language: de}
+  - id: lemonde
+    name: Le Monde
+    domain: lemonde.fr
+    tier: 3
+    kind: general_press
+    region: FR
+    languages: [fr]
+    paywalled: true
+    feeds:
+      - {id: lemonde.economie, url: "https://www.lemonde.fr/economie/rss_full.xml", categories: [economy], poll_seconds: 300, language: fr}
+  - id: france24
+    name: France 24
+    domain: france24.com
+    tier: 3
+    kind: general_press
+    region: FR
+    fetch_fulltext: true
+    feeds:
+      - {id: france24.economy, url: "https://www.france24.com/en/economy/rss", categories: [economy], poll_seconds: 300}
+  - id: euronews
+    name: Euronews
+    domain: euronews.com
+    tier: 3
+    kind: general_press
+    region: EU
+    fetch_fulltext: true
+    feeds:
+      - {id: euronews.business, url: "https://www.euronews.com/rss?level=theme&name=business", categories: [business], poll_seconds: 300}
+  - id: cna
+    name: CNA (Channel NewsAsia)
+    domain: channelnewsasia.com
+    tier: 3
+    kind: general_press
+    region: SG
+    fetch_fulltext: true
+    feeds:
+      - {id: cna.business, url: "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511", categories: [business], poll_seconds: 300}
+  - id: scmp
+    name: South China Morning Post
+    domain: scmp.com
+    tier: 3
+    kind: general_press
+    region: HK
+    paywalled: true
+    feeds:
+      - {id: scmp.business, url: "https://www.scmp.com/rss/92/feed", categories: [business], poll_seconds: 300}
+  - id: straits_times
+    name: The Straits Times
+    domain: straitstimes.com
+    tier: 3
+    kind: general_press
+    region: SG
+    fetch_fulltext: true
+    feeds:
+      - {id: straitstimes.business, url: "https://www.straitstimes.com/news/business/rss.xml", categories: [business], poll_seconds: 300}
+  - id: economic_times
+    name: The Economic Times
+    domain: economictimes.indiatimes.com
+    tier: 3
+    kind: general_press
+    region: IN
+    fetch_fulltext: true
+    feeds:
+      - {id: et.markets, url: "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms", categories: [markets, equities], poll_seconds: 240}
+  - id: the_hindu_businessline
+    name: The Hindu BusinessLine
+    domain: thehindubusinessline.com
+    tier: 3
+    kind: general_press
+    region: IN
+    fetch_fulltext: true
+    feeds:
+      - {id: hindu.markets, url: "https://www.thehindubusinessline.com/markets/?service=rss", categories: [markets], poll_seconds: 300}
+  - id: livemint
+    name: Mint (Livemint)
+    domain: livemint.com
+    tier: 3
+    kind: general_press
+    region: IN
+    fetch_fulltext: true
+    feeds:
+      - {id: livemint.markets, url: "https://www.livemint.com/rss/markets", categories: [markets], poll_seconds: 300}
+  - id: axios
+    name: Axios
+    domain: axios.com
+    tier: 3
+    kind: general_press
+    region: US
+    fetch_fulltext: true
+    feeds:
+      - {id: axios.business, url: "https://www.axios.com/feeds/feed.rss", categories: [business], poll_seconds: 300}
+  - id: fortune
+    name: Fortune
+    domain: fortune.com
+    tier: 3
+    kind: general_press
+    region: US
+    fetch_fulltext: true
+    feeds:
+      - {id: fortune.business, url: "https://fortune.com/feed/", categories: [business], poll_seconds: 300}
+  - id: business_insider
+    name: Business Insider
+    domain: businessinsider.com
+    tier: 3
+    kind: general_press
+    region: US
+    feeds:
+      - {id: businessinsider.news, url: "https://www.businessinsider.com/rss", categories: [business], poll_seconds: 300, kind: atom}
   - id: coindesk
     name: CoinDesk
     domain: coindesk.com
@@ -78,6 +437,48 @@ publishers:
     fetch_fulltext: true
     feeds:
       - {id: coindesk.all, url: "https://www.coindesk.com/arc/outboundfeeds/rss/", categories: [crypto], poll_seconds: 180}
+  - id: cointelegraph
+    name: Cointelegraph
+    domain: cointelegraph.com
+    tier: 3
+    kind: specialist
+    region: GLOBAL
+    fetch_fulltext: true
+    feeds:
+      - {id: cointelegraph.all, url: "https://cointelegraph.com/rss", categories: [crypto], poll_seconds: 240}
+  - id: decrypt
+    name: Decrypt
+    domain: decrypt.co
+    tier: 3
+    kind: specialist
+    region: GLOBAL
+    fetch_fulltext: true
+    feeds:
+      - {id: decrypt.all, url: "https://decrypt.co/feed", categories: [crypto], poll_seconds: 300}
+  - id: the_block
+    name: The Block
+    domain: theblock.co
+    tier: 3
+    kind: specialist
+    region: GLOBAL
+    feeds:
+      - {id: theblock.all, url: "https://www.theblock.co/rss.xml", categories: [crypto], poll_seconds: 300}
+  - id: mining_com
+    name: Mining.com
+    domain: mining.com
+    tier: 3
+    kind: specialist
+    region: GLOBAL
+    feeds:
+      - {id: mining.news, url: "https://www.mining.com/feed/", categories: [commodities], poll_seconds: 600, profile: browser}
+  - id: oilprice
+    name: OilPrice.com
+    domain: oilprice.com
+    tier: 3
+    kind: specialist
+    region: GLOBAL
+    feeds:
+      - {id: oilprice.main, url: "https://oilprice.com/rss/main", categories: [commodities], poll_seconds: 600}
   - id: anadolu
     name: Anadolu Ajansı
     domain: aa.com.tr
@@ -88,6 +489,68 @@ publishers:
     fetch_fulltext: true
     feeds:
       - {id: aa.ekonomi, url: "https://www.aa.com.tr/tr/rss/default?cat=ekonomi", categories: [economy], poll_seconds: 300, language: tr}
+  - id: bloomberg_ht
+    name: Bloomberg HT
+    domain: bloomberght.com
+    tier: 3
+    kind: financial_press
+    region: TR
+    languages: [tr]
+    fetch_fulltext: true
+    feeds:
+      - {id: bloomberght.all, url: "https://www.bloomberght.com/rss", categories: [markets, economy], poll_seconds: 180, language: tr}
+  - id: ntv
+    name: NTV
+    domain: ntv.com.tr
+    tier: 3
+    kind: general_press
+    region: TR
+    languages: [tr]
+    fetch_fulltext: true
+    feeds:
+      - {id: ntv.ekonomi, url: "https://www.ntv.com.tr/ekonomi.rss", categories: [economy], poll_seconds: 300, language: tr}
+  - id: haberturk
+    name: Habertürk
+    domain: haberturk.com
+    tier: 3
+    kind: general_press
+    region: TR
+    languages: [tr]
+    fetch_fulltext: true
+    feeds:
+      - {id: haberturk.ekonomi, url: "https://www.haberturk.com/rss/ekonomi.xml", categories: [economy], poll_seconds: 300, language: tr}
+  - id: dunya
+    name: Dünya
+    domain: dunya.com
+    tier: 3
+    kind: general_press
+    region: TR
+    languages: [tr]
+    fetch_fulltext: true
+    feeds:
+      - {id: dunya.all, url: "https://www.dunya.com/rss", categories: [economy, markets], poll_seconds: 300, language: tr}
+  - id: hurriyet
+    name: Hürriyet
+    domain: hurriyet.com.tr
+    tier: 3
+    kind: general_press
+    region: TR
+    languages: [tr]
+    fetch_fulltext: true
+    feeds:
+      - {id: hurriyet.ekonomi, url: "https://www.hurriyet.com.tr/rss/ekonomi", categories: [economy], poll_seconds: 300, language: tr}
+  - id: sabah
+    name: Sabah
+    domain: sabah.com.tr
+    tier: 3
+    kind: general_press
+    region: TR
+    languages: [tr]
+    fetch_fulltext: true
+    feeds:
+      - {id: sabah.ekonomi, url: "https://www.sabah.com.tr/rss/ekonomi.xml", categories: [economy], poll_seconds: 300, language: tr}
+
+  # ── tier 4: aggregators, PR wires, contributor platforms ─────────────
   - id: yahoo_finance
     name: Yahoo Finance
     domain: finance.yahoo.com
@@ -96,6 +559,87 @@ publishers:
     region: US
     aliases: [yahoo.com]
     feeds: []
+  - id: nasdaq
+    name: Nasdaq
+    domain: nasdaq.com
+    tier: 4
+    kind: aggregator
+    region: US
+    feeds:
+      - {id: nasdaq.markets, url: "https://www.nasdaq.com/feed/rssoutbound?category=Markets", categories: [markets], poll_seconds: 300, profile: browser}
+  - id: investing_com
+    name: Investing.com
+    domain: investing.com
+    tier: 4
+    kind: aggregator
+    region: GLOBAL
+    feeds:
+      - {id: investing.news, url: "https://www.investing.com/rss/news.rss", categories: [markets], poll_seconds: 300}
+  - id: fxstreet
+    name: FXStreet
+    domain: fxstreet.com
+    tier: 4
+    kind: specialist
+    region: GLOBAL
+    feeds:
+      - {id: fxstreet.news, url: "https://www.fxstreet.com/rss/news", categories: [markets, rates], poll_seconds: 300}
+  - id: seeking_alpha
+    name: Seeking Alpha
+    domain: seekingalpha.com
+    tier: 4
+    kind: aggregator
+    region: US
+    feeds:
+      - {id: seekingalpha.currents, url: "https://seekingalpha.com/market_currents.xml", categories: [markets, equities], poll_seconds: 300}
+  - id: motley_fool
+    name: The Motley Fool
+    domain: fool.com
+    tier: 4
+    kind: aggregator
+    region: US
+    feeds:
+      - {id: fool.all, url: "https://www.fool.com/feeds/index.aspx", categories: [equities], poll_seconds: 600}
+  - id: investorplace
+    name: InvestorPlace
+    domain: investorplace.com
+    tier: 4
+    kind: aggregator
+    region: US
+    feeds:
+      - {id: investorplace.all, url: "https://investorplace.com/feed/", categories: [equities], poll_seconds: 600}
+  - id: benzinga
+    name: Benzinga
+    domain: benzinga.com
+    tier: 4
+    kind: aggregator
+    region: US
+    feeds:
+      - {id: benzinga.all, url: "https://www.benzinga.com/feed", categories: [equities], poll_seconds: 600}
+  - id: forbes
+    name: Forbes
+    domain: forbes.com
+    tier: 4
+    kind: general_press
+    region: US
+    feeds:
+      - {id: forbes.business, url: "https://www.forbes.com/business/feed/", categories: [business], poll_seconds: 600}
+  - id: prnewswire
+    name: PR Newswire
+    domain: prnewswire.com
+    tier: 4
+    kind: press_release
+    region: GLOBAL
+    feeds:
+      - {id: prnewswire.financial, url: "https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss", categories: [earnings, markets], poll_seconds: 180}
+  - id: business_wire
+    name: Business Wire
+    domain: businesswire.com
+    tier: 4
+    kind: press_release
+    region: GLOBAL
+    feeds: []
+
+  # ── tier 5: community and social ─────────────────────────────────────
   - id: reddit
     name: Reddit
     domain: reddit.com
@@ -104,3 +648,7 @@ publishers:
     region: GLOBAL
     feeds:
       - {id: reddit.stocks, url: "https://www.reddit.com/r/stocks/new/.rss", categories: [social, equities], poll_seconds: 600, kind: atom}
+      - {id: reddit.investing, url: "https://www.reddit.com/r/investing/new/.rss", categories: [social, equities], poll_seconds: 600, kind: atom}
+      - {id: reddit.wallstreetbets, url: "https://www.reddit.com/r/wallstreetbets/new/.rss", categories: [social, equities], poll_seconds: 900, kind: atom}
+      - {id: reddit.cryptocurrency, url: "https://www.reddit.com/r/CryptoCurrency/new/.rss", categories: [social, crypto], poll_seconds: 900, kind: atom}
+      - {id: reddit.borsa, url: "https://www.reddit.com/r/borsa/new/.rss", categories: [social, equities], poll_seconds: 900, kind: atom, language: tr}
