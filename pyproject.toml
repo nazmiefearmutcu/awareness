@@ -115,7 +115,7 @@ ignore = ["S101", "PLR0913", "PLR2004", "E501"]
 "src/awareness/markets/**" = ["PLC0415"]
 # Collectors accept a per-request timeout for the underlying httpx call.
 "src/awareness/markets/http.py" = ["ASYNC109"]
-"tests/markets/**" = ["S608", "PLR0915"]
+"tests/markets/**" = ["S608", "PLR0915", "RUF001"]  # Turkish fixture text
 
 [tool.mypy]
 python_version = "3.11"

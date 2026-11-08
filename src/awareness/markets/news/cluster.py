@@ -106,6 +106,7 @@ _KEY_SALIENCE = 0.9
 _KEY_ENTITY_TYPES = frozenset({"equity", "crypto", "central_bank", "index", "commodity"})
 _TITLE_JACCARD = 0.5
 _FALLBACK_JACCARD = 0.25
+_INSTITUTION_JACCARD = 0.3
 _EVENT_WINDOW = timedelta(hours=18)
 _FALLBACK_WINDOW = timedelta(hours=12)
 _SENTIMENT_BAND = 0.15
@@ -225,6 +226,18 @@ def _key_entities(item: NewsItem) -> set[str]:
     }
 
 
+def _company_key_entities(item: NewsItem) -> set[str]:
+    """Key entities that identify ONE issuer (equity/crypto). Central banks, indices and
+    commodities are covered by many unrelated stories a day, so they do not define an event."""
+    return {
+        e.id
+        for e in item.entities
+        if e.type in ("equity", "crypto")
+        and e.salience >= _KEY_SALIENCE
+        and e.confidence >= _HIGH_CONFIDENCE
+    }
+
+
 def _label_for_score(score: float) -> SentimentLabel:
     if score >= _SENTIMENT_BAND:
         return "positive"
@@ -313,7 +326,13 @@ class StoryClusterer:
         if not shared_key or _is_promo(item) or _is_promo(cand):
             return False
         if item.topics and cand.topics:
-            return bool(set(item.topics) & set(cand.topics)) and delta <= _EVENT_WINDOW
+            if not (set(item.topics) & set(cand.topics)):
+                return False
+            if _company_key_entities(item) & _company_key_entities(cand):
+                return delta <= _EVENT_WINDOW
+            # shared central bank / index / commodity only: one institution, many stories a day —
+            # also require the headlines to overlap.
+            return jaccard >= _INSTITUTION_JACCARD and delta <= _FALLBACK_WINDOW
         return jaccard >= _FALLBACK_JACCARD and delta <= _FALLBACK_WINDOW
 
     def new_story_id(self, item: NewsItem) -> str:

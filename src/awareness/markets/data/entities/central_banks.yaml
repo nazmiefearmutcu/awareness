@@ -8,21 +8,24 @@ banks:
       - {text: Fed, exclude_next: [up, down]}
       - FOMC
       - Federal Open Market Committee
+      - ABD Merkez Bankası
+      - ABD Merkez Bankasi
+      - Amerikan Merkez Bankası
   - id: ECB
     country: EU
-    aliases: [European Central Bank, ECB]
+    aliases: [European Central Bank, ECB, Avrupa Merkez Bankası, Avrupa Merkez Bankasi, AMB]
   - id: BOE
     country: GB
-    aliases: [Bank of England, BoE, BOE]
+    aliases: [Bank of England, BoE, BOE, İngiltere Merkez Bankası, Ingiltere Merkez Bankasi]
   - id: BOJ
     country: JP
-    aliases: [Bank of Japan, BoJ, BOJ]
+    aliases: [Bank of Japan, BoJ, BOJ, Japonya Merkez Bankası, Japonya Merkez Bankasi]
   - id: PBOC
     country: CN
-    aliases: ["People's Bank of China", PBOC, PBoC]
+    aliases: ["People's Bank of China", PBOC, PBoC, Çin Merkez Bankası, Cin Merkez Bankasi]
   - id: SNB
     country: CH
-    aliases: [Swiss National Bank, SNB]
+    aliases: [Swiss National Bank, SNB, İsviçre Merkez Bankası, Isvicre Merkez Bankasi]
   - id: BOC
     country: CA
     aliases: [Bank of Canada, BoC]
@@ -40,7 +43,7 @@ banks:
     aliases: [Norges Bank]
   - id: RBI
     country: IN
-    aliases: [Reserve Bank of India, RBI]
+    aliases: [Reserve Bank of India, RBI, Hindistan Merkez Bankası]
   - id: TCMB
     country: TR
     aliases:
@@ -48,8 +51,11 @@ banks:
       - Central Bank of Turkey
       - CBRT
       - TCMB
-      - Merkez Bankası
-      - Merkez Bankasi
+      # Bare "Merkez Bankası" means TCMB in Turkish copy — except when a country/region precedes it
+      # ("Avrupa Merkez Bankası" = ECB, "Çin Merkez Bankası" = PBOC, …); those have their own aliases.
+      - {text: Merkez Bankası, exclude_prev: [Avrupa, Çin, Cin, Japonya, İngiltere, Ingiltere, İsviçre, Isvicre, Rusya, ABD, Amerikan, Amerika, Kanada, Avustralya, Hindistan, Brezilya, Çekya, Cekya, Çek, Polonya, Macaristan, Meksika, Kore, Norveç, Norvec, İsveç, Isvec, Mısır, Misir, Suudi, Endonezya, Arjantin, Şili, Sili, Kolombiya, Peru, Ukrayna, İsrail, Israil, Pakistan, Nijerya, Kazakistan, Azerbaycan, Gürcistan, Yunanistan, Romanya, Bulgaristan, Sırbistan, Danimarka, Tayvan, Singapur, Malezya, Tayland, Filipinler, Vietnam, Katar, Kuveyt, Emirlikleri, İran, Iran, Irak, Lübnan, Tunus, Fas, Cezayir, Kenya, Gana, Güney, Yeni, İskoçya, Avro, Bölge, bölgesi, ülke, ülkelerin, merkez, hangi]}
+      - {text: Merkez Bankasi, exclude_prev: [Avrupa, Çin, Cin, Japonya, İngiltere, Ingiltere, İsviçre, Isvicre, Rusya, ABD, Amerikan, Amerika, Kanada, Avustralya, Hindistan, Brezilya, Çekya, Cekya, Çek, Polonya, Macaristan, Meksika, Kore, Norveç, Norvec, İsveç, Isvec, Mısır, Misir, Suudi, Endonezya, Arjantin, Şili, Sili, Kolombiya, Peru, Ukrayna, İsrail, Israil, Pakistan, Nijerya, Kazakistan, Azerbaycan, Gürcistan, Yunanistan, Romanya, Bulgaristan, Sırbistan, Danimarka, Tayvan, Singapur, Malezya, Tayland, Filipinler, Vietnam, Katar, Kuveyt, Emirlikleri, İran, Iran, Irak, Lübnan, Tunus, Fas, Cezayir, Kenya, Gana, Güney, Yeni, İskoçya, Avro, Bölge, bölgesi, ülke, ülkelerin, merkez, hangi]}
+      - Cumhuriyet Merkez Bankası
       - Türkiye Cumhuriyet Merkez Bankası
   - id: BANXICO
     country: MX

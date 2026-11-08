@@ -41,6 +41,9 @@ FINANCE_FEED_CATEGORIES = {
     "equities", "commodities",
 }
 EXCERPT_CHARS = 400
+# Bump when entity/taxonomy/sentiment/quality rules change: the service then re-enriches the
+# recent window once at startup so stored items follow the current rules.
+NLP_VERSION = "2026-11-08.3"
 
 
 # ── component protocols (implemented in nlp/, news/quality.py, news/cluster.py) ──
@@ -272,6 +275,35 @@ class NewsPipeline:
         """
         async with self._lock:
             return await asyncio.to_thread(self._recluster_sync, hours or self.settings.cluster_window_hours * 2)
+
+    async def reenrich(self, *, hours: int = 96) -> int:
+        """Re-run entities, taxonomy, sentiment, quality and importance over stored recent items."""
+        async with self._lock:
+            return await asyncio.to_thread(self._reenrich_sync, hours)
+
+    def _reenrich_sync(self, hours: int) -> int:
+        now = self._now()
+        items = self.store.recent_news(now - timedelta(hours=hours), min_quality="rejected", limit=20000)
+        drafts: list[_Draft] = []
+        for item in items:
+            raw = RawNewsItem(
+                url=item.url, title=item.title, summary=item.summary, published_at=item.published_at,
+                author=item.author, feed_id=item.feed_id, publisher_id=item.publisher_id,
+                categories=list(item.categories), language=item.language, body_text=item.body_text,
+                fetched_at=item.first_seen_at,
+            )
+            publisher = self.registry.get(item.publisher_id)
+            ts_source = "fetched" if "missing_timestamp" in item.quality_reasons else "feed"
+            draft = _Draft(raw=raw, publisher=publisher, item=item.model_copy(update={"story_id": None}),
+                           timestamp_source=ts_source)
+            drafts.append(draft)
+        for start in range(0, len(drafts), 64):
+            self._enrich(drafts[start : start + 64], now)
+        updated = [d.item.model_copy(update={"first_seen_at": orig.first_seen_at}) for d, orig in zip(drafts, items, strict=True)]
+        if updated:
+            self.store.upsert_news(updated)
+        log.info("reenrich: %d items re-scored with NLP %s", len(updated), NLP_VERSION)
+        return len(updated)
 
     def _recluster_sync(self, hours: int) -> int:
         now = self._now()

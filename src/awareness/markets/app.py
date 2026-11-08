@@ -76,10 +76,16 @@ class MarketsService:
 
     async def _recluster_once(self) -> None:
         try:
+            from awareness.markets.news.pipeline import NLP_VERSION
+
+            if self.store.kv_get("nlp_version") != NLP_VERSION and hasattr(self.pipeline, "reenrich"):
+                count = await self.pipeline.reenrich(hours=96)
+                self.store.kv_set("nlp_version", NLP_VERSION)
+                log.info("startup re-enrichment: %d items follow NLP %s", count, NLP_VERSION)
             changed = await self.pipeline.recluster()
             log.info("startup recluster changed %d items", changed)
         except Exception as exc:  # never block the service on maintenance
-            log.warning("startup recluster failed: %s", exc)
+            log.warning("startup maintenance failed: %s", exc)
 
     async def close(self) -> None:
         if self.runner is not None:

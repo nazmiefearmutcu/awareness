@@ -83,7 +83,7 @@ def test_stopwords_english_and_turkish_removed() -> None:
     shingles = title_shingles("The Fed holds rates as inflation eases")
     assert "the" not in shingles and "as" not in shingles
     assert "fed hold" in shingles  # bigram of kept tokens (holds -> hold)
-    tr = title_shingles("Merkez Bankası faiz kararını ve enflasyonu açıkladı")  # noqa: RUF001
+    tr = title_shingles("Merkez Bankası faiz kararını ve enflasyonu açıkladı")
     assert "ve" not in tr
 
 
@@ -183,7 +183,7 @@ def test_synonym_and_stem_folding_aligns_paraphrases() -> None:
 
 
 def test_turkish_capital_dotted_i_is_normalised() -> None:
-    shingles = title_shingles("İran faiz kararı")  # noqa: RUF001
+    shingles = title_shingles("İran faiz kararı")
     assert "iran faiz" in shingles  # not split into "i ran"
     assert "iran" in shingles
 
@@ -207,7 +207,7 @@ def test_outside_window_does_not_match() -> None:
 
 def test_different_language_does_not_match() -> None:
     cnbc = make_news("https://cnbc.example/a", CNBC_TITLE, story_id="story-1")
-    tr = make_news("https://bloomberght.example/t", "Nvidia beklentileri aştı veri merkezi geliri",  # noqa: RUF001
+    tr = make_news("https://bloomberght.example/t", "Nvidia beklentileri aştı veri merkezi geliri",
                    publisher_id="bloomberght", language="tr", entities=[NVDA])
     assert StoryClusterer().find_story(tr, [cnbc]) is None
 
@@ -406,3 +406,21 @@ def test_promo_price_pages_never_join_stories_via_entity_rules() -> None:
     promo = mk("Current price of Ethereum for November 6, 2026", "fortune", 13.7, ["tier3:+28", "clickbait:-25"])
     promo = promo.model_copy(update={"story_id": None})
     assert StoryClusterer().find_story(promo, [real]) is None
+
+
+def test_shared_central_bank_alone_does_not_merge_different_stories() -> None:
+    now = datetime(2026, 11, 7, 12, tzinfo=UTC)
+    tcmb = EntityRef(type="central_bank", id="TCMB", name="TCMB", confidence=0.95, salience=1.0)
+
+    def mk(title: str, hours: float, sid: str | None) -> NewsItem:
+        url = f"https://bloomberght.example/{abs(hash(title))}"
+        return NewsItem(
+            id=NewsItem.id_for_url(url), url=url, title=title, publisher_id="bloomberght", publisher_name="Bloomberg HT",
+            publisher_domain="bloomberght.com", publisher_tier=3, published_at=now + timedelta(hours=hours),
+            first_seen_at=now, feed_id="f", language="tr", entities=[tcmb], topics=["central_bank"],
+            quality_label="standard", story_id=sid,
+        )
+
+    a = mk("Karahan: Fon piyasasında yaşanan gelişmeleri gözlemliyoruz", 0, "s-a")
+    b = mk("Merkez Bankası rezervleri haftalık bazda arttı", 3, None)
+    assert StoryClusterer().find_story(b, [a]) is None

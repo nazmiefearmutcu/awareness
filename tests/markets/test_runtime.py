@@ -386,3 +386,17 @@ def test_orphan_stories_are_removed(store: MarketsStore) -> None:
                                 first_seen_at=now, feed_id="cnbc.top", quality_label="standard", story_id="live")])
     assert store.delete_orphan_stories() == 1
     assert store.get_story("live") is not None and store.get_story("orphan") is None
+
+
+def test_reenrich_reapplies_current_rules(markets_settings: MarketsSettings, store: MarketsStore) -> None:
+    pipe = _pipeline(markets_settings, store)
+    asyncio.run(pipe.process([_raw(41, "Nvidia earnings beat estimates again", "cnbc")]))
+    stored = store.recent_news(NOW - timedelta(days=2), min_quality="rejected")
+    assert stored and stored[0].symbols == ["NVDA"]
+    # simulate stale enrichment written by older rules
+    stale = stored[0].model_copy(update={"symbols": ["WRONG"], "entities": [], "topics": []})
+    store.upsert_news([stale])
+    assert asyncio.run(pipe.reenrich(hours=48)) == 1
+    again = store.get_news(stale.id)
+    assert again is not None and again.symbols == ["NVDA"] and again.topics == ["earnings"]
+    assert again.first_seen_at == stored[0].first_seen_at
