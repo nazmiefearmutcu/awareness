@@ -75,6 +75,10 @@ class FakeTaxonomy:
     def classify(self, title: str, text: str | None, entities: list[EntityRef], **_: Any) -> FakeTax:
         if "celebrity" in title.lower():
             return FakeTax(finance_relevance=0.05)
+        if "greenhouse" in title.lower():  # a soft feature: no topic, no asset class, no finance entity
+            return FakeTax(finance_relevance=0.3)
+        if "holding" in title.lower():  # a company the linker does not know: asset class only
+            return FakeTax(asset_classes=["equities"], finance_relevance=0.3)
         topics = ["earnings"] if "earnings" in title.lower() else ["central_bank"] if "Fed" in title else []
         return FakeTax(asset_classes=["equities"], topics=topics)
 
@@ -192,6 +196,23 @@ def test_pipeline_enriches_gates_clusters_and_rescored(markets_settings: Markets
     titles = {i.title for i in visible}
     assert "Celebrity wedding photos" not in titles and "Fed holds rates steady" in titles
     assert pipe.last_stats.rejected == 3
+
+
+def test_finance_feed_floor_needs_market_evidence(markets_settings: MarketsSettings, store: MarketsStore) -> None:
+    pipe = _pipeline(markets_settings, store)
+    items = asyncio.run(
+        pipe.process(
+            [
+                _raw(11, "University greenhouse project grows herbs", "cnbc", categories=["economy"]),
+                _raw(12, "Acme Holding plans a new plant", "cnbc", categories=["economy"]),
+            ]
+        )
+    )
+    by_title = {i.title: i for i in items}
+    # No topic, asset class or finance entity: the economy feed alone does not lift it to 0.5.
+    assert by_title["University greenhouse project grows herbs"].finance_relevance == pytest.approx(0.3)
+    # Some market evidence (an asset class) keeps the recall-gap floor for an unknown company.
+    assert by_title["Acme Holding plans a new plant"].finance_relevance == pytest.approx(0.5)
 
 
 # ── runner ────────────────────────────────────────────────────────────────

@@ -45,7 +45,7 @@ FINANCE_FEED_CATEGORIES = {
 EXCERPT_CHARS = 400
 # Bump when entity/taxonomy/sentiment/quality rules change: the service then re-enriches the
 # recent window once at startup so stored items follow the current rules.
-NLP_VERSION = "2026-11-08.8"
+NLP_VERSION = "2026-11-08.9"
 
 
 # ── component protocols (implemented in nlp/, news/quality.py, news/cluster.py) ──
@@ -522,14 +522,16 @@ class NewsPipeline:
             return self.scorer.entity_sentiment(d.item.title, d.text_for_nlp or None, relevant)
 
     @staticmethod
-    def _relevance_floor(d: _Draft, relevance: float, negative_hit: bool = False) -> float:
+    def _relevance_floor(d: _Draft, relevance: float, negative_hit: bool = False, *, evidence: bool = True) -> float:
         """Wires, financial press and specialists on finance-section feeds are business coverage by
         construction: keyword recall gaps (a company the linker does not know yet) must not hide them.
         The floor (0.5) allows ``standard`` but never ``premium`` (which needs real evidence), and it
-        is NOT applied when a non-finance class (sports, celebrity, lifestyle…) matched."""
+        is NOT applied when a non-finance class (sports, celebrity, lifestyle…) matched, nor when the
+        item shows no market evidence at all (no topic, no asset class, no finance entity): a soft
+        feature on an economy feed (a university lab, a greenhouse project) is not market news."""
         pub = d.publisher
         finance_feed = bool(set(d.raw.categories) & FINANCE_FEED_CATEGORIES)
-        if negative_hit or pub is None:
+        if negative_hit or pub is None or not evidence:
             return relevance
         if pub.kind in {"wire", "financial_press", "specialist"} and finance_feed:
             return max(relevance, 0.5)
@@ -553,15 +555,25 @@ class NewsPipeline:
             # tangential mentions stay in `entities` for display only.
             symbols = [e.id for e in entities if e.type in FILTER_ENTITY_TYPES and e.salience >= SALIENT]
             countries = [e.id for e in entities if e.type == "country" and e.salience >= 0.5]
+            topics = list(getattr(tax, "topics", []) or [])
+            asset_classes = list(getattr(tax, "asset_classes", []) or [])
+            market_evidence = bool(
+                topics
+                or asset_classes
+                or any(e.type in FILTER_ENTITY_TYPES or e.type == "central_bank" for e in entities)
+            )
             d.item = d.item.model_copy(
                 update={
                     "entities": entities,
                     "symbols": list(dict.fromkeys(symbols)),
                     "countries": list(dict.fromkeys(countries)),
-                    "asset_classes": list(getattr(tax, "asset_classes", []) or []),
-                    "topics": list(getattr(tax, "topics", []) or []),
+                    "asset_classes": asset_classes,
+                    "topics": topics,
                     "finance_relevance": self._relevance_floor(
-                        d, float(getattr(tax, "finance_relevance", 0.0) or 0.0), bool(getattr(tax, "negative_hit", False))
+                        d,
+                        float(getattr(tax, "finance_relevance", 0.0) or 0.0),
+                        bool(getattr(tax, "negative_hit", False)),
+                        evidence=market_evidence,
                     ),
                 }
             )
