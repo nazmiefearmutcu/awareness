@@ -20,7 +20,7 @@ clickbait:
     - "\\b(a|the) better buy\\b"
     - "here'?s what (it|this|that) (could |may |might )?means?"
     - "could mean for (you|your)"
-    - "\b(your|my) retirement (savings|account|portfolio)\b"
+    - '\b(your|my) retirement (savings|account|portfolio)\b'
     - "sending shockwaves"
     # SEO price pages / auto-generated quotes (no reporting in them)
     - "^(current|today'?s|live) price of"

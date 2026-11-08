@@ -49,6 +49,7 @@ class TaxonomyResult:
     content_type_hint: str | None
     horizon: str | None
     topic_scores: dict[str, float] = field(default_factory=dict)
+    negative_hit: bool = False  # a non-finance class (sports, celebrity, lifestyle …) matched
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +166,7 @@ class TaxonomyClassifier:
             content_type_hint=self._content_type(title or "", publisher),
             horizon=self._horizon(ft, fb, topics),
             topic_scores={t: round(s, 3) for t, s in topic_scores.items() if s > 0},
+            negative_hit=negatives < 0,
         )
 
     # ── scoring ───────────────────────────────────────────────────────────

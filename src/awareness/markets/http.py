@@ -81,7 +81,7 @@ class FetchResult:
                 self._text = self.content.decode(charset, errors="replace")
             except LookupError:
                 self._text = self.content.decode("utf-8", errors="replace")
-            if self._text.startswith("﻿"):
+            if self._text.startswith("\ufeff"):
                 self._text = self._text[1:]
         return self._text
 

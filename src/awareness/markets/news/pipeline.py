@@ -44,7 +44,7 @@ FINANCE_FEED_CATEGORIES = {
 EXCERPT_CHARS = 400
 # Bump when entity/taxonomy/sentiment/quality rules change: the service then re-enriches the
 # recent window once at startup so stored items follow the current rules.
-NLP_VERSION = "2026-11-08.5"
+NLP_VERSION = "2026-11-08.6"
 
 
 # ── component protocols (implemented in nlp/, news/quality.py, news/cluster.py) ──
@@ -301,8 +301,7 @@ class NewsPipeline:
             )
             publisher = self.registry.get(item.publisher_id)
             ts_source = "fetched" if "missing_timestamp" in item.quality_reasons else "feed"
-            draft = _Draft(raw=raw, publisher=publisher, item=item.model_copy(update={"story_id": None}),
-                           timestamp_source=ts_source)
+            draft = _Draft(raw=raw, publisher=publisher, item=item, timestamp_source=ts_source)
             drafts.append(draft)
         for start in range(0, len(drafts), 64):
             self._enrich(drafts[start : start + 64], now)
@@ -515,13 +514,17 @@ class NewsPipeline:
             return self.scorer.entity_sentiment(d.item.title, d.text_for_nlp or None, relevant)
 
     @staticmethod
-    def _relevance_floor(d: _Draft, relevance: float) -> float:
+    def _relevance_floor(d: _Draft, relevance: float, negative_hit: bool = False) -> float:
         """Wires, financial press and specialists on finance-section feeds are business coverage by
-        construction; keyword relevance alone must not hard-reject them (they are still scored)."""
+        construction: keyword recall gaps (a company the linker does not know yet) must not hide them.
+        The floor (0.5) allows ``standard`` but never ``premium`` (which needs real evidence), and it
+        is NOT applied when a non-finance class (sports, celebrity, lifestyle…) matched."""
         pub = d.publisher
         finance_feed = bool(set(d.raw.categories) & FINANCE_FEED_CATEGORIES)
-        if pub is not None and pub.kind in {"wire", "financial_press", "specialist"} and finance_feed:
-            return max(relevance, 0.3)
+        if negative_hit or pub is None:
+            return relevance
+        if pub.kind in {"wire", "financial_press", "specialist"} and finance_feed:
+            return max(relevance, 0.5)
         return relevance
 
     def _enrich(self, drafts: list[_Draft], now: datetime) -> None:
@@ -549,7 +552,9 @@ class NewsPipeline:
                     "countries": list(dict.fromkeys(countries)),
                     "asset_classes": list(getattr(tax, "asset_classes", []) or []),
                     "topics": list(getattr(tax, "topics", []) or []),
-                    "finance_relevance": float(getattr(tax, "finance_relevance", 0.0) or 0.0),
+                    "finance_relevance": self._relevance_floor(
+                        d, float(getattr(tax, "finance_relevance", 0.0) or 0.0), bool(getattr(tax, "negative_hit", False))
+                    ),
                 }
             )
             lead = d.item.title if not d.item.summary else f"{d.item.title}. {d.item.summary[:400]}"

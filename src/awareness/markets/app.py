@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -105,6 +106,14 @@ class MarketsService:
                 log.info("startup re-enrichment: %d items follow NLP %s", count, NLP_VERSION)
             changed = await self.pipeline.recluster()
             log.info("startup recluster changed %d items", changed)
+            try:
+                from awareness.markets.calendar.economic import reclassify_stored
+
+                fixed = await asyncio.to_thread(reclassify_stored, self.store, datetime.now(UTC))
+                if fixed:
+                    log.info("reclassified %d stored economic events", fixed)
+            except Exception as exc:  # maintenance only
+                log.warning("econ reclassify failed: %s", exc)
             if self.runner is not None:
                 for name in self._static_config_changed():
                     self.runner.trigger(name)
@@ -113,6 +122,10 @@ class MarketsService:
             log.warning("startup maintenance failed: %s", exc)
 
     async def close(self) -> None:
+        if self._recluster_task is not None and not self._recluster_task.done():
+            self._recluster_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(self._recluster_task, timeout=30)
         if self.runner is not None:
             await self.runner.stop()
         await self.fetcher.aclose()

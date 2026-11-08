@@ -102,7 +102,7 @@ def parse_nasdaq_econ(payload: dict[str, Any], *, day: date, fetched_at: datetim
     if not isinstance(data, dict):
         raise ValueError("unexpected Nasdaq data shape")
     rows = data.get("rows") or []
-    ref = ProviderRef(provider="nasdaq", url=nasdaq_url(day), fetched_at=utc_of(fetched_at))
+    ref = ProviderRef(provider="nasdaq", url=nasdaq_url(day + timedelta(days=NASDAQ_DATE_SHIFT_DAYS)), fetched_at=utc_of(fetched_at))
 
     prepared: list[tuple[dict[str, Any], str, str, datetime, bool]] = []
     skipped = 0
@@ -325,6 +325,9 @@ def reclassify_stored(store: MarketsStore, now: datetime) -> int:
     return len(changed)
 
 
+NASDAQ_DATE_SHIFT_DAYS = 1  # see NasdaqEconCollector.run
+
+
 class NasdaqEconCollector:
     """Daily Nasdaq economic-events pages for ``today - econ_days_back .. today + econ_days_ahead``.
 
@@ -345,7 +348,10 @@ class NasdaqEconCollector:
         failed: list[date] = []
         for day in days:
             try:
-                response = await ctx.http.get(nasdaq_url(day), profile="browser")
+                # Nasdaq's ``date`` query parameter is one day AHEAD of the events it returns
+                # (verified live 2026-11-08: date=2026-11-07 lists Friday 2026-11-06 Nonfarm Payrolls,
+                # date=2026-11-06 lists Thursday's jobless claims), so ask for day + 1.
+                response = await ctx.http.get(nasdaq_url(day + timedelta(days=NASDAQ_DATE_SHIFT_DAYS)), profile="browser")
                 incoming.extend(parse_nasdaq_econ(response.json(), day=day, fetched_at=response.fetched_at))
             except (FetchError, ValueError) as exc:
                 failed.append(day)

@@ -323,11 +323,15 @@ class MarketsStore:
         with self._tx() as conn:
             for incoming in items:
                 existing = conn.execute(
-                    "SELECT first_seen_at FROM news WHERE id = ?", (incoming.id,)
+                    "SELECT first_seen_at, json_extract(doc, '$.body_text') AS body FROM news WHERE id = ?",
+                    (incoming.id,),
                 ).fetchone()
                 item = incoming
                 if existing is not None:
-                    item = incoming.model_copy(update={"first_seen_at": parse_ts(existing["first_seen_at"])})
+                    keep: dict[str, Any] = {"first_seen_at": parse_ts(existing["first_seen_at"])}
+                    if incoming.body_text is None and existing["body"]:
+                        keep["body_text"] = existing["body"]  # light copies (clustering) never wipe the body
+                    item = incoming.model_copy(update=keep)
                 doc = item.model_dump_json()
                 sentiment_score = item.sentiment.score if item.sentiment else None
                 sentiment_label = item.sentiment.label if item.sentiment else None

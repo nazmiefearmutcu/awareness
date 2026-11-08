@@ -195,7 +195,8 @@ def test_nasdaq_description_is_clean(nasdaq_events: list[EconEvent]) -> None:
 def test_nasdaq_provenance_and_importance(nasdaq_events: list[EconEvent]) -> None:
     ev = nasdaq_events[0]
     assert ev.sources[0].provider == "nasdaq"
-    assert ev.sources[0].url == "https://api.nasdaq.com/api/calendar/economicevents?date=2026-11-10"
+    # the request for events of 2026-11-10 is date=2026-11-11 (Nasdaq lists the previous day)
+    assert ev.sources[0].url == "https://api.nasdaq.com/api/calendar/economicevents?date=2026-11-11"
     assert ev.sources[0].fetched_at == NOW
     bailey = next(e for e in nasdaq_events if "Bailey" in e.title)
     assert bailey.importance == 3
@@ -892,3 +893,23 @@ def test_reclassify_stored_fixes_stale_categories_and_is_idempotent(store: Marke
     assert stored[0].category == "inflation"
     assert stored[0].importance == 3
     assert reclassify_stored(store, NOW) == 0
+
+
+async def test_nasdaq_collector_requests_the_day_after_each_target_day(markets_settings, store, fixture_bytes) -> None:  # type: ignore[no-untyped-def]
+    """Nasdaq's ``date`` parameter is one day ahead of the events it lists (verified live)."""
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.params.get("date"))
+        return httpx.Response(200, content=fixture_bytes("nasdaq_econ_2026-11-10.json"))
+
+    settings = markets_settings.model_copy(update={"econ_days_back": 0, "econ_days_ahead": 0})
+    http = Fetcher(settings, store, transport=httpx.MockTransport(handler), sleep=_no_sleep,
+                   host_intervals={"api.nasdaq.com": 0.0})
+    ctx = _ctx(settings, store, http)
+    ctx.now = lambda: datetime(2026, 11, 9, 12, tzinfo=UTC)
+    await NasdaqEconCollector().run(ctx)
+    await http.aclose()
+    assert requested == ["2026-11-10"]
+    stored = store.query_econ(datetime(2026, 11, 9, tzinfo=UTC), datetime(2026, 11, 9, 23, 59, tzinfo=UTC))
+    assert stored and all(e.scheduled_at.date().isoformat() in ("2026-11-09", "2026-11-10") for e in stored)
