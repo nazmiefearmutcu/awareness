@@ -1,17 +1,40 @@
-# Hand-maintained central-bank decision schedules for banks whose official
-# calendar is not machine-reachable (see load_curated_schedules).
+# Hand-maintained central-bank schedules for banks whose official calendar is
+# not machine-reachable (see load_curated_schedules).
 #
 # Each entry needs: provider, country, currency, title, date (YYYY-MM-DD),
-# time (HH:MM local, or null for an all-day event), tz (IANA zone),
+# time ("HH:MM" quoted, local to tz; or null for an all-day event), tz (IANA zone),
 # source_url (the official page the date was read from) and verified_on
 # (YYYY-MM-DD, the day the date was checked against that page).
 # Only add a date after checking it on the official page. Never extrapolate.
 #
-# TCMB (Turkey, PPK): intentionally EMPTY. The official tcmb.gov.tr pages
-# (PPK/2026, PPK/2027, Duyurular/Takvim) list pairs of dates about a week
-# apart (for example 22 Ocak / 29 Ocak 2026) but do not label which date of a
-# pair is the rate decision and which is the summary release, and the policy
-# text PDF could not be read to confirm it. Dates are added here only after
-# that is verified. Decision time per the TCMB policy text is 14:00 Europe/Istanbul.
+# TCMB (Turkey, PPK): source is the official "2026 Para Politikasi" policy text,
+# Annex 2 "Ek 2: PPK Toplantilari ve Rapor Takvimi", corroborated by the TCMB
+# PPK/2026 page. Section 13 of the same text: decisions are published on the
+# meeting day at 14:00 Istanbul time (UTC+3 all year). The second half of 2027 is
+# not published yet (2027 policy text due 2026-12-18), so nothing after 2027-06-10.
 
-entries: []
+entries:
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB Interest Rate Decision, date: 2026-01-22, time: "14:00", tz: Europe/Istanbul, importance: 3, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB Interest Rate Decision, date: 2026-03-12, time: "14:00", tz: Europe/Istanbul, importance: 3, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB Interest Rate Decision, date: 2026-04-22, time: "14:00", tz: Europe/Istanbul, importance: 3, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB Interest Rate Decision, date: 2026-06-11, time: "14:00", tz: Europe/Istanbul, importance: 3, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB Interest Rate Decision, date: 2026-07-23, time: "14:00", tz: Europe/Istanbul, importance: 3, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB Interest Rate Decision, date: 2026-09-10, time: "14:00", tz: Europe/Istanbul, importance: 3, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB Interest Rate Decision, date: 2026-10-22, time: "14:00", tz: Europe/Istanbul, importance: 3, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB Interest Rate Decision, date: 2026-12-10, time: "14:00", tz: Europe/Istanbul, importance: 3, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB Interest Rate Decision, date: 2027-01-21, time: "14:00", tz: Europe/Istanbul, importance: 3, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB Interest Rate Decision, date: 2027-03-18, time: "14:00", tz: Europe/Istanbul, importance: 3, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB Interest Rate Decision, date: 2027-04-22, time: "14:00", tz: Europe/Istanbul, importance: 3, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB Interest Rate Decision, date: 2027-06-10, time: "14:00", tz: Europe/Istanbul, importance: 3, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB MPC Summary, date: 2026-01-29, time: null, tz: Europe/Istanbul, importance: 2, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB MPC Summary, date: 2026-03-18, time: null, tz: Europe/Istanbul, importance: 2, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB MPC Summary, date: 2026-04-30, time: null, tz: Europe/Istanbul, importance: 2, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB MPC Summary, date: 2026-06-18, time: null, tz: Europe/Istanbul, importance: 2, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB MPC Summary, date: 2026-07-30, time: null, tz: Europe/Istanbul, importance: 2, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB MPC Summary, date: 2026-09-17, time: null, tz: Europe/Istanbul, importance: 2, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB MPC Summary, date: 2026-10-30, time: null, tz: Europe/Istanbul, importance: 2, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB MPC Summary, date: 2026-12-17, time: null, tz: Europe/Istanbul, importance: 2, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB MPC Summary, date: 2027-01-28, time: null, tz: Europe/Istanbul, importance: 2, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB MPC Summary, date: 2027-03-25, time: null, tz: Europe/Istanbul, importance: 2, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB MPC Summary, date: 2027-04-29, time: null, tz: Europe/Istanbul, importance: 2, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}
+  - {provider: tcmb, country: TR, currency: TRY, title: TCMB MPC Summary, date: 2027-06-17, time: null, tz: Europe/Istanbul, importance: 2, source_url: "https://www.tcmb.gov.tr/wps/wcm/connect/50433504-d77c-472a-82d0-6ad1cc25c927/2026_Para_Politikas%C4%B1_Metni.pdf?MOD=AJPERES", verified_on: 2026-11-08}

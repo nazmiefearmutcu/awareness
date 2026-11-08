@@ -10,14 +10,17 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time
+from functools import cache
 from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
+from lxml import etree
 from lxml import html as lxml_html
 
-from awareness.markets.calendar.economic import _padded_bounds, _store_merge, _utc, event_id
+from awareness.markets.calendar.econ_common import event_id, utc_of
+from awareness.markets.calendar.economic import padded_bounds, store_merge
 from awareness.markets.collectors.base import CollectorContext, CollectorResult
 from awareness.markets.http import FetchError
 from awareness.markets.models import EconEvent, ProviderRef
@@ -29,11 +32,8 @@ ECB_URL = "https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html"
 BOE_URL = "https://www.bankofengland.co.uk/monetary-policy/upcoming-mpc-dates"
 BOJ_URL = "https://www.boj.or.jp/en/mopo/mpmsche_minu/index.htm"
 
-NEW_YORK = ZoneInfo("America/New_York")
 # Europe/Frankfurt is not present in the tzdata bundle used here; Europe/Berlin has the
 # identical CET/CEST rules (the ECB is in Frankfurt).
-FRANKFURT = ZoneInfo("Europe/Berlin")
-LONDON = ZoneInfo("Europe/London")
 
 FOMC_DECISION_TITLE = "FOMC Interest Rate Decision"
 FOMC_MINUTES_TITLE = "FOMC Minutes"
@@ -56,8 +56,21 @@ def _month(text: str) -> int | None:
     return _MONTHS.get(text.strip().lower()[:3])
 
 
+@cache
+def _zone(name: str) -> ZoneInfo:
+    """IANA zone looked up on first use (not at import), so a missing tz database
+    fails the collector run instead of importing this module."""
+    return ZoneInfo(name)
+
+
 def _doc(html_text: str) -> Any:
-    return lxml_html.fromstring(html_text.lstrip("﻿"))
+    """Parse a page body. An empty or garbled body raises ValueError (tolerated per page)."""
+    if not html_text.strip():
+        raise ValueError("empty page body")
+    try:
+        return lxml_html.fromstring(html_text.lstrip("﻿"))
+    except etree.LxmlError as exc:
+        raise ValueError(f"unparseable page body: {exc}") from exc
 
 
 def _text(node: Any) -> str:
@@ -65,7 +78,7 @@ def _text(node: Any) -> str:
 
 
 def _ref(provider: str, url: str, fetched_at: datetime) -> ProviderRef:
-    return ProviderRef(provider=provider, url=url, fetched_at=_utc(fetched_at), basis="native")
+    return ProviderRef(provider=provider, url=url, fetched_at=utc_of(fetched_at), basis="native")
 
 
 def _event(
@@ -131,7 +144,7 @@ def parse_fomc_calendar(html: str, *, fetched_at: datetime) -> list[EconEvent]:
             end_year = year + 1 if start_month is not None and end_month < start_month else year
             end_day = int(day_match.group(2))
             decision_day = date(end_year, end_month, end_day)
-            decision = datetime(decision_day.year, decision_day.month, decision_day.day, 14, 0, tzinfo=NEW_YORK)
+            decision = datetime(decision_day.year, decision_day.month, decision_day.day, 14, 0, tzinfo=_zone("America/New_York"))
             is_sep = "*" in date_text
             events.append(
                 _event(
@@ -194,7 +207,7 @@ def parse_ecb_calendar(html: str, *, fetched_at: datetime) -> list[EconEvent]:
             except ValueError:
                 log.debug("ecb: unparsed date %r", current)
                 continue
-            decision = datetime.combine(day, time(14, 15), tzinfo=FRANKFURT).astimezone(UTC)
+            decision = datetime.combine(day, time(14, 15), tzinfo=_zone("Europe/Berlin")).astimezone(UTC)
             events.append(
                 _event(
                     country="EU", currency="EUR", title=ECB_TITLE, when=decision, all_day=False,
@@ -232,7 +245,7 @@ def parse_boe_mpc_dates(html: str, *, fetched_at: datetime) -> list[EconEvent]:
             if month is None:
                 continue
             day = date(year, month, int(match.group(1)))
-            announce = datetime.combine(day, time(12, 0), tzinfo=LONDON).astimezone(UTC)
+            announce = datetime.combine(day, time(12, 0), tzinfo=_zone("Europe/London")).astimezone(UTC)
             events.append(
                 _event(
                     country="GB", currency="GBP", title=BOE_TITLE, when=announce, all_day=False,
@@ -347,7 +360,7 @@ def load_curated_schedules(path: Path, *, fetched_at: datetime) -> list[EconEven
             when, all_day = datetime.combine(day, time(0, 0), UTC), True
         provider = str(entry["provider"])
         ref = ProviderRef(
-            provider=provider, url=str(entry["source_url"]), fetched_at=_utc(fetched_at), basis="curated"
+            provider=provider, url=str(entry["source_url"]), fetched_at=utc_of(fetched_at), basis="curated"
         )
         events.append(
             EconEvent(
@@ -377,7 +390,7 @@ class CentralBankCollector:
     lock_group: str | None = "econ"
 
     async def run(self, ctx: CollectorContext) -> CollectorResult:
-        now = _utc(ctx.now())
+        now = utc_of(ctx.now())
         pages: list[tuple[str, str, Literal["bot", "browser"], Callable[..., list[EconEvent]]]] = [
             ("fed", FED_URL, "bot", parse_fomc_calendar),
             ("ecb", ECB_URL, "bot", parse_ecb_calendar),
@@ -396,10 +409,10 @@ class CentralBankCollector:
         if len(failed) == len(pages):
             raise FetchError(FED_URL, None, "every central-bank page failed")
         incoming.extend(load_curated_schedules(ctx.settings.config_file("central_banks.yaml"), fetched_at=now))
-        bounds = _padded_bounds(incoming)
+        bounds = padded_bounds(incoming)
         if bounds is None:
             return CollectorResult(items=0, notes=[f"pages failed: {', '.join(failed)}"] if failed else [])
-        changed = _store_merge(ctx, incoming, bounds[0], bounds[1], now)
+        changed = store_merge(ctx, incoming, bounds[0], bounds[1], now)
         notes = [f"pages failed: {', '.join(failed)}"] if failed else []
         return CollectorResult(items=len(changed), notes=notes)
 

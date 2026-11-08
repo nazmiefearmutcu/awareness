@@ -6,7 +6,8 @@
 # Final importance = max(provider impact, rule importance) when both exist.
 # Anything that matches no rule gets `default` (importance 1, category other).
 #
-# Patterns are Python regular expressions (re.IGNORECASE).
+# Patterns are Python regular expressions (re.IGNORECASE). Patterns MUST be
+# single-quoted YAML scalars: in double quotes "\b" is a backspace character.
 
 chair_names:
   - Powell
@@ -18,63 +19,68 @@ chair_names:
 rules:
   # Speeches come before central-bank patterns so "FOMC Member X Speaks"
   # is classified as a speech, not as an FOMC decision.
-  - pattern: "speaks|speech|testimony"
+  - pattern: 'speaks|speech|testimony'
     importance: 2
     chair_importance: 3
     category: speech
 
-  - pattern: "non-?farm payrolls|nonfarm payrolls|unemployment rate"
+  - pattern: 'non-?farm payrolls|nonfarm payrolls|\bnfp\b|unemployment rate'
     importance: 3
     category: employment
-  - pattern: "\bcpi\b|consumer price"
+  - pattern: '\bcpi\b|consumer price'
     importance: 3
     category: inflation
-  - pattern: "core pce|pce price|personal income and outlays"
+  - pattern: 'core pce|pce price|personal income and outlays'
     importance: 3
     category: inflation
-  - pattern: "\bgdp\b|gross domestic product"
+  - pattern: '\bgdp\b|gross domestic product'
     importance: 3
     category: growth
-  - pattern: "interest rate decision|rate statement|monetary policy (decision|statement)|fomc"
+  - pattern: 'interest rate decision|rate statement|monetary policy (decision|statement)|fomc'
     importance: 3
     category: central_bank
-  - pattern: "retail sales"
+  # Policy-rate rows from ForexFactory; matched as whole titles so that
+  # "MPC Official Bank Rate Votes" does not count as a rate decision.
+  - pattern: '^(federal funds rate|official bank rate|main refinancing rate|boj policy rate|cash rate|official cash rate|deposit facility rate)$'
+    importance: 3
+    category: central_bank
+  - pattern: 'retail sales'
     importance: 3
     category: consumer
-  - pattern: "ism (manufacturing|services)"
+  - pattern: 'ism (manufacturing|services)'
     importance: 3
     category: pmi
-  - pattern: "\bism\b|\bpmi\b"
+  - pattern: '\bism\b|\bpmi\b'
     importance: 2
     category: pmi
-  - pattern: "\bppi\b|producer price"
+  - pattern: '\bppi\b|producer price'
     importance: 2
     category: inflation
-  - pattern: "jobless claims|unemployment claims|initial claims"
+  - pattern: 'jobless claims|unemployment claims|initial claims'
     importance: 2
     category: employment
-  - pattern: "\bjolts\b"
+  - pattern: '\bjolts\b'
     importance: 2
     category: employment
-  - pattern: "durable goods|industrial production"
+  - pattern: 'durable goods|industrial production'
     importance: 2
     category: growth
-  - pattern: "consumer confidence|consumer sentiment|michigan"
+  - pattern: 'consumer confidence|consumer sentiment|michigan'
     importance: 2
     category: sentiment
-  - pattern: "housing starts|building permits|existing home sales|new home sales"
+  - pattern: 'housing starts|building permits|existing home sales|new home sales'
     importance: 2
     category: housing
-  - pattern: "trade balance|international trade"
+  - pattern: 'trade balance|international trade'
     importance: 2
     category: trade
-  - pattern: "crude oil inventories"
+  - pattern: 'crude oil inventories'
     importance: 2
     category: energy
-  - pattern: "\bzew\b|\bifo\b"
+  - pattern: '\bzew\b|\bifo\b'
     importance: 2
     category: sentiment
-  - pattern: "auction"
+  - pattern: 'treasury auction|bond auction|note auction|bill auction'
     importance: 1
     category: auction
 
