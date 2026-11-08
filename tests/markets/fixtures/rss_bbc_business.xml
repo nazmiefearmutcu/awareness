@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?><rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom" version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+    <channel>
+        <title><![CDATA[BBC News]]></title>
+        <description><![CDATA[BBC News - Business]]></description>
+        <link>https://www.bbc.co.uk/news/business</link>
+        <image>
+            <url>https://news.bbcimg.co.uk/nol/shared/img/bbc_news_120x60.gif</url>
+            <title>BBC News</title>
+            <link>https://www.bbc.co.uk/news/business</link>
+        </image>
+        <generator>RSS for Node</generator>
+        <lastBuildDate>Sun, 08 Nov 2026 00:37:48 GMT</lastBuildDate>
+        <atom:link href="https://feeds.bbci.co.uk/news/business/rss.xml" rel="self" type="application/rss+xml"/>
+        <copyright><![CDATA[Copyright: (C) British Broadcasting Corporation, see https://www.bbc.co.uk/usingthebbc/terms-of-use/#15metadataandrssfeeds for terms and conditions of reuse.]]></copyright>
+        <language><![CDATA[en-gb]]></language>
+        <ttl>15</ttl>
+        <item>
+            <title><![CDATA[Labubu hype seemed unstoppable, now the fluffy monster mania is dying]]></title>
+            <description><![CDATA[Parent company Pop Mart's revenue has fallen as appetite for the quirky collectible monsters wanes.]]></description>
+            <link>https://www.bbc.co.uk/news/articles/cmvg652l927lo?at_medium=RSS&amp;at_campaign=rss</link>
+            <guid isPermaLink="false">https://www.bbc.co.uk/news/articles/cmvg652l927lo#0</guid>
+            <pubDate>Sat, 07 Nov 2026 23:02:35 GMT</pubDate>
+            <media:thumbnail width="240" height="135" url="https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/79bc/live/19d4a530-d90b-11f1-93e1-3b657b665bcf.jpg"/>
+        </item>
+        <item>
+            <title><![CDATA[AI stocks climb after trillions wiped from market values]]></title>
+            <description><![CDATA[Investors had been selling off tech shares in part due to concerns the Democrat election victory would mean slower AI development.]]></description>
+            <link>https://www.bbc.co.uk/news/articles/c35ynnpzdq51o?at_medium=RSS&amp;at_campaign=rss</link>
+            <guid isPermaLink="false">https://www.bbc.co.uk/news/articles/c35ynnpzdq51o#0</guid>
+            <pubDate>Fri, 06 Nov 2026 21:06:25 GMT</pubDate>
+            <media:thumbnail width="240" height="135" url="https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/fdde/live/9036f7e0-da01-11f1-93e1-3b657b665bcf.jpg"/>
+        </item>
+        <item>
+            <title><![CDATA[Why the US midterms sparked an AI stock selloff]]></title>
+            <description><![CDATA[Fears of more AI regulation appear to have sparked fear among investors, but  concerns about the industry have been growing for some time.]]></description>
+            <link>https://www.bbc.co.uk/news/articles/crlykkzwwpydo?at_medium=RSS&amp;at_campaign=rss</link>
+            <guid isPermaLink="false">https://www.bbc.co.uk/news/articles/crlykkzwwpydo#0</guid>
+            <pubDate>Fri, 06 Nov 2026 18:32:16 GMT</pubDate>
+            <media:thumbnail width="240" height="135" url="https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/f055/live/19529fe0-d9fb-11f1-93e1-3b657b665bcf.jpg"/>
+        </item>
+        <item>
+            <title><![CDATA[How does it affect me if share prices fall?]]></title>
+            <description><![CDATA[Changes in the FTSE 100 and other indexes are not just for financial experts, they can affect our lives.]]></description>
+            <link>https://www.bbc.co.uk/news/articles/c33zdz2m1e2o?at_medium=RSS&amp;at_campaign=rss</link>
+            <guid isPermaLink="false">https://www.bbc.co.uk/news/articles/c33zdz2m1e2o#0</guid>
+            <pubDate>Fri, 06 Nov 2026 09:21:50 GMT</pubDate>
+            <media:thumbnail width="240" height="134" url="https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/c320/live/25775960-3fc2-11f1-b61b-1d0ccf7b6022.jpg"/>
+        </item>
+        <item>
+            <title><![CDATA[Why smoky bacon crisps threaten to reignite rows over EU rules]]></title>
+            <description><![CDATA[A post-Brexit deal on food standards has raised questions over the future naming of the classic British snack.]]></description>
+            <link>https://www.bbc.co.uk/news/articles/cm1dwwqrr1kvo?at_medium=RSS&amp;at_campaign=rss</link>
+            <guid isPermaLink="false">https://www.bbc.co.uk/news/articles/cm1dwwqrr1kvo#0</guid>
+            <pubDate>Fri, 06 Nov 2026 17:19:38 GMT</pubDate>
+            <media:thumbnail width="240" height="134" url="https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/67af/live/52b739e0-da04-11f1-84c1-dbcae60402d7.jpg"/>
+        </item>
+        <item>
+            <title><![CDATA[The engine parts that 'fight the laws of the universe']]></title>
+            <description><![CDATA[Investment has surged into the making of jet turbine blades - an extremely difficult component to make. ]]></description>
+            <link>https://www.bbc.co.uk/news/articles/cwe9lmp1pyyxo?at_medium=RSS&amp;at_campaign=rss</link>
+            <guid isPermaLink="false">https://www.bbc.co.uk/news/articles/cwe9lmp1pyyxo#0</guid>
+            <pubDate>Fri, 06 Nov 2026 00:06:06 GMT</pubDate>
+            <media:thumbnail width="240" height="134" url="https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/6023/live/c7b8cb20-d9e9-11f1-93e1-3b657b665bcf.jpg"/>
+        </item>
+        <item>
+            <title><![CDATA[Elon Musk appears to signal the end of the road for Cybertruck]]></title>
+            <description><![CDATA[Musk said it was to make room for production of its Cybercabs - autonomous taxis without a driver.]]></description>
+            <link>https://www.bbc.co.uk/news/articles/cq1j33w7d232o?at_medium=RSS&amp;at_campaign=rss</link>
+            <guid isPermaLink="false">https://www.bbc.co.uk/news/articles/cq1j33w7d232o#0</guid>
+            <pubDate>Fri, 06 Nov 2026 21:49:50 GMT</pubDate>
+            <media:thumbnail width="240" height="135" url="https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/d7ce/live/3fc37350-d9f3-11f1-a701-fddedf244c16.jpg"/>
+        </item>
+        <item>
+            <title><![CDATA[PM tells firms to publish salaries in job adverts ahead of new law]]></title>
+            <description><![CDATA[The government argues the change will help jobseekers and could help to prevent pay discrimination.]]></description>
+            <link>https://www.bbc.co.uk/news/articles/cmd9343z3zw2o?at_medium=RSS&amp;at_campaign=rss</link>
+            <guid isPermaLink="false">https://www.bbc.co.uk/news/articles/cmd9343z3zw2o#1</guid>
+            <pubDate>Fri, 06 Nov 2026 15:25:43 GMT</pubDate>
+            <media:thumbnail width="240" height="135" url="https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/04d2/live/40c46130-d9f6-11f1-a701-fddedf244c16.jpg"/>
+        </item>
+        <item>
+            <title><![CDATA['I was asked if I was a crier': Your worst job interviews revealed]]></title>
+            <description><![CDATA[Bad job interviews can be horrible to experience in the moment, but there is a lot they can teach us about the world of work]]></description>
+            <link>https://www.bbc.co.uk/news/articles/c3j4751pqnj8o?at_medium=RSS&amp;at_campaign=rss</link>
+            <guid isPermaLink="false">https://www.bbc.co.uk/news/articles/c3j4751pqnj8o#1</guid>
+            <pubDate>Fri, 06 Nov 2026 00:02:52 GMT</pubDate>
+            <media:thumbnail width="240" height="135" url="https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/a4ec/live/3550b220-d845-11f1-93e1-3b657b665bcf.png"/>
+        </item>
+        <item>
+            <title><![CDATA[Interest rates hiked to 4% in first increase in over three years]]></title>
+            <description><![CDATA[Most analysts expected the increase from 3.75% to 4%. ]]></description>
+            <link>https://www.bbc.co.uk/news/articles/ck5ynw45jrgqo?at_medium=RSS&amp;at_campaign=rss</link>
+            <guid isPermaLink="false">https://www.bbc.co.uk/news/articles/ck5ynw45jrgqo#1</guid>
+            <pubDate>Thu, 05 Nov 2026 17:09:55 GMT</pubDate>
+            <media:thumbnail width="240" height="134" url="https://ichef.bbci.co.uk/ace/standard/240/cpsprodpb/5e8c/live/91074120-d849-11f1-b870-55415e6a9944.jpg"/>
+        </item>
+        
+    </channel>
+</rss>

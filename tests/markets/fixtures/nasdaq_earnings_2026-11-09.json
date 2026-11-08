@@ -1,0 +1,189 @@
+{
+ "data": {
+  "asOf": "Mon, Nov 9, 2026",
+  "headers": {
+   "time": "Time",
+   "symbol": "Symbol",
+   "name": "Company Name",
+   "marketCap": "Market Cap",
+   "fiscalQuarterEnding": "Fiscal Quarter Ending",
+   "epsForecast": "Consensus EPS* Forecast",
+   "noOfEsts": "# of Ests",
+   "lastYearRptDt": "Last Year's Report Date",
+   "lastYearEPS": "Last year's EPS*"
+  },
+  "rows": [
+   {
+    "lastYearRptDt": "11/07/2025",
+    "lastYearEPS": "$1.22",
+    "time": "time-pre-market",
+    "symbol": "KKR",
+    "name": "KKR & Co. Inc.",
+    "marketCap": "$88,237,580,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$1.41",
+    "noOfEsts": "7"
+   },
+   {
+    "lastYearRptDt": "11/07/2025",
+    "lastYearEPS": "$3.04",
+    "time": "time-pre-market",
+    "symbol": "CEG",
+    "name": "Constellation Energy Corporation",
+    "marketCap": "$84,909,761,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$3.90",
+    "noOfEsts": "5"
+   },
+   {
+    "lastYearRptDt": "11/10/2025",
+    "lastYearEPS": "$0.58",
+    "time": "time-pre-market",
+    "symbol": "B",
+    "name": "Barrick Mining Corporation",
+    "marketCap": "$66,373,366,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$0.74",
+    "noOfEsts": "5"
+   },
+   {
+    "lastYearRptDt": "11/10/2025",
+    "lastYearEPS": "$0.64",
+    "time": "time-after-hours",
+    "symbol": "OXY",
+    "name": "Occidental Petroleum Corporation",
+    "marketCap": "$56,339,562,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$1.43",
+    "noOfEsts": "10"
+   },
+   {
+    "lastYearRptDt": "N/A",
+    "lastYearEPS": "$2.84",
+    "time": "time-pre-market",
+    "symbol": "FERG",
+    "name": "Ferguson Enterprises Inc.",
+    "marketCap": "$45,587,132,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$3.28",
+    "noOfEsts": "N/A"
+   },
+   {
+    "lastYearRptDt": "N/A",
+    "lastYearEPS": "N/A",
+    "time": "time-after-hours",
+    "symbol": "SKYD",
+    "name": "Skydance Corporation",
+    "marketCap": "$41,093,751,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$0.11",
+    "noOfEsts": "3"
+   },
+   {
+    "lastYearRptDt": "11/06/2025",
+    "lastYearEPS": "$1.04",
+    "time": "time-after-hours",
+    "symbol": "TTWO",
+    "name": "Take-Two Interactive Software, Inc.",
+    "marketCap": "$39,894,147,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$0.49",
+    "noOfEsts": "6"
+   },
+   {
+    "lastYearRptDt": "11/12/2025",
+    "lastYearEPS": "$0.99",
+    "time": "time-pre-market",
+    "symbol": "IX",
+    "name": "ORIX Corporation",
+    "marketCap": "$39,051,293,000",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "",
+    "noOfEsts": "N/A"
+   },
+   {
+    "lastYearRptDt": "11/10/2025",
+    "lastYearEPS": "($0.01)",
+    "time": "time-after-hours",
+    "symbol": "RKLB",
+    "name": "Rocket Lab Corporation",
+    "marketCap": "$28,870,670,300",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "($0.05)",
+    "noOfEsts": "2"
+   },
+   {
+    "lastYearRptDt": "11/13/2025",
+    "lastYearEPS": "$6.17",
+    "time": "time-after-hours",
+    "symbol": "BAP",
+    "name": "Credicorp Ltd.",
+    "marketCap": "$27,637,127,200",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$7.51",
+    "noOfEsts": "3"
+   },
+   {
+    "lastYearRptDt": "11/10/2025",
+    "lastYearEPS": "($0.40)",
+    "time": "time-pre-market",
+    "symbol": "ROIV",
+    "name": "Roivant Sciences Ltd.",
+    "marketCap": "$26,451,468,300",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "($0.52)",
+    "noOfEsts": "1"
+   },
+   {
+    "lastYearRptDt": "11/06/2025",
+    "lastYearEPS": "$2.18",
+    "time": "time-after-hours",
+    "symbol": "CIB",
+    "name": "Grupo Cibest S.A.",
+    "marketCap": "$21,976,365,100",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$2.87",
+    "noOfEsts": "3"
+   },
+   {
+    "lastYearRptDt": "11/10/2025",
+    "lastYearEPS": "$2.72",
+    "time": "time-pre-market",
+    "symbol": "KSPI",
+    "name": "Joint Stock Company Kaspi.kz",
+    "marketCap": "$17,339,158,500",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$3.12",
+    "noOfEsts": "1"
+   },
+   {
+    "lastYearRptDt": "11/06/2025",
+    "lastYearEPS": "$0.43",
+    "time": "time-pre-market",
+    "symbol": "RBA",
+    "name": "RB Global, Inc.",
+    "marketCap": "$17,222,590,500",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$0.93",
+    "noOfEsts": "2"
+   },
+   {
+    "lastYearRptDt": "11/06/2025",
+    "lastYearEPS": "$2.75",
+    "time": "time-pre-market",
+    "symbol": "NRG",
+    "name": "NRG Energy, Inc.",
+    "marketCap": "$16,932,454,400",
+    "fiscalQuarterEnding": "Sep/2026",
+    "epsForecast": "$3.44",
+    "noOfEsts": "3"
+   }
+  ]
+ },
+ "message": null,
+ "status": {
+  "rCode": 200,
+  "bCodeMessage": null,
+  "developerMessage": null
+ }
+}

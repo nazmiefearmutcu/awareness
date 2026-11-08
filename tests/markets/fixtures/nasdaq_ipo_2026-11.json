@@ -1,0 +1,132 @@
+{
+ "data": {
+  "priced": {
+   "asOf": null,
+   "headers": {
+    "proposedTickerSymbol": "Symbol",
+    "companyName": "Company Name",
+    "proposedExchange": "Exchange/ Market",
+    "proposedSharePrice": "Price",
+    "sharesOffered": "Shares",
+    "pricedDate": "Date",
+    "dollarValueOfSharesOffered": "Offer Amount",
+    "dealStatus": "Actions"
+   },
+   "rows": [
+    {
+     "dealID": "1390143-118358",
+     "proposedTickerSymbol": "NARA",
+     "companyName": "Narragansett Bancorp, Inc.",
+     "proposedExchange": "NASDAQ Capital",
+     "proposedSharePrice": "10.00",
+     "sharesOffered": "9,098,800",
+     "pricedDate": "11/02/2026",
+     "dollarValueOfSharesOffered": "$90,988,000",
+     "dealStatus": "Priced"
+    }
+   ]
+  },
+  "upcoming": {
+   "upcomingTable": {
+    "asOf": null,
+    "headers": {
+     "proposedTickerSymbol": "Symbol",
+     "companyName": "Company Name",
+     "proposedExchange": "Exchange/ Market",
+     "proposedSharePrice": "Price",
+     "sharesOffered": "Shares",
+     "expectedPriceDate": "Expected IPO Date",
+     "dollarValueOfSharesOffered": "Offer Amount"
+    },
+    "rows": [
+     {
+      "dealID": "1407089-119692",
+      "proposedTickerSymbol": "RZRA",
+      "companyName": "Rezera Inc.",
+      "proposedExchange": "NASDAQ Global",
+      "proposedSharePrice": "11.00-13.00",
+      "sharesOffered": "16,666,667",
+      "expectedPriceDate": "11/12/2026",
+      "dollarValueOfSharesOffered": "$249,166,671"
+     }
+    ]
+   },
+   "lastUpdatedTime": "LAST UPDATED: 11/06/2026* - Source: EDGAR® Online"
+  },
+  "filed": {
+   "asOf": null,
+   "headers": {
+    "proposedTickerSymbol": "Symbol",
+    "companyName": "Company Name",
+    "filedDate": "Date Filed",
+    "dollarValueOfSharesOffered": "Offer Amount"
+   },
+   "rows": [
+    {
+     "dealID": "1409091-119839",
+     "proposedTickerSymbol": null,
+     "companyName": "Guitar Group Ltd",
+     "filedDate": "11/05/2026",
+     "dollarValueOfSharesOffered": "$31,050,000.00"
+    },
+    {
+     "dealID": "1409007-119836",
+     "proposedTickerSymbol": "KACQU",
+     "companyName": "Kartoon Studios Acquisition Corp",
+     "filedDate": "11/05/2026",
+     "dollarValueOfSharesOffered": "$345,000,000"
+    },
+    {
+     "dealID": "1408910-119818",
+     "proposedTickerSymbol": "CXIVU",
+     "companyName": "Churchill Capital Corp XIV",
+     "filedDate": "11/04/2026",
+     "dollarValueOfSharesOffered": "$345,000,000"
+    }
+   ]
+  },
+  "withdrawn": {
+   "asOf": null,
+   "headers": {
+    "proposedTickerSymbol": "Symbol",
+    "companyName": "Company Name",
+    "proposedExchange": "Exchange/ Market",
+    "sharesOffered": "Shares",
+    "filedDate": "Date Filed",
+    "dollarValueOfSharesOffered": "Offer Amount",
+    "withdrawDate": "Date Withdrawn"
+   },
+   "rows": [
+    {
+     "dealID": "1326992-116748",
+     "proposedTickerSymbol": null,
+     "companyName": "DT House Ltd",
+     "proposedExchange": null,
+     "sharesOffered": "5,000,000",
+     "filedDate": "1/20/2026",
+     "dollarValueOfSharesOffered": "$31,625,000",
+     "withdrawDate": "11/04/2026"
+    },
+    {
+     "dealID": "1314383-111989",
+     "proposedTickerSymbol": null,
+     "companyName": "GLAMOORE Capital Group Co Ltd.",
+     "proposedExchange": null,
+     "sharesOffered": "3,750,000",
+     "filedDate": "11/12/2024",
+     "dollarValueOfSharesOffered": "$16,200,000",
+     "withdrawDate": "11/02/2026"
+    }
+   ]
+  },
+  "month": 11,
+  "year": 2026,
+  "totalResults": 2
+ },
+ "message": null,
+ "status": {
+  "rCode": 200,
+  "bCodeMessage": null,
+  "developerMessage": null
+ }
+}

@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+		<rss xmlns:wsj="http://dowjones.net/rss/" xmlns:dj="http://dowjones.net/rss/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+<channel>
+<title>WSJ.com: Markets</title>
+<link>http://online.wsj.com</link>
+<atom:link type="application/rss+xml" rel="self" href="http://online.wsj.com"/>
+<description>Markets</description>
+<language>en-us</language>
+<pubDate>Mon, 27 Jan 2025 14:27:15 -0500</pubDate>
+<lastBuildDate>Mon, 27 Jan 2025 14:27:15 -0500</lastBuildDate>
+<copyright>Dow Jones &amp; Company, Inc.</copyright>
+<generator>http://online.wsj.com</generator>
+<docs>http://cyber.law.harvard.edu/rss/rss.html</docs>
+<image>
+<title>WSJ.com: Markets</title>
+<link>http://online.wsj.com</link>
+<url>http://online.wsj.com/img/wsj_sm_logo.gif</url>
+</image>
+<item>
+<title>Stocks Sink in Broad AI Rout Sparked by China's DeepSeek</title>
+<link>https://www.wsj.com/articles/nikkei-may-rise-as-weak-yen-raises-earnings-hopes-776a8056?mod=rss_markets_main</link>
+<description><![CDATA[U.S. stocks were mostly lower, with the Nasdaq leading declines as makers of AI infrastructure suffered steep falls, many in the double digits. Nvidia was down 16%.]]></description>
+<content:encoded/>
+<pubDate>Mon, 27 Jan 2025 14:26:00 -0500</pubDate>
+<guid isPermaLink="false">WP-WSJ-0002354015</guid>
+<category domain="AccessClassName">PAID</category>
+<wsj:articletype>Stocks</wsj:articletype>
+</item>
+<item>
+<title>Comex Gold, Silver Settle Lower</title>
+<link>https://www.wsj.com/articles/gold-edges-lower-feds-rate-decision-in-focus-09dbfceb?mod=rss_markets_main</link>
+<description><![CDATA[Gold settled 1.4% lower, down two of the past three sessions, and silver fell 2.5%, down three of the past four sessions.]]></description>
+<content:encoded/>
+<pubDate>Mon, 27 Jan 2025 14:01:00 -0500</pubDate>
+<guid isPermaLink="false">WP-WSJ-0002354018</guid>
+<category domain="AccessClassName">PAID</category>
+<wsj:articletype>Precious Metals</wsj:articletype>
+</item>
+<item>
+<title>DeepSeek Won't Sink U.S. AI Titans</title>
+<link>https://www.wsj.com/articles/deepseek-us-ai-stocks-nvidia-broadcom-6cdfae81?mod=rss_markets_main</link>
+<description><![CDATA[Panic fueling the selloff of Nvidia, Broadcom and other tech giants is overblown.]]></description>
+<content:encoded/>
+<pubDate>Mon, 27 Jan 2025 13:12:00 -0500</pubDate>
+<guid isPermaLink="false">WP-WSJ-0002355367</guid>
+<category domain="AccessClassName">PAID</category>
+<wsj:articletype>Heard on the Street</wsj:articletype>
+</item>
+<item>
+<title>Financial Services Roundup: Market Talk</title>
+<link>https://www.wsj.com/articles/financial-services-roundup-market-talk-94f52cba?mod=rss_markets_main</link>
+<description><![CDATA[Gain insight on Experian, SoFi Technologies and more in the latest Market Talks covering Financial Services.]]></description>
+<content:encoded/>
+<pubDate>Mon, 27 Jan 2025 12:27:00 -0500</pubDate>
+<guid isPermaLink="false">WP-WSJ-0002355424</guid>
+<category domain="AccessClassName">PAID</category>
+<wsj:articletype>Finance</wsj:articletype>
+</item>
+<item>
+<title>Arabica Coffee Prices Hit Record on U.S., Colombia Tariff Spat</title>
+<link>https://www.wsj.com/articles/arabica-coffee-prices-hit-new-high-on-u-s-colombia-tariff-spat-582446fe?mod=rss_markets_main</link>
+<description><![CDATA[Arabica coffee prices hit a record level, as traders digested the withdrawal of President Trump’s threats to impose tariffs and economic sanctions on Colombia.]]></description>
+<content:encoded/>
+<pubDate>Mon, 27 Jan 2025 12:20:00 -0500</pubDate>
+<guid isPermaLink="false">WP-WSJ-0002354874</guid>
+<category domain="AccessClassName">PAID</category>
+<wsj:articletype>Commodities</wsj:articletype>
+</item>
+<item>
+<title>Swiss franc, Japanese yen Rise as DeepSeek News Boosts Safe Havens</title>
+<link>https://www.wsj.com/articles/safe-haven-currencies-strengthen-amid-fears-over-global-tariffs-9964e17a?mod=rss_markets_main</link>
+<description><![CDATA[The Yen and Swiss Franc were stronger against the dollar as investors sought safe havens after Chinese start-up DeepSeek’s new AI model hit U.S. tech stocks.]]></description>
+<content:encoded/>
+<pubDate>Mon, 27 Jan 2025 09:55:00 -0500</pubDate>
+<guid isPermaLink="false">WP-WSJ-0002354017</guid>
+<category domain="AccessClassName">PAID</category>
+<wsj:articletype>Foreign Exchange</wsj:articletype>
+</item>
+<item>
+<title>Natural Gas Falls on Shifting Weather Forecasts</title>
+<link>https://www.wsj.com/articles/u-s-natural-gas-futures-fall-on-shifting-weather-forecasts-1ef3e457?mod=rss_markets_main</link>
+<description><![CDATA[U.S. natural gas futures fell after weekend updates took some of the chill out of early February weather forecasts.]]></description>
+<content:encoded/>
+<pubDate>Mon, 27 Jan 2025 09:05:00 -0500</pubDate>
+<guid isPermaLink="false">WP-WSJ-0002355062</guid>
+<category domain="AccessClassName">PAID</category>
+<wsj:articletype>Gas Markets</wsj:articletype>
+</item>
+<item>
+<title>Building-Products Distributor QXO Launches Hostile Bid for Beacon</title>
+<link>https://www.wsj.com/articles/building-products-distributor-qxo-launching-hostile-bid-for-beacon-de024410?mod=rss_markets_main</link>
+<description><![CDATA[QXO is taking its offer directly to shareholders after being rebuffed on several occasions.]]></description>
+<content:encoded/>
+<pubDate>Mon, 27 Jan 2025 08:28:00 -0500</pubDate>
+<guid isPermaLink="false">WP-WSJ-0002353768</guid>
+<category domain="AccessClassName">PAID</category>
+<wsj:articletype>Deals &amp; Deal Makers</wsj:articletype>
+</item>
+<item>
+<title>Natural-Gas Firm Diversified Energy Strikes Deal for Permian Basin Player</title>
+<link>https://www.wsj.com/articles/natural-gas-firm-diversified-energy-nears-deal-for-permian-basin-player-4c1c5ff5?mod=rss_markets_main</link>
+<description><![CDATA[Maverick Natural Resources has operations in Texas and Oklahoma.]]></description>
+<content:encoded/>
+<pubDate>Mon, 27 Jan 2025 06:57:00 -0500</pubDate>
+<guid isPermaLink="false">WP-WSJ-0002353480</guid>
+<category domain="AccessClassName">PAID</category>
+<wsj:articletype>Deals &amp; Deal Makers</wsj:articletype>
+</item>
+<item>
+<title>What's New This Tax Season That Can Save You Money</title>
+<link>https://www.wsj.com/articles/tax-season-2024-irs-filing-dates-explained-628a8b37?mod=rss_markets_main</link>
+<description><![CDATA[There are some new wrinkles, especially for those who sell things online or bought an EV.]]></description>
+<content:encoded/>
+<pubDate>Mon, 27 Jan 2025 05:30:00 -0500</pubDate>
+<guid isPermaLink="false">WP-WSJ-0002351293</guid>
+<category domain="AccessClassName">PAID</category>
+<wsj:articletype>Personal Finance</wsj:articletype>
+</item>
+
+</channel>
+</rss>

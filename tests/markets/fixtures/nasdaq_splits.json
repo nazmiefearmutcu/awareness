@@ -1,0 +1,169 @@
+{
+ "data": {
+  "asOf": "Sat, Nov 7, 2026",
+  "headers": {
+   "symbol": "SYMBOL",
+   "name": "COMPANY",
+   "ratio": "RATIO",
+   "executionDate": "EFFECTIVE DATE"
+  },
+  "rows": [
+   {
+    "symbol": "SNDK",
+    "name": "Sandisk Corporation",
+    "ratio": "8:1",
+    "executionDate": "11/20/2026"
+   },
+   {
+    "symbol": "BITO",
+    "name": "ProShares Bitcoin ETF",
+    "ratio": "1 : 2",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "BITI",
+    "name": "ProShares Short Bitcoin ETF",
+    "ratio": "1 : 2",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "RWM",
+    "name": "ProShares Short Russell2000",
+    "ratio": "1 : 2",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "VIXM",
+    "name": "ProShares Trust VIX Mid-Term Futures ETF",
+    "ratio": "1 : 2",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "UBT",
+    "name": "ProShares Ultra 20+ Year Treasury",
+    "ratio": "1 : 2",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "EET",
+    "name": "ProShares Ultra MSCI Emerging Markets",
+    "ratio": "3 : 1",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "ROM",
+    "name": "ProShares Ultra Technology",
+    "ratio": "3 : 1",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "DXD",
+    "name": "ProShares UltraShort Dow30",
+    "ratio": "1 : 2",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "DUG",
+    "name": "ProShares UltraShort Energy",
+    "ratio": "1 : 2",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "MZZ",
+    "name": "ProShares UltraShort MidCap400",
+    "ratio": "1 : 4",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "QID",
+    "name": "ProShares UltraShort QQQ",
+    "ratio": "1 : 4",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "SSG",
+    "name": "ProShares UltraShort Semiconductors",
+    "ratio": "1 : 2",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "REW",
+    "name": "ProShares UltraShort Technology",
+    "ratio": "1 : 2",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "SMDD",
+    "name": "UltraPro Short MidCap400",
+    "ratio": "1 : 2",
+    "executionDate": "11/19/2026"
+   },
+   {
+    "symbol": "EMBJ",
+    "name": "Embraer S.A.",
+    "ratio": "4 : 1",
+    "executionDate": "11/16/2026"
+   },
+   {
+    "symbol": "MMT",
+    "name": "Aberdeen Multi-Market Income Fund",
+    "ratio": "1 : 4",
+    "executionDate": "11/09/2026"
+   },
+   {
+    "symbol": "ARAY",
+    "name": "Accuray Incorporated",
+    "ratio": "1:40",
+    "executionDate": "11/09/2026"
+   },
+   {
+    "symbol": "ADGM",
+    "name": "Adagio Medical Holdings, Inc",
+    "ratio": "1:30",
+    "executionDate": "11/09/2026"
+   },
+   {
+    "symbol": "ALPS",
+    "name": "ALPS Group Inc",
+    "ratio": "1:5",
+    "executionDate": "11/09/2026"
+   },
+   {
+    "symbol": "CISS",
+    "name": "C3is Inc.",
+    "ratio": "1:5",
+    "executionDate": "11/09/2026"
+   },
+   {
+    "symbol": "NXTS",
+    "name": "Nexentis Technologies Inc.",
+    "ratio": "1:5",
+    "executionDate": "11/09/2026"
+   },
+   {
+    "symbol": "SMX",
+    "name": "SMX (Security Matters) Public Limited Company",
+    "ratio": "1:3",
+    "executionDate": "11/09/2026"
+   },
+   {
+    "symbol": "STKH",
+    "name": "Steakholder Foods Ltd.",
+    "ratio": "1:5",
+    "executionDate": "11/09/2026"
+   },
+   {
+    "symbol": "WCT",
+    "name": "Wellchange Holdings Company Limited",
+    "ratio": "1:10",
+    "executionDate": "11/09/2026"
+   }
+  ]
+ },
+ "message": null,
+ "status": {
+  "rCode": 200,
+  "bCodeMessage": null,
+  "developerMessage": null
+ }
+}

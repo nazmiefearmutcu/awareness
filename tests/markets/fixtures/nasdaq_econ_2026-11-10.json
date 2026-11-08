@@ -1,0 +1,382 @@
+{
+ "data": {
+  "asOf": "Sat, Nov 7, 2026",
+  "headers": {
+   "gmt": "Time",
+   "country": "Country",
+   "eventName": "Event",
+   "actual": "Actual",
+   "consensus": "Consensus",
+   "previous": "Previous",
+   "description": "Description"
+  },
+  "rows": [
+   {
+    "gmt": "24H",
+    "country": "Japan",
+    "eventName": "Coincident Indicator",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "-1.8%",
+    "description": "Japan's Composite index of coincident indicators measures current economic \r\nconditions. For the main purpose of measuring the amplitude of the fluctuations \r\nof economic activities, the composite indexes are constructed by aggregating the\r\npercentage changes of the selected series. They are represented with the average\r\nof their 1995 values as 100. \r\n \r\nThe coincident index consists of the following components: \r\n- Index of industrial production (mining and manufacturing); \r\n- Index of consumption of raw materials (manufacturing); \r\n- Large industrial power consumption; \r\n- Index of capacity utilization ratio (manufacturing); \r\n- Index of non-scheduled worked hours; \r\n- Index of producer's shipment (investment goods); \r\n- Sales at department stores (percent change from the previous year); \r\n- Index of sales in wholesale trade (percent change from the previous year); \r\n- Operating profits (all industries); \r\n- Index of sales in small and medium sized enterprises (manufacturing); \r\n- Effective job offer rate (excluding new school graduates)."
+   },
+   {
+    "gmt": "24H",
+    "country": "Japan",
+    "eventName": "Leading Index",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "0.4%",
+    "description": "The Leading Indicators Index is a composite index based on 12 economic indicators, that is designed to predict the future direction of the economy.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as positive/bullish for the JPY, while a lower than expected reading should be taken as negative/bearish for the JPY."
+   },
+   {
+    "gmt": "24H",
+    "country": "Japan",
+    "eventName": "Leading Index",
+    "actual": "&nbsp;",
+    "consensus": "116.7",
+    "previous": "118.0",
+    "description": "The Leading Indicators Index is a composite index based on 12 economic indicators, that is designed to predict the future direction of the economy.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as positive/bullish for the JPY, while a lower than expected reading should be taken as negative/bearish for the JPY."
+   },
+   {
+    "gmt": "01:00",
+    "country": "South Africa",
+    "eventName": "Foreign Reserves (USD)",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "75.43B",
+    "description": "Total of a country's gold holdings and convertible foreign currencies held in its central bank. Usually includes foreign currencies themselves, other assets denominated in foreign currencies, and particular amount of special drawing rights (SDRs). A foreign exchange reserve is a useful precaution for countries exposed to financial crises. It can be used for the purpose of intervening in the exchange market to influence or peg the exchange rate.Amount as at end of period."
+   },
+   {
+    "gmt": "01:00",
+    "country": "South Africa",
+    "eventName": "Net FX Reserves  (USD)",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "72.258B",
+    "description": "Total of a country's gold holdings and convertible foreign currencies held in its central bank. Usually includes foreign currencies themselves, other assets denominated in foreign currencies, and particular amount of special drawing rights (SDRs). A foreign exchange reserve is a useful precaution for countries exposed to financial crises. It can be used for the purpose of intervening in the exchange market to influence or peg the exchange rate.End of period. Up to the end of February 2004 referred to as the \"net open position in foreign currency of the Reserve Bank\"."
+   },
+   {
+    "gmt": "02:00",
+    "country": "Germany",
+    "eventName": "German Exports",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "-0.8%",
+    "description": "Exports of goods and services consist of transactions in goods and services (sales, barter, gifts or grants) from residents to non-residents.Exports free onboard (f.o.b.) and Imports cost insurance freight (c.i.f.) are, in general, customs statistics reported under the general trade statistics according to the recommendations of the UN International Trade Statistics. For some countries Imports are reported as f.o.b. instead of c.i.f. which is generally accepted. When reporting Imports as f.o.b. you will have the effect of reducing the value of Imports by the amount of the cost of insurance and freight."
+   },
+   {
+    "gmt": "02:00",
+    "country": "Germany",
+    "eventName": "German Imports",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "0.9%",
+    "description": "Exports free on board (f.o.b.) and Imports cost insurance freight (c.i.f.) are, in general, customs statistics reported under the general trade statistics according to the recommendations of the UN International Trade Statistics. For some countries Imports are reported as f.o.b. instead of c.i.f. which is generally accepted. When reporting Imports as f.o.b. you will have the effect ofreducing the value of Imports by the amount of the cost of insurance and freight."
+   },
+   {
+    "gmt": "02:00",
+    "country": "Germany",
+    "eventName": "German Trade Balance",
+    "actual": "&nbsp;",
+    "consensus": "19.2B",
+    "previous": "19.5B",
+    "description": "The Trade Balance measures the difference in worth between exported and imported goods over the month. A positive number indicates that more goods were exported than imported.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as positive/bullish for the EUR, while a lower than expected reading should be taken as negative/bearish for the EUR."
+   },
+   {
+    "gmt": "04:30",
+    "country": "Euro Zone",
+    "eventName": "Sentix Investor Confidence",
+    "actual": "&nbsp;",
+    "consensus": "2.1",
+    "previous": "2.7",
+    "description": "The Sentix Investor Confidence Index rates the relative six-month economic outlook for the euro zone. The data is compiled from a survey of about 2,800 investors and analysts. A reading above zero indicates optimism; below indicates pessimism.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as positive/bullish for the EUR, while a lower than expected reading should be taken as negative/bearish for the EUR."
+   },
+   {
+    "gmt": "05:00",
+    "country": "Euro Zone",
+    "eventName": "ECOFIN Meetings",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "&nbsp;",
+    "description": ""
+   },
+   {
+    "gmt": "05:00",
+    "country": "Euro Zone",
+    "eventName": "Eurogroup Meetings",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "&nbsp;",
+    "description": ""
+   },
+   {
+    "gmt": "06:00",
+    "country": "Canada",
+    "eventName": "Leading Index",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "0.08%",
+    "description": "The Leading Indicators Index is a composite index based on 12 economic indicators, that is designed to predict the future direction of the economy.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as positive/bullish for the CAD, while a lower than expected reading should be taken as negative/bearish for the CAD."
+   },
+   {
+    "gmt": "06:00",
+    "country": "Brazil",
+    "eventName": "IGP-DI Inflation Index",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "1.50%",
+    "description": "An index that measures and tracks the changes in price of goods in the stages before the retail level. Wholesale price indexes (WPIs) report monthly to show the average price changes of goods sold in bulk, and they are a group of the indicators that follow growth in the economy. \r\nAlthough some countries still use the WPIs as a measure of inflation, many countries, including the United States, use the producer price index (PPI) instead."
+   },
+   {
+    "gmt": "06:25",
+    "country": "Brazil",
+    "eventName": "BCB Focus Market Readout",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "&nbsp;",
+    "description": "The Focus Market Report provides weekly mean market expectations for inflation over following month, 12 months, and following year as well as expectations for Selic target rate, real GDP growth, net public sector debt/GDP, industrial production growth, current account, and trade balance, collected from over 130 banks, brokers, and funds managers."
+   },
+   {
+    "gmt": "08:40",
+    "country": "United States",
+    "eventName": "FOMC Member Bowman Speaks",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "&nbsp;",
+    "description": "Michelle W. Bowman took office as a member of the Board of Governors of the Federal Reserve System on November 26, 2018, to fill an unexpired term ending January 31, 2020. Her public engagements are often used to drop subtle clues regarding future monetary policy."
+   },
+   {
+    "gmt": "09:00",
+    "country": "France",
+    "eventName": "French 12-Month BTF Auction",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "3.352%",
+    "description": "The figures displayed in the calendar represent the average yield on the Bons du Trésor à taux fixe or BTF auctioned. &lt;BR/&gt;&lt;BR/&gt;French BTF bills have maturities of up to 1 year. Governments issue treasuries to borrow money to cover the gap between the amount they receive in taxes and the amount they spend to refinance existing debt and/or to raise capital.&lt;BR/&gt;&lt;BR/&gt;The yield on the BTF represents the return an investor will receive by holding the treasury for its entire duration. All bidders receive the same rate at the highest accepted bid.&lt;BR/&gt;&lt;BR/&gt;Yield fluctuations should be monitored closely as an indicator of the government debt situation. Investors compare the average rate at auction to the rate at previous auctions of the same security."
+   },
+   {
+    "gmt": "09:00",
+    "country": "France",
+    "eventName": "French 3-Month BTF Auction",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "2.788%",
+    "description": "The figures displayed in the calendar represent the average yield on the Bons du Trésor à taux fixe or BTF auctioned. &lt;BR/&gt;&lt;BR/&gt;French BTF bills have maturities of up to 1 year. Governments issue treasuries to borrow money to cover the gap between the amount they receive in taxes and the amount they spend to refinance existing debt and/or to raise capital.&lt;BR/&gt;&lt;BR/&gt;The yield on the BTF represents the return an investor will receive by holding the treasury for its entire duration. All bidders receive the same rate at the highest accepted bid.&lt;BR/&gt;&lt;BR/&gt;Yield fluctuations should be monitored closely as an indicator of the government debt situation. Investors compare the average rate at auction to the rate at previous auctions of the same security."
+   },
+   {
+    "gmt": "09:00",
+    "country": "France",
+    "eventName": "French 6-Month BTF Auction",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "3.068%",
+    "description": "The figures displayed in the calendar represent the average yield on the Bons du Trésor à taux fixe or BTF auctioned. &lt;BR/&gt;&lt;BR/&gt;French BTF bills have maturities of up to 1 year. Governments issue treasuries to borrow money to cover the gap between the amount they receive in taxes and the amount they spend to refinance existing debt and/or to raise capital.&lt;BR/&gt;&lt;BR/&gt;The yield on the BTF represents the return an investor will receive by holding the treasury for its entire duration. All bidders receive the same rate at the highest accepted bid.&lt;BR/&gt;&lt;BR/&gt;Yield fluctuations should be monitored closely as an indicator of the government debt situation. Investors compare the average rate at auction to the rate at previous auctions of the same security."
+   },
+   {
+    "gmt": "10:00",
+    "country": "United States",
+    "eventName": "CB Employment Trends Index",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "107.56",
+    "description": "The eight labor-market indicators listed below aggregated into the Employment Trends Index. &lt;/BR&gt;Percentage of respondents who say they find &quot;&quot;Jobs Hard to Get&quot;&quot; (The Conference Board Consumer Confidence Survey).Initial Claims for Unemployment Insurance (U.S. Department of Labor). Percentage of Firms With Positions Not Able to Fill Right Now (National Federation of Independent Business).Number of employees hired by the temporary-help industry (U.S. Bureau of Labor Statistics).Part-time Workers for Economic Reasons (BLS).Job Openings (BLS). Industrial Production (Federal Reserve Board).Real Manufacturing and Trade Sales (U.S. Bureau of Economic Analysis).&lt;/BR&gt;A higher than expected reading should be taken as positive/bullish for the USD , while a lower than expected reading should be taken as negative/bearish for the USD."
+   },
+   {
+    "gmt": "10:00",
+    "country": "United States",
+    "eventName": "Fed Goolsbee Speaks",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "&nbsp;",
+    "description": ""
+   },
+   {
+    "gmt": "10:00",
+    "country": "United States",
+    "eventName": "Wholesale Inventories",
+    "actual": "&nbsp;",
+    "consensus": "0.6%",
+    "previous": "0.6%",
+    "description": "Wholesale Inventories measures the change in the total value of goods held in inventory by wholesalers.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as negative/bearish for the USD, while a lower than expected reading should be taken as positive/bullish for the USD."
+   },
+   {
+    "gmt": "10:00",
+    "country": "United States",
+    "eventName": "Wholesale Trade Sales",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "1.8%",
+    "description": "Change in the total value of sales at the wholesale level."
+   },
+   {
+    "gmt": "10:30",
+    "country": "United States",
+    "eventName": "Atlanta Fed GDPNow",
+    "actual": "&nbsp;",
+    "consensus": "3.4%",
+    "previous": "3.4%",
+    "description": "GDPNow is not an official forecast of the Atlanta Fed. Rather, it is best viewed as a running estimate of real GDP growth based on available economic data for the current measured quarter. There are no subjective adjustments made to GDPNow‚Äîthe estimate is based solely on the mathematical results of the model. In particular, it does not capture the impact of COVID-19 and social mobility beyond their impact on GDP source data and relevant economic reports that have already been released. It does not anticipate their impact on forthcoming economic reports beyond the standard internal dynamics of the model."
+   },
+   {
+    "gmt": "11:00",
+    "country": "United States",
+    "eventName": "NY Fed 1-Year Consumer Inflation Expectations",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "3.9%",
+    "description": ""
+   },
+   {
+    "gmt": "11:30",
+    "country": "United States",
+    "eventName": "3-Month Bill Auction",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "4.040%",
+    "description": "The figures displayed in the calendar represent the rate on the Treasury Bill auctioned.&lt;BR/&gt;&lt;BR/&gt;U.S. Treasury Bills have maturities of a few days to one year.  Governments issue treasuries to borrow money to cover the gap between the amount they receive in taxes and the amount they spend to refinance existing debt and/or to raise capital. The rate on a Treasury Bill represents the return an investor will receive by holding the bill for its entire duration. All bidders receive the same rate at the highest accepted bid.&lt;BR/&gt;&lt;BR/&gt;Yield fluctuations should be monitored closely as an indicator of the government debt situation. Investors compare the average rate at auction to the rate at previous auctions of the same security."
+   },
+   {
+    "gmt": "11:30",
+    "country": "United States",
+    "eventName": "6-Month Bill Auction",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "4.150%",
+    "description": "The figures displayed in the calendar represent the rate on the Treasury Bill auctioned.&lt;BR/&gt;&lt;BR/&gt;U.S. Treasury Bills have maturities of a few days to one year. Governments issue treasuries to borrow money to cover the gap between the amount they receive in taxes and the amount they spend to refinance existing debt and/or to raise capital. The rate on a Treasury Bill represents the return an investor will receive by holding the bill for its entire duration. All bidders receive the same rate at the highest accepted bid.&lt;BR/&gt;&lt;BR/&gt;Yield fluctuations should be monitored closely as an indicator of the government debt situation. Investors compare the average rate at auction to the rate at previous auctions of the same security."
+   },
+   {
+    "gmt": "12:15",
+    "country": "United States",
+    "eventName": "FOMC Member Barkin Speaks",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "&nbsp;",
+    "description": "Richmond Fed President Thomas Barkin. His public engagements are often used to drop subtle clues regarding future monetary policy."
+   },
+   {
+    "gmt": "12:25",
+    "country": "United Kingdom",
+    "eventName": "BoE Gov Bailey Speaks",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "&nbsp;",
+    "description": "Bank of England (BOE) Governor Andrew Bailey (Mar 2020 - Mar 2028) is to speak. As head of the BOE's Monetary Policy Committee (MPC) which controls short term interest rates, Bailey has more influence over sterling's value than any other person. Traders scrutinize his public engagements for clues regarding future monetary policy.\n\nHis comments may spark a short-term positive or negative trend."
+   },
+   {
+    "gmt": "13:00",
+    "country": "United States",
+    "eventName": "3-Year Note Auction",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "4.932%",
+    "description": "The figures displayed in the calendar represent the yield on the Treasury Note auctioned.&lt;BR/&gt;&lt;BR/&gt;U.S. Treasury Notes have maturities of two to ten years. Governments issue treasuries to borrow money to cover the gap between the amount they receive in taxes and the amount they spend to refinance existing debt and/or to raise capital. The rate on a Treasury Note represents the return an investor will receive by holding the note for its entire duration. All bidders receive the same rate at the highest accepted bid.&lt;BR/&gt;&lt;BR/&gt;Yield fluctuations should be monitored closely as an indicator of the government debt situation. Investors compare the average rate at auction to the rate at previous auctions of the same security."
+   },
+   {
+    "gmt": "18:30",
+    "country": "Australia",
+    "eventName": "Westpac Consumer Sentiment",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "-4.7%",
+    "description": "The Westpac Consumer Sentiment Index measures the change in the level of consumer confidence in economic activity.\r\nOn the index, a level above 100.0 indicates optimism; below indicates pessimism.\r\nThe data is compiled from a survey of about 1,200 consumers which asks respondents to rate the relative level of past and future economic conditions.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as positive/bullish for the AUD, while a lower than expected reading should be taken as negative/bearish for the AUD."
+   },
+   {
+    "gmt": "18:30",
+    "country": "Japan",
+    "eventName": "Household Spending",
+    "actual": "&nbsp;",
+    "consensus": "0.3%",
+    "previous": "0.1%",
+    "description": "Household Spending measures the change in the inflation-adjusted value of all expenditures by consumers.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as positive/bullish for the JPY, while a lower than expected reading should be taken as negative/bearish for the JPY."
+   },
+   {
+    "gmt": "18:30",
+    "country": "Japan",
+    "eventName": "Household Spending",
+    "actual": "&nbsp;",
+    "consensus": "-3.1%",
+    "previous": "-3.1%",
+    "description": "Household Spending measures the change in the inflation-adjusted value of all expenditures by consumers.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as positive/bullish for the JPY, while a lower than expected reading should be taken as negative/bearish for the JPY."
+   },
+   {
+    "gmt": "18:50",
+    "country": "Japan",
+    "eventName": "Adjusted Current Account",
+    "actual": "&nbsp;",
+    "consensus": "2.81T",
+    "previous": "29.79T",
+    "description": "The Japanese Adjusted Current Account index measures the difference in value between exported and imported goods, services and interest payments during the reported month. The goods portion is the same as the monthly Trade Balance figure. Because foreigners must buy the domestic currency to pay for the nation&#039;s exports the data can have a sizable affect on the JPY.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as positive/bullish for the JPY,\r\nwhile a lower than expected reading should be taken as negative/bearish for the JPY."
+   },
+   {
+    "gmt": "18:50",
+    "country": "Japan",
+    "eventName": "Bank Lending",
+    "actual": "&nbsp;",
+    "consensus": "5.4%",
+    "previous": "5.3%",
+    "description": "Bank Lending measures the change in the total value of outstanding bank loans issued to consumers and businesses. Borrowing and spending are closely correlated with consumer confidence.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as positive/bullish for the JPY, while a lower than expected reading should be taken as negative/bearish for the JPY."
+   },
+   {
+    "gmt": "18:50",
+    "country": "Japan",
+    "eventName": "BoJ Summary of Opinions",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "&nbsp;",
+    "description": "This report includes the BOJ's projection for inflation and economic growth. It is scheduled 8 times per year, about 10 days after the Monetary Policy Statement is released."
+   },
+   {
+    "gmt": "18:50",
+    "country": "Japan",
+    "eventName": "Current Account n.s.a.",
+    "actual": "&nbsp;",
+    "consensus": "3.354T",
+    "previous": "4.062T",
+    "description": "The Current Account index measures the difference in value between exported and imported goods, services and interest payments during the reported month. The goods portion is the same as the monthly Trade Balance figure&lt;/BR&gt;A higher than expected reading should be taken as positive/bullish for the JPY , while a lower than expected reading should be taken as negative/bearish for the JPY"
+   },
+   {
+    "gmt": "19:01",
+    "country": "United Kingdom",
+    "eventName": "BRC Retail Sales Monitor",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "1.0%",
+    "description": "The British Retail Consortium (BRC) Retail Sales Monitor measures the change in the value of same-store sales in BRC-member retail outlets in the U.K.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as positive/bullish for the GBP, while a lower than expected reading should be taken as negative/bearish for the GBP."
+   },
+   {
+    "gmt": "19:30",
+    "country": "Australia",
+    "eventName": "NAB Business Confidence",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "-13",
+    "description": "The National Australia Bank (NAB) Business Confidence Index rates the current level of business conditions in Australia. Changes in business sentiment can be an early signal of future economic activity such as spending, hiring, and investment. The index is based on data collected from a survey of around 350 companies. A level above zero indicates improving conditions; below indicates worsening conditions.&lt;BR/&gt;&lt;BR/&gt;A higher than expected reading should be taken as positive/bullish for the AUD, while a lower than expected reading should be taken as negative/bearish for the AUD."
+   },
+   {
+    "gmt": "19:30",
+    "country": "Australia",
+    "eventName": "NAB Business Survey",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "-1",
+    "description": "Business confidence is a measure of respondents expectations of business conditions in their industry for the upcoming period. Business conditions is a simple average of trading, profitability and employment indices, reported by respondents for their company. A higher than expected number should be taken as positive to the AUD, while a lower than expected number as negative."
+   },
+   {
+    "gmt": "22:35",
+    "country": "Japan",
+    "eventName": "30-Year JGB Auction",
+    "actual": "&nbsp;",
+    "consensus": " ",
+    "previous": "4.109%",
+    "description": "The figures displayed in the calendar represent the yield on the JGB auctioned.&lt;BR/&gt;&lt;BR/&gt; JGB&#039;s have maturities of up to 50 years. Governments issue treasuries to borrow money to cover the gap between the amount they receive in taxes and the amount they spend to refinance existing debt and/or to raise capital. The rate on a JGB represents the return an investor will receive by holding the note for its entire duration. All bidders receive the same rate at the highest accepted bid.&lt;BR/&gt;&lt;BR/&gt;Yield fluctuations should be monitored closely as an indicator of the government debt situation. Investors compare the average rate at auction to the rate at previous auctions of the same security."
+   }
+  ]
+ },
+ "message": null,
+ "status": {
+  "rCode": 200,
+  "bCodeMessage": null,
+  "developerMessage": null
+ }
+}

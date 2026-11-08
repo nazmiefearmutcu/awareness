@@ -41,9 +41,13 @@ dependencies = [
   # time
   "python-dateutil>=2.9",
   "redis>=5.0.0",
+  # markets layer (awareness.markets)
+  "exchange_calendars>=4.5",
 ]
 
 [project.optional-dependencies]
+# FinBERT sentiment for awareness.markets (falls back to the finance lexicon without it).
+ml = ["transformers>=4.40", "torch>=2.2"]
 hf = ["datasets>=2.20", "huggingface-hub>=0.23"]
 postgres = ["asyncpg>=0.29", "psycopg[binary]>=3.2"]
 dev = [
@@ -68,6 +72,7 @@ awareness = "awareness.cli.main:app"
 awareness-api = "awareness.api.server:run"
 awareness-worker = "awareness.workers.main:run"
 awareness-tail = "awareness.tail.daemon:run"
+awareness-markets = "awareness.markets.app:run"
 
 [build-system]
 requires = ["hatchling>=1.25"]
@@ -101,6 +106,12 @@ ignore = ["S101", "PLR0913", "PLR2004", "E501"]
 # Entity extractor is a single dense classifier function; branch-count is
 # inherent to the span-classification ruleset.
 "src/awareness/entities/**" = ["PLR0912"]
+# Markets store builds SQL from constant table names and "?" placeholder lists only;
+# every user value is bound as a parameter.
+"src/awareness/markets/store.py" = ["S608", "PLR0912"]
+# Collectors accept a per-request timeout for the underlying httpx call.
+"src/awareness/markets/http.py" = ["ASYNC109"]
+"tests/markets/**" = ["S608", "PLR0915"]
 
 [tool.mypy]
 python_version = "3.11"

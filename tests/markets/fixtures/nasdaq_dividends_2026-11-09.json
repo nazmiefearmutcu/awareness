@@ -1,0 +1,179 @@
+{
+ "data": {
+  "calendar": {
+   "asOf": "Mon, Nov 9, 2026",
+   "headers": {
+    "symbol": "Symbol",
+    "companyName": "Name",
+    "dividend_Ex_Date": "Ex-Dividend Date",
+    "payment_Date": "Payment Date",
+    "record_Date": "Record Date",
+    "dividend_Rate": "Dividend",
+    "indicated_Annual_Dividend": "Historical Annual Dividend",
+    "announcement_Date": "Announcement Date"
+   },
+   "rows": [
+    {
+     "companyName": "Bankwell Financial Group, Inc. Common Stock",
+     "symbol": "BWFG",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/20/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.2,
+     "indicated_Annual_Dividend": 0.8,
+     "announcement_Date": "10/28/2026"
+    },
+    {
+     "companyName": "Capital Bancorp, Inc. Common Stock",
+     "symbol": "CBNK",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/25/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.14,
+     "indicated_Annual_Dividend": 0.56,
+     "announcement_Date": "10/23/2026"
+    },
+    {
+     "companyName": "DeFi Development Corp. Variable Rate Series C Perpetual Preferred Stock",
+     "symbol": "CHAD",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/10/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.00614,
+     "indicated_Annual_Dividend": 1.52886,
+     "announcement_Date": "10/14/2026"
+    },
+    {
+     "companyName": "H2O America Common Stock",
+     "symbol": "HTO",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "12/01/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.44,
+     "indicated_Annual_Dividend": 1.76,
+     "announcement_Date": "10/23/2026"
+    },
+    {
+     "companyName": "Hanmi Financial Corporation Common Stock",
+     "symbol": "HAFC",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/25/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.28,
+     "indicated_Annual_Dividend": 1.12,
+     "announcement_Date": "10/29/2026"
+    },
+    {
+     "companyName": "HBT Financial, Inc. Common Stock",
+     "symbol": "HBT",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/17/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.25,
+     "indicated_Annual_Dividend": 1.0,
+     "announcement_Date": "10/27/2026"
+    },
+    {
+     "companyName": "Medallion Financial Corp. Common Stock",
+     "symbol": "MFIN",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/19/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.14,
+     "indicated_Annual_Dividend": 0.56,
+     "announcement_Date": "10/27/2026"
+    },
+    {
+     "companyName": "Meridian Corporation Common Stock",
+     "symbol": "MRBK",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/16/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.14,
+     "indicated_Annual_Dividend": 0.56,
+     "announcement_Date": "10/29/2026"
+    },
+    {
+     "companyName": "Northeast Bank Common Stock",
+     "symbol": "NBN",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/23/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.01,
+     "indicated_Annual_Dividend": 0.04,
+     "announcement_Date": "10/26/2026"
+    },
+    {
+     "companyName": "OceanFirst Financial Corp. Common Stock",
+     "symbol": "OCFC",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/20/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.2,
+     "indicated_Annual_Dividend": 0.8,
+     "announcement_Date": "10/27/2026"
+    },
+    {
+     "companyName": "Strategy Inc Variable Rate Series A Perpetual Stretch Preferred Stock",
+     "symbol": "STRC",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/10/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.04,
+     "indicated_Annual_Dividend": 24.9,
+     "announcement_Date": "10/15/2026"
+    },
+    {
+     "companyName": "Strive, Inc. 15% Series A Perpetual SATS Preferred Stock",
+     "symbol": "SATS",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/10/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.0658,
+     "indicated_Annual_Dividend": 216.879,
+     "announcement_Date": "10/20/2026"
+    },
+    {
+     "companyName": "Strive, Inc. Variable Rate Series A Perpetual Preferred Stock",
+     "symbol": "SATA",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/10/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.0571,
+     "indicated_Annual_Dividend": 14.2179,
+     "announcement_Date": "10/12/2026"
+    },
+    {
+     "companyName": "TPG Inc. Class A Common Stock",
+     "symbol": "TPG",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/23/2026",
+     "record_Date": "11/09/2026",
+     "dividend_Rate": 0.55,
+     "indicated_Annual_Dividend": 2.36,
+     "announcement_Date": "10/29/2026"
+    },
+    {
+     "companyName": "Vistance Networks, Inc. Common Stock",
+     "symbol": "VISN",
+     "dividend_Ex_Date": "11/09/2026",
+     "payment_Date": "11/06/2026",
+     "record_Date": "10/26/2026",
+     "dividend_Rate": 1.5,
+     "indicated_Annual_Dividend": 0.0,
+     "announcement_Date": "10/14/2026"
+    }
+   ]
+  },
+  "timeframe": {
+   "minDate": "1988-10-03T00:00:00",
+   "maxDate": "2104-06-02T00:00:00"
+  }
+ },
+ "message": null,
+ "status": {
+  "rCode": 200,
+  "bCodeMessage": null,
+  "developerMessage": null
+ }
+}

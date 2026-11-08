@@ -1,0 +1,580 @@
+<?xml version="1.0"?>
+<rss xmlns:sa="https://seekingalpha.com/api/1.0" xmlns:media="http://search.yahoo.com/mrss/" version="2.0">
+  <channel>
+    <title>Apple Inc. - News and Analysis on Seeking Alpha</title>
+    <link>https://seekingalpha.com</link>
+    <description>&#xA9; seekingalpha.com. Use of this feed is limited to personal, non-commercial use and is governed by Seeking Alpha's Terms of Use (https://about.seekingalpha.com/terms). Publishing this feed for public or commercial use and/or misrepresentation by a third party is prohibited.</description>
+    <item>
+      <title>Earnings Scoreboard: 86% of reporting firms beat EPS estimates, 78% post Y/Y earnings growth</title>
+      <link>https://seekingalpha.com/symbol/AAPL/news?source=feed_symbol_AAPL</link>
+      <guid isPermaLink="false">https://seekingalpha.com/MarketCurrent:4667797</guid>
+      <pubDate>Sat, 07 Nov 2026 11:45:02 -0500</pubDate>
+      <sa:author_name>Meghavi Singh</sa:author_name>
+      <media:thumbnail url=""/>
+      <sa:picture/>
+      <sa:stock>
+        <sa:symbol>AAPL</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>MCD</sa:symbol>
+        <sa:company_name>McDonald's Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AMD</sa:symbol>
+        <sa:company_name>Advanced Micro Devices, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>QCOM</sa:symbol>
+        <sa:company_name>QUALCOMM Incorporated</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>CVS</sa:symbol>
+        <sa:company_name>CVS Health Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>PFE</sa:symbol>
+        <sa:company_name>Pfizer Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>O</sa:symbol>
+        <sa:company_name>Realty Income Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>SMCI</sa:symbol>
+        <sa:company_name>Super Micro Computer, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>UBER</sa:symbol>
+        <sa:company_name>Uber Technologies, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>PLTR</sa:symbol>
+        <sa:company_name>Palantir Technologies Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AAPL:CA</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>CVS:CA</sa:symbol>
+        <sa:company_name>CVS Health Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>PFE:CA</sa:symbol>
+        <sa:company_name>Pfizer Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AMD:CA</sa:symbol>
+        <sa:company_name>Advanced Micro Devices, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>MCD:CA</sa:symbol>
+        <sa:company_name>McDonald's Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>UBER:CA</sa:symbol>
+        <sa:company_name>Uber Technologies, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>SMCI:CA</sa:symbol>
+        <sa:company_name>Super Micro Computer, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>QCOM:CA</sa:symbol>
+        <sa:company_name>QUALCOMM Incorporated</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>PLTR:CA</sa:symbol>
+        <sa:company_name>Palantir Technologies Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>CEG</sa:symbol>
+        <sa:company_name>Constellation Energy Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>CSCO</sa:symbol>
+        <sa:company_name>Cisco Systems, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>OXY</sa:symbol>
+        <sa:company_name>Occidental Petroleum Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>NRG</sa:symbol>
+        <sa:company_name>NRG Energy, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AMAT</sa:symbol>
+        <sa:company_name>Applied Materials, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>TTWO</sa:symbol>
+        <sa:company_name>Take-Two Interactive Software, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>TDG</sa:symbol>
+        <sa:company_name>TransDigm Group Incorporated</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>KKR</sa:symbol>
+        <sa:company_name>KKR &amp; Co. Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>FERG</sa:symbol>
+        <sa:company_name>Ferguson Enterprises Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>VYLR</sa:symbol>
+        <sa:company_name>Vylor Inc.</sa:company_name>
+      </sa:stock>
+    </item>
+    <item>
+      <title>Dividend Roundup: Apple, 3M, Cohen &amp; Steers, ConocoPhillips, and more</title>
+      <link>https://seekingalpha.com/symbol/AAPL/news?source=feed_symbol_AAPL</link>
+      <guid isPermaLink="false">https://seekingalpha.com/MarketCurrent:4667883</guid>
+      <pubDate>Fri, 06 Nov 2026 08:00:54 -0500</pubDate>
+      <sa:author_name>Sinchita Mitra</sa:author_name>
+      <media:thumbnail url=""/>
+      <sa:picture/>
+      <sa:stock>
+        <sa:symbol>AAPL</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>DVY</sa:symbol>
+        <sa:company_name>iShares Select Dividend ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>SDY</sa:symbol>
+        <sa:company_name>State Street SPDR S&amp;P Dividend ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>MMM</sa:symbol>
+        <sa:company_name>3M Company</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>VIG</sa:symbol>
+        <sa:company_name>Vanguard Dividend Appreciation ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>BDX</sa:symbol>
+        <sa:company_name>Becton, Dickinson and Company</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>CNS</sa:symbol>
+        <sa:company_name>Cohen &amp; Steers, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>VYM</sa:symbol>
+        <sa:company_name>Vanguard High Dividend Yield ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>IDV</sa:symbol>
+        <sa:company_name>iShares International Select Dividend ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>DGRO</sa:symbol>
+        <sa:company_name>iShares Core Dividend Growth ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>HDV</sa:symbol>
+        <sa:company_name>iShares Core High Dividend ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>SCHD</sa:symbol>
+        <sa:company_name>Schwab US Dividend Equity ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>DGRW</sa:symbol>
+        <sa:company_name>WisdomTree US Quality Dividend Growth Fund ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>NOBL</sa:symbol>
+        <sa:company_name>ProShares S&amp;P 500 Dividend Aristocrats ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>RDVY</sa:symbol>
+        <sa:company_name>First Trust Rising Dividend Achievers ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>VIGI</sa:symbol>
+        <sa:company_name>Vanguard Intl Dividend Appreciation ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>SDVY</sa:symbol>
+        <sa:company_name>First Trust SMID Cap Rising Dividend Achievers ETF</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>IBM</sa:symbol>
+        <sa:company_name>International Business Machines Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>COP</sa:symbol>
+        <sa:company_name>ConocoPhillips</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>UPS</sa:symbol>
+        <sa:company_name>United Parcel Service, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>B</sa:symbol>
+        <sa:company_name>Barrick Mining Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>EL</sa:symbol>
+        <sa:company_name>The Est&#xE9;e Lauder Companies Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>BKR</sa:symbol>
+        <sa:company_name>Baker Hughes Company</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>APO</sa:symbol>
+        <sa:company_name>Apollo Global Management, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>FANG</sa:symbol>
+        <sa:company_name>Diamondback Energy, Inc.</sa:company_name>
+      </sa:stock>
+    </item>
+    <item>
+      <title>Democrats prepare corporate probe wave targeting Apple, Meta, Musk cos.: report</title>
+      <link>https://seekingalpha.com/symbol/AAPL/news?source=feed_symbol_AAPL</link>
+      <guid isPermaLink="false">https://seekingalpha.com/MarketCurrent:4667941</guid>
+      <pubDate>Fri, 06 Nov 2026 06:08:58 -0500</pubDate>
+      <sa:author_name>Preeti Singh</sa:author_name>
+      <media:thumbnail url=""/>
+      <sa:picture/>
+      <sa:stock>
+        <sa:symbol>AAPL</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>META</sa:symbol>
+        <sa:company_name>Meta Platforms, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>X.AI</sa:symbol>
+        <sa:company_name>xAI</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>TSLA</sa:symbol>
+        <sa:company_name>Tesla, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>SPCX</sa:symbol>
+        <sa:company_name>Space Exploration Technologies Corp.</sa:company_name>
+      </sa:stock>
+    </item>
+    <item>
+      <title>Apple: Record Revenue Ahead, But Memory Costs Could Eat The Growth</title>
+      <link>https://seekingalpha.com/article/4963658-apple-record-revenue-ahead-but-memory-costs-will-eat-the-growth?source=feed_symbol_AAPL</link>
+      <guid isPermaLink="false">https://seekingalpha.com/Article:4963658</guid>
+      <pubDate>Thu, 05 Nov 2026 20:05:22 -0500</pubDate>
+      <sa:author_name>Timur Mekhantev</sa:author_name>
+      <media:thumbnail url=""/>
+      <sa:picture/>
+      <sa:stock>
+        <sa:symbol>AAPL</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+    </item>
+    <item>
+      <title>Wall Street Lunch: Fear Grips The Market</title>
+      <link>https://seekingalpha.com/article/4963328-wall-street-lunch-fear-grips-the-market?source=feed_symbol_AAPL</link>
+      <guid isPermaLink="false">https://seekingalpha.com/Article:4963328</guid>
+      <pubDate>Thu, 05 Nov 2026 13:05:00 -0500</pubDate>
+      <sa:author_name>Wall Street Breakfast</sa:author_name>
+      <media:thumbnail url=""/>
+      <sa:picture/>
+      <sa:stock>
+        <sa:symbol>QCOM</sa:symbol>
+        <sa:company_name>QUALCOMM Incorporated</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AAPL</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>SP500</sa:symbol>
+        <sa:company_name>S&amp;P 500 Index</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>NDAQ</sa:symbol>
+        <sa:company_name>Nasdaq, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AMD</sa:symbol>
+        <sa:company_name>Advanced Micro Devices, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AVGO</sa:symbol>
+        <sa:company_name>Broadcom Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>NVDA</sa:symbol>
+        <sa:company_name>NVIDIA Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>TSM</sa:symbol>
+        <sa:company_name>Taiwan Semiconductor Manufacturing Company Limited</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>META</sa:symbol>
+        <sa:company_name>Meta Platforms, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AMZN</sa:symbol>
+        <sa:company_name>Amazon.com, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>MSFT</sa:symbol>
+        <sa:company_name>Microsoft Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>APP</sa:symbol>
+        <sa:company_name>AppLovin Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>GOOG</sa:symbol>
+        <sa:company_name>Alphabet Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>GOOGL</sa:symbol>
+        <sa:company_name>Alphabet Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>U</sa:symbol>
+        <sa:company_name>Unity Software Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>TEAM</sa:symbol>
+        <sa:company_name>Atlassian Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>DBX</sa:symbol>
+        <sa:company_name>Dropbox, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>LITE</sa:symbol>
+        <sa:company_name>Lumentum Holdings Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>MRVL</sa:symbol>
+        <sa:company_name>Marvell Technology, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>ZNVD:CA</sa:symbol>
+        <sa:company_name>NVIDIA Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>ZMSF:CA</sa:symbol>
+        <sa:company_name>Microsoft Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>ZMET:CA</sa:symbol>
+        <sa:company_name>Meta Platforms, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>ZGOO:CA</sa:symbol>
+        <sa:company_name>Alphabet Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>ZAVG:CA</sa:symbol>
+        <sa:company_name>Broadcom Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>ZAMZ:CA</sa:symbol>
+        <sa:company_name>Amazon.com, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>ZAMD:CA</sa:symbol>
+        <sa:company_name>Advanced Micro Devices, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>ZAAP:CA</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AAPL:CA</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>TSMWF</sa:symbol>
+        <sa:company_name>Taiwan Semiconductor Manufacturing Company Limited</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AMD:CA</sa:symbol>
+        <sa:company_name>Advanced Micro Devices, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AMZN:CA</sa:symbol>
+        <sa:company_name>Amazon.com, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>APPS:CA</sa:symbol>
+        <sa:company_name>AppLovin Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>QCOM:CA</sa:symbol>
+        <sa:company_name>QUALCOMM Incorporated</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AVGO:CA</sa:symbol>
+        <sa:company_name>Broadcom Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>NVDA:CA</sa:symbol>
+        <sa:company_name>NVIDIA Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>GOOG:CA</sa:symbol>
+        <sa:company_name>Alphabet Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>GOOGM</sa:symbol>
+        <sa:company_name>Alphabet Inc. DEP SHS RP1/20 A</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>MTPDL</sa:symbol>
+        <sa:company_name>Meta Platforms, Inc. Metapl 12/31/2099 Fix Usd Corporate</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>MSFT:CA</sa:symbol>
+        <sa:company_name>Microsoft Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>GOOGN</sa:symbol>
+        <sa:company_name>Alphabet Inc. DEP SHS RP1/20 B</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>LUME:CA</sa:symbol>
+        <sa:company_name>Lumentum Holdings Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>MRV:CA</sa:symbol>
+        <sa:company_name>Marvell Technology, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>META:CA</sa:symbol>
+        <sa:company_name>Meta Platforms, Inc.</sa:company_name>
+      </sa:stock>
+    </item>
+    <item>
+      <title>Apple: Sell - The Premium Without The Growth</title>
+      <link>https://seekingalpha.com/article/4963001-apple-sell-the-premium-without-the-growth?source=feed_symbol_AAPL</link>
+      <guid isPermaLink="false">https://seekingalpha.com/Article:4963001</guid>
+      <pubDate>Thu, 05 Nov 2026 09:52:18 -0500</pubDate>
+      <sa:author_name>Nicholas Thomas Lowry</sa:author_name>
+      <media:thumbnail url=""/>
+      <sa:picture/>
+      <sa:stock>
+        <sa:symbol>AAPL</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AAPL:CA</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>ZAAP:CA</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+    </item>
+    <item>
+      <title>Apple taps bond market in seven-part offering</title>
+      <link>https://seekingalpha.com/symbol/AAPL/news?source=feed_symbol_AAPL</link>
+      <guid isPermaLink="false">https://seekingalpha.com/MarketCurrent:4666682</guid>
+      <pubDate>Thu, 05 Nov 2026 09:30:56 -0500</pubDate>
+      <sa:author_name>Chris Ciaccia</sa:author_name>
+      <media:thumbnail url=""/>
+      <sa:picture/>
+      <sa:stock>
+        <sa:symbol>AAPL</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>BAC</sa:symbol>
+        <sa:company_name>Bank of America Corporation</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>JPM</sa:symbol>
+        <sa:company_name>JPMorgan Chase &amp; Co.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>GS</sa:symbol>
+        <sa:company_name>The Goldman Sachs Group, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>DB</sa:symbol>
+        <sa:company_name>Deutsche Bank Aktiengesellschaft</sa:company_name>
+      </sa:stock>
+    </item>
+    <item>
+      <title>Apple: Demand Is Not The Problem</title>
+      <link>https://seekingalpha.com/article/4962918-apple-demand-is-not-the-problem?source=feed_symbol_AAPL</link>
+      <guid isPermaLink="false">https://seekingalpha.com/Article:4962918</guid>
+      <pubDate>Thu, 05 Nov 2026 07:54:50 -0500</pubDate>
+      <sa:author_name>Rick Orford</sa:author_name>
+      <media:thumbnail url=""/>
+      <sa:picture/>
+      <sa:stock>
+        <sa:symbol>AAPL:CA</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>ZAAP:CA</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AAPL</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+    </item>
+    <item>
+      <title>Apple reduces internal AI tool usage budgets: report</title>
+      <link>https://seekingalpha.com/symbol/AAPL/news?source=feed_symbol_AAPL</link>
+      <guid isPermaLink="false">https://seekingalpha.com/MarketCurrent:4665443</guid>
+      <pubDate>Wed, 04 Nov 2026 15:15:32 -0500</pubDate>
+      <sa:author_name>Brandon Evans</sa:author_name>
+      <media:thumbnail url=""/>
+      <sa:picture/>
+      <sa:stock>
+        <sa:symbol>AAPL</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>TSLA</sa:symbol>
+        <sa:company_name>Tesla, Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>UBER</sa:symbol>
+        <sa:company_name>Uber Technologies, Inc.</sa:company_name>
+      </sa:stock>
+    </item>
+    <item>
+      <title>Apple: The Price You Pay Matters</title>
+      <link>https://seekingalpha.com/article/4962130-apple-the-price-you-pay-matters?source=feed_symbol_AAPL</link>
+      <guid isPermaLink="false">https://seekingalpha.com/Article:4962130</guid>
+      <pubDate>Wed, 04 Nov 2026 10:10:00 -0500</pubDate>
+      <sa:author_name>Raul Shah</sa:author_name>
+      <media:thumbnail url=""/>
+      <sa:picture/>
+      <sa:stock>
+        <sa:symbol>AAPL</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>AAPL:CA</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+      <sa:stock>
+        <sa:symbol>ZAAP:CA</sa:symbol>
+        <sa:company_name>Apple Inc.</sa:company_name>
+      </sa:stock>
+    </item>
+    
+  </channel>
+</rss>
+

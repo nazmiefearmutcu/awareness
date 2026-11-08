@@ -1,0 +1,898 @@
+{
+ "count": 99,
+ "pages": 1,
+ "current_page": 1,
+ "results": [
+  {
+   "rank": 1,
+   "ticker": "BTC.X",
+   "name": "Bitcoin",
+   "mentions": 53,
+   "upvotes": 244,
+   "rank_24h_ago": 1,
+   "mentions_24h_ago": 87
+  },
+  {
+   "rank": 2,
+   "ticker": "ETH.X",
+   "name": "Ethereum",
+   "mentions": 12,
+   "upvotes": 38,
+   "rank_24h_ago": 2,
+   "mentions_24h_ago": 16
+  },
+  {
+   "rank": 3,
+   "ticker": "SOL.X",
+   "name": "Solana",
+   "mentions": 7,
+   "upvotes": 8,
+   "rank_24h_ago": 26,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 4,
+   "ticker": "MEXC.X",
+   "name": "MEXC Token",
+   "mentions": 4,
+   "upvotes": 23,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 5,
+   "ticker": "HYPE.X",
+   "name": "Hype",
+   "mentions": 3,
+   "upvotes": 5,
+   "rank_24h_ago": 100,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 6,
+   "ticker": "FTX.X",
+   "name": "FintruX Network",
+   "mentions": 2,
+   "upvotes": 35,
+   "rank_24h_ago": 58,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 7,
+   "ticker": "FET.X",
+   "name": "Fetch.ai",
+   "mentions": 2,
+   "upvotes": 3,
+   "rank_24h_ago": 30,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 8,
+   "ticker": "UNI.X",
+   "name": "Uniswap",
+   "mentions": 2,
+   "upvotes": 3,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 9,
+   "ticker": "LTC.X",
+   "name": "Litecoin",
+   "mentions": 2,
+   "upvotes": 3,
+   "rank_24h_ago": 10,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 10,
+   "ticker": "CPU.X",
+   "name": "CPUchain",
+   "mentions": 1,
+   "upvotes": 4,
+   "rank_24h_ago": 68,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 11,
+   "ticker": "BUT.X",
+   "name": "BitUP Token",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 12,
+   "ticker": "FAR.X",
+   "name": "Farmland Protocol",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 77,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 13,
+   "ticker": "OM.X",
+   "name": "MANTRA DAO",
+   "mentions": 1,
+   "upvotes": 2,
+   "rank_24h_ago": 75,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 14,
+   "ticker": "JT.X",
+   "name": "Jubi Token",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 74,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 15,
+   "ticker": "WETH.X",
+   "name": "WETH",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 74,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 16,
+   "ticker": "BENJI.X",
+   "name": "BenjiRolls",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 72,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 17,
+   "ticker": "SIM.X",
+   "name": "Simmitri",
+   "mentions": 1,
+   "upvotes": 4,
+   "rank_24h_ago": 71,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 18,
+   "ticker": "ETHP.X",
+   "name": "ETHPlus",
+   "mentions": 1,
+   "upvotes": 2,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 19,
+   "ticker": "LST.X",
+   "name": "LuckySevenToken",
+   "mentions": 1,
+   "upvotes": 3,
+   "rank_24h_ago": 70,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 20,
+   "ticker": "FIRE.X",
+   "name": "Fireball",
+   "mentions": 1,
+   "upvotes": 2,
+   "rank_24h_ago": 69,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 21,
+   "ticker": "LONG.X",
+   "name": "LONG COIN",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 79,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 22,
+   "ticker": "GPT.X",
+   "name": "GoPower",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 67,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 23,
+   "ticker": "ENT.X",
+   "name": "Eternity",
+   "mentions": 1,
+   "upvotes": 0,
+   "rank_24h_ago": 66,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 24,
+   "ticker": "DAY.X",
+   "name": "Chronologic",
+   "mentions": 1,
+   "upvotes": -2,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 25,
+   "ticker": "BRO.X",
+   "name": "Bitradio",
+   "mentions": 1,
+   "upvotes": 0,
+   "rank_24h_ago": 65,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 26,
+   "ticker": "TRUMP.X",
+   "name": "TrumpCoin",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 64,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 27,
+   "ticker": "CEN.X",
+   "name": "Coinsuper Ecosystem Network",
+   "mentions": 1,
+   "upvotes": 0,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 28,
+   "ticker": "SWIFT.X",
+   "name": "SwiftCash",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 60,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 29,
+   "ticker": "MB.X",
+   "name": "MineBee",
+   "mentions": 1,
+   "upvotes": 5,
+   "rank_24h_ago": 59,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 30,
+   "ticker": "CAD.X",
+   "name": "Candy Protocol",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 102,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 31,
+   "ticker": "SVB.X",
+   "name": "Sendvibe",
+   "mentions": 1,
+   "upvotes": 24,
+   "rank_24h_ago": 89,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 32,
+   "ticker": "JFC.X",
+   "name": "JFIN",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 33,
+   "ticker": "XNO.X",
+   "name": "Xeno Token",
+   "mentions": 1,
+   "upvotes": 7,
+   "rank_24h_ago": 99,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 34,
+   "ticker": "LOVE.X",
+   "name": "Love Coin",
+   "mentions": 1,
+   "upvotes": -4,
+   "rank_24h_ago": 96,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 35,
+   "ticker": "YT.X",
+   "name": "Cherry Token",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 95,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 36,
+   "ticker": "HL.X",
+   "name": "HL Chain",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 94,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 37,
+   "ticker": "JACK.X",
+   "name": "Jack Token",
+   "mentions": 1,
+   "upvotes": 0,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 38,
+   "ticker": "CNC.X",
+   "name": "Global China Cash",
+   "mentions": 1,
+   "upvotes": 0,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 39,
+   "ticker": "CLUB.X",
+   "name": "ClubCoin",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 92,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 40,
+   "ticker": "NVDA.X",
+   "name": "NVIDIA tokenized stock FTX",
+   "mentions": 1,
+   "upvotes": 0,
+   "rank_24h_ago": 91,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 41,
+   "ticker": "AMD.X",
+   "name": "Advanced Micro Devices tokenized stock FTX",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 90,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 42,
+   "ticker": "MM.X",
+   "name": "MM Token",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 78,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 43,
+   "ticker": "MAG.X",
+   "name": "Maggie",
+   "mentions": 1,
+   "upvotes": 4,
+   "rank_24h_ago": 88,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 44,
+   "ticker": "SSL.X",
+   "name": "Sergey Save Link",
+   "mentions": 1,
+   "upvotes": 9,
+   "rank_24h_ago": 87,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 45,
+   "ticker": "LOAD.X",
+   "name": "Load Network",
+   "mentions": 1,
+   "upvotes": 9,
+   "rank_24h_ago": 86,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 46,
+   "ticker": "CAN.X",
+   "name": "Channels",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 101,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 47,
+   "ticker": "SPY.X",
+   "name": "SPDR S&P 500 ETF tokenized stock FTX",
+   "mentions": 1,
+   "upvotes": 0,
+   "rank_24h_ago": 84,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 48,
+   "ticker": "AMZN.X",
+   "name": "Amazon tokenized stock Bittrex",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 83,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 49,
+   "ticker": "IT.X",
+   "name": "IDCM Token",
+   "mentions": 1,
+   "upvotes": 0,
+   "rank_24h_ago": 82,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 50,
+   "ticker": "FAST.X",
+   "name": "FastSwap",
+   "mentions": 1,
+   "upvotes": 0,
+   "rank_24h_ago": 81,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 51,
+   "ticker": "MSTR.X",
+   "name": "MicroStrategy tokenized stock FTX",
+   "mentions": 1,
+   "upvotes": 2,
+   "rank_24h_ago": 80,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 52,
+   "ticker": "ID.X",
+   "name": "Everest",
+   "mentions": 1,
+   "upvotes": 0,
+   "rank_24h_ago": 7,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 53,
+   "ticker": "LEO.X",
+   "name": "UNUS SED LEO",
+   "mentions": 1,
+   "upvotes": 9,
+   "rank_24h_ago": 17,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 54,
+   "ticker": "QQQ.X",
+   "name": "Poseidon Network",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 6,
+   "mentions_24h_ago": 2
+  },
+  {
+   "rank": 55,
+   "ticker": "FUN.X",
+   "name": "FunFair",
+   "mentions": 1,
+   "upvotes": 18,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 56,
+   "ticker": "IQ.X",
+   "name": "Everipedia",
+   "mentions": 1,
+   "upvotes": 9,
+   "rank_24h_ago": 29,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 57,
+   "ticker": "TRAC.X",
+   "name": "OriginTrail",
+   "mentions": 1,
+   "upvotes": -5,
+   "rank_24h_ago": 28,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 58,
+   "ticker": "QNT.X",
+   "name": "Quant",
+   "mentions": 1,
+   "upvotes": -4,
+   "rank_24h_ago": 25,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 59,
+   "ticker": "HBAR.X",
+   "name": "Hedera Hashgraph",
+   "mentions": 1,
+   "upvotes": 8,
+   "rank_24h_ago": 24,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 60,
+   "ticker": "SC.X",
+   "name": "Siacoin",
+   "mentions": 1,
+   "upvotes": 2,
+   "rank_24h_ago": 23,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 61,
+   "ticker": "NEAR.X",
+   "name": "NEAR Protocol",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 22,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 62,
+   "ticker": "LUNA.X",
+   "name": "Terra",
+   "mentions": 1,
+   "upvotes": 4,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 63,
+   "ticker": "ZEC.X",
+   "name": "Zcash",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 4,
+   "mentions_24h_ago": 3
+  },
+  {
+   "rank": 64,
+   "ticker": "ETC.X",
+   "name": "Ethereum Classic",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 19,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 65,
+   "ticker": "ARPA.X",
+   "name": "ARPA Chain",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 31,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 66,
+   "ticker": "XTZ.X",
+   "name": "Tezos",
+   "mentions": 1,
+   "upvotes": -1,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 67,
+   "ticker": "XMR.X",
+   "name": "Monero",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 3,
+   "mentions_24h_ago": 4
+  },
+  {
+   "rank": 68,
+   "ticker": "XLM.X",
+   "name": "Stellar",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 5,
+   "mentions_24h_ago": 2
+  },
+  {
+   "rank": 69,
+   "ticker": "USDC.X",
+   "name": "USD Coin",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 15,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 70,
+   "ticker": "LINK.X",
+   "name": "Chainlink",
+   "mentions": 1,
+   "upvotes": 2,
+   "rank_24h_ago": 14,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 71,
+   "ticker": "ADA.X",
+   "name": "Cardano",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 13,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 72,
+   "ticker": "BNB.X",
+   "name": "Binance Coin",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 12,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 73,
+   "ticker": "BCH.X",
+   "name": "Bitcoin Cash",
+   "mentions": 1,
+   "upvotes": -1,
+   "rank_24h_ago": 11,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 74,
+   "ticker": "DOT.X",
+   "name": "Polkadot",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 75,
+   "ticker": "XRP.X",
+   "name": "XRP",
+   "mentions": 1,
+   "upvotes": 3,
+   "rank_24h_ago": 9,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 76,
+   "ticker": "USDT.X",
+   "name": "Tether",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 8,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 77,
+   "ticker": "APY.X",
+   "name": "APY.Finance",
+   "mentions": 1,
+   "upvotes": 0,
+   "rank_24h_ago": 44,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 78,
+   "ticker": "OWN.X",
+   "name": "OWNDATA",
+   "mentions": 1,
+   "upvotes": 27,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 79,
+   "ticker": "ZP.X",
+   "name": "Zen Protocol",
+   "mentions": 1,
+   "upvotes": 5,
+   "rank_24h_ago": 54,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 80,
+   "ticker": "RISE.X",
+   "name": "Rise",
+   "mentions": 1,
+   "upvotes": -3,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 81,
+   "ticker": "CNN.X",
+   "name": "Content Neutrality Network",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 53,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 82,
+   "ticker": "BC.X",
+   "name": "Bitcoin Confidential",
+   "mentions": 1,
+   "upvotes": 0,
+   "rank_24h_ago": 52,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 83,
+   "ticker": "NOW.X",
+   "name": "NOW Token",
+   "mentions": 1,
+   "upvotes": 3,
+   "rank_24h_ago": 51,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 84,
+   "ticker": "CXO.X",
+   "name": "CargoX",
+   "mentions": 1,
+   "upvotes": -2,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 85,
+   "ticker": "ANY.X",
+   "name": "Anyswap",
+   "mentions": 1,
+   "upvotes": -1,
+   "rank_24h_ago": 49,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 86,
+   "ticker": "CGT.X",
+   "name": "CACHE Gold",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 48,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 87,
+   "ticker": "BASE.X",
+   "name": "Base Protocol",
+   "mentions": 1,
+   "upvotes": 3,
+   "rank_24h_ago": 46,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 88,
+   "ticker": "ACH.X",
+   "name": "Alchemy Pay",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 45,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 89,
+   "ticker": "ONG.X",
+   "name": "SoMee.Social",
+   "mentions": 1,
+   "upvotes": 2,
+   "rank_24h_ago": 57,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 90,
+   "ticker": "DEX.X",
+   "name": "DEX",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 42,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 91,
+   "ticker": "SHA.X",
+   "name": "Safe Haven",
+   "mentions": 1,
+   "upvotes": 2,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 92,
+   "ticker": "FOR.X",
+   "name": "ForTube",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 41,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 93,
+   "ticker": "ABT.X",
+   "name": "Arcblock",
+   "mentions": 1,
+   "upvotes": -2,
+   "rank_24h_ago": 0,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 94,
+   "ticker": "OG.X",
+   "name": "OG Fan Token",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 40,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 95,
+   "ticker": "ETP.X",
+   "name": "Metaverse ETP",
+   "mentions": 1,
+   "upvotes": -2,
+   "rank_24h_ago": 39,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 96,
+   "ticker": "ECC.X",
+   "name": "ECC",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 38,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 97,
+   "ticker": "CRE.X",
+   "name": "Carry",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 35,
+   "mentions_24h_ago": 1
+  },
+  {
+   "rank": 98,
+   "ticker": "ATM.X",
+   "name": "Atletico De Madrid Fan Token",
+   "mentions": 1,
+   "upvotes": 3,
+   "rank_24h_ago": 34,
+   "mentions_24h_ago": null
+  },
+  {
+   "rank": 99,
+   "ticker": "FX.X",
+   "name": "Function X",
+   "mentions": 1,
+   "upvotes": 1,
+   "rank_24h_ago": 33,
+   "mentions_24h_ago": null
+  }
+ ]
+}
