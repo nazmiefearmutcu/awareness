@@ -18,6 +18,10 @@ clickbait:
     - "^prediction:"
     - "\\bwhich .{0,40}\\b(is (a|the) )?better buy\\b"
     - "\\b(a|the) better buy\\b"
+    - "here'?s what (it|this|that) (could |may |might )?means?"
+    - "could mean for (you|your)"
+    - "\b(your|my) retirement (savings|account|portfolio)\b"
+    - "sending shockwaves"
     # SEO price pages / auto-generated quotes (no reporting in them)
     - "^(current|today'?s|live) price of"
     - "price (today|prediction|forecast)\b"
