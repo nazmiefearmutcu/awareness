@@ -43,6 +43,7 @@ dependencies = [
   "redis>=5.0.0",
   # markets layer (awareness.markets)
   "exchange_calendars>=4.5",
+  "tzdata>=2024.1",  # zoneinfo on Windows (central-bank schedule times)
 ]
 
 [project.optional-dependencies]
