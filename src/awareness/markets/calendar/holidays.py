@@ -183,7 +183,7 @@ def exchange_coverage_end(mic: str) -> date:
     Beyond this date the store holds no closures for the exchange; the coverage end is
     recorded in kv as ``holidays.coverage_end.<MIC>`` so consumers can say "unknown".
     """
-    import exchange_calendars as xcals  # noqa: PLC0415 - pandas-backed, loaded only when needed
+    import exchange_calendars as xcals
 
     return xcals.get_calendar(mic).last_session.date()
 
@@ -204,7 +204,7 @@ class ExchangeHolidayCollector:
         today = now.date()
         start = today - timedelta(days=EXCHANGE_WINDOW_BACK_DAYS)
         end = today + timedelta(days=EXCHANGE_WINDOW_AHEAD_DAYS)
-        from exchange_calendars.errors import InvalidCalendarName  # noqa: PLC0415 - lazy, pandas-backed
+        from exchange_calendars.errors import InvalidCalendarName
 
         holidays: list[Holiday] = []
         errors: list[str] = []
