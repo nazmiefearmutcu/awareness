@@ -256,7 +256,7 @@ publishers:
     region: US
     fetch_fulltext: true
     feeds:
-      - {id: cbs.moneywatch, url: "https://www.cbsnews.com/latest/rss/moneywatch", categories: [business, economy], poll_seconds: 300}
+      - {id: cbs_news.moneywatch, url: "https://www.cbsnews.com/latest/rss/moneywatch", categories: [business, economy], poll_seconds: 300}
   - id: washington_post
     name: The Washington Post
     domain: washingtonpost.com
@@ -265,7 +265,7 @@ publishers:
     region: US
     paywalled: true
     feeds:
-      - {id: wapo.business, url: "https://feeds.washingtonpost.com/rss/business", categories: [business], poll_seconds: 300}
+      - {id: washington_post.business, url: "https://feeds.washingtonpost.com/rss/business", categories: [business], poll_seconds: 300}
   - id: la_times
     name: Los Angeles Times
     domain: latimes.com
@@ -282,7 +282,7 @@ publishers:
     kind: general_press
     region: US
     feeds:
-      - {id: foxbiz.markets, url: "https://moxie.foxbusiness.com/google-publisher/markets.xml", categories: [markets], poll_seconds: 300}
+      - {id: fox_business.markets, url: "https://moxie.foxbusiness.com/google-publisher/markets.xml", categories: [markets], poll_seconds: 300}
   - id: cbc
     name: CBC News
     domain: cbc.ca
@@ -300,7 +300,7 @@ publishers:
     region: CA
     paywalled: true
     feeds:
-      - {id: globemail.business, url: "https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/business/", categories: [business], poll_seconds: 300}
+      - {id: globe_and_mail.business, url: "https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/business/", categories: [business], poll_seconds: 300}
   - id: dw
     name: Deutsche Welle
     domain: dw.com
@@ -383,7 +383,7 @@ publishers:
     region: IN
     fetch_fulltext: true
     feeds:
-      - {id: et.markets, url: "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms", categories: [markets, equities], poll_seconds: 240}
+      - {id: economic_times.markets, url: "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms", categories: [markets, equities], poll_seconds: 240}
   - id: the_hindu_businessline
     name: The Hindu BusinessLine
     domain: thehindubusinessline.com
@@ -392,7 +392,7 @@ publishers:
     region: IN
     fetch_fulltext: true
     feeds:
-      - {id: hindu.markets, url: "https://www.thehindubusinessline.com/markets/?service=rss", categories: [markets], poll_seconds: 300}
+      - {id: the_hindu_businessline.markets, url: "https://www.thehindubusinessline.com/markets/?service=rss", categories: [markets], poll_seconds: 300}
   - id: livemint
     name: Mint (Livemint)
     domain: livemint.com
@@ -466,7 +466,7 @@ publishers:
   - id: mining_com
     name: Mining.com
     domain: mining.com
-    tier: 3
+    tier: 4
     kind: specialist
     region: GLOBAL
     feeds:
@@ -474,7 +474,7 @@ publishers:
   - id: oilprice
     name: OilPrice.com
     domain: oilprice.com
-    tier: 3
+    tier: 4
     kind: specialist
     region: GLOBAL
     feeds:
@@ -488,7 +488,7 @@ publishers:
     languages: [tr]
     fetch_fulltext: true
     feeds:
-      - {id: aa.ekonomi, url: "https://www.aa.com.tr/tr/rss/default?cat=ekonomi", categories: [economy], poll_seconds: 300, language: tr}
+      - {id: anadolu.ekonomi, url: "https://www.aa.com.tr/tr/rss/default?cat=ekonomi", categories: [economy], poll_seconds: 300, language: tr}
   - id: bloomberg_ht
     name: Bloomberg HT
     domain: bloomberght.com
@@ -498,7 +498,7 @@ publishers:
     languages: [tr]
     fetch_fulltext: true
     feeds:
-      - {id: bloomberght.all, url: "https://www.bloomberght.com/rss", categories: [markets, economy], poll_seconds: 180, language: tr}
+      - {id: bloomberg_ht.all, url: "https://www.bloomberght.com/rss", categories: [markets, economy], poll_seconds: 180, language: tr}
   - id: ntv
     name: NTV
     domain: ntv.com.tr
@@ -550,7 +550,8 @@ publishers:
     feeds:
       - {id: sabah.ekonomi, url: "https://www.sabah.com.tr/rss/ekonomi.xml", categories: [economy], poll_seconds: 300, language: tr}
 
-  # ── tier 4: aggregators, PR wires, contributor platforms ─────────────
+  # ── tier 4: aggregators, PR wires, contributor and promo-prone platforms ─
+  # Mining.com and OilPrice carry sponsored and promotional content: tier 4 by policy.
   - id: yahoo_finance
     name: Yahoo Finance
     domain: finance.yahoo.com
@@ -647,8 +648,8 @@ publishers:
     kind: community
     region: GLOBAL
     feeds:
-      - {id: reddit.stocks, url: "https://www.reddit.com/r/stocks/new/.rss", categories: [social, equities], poll_seconds: 600, kind: atom}
-      - {id: reddit.investing, url: "https://www.reddit.com/r/investing/new/.rss", categories: [social, equities], poll_seconds: 600, kind: atom}
+      - {id: reddit.stocks, url: "https://www.reddit.com/r/stocks/new/.rss", categories: [social, equities], poll_seconds: 900, kind: atom}
+      - {id: reddit.investing, url: "https://www.reddit.com/r/investing/new/.rss", categories: [social, equities], poll_seconds: 900, kind: atom}
       - {id: reddit.wallstreetbets, url: "https://www.reddit.com/r/wallstreetbets/new/.rss", categories: [social, equities], poll_seconds: 900, kind: atom}
       - {id: reddit.cryptocurrency, url: "https://www.reddit.com/r/CryptoCurrency/new/.rss", categories: [social, crypto], poll_seconds: 900, kind: atom}
       - {id: reddit.borsa, url: "https://www.reddit.com/r/borsa/new/.rss", categories: [social, equities], poll_seconds: 900, kind: atom, language: tr}

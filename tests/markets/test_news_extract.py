@@ -131,6 +131,35 @@ async def test_robots_server_error_allows(markets_settings: MarketsSettings) -> 
     assert await RobotsChecker().allowed(fetcher, ARTICLE_URL, UA) is True
 
 
+async def test_transient_robots_failure_is_not_cached(markets_settings: MarketsSettings) -> None:
+    state = {"robots_requests": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/robots.txt":
+            return httpx.Response(200, text="<html></html>")
+        state["robots_requests"] += 1
+        if state["robots_requests"] <= 2:  # both attempts of the first lookup fail
+            return httpx.Response(500, text="oops")
+        return httpx.Response(200, text="User-agent: *\nDisallow: /markets/\n")
+
+    fetcher = _fetcher(markets_settings, handler)
+    robots = RobotsChecker()
+    url = "https://www.example-finance.test/markets/x.html"
+    assert await robots.allowed(fetcher, url, UA) is True  # transient: this page is allowed
+    assert await robots.allowed(fetcher, url, UA) is False  # real rules are read on the next call
+
+
+def test_ambiguous_slash_date_is_not_parsed() -> None:
+    html = (
+        '<html><head><meta property="article:published_time" content="05/06/2026"></head><body><article>'
+        + "<p>" + ("Rates held steady while markets digested the data release. " * 20) + "</p>"
+        + "</article></body></html>"
+    )
+    article = extract_from_html(html, url="https://www.example-finance.test/markets/rates.html")
+    assert article is not None
+    assert article.published_at is None
+
+
 async def test_fetch_and_extract_end_to_end(
     markets_settings: MarketsSettings, fixture_path: Callable[[str], Path]
 ) -> None:

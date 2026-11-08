@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Literal, cast
 
 import httpx
 import pytest
@@ -14,8 +15,12 @@ from awareness.markets.config import PACKAGE_DATA_DIR, MarketsSettings
 from awareness.markets.http import Fetcher
 from awareness.markets.models import FeedSpec, NewsItem, Publisher, RawNewsItem
 from awareness.markets.news.feeds import (
+    _MAX_BACKOFF_S,
     FeedCollector,
     GoogleNewsCollector,
+    _ingest,
+    _schedule_next,
+    _stagger_offset,
     canonicalize_url,
     clean_text,
     google_news_url,
@@ -32,14 +37,14 @@ TAG_RE = re.compile(r"<[^>]+>")
 
 
 class FakePipeline:
-    """Stands in for the news pipeline: records what it was given, stores nothing."""
+    """Stands in for the news pipeline: records each call and stores nothing."""
 
     def __init__(self) -> None:
         self.calls: list[list[RawNewsItem]] = []
 
     async def process(self, raws: list[RawNewsItem]) -> list[NewsItem]:
         self.calls.append(list(raws))
-        return [raw for raw in raws]  # type: ignore[misc]
+        return cast(list[NewsItem], list(raws))  # counted as "stored" by the collectors
 
     @property
     def urls(self) -> list[str]:
@@ -61,8 +66,8 @@ def _publisher(pid: str = "cnbc", tier: int = 2, feeds: list[FeedSpec] | None = 
     )
 
 
-def _feed(fid: str, url: str, poll: int = 120, kind: str = "rss") -> FeedSpec:
-    return FeedSpec(id=fid, url=url, categories=["markets"], poll_seconds=poll, kind=kind)  # type: ignore[arg-type]
+def _feed(fid: str, url: str, poll: int = 120, kind: Literal["rss", "atom"] = "rss") -> FeedSpec:
+    return FeedSpec(id=fid, url=url, categories=["markets"], poll_seconds=poll, kind=kind)
 
 
 def _ctx(
@@ -79,7 +84,7 @@ def _ctx(
         store=store,
         http=http,
         registry=registry,
-        pipeline=pipeline,  # type: ignore[arg-type]
+        pipeline=pipeline,
         now=lambda: now,
     )
 
@@ -102,8 +107,23 @@ def test_canonicalize_leaves_non_absolute_values_alone() -> None:
     assert canonicalize_url("  not a url ") == "not a url"
 
 
+def test_canonicalize_keeps_valueless_params_as_written() -> None:
+    assert canonicalize_url("https://www.example.com/a?flag&b=1") == "https://www.example.com/a?b=1&flag"
+    assert canonicalize_url("https://www.example.com/a?flag") == "https://www.example.com/a?flag"
+
+
 def test_clean_text_unescapes_strips_tags_and_collapses_whitespace() -> None:
     assert clean_text("  <p>Tom &amp; Jerry&#39;s   <b>hold</b></p>\n\n now ") == "Tom & Jerry's hold now"
+
+
+def test_clean_text_keeps_comparison_operators() -> None:
+    assert clean_text("Margins &lt;5% and sales &gt;10% this quarter") == "Margins <5% and sales >10% this quarter"
+    assert clean_text("Price < 5% and > 3% today") == "Price < 5% and > 3% today"
+
+
+def test_clean_text_inline_tags_do_not_split_words_and_blocks_do_separate() -> None:
+    assert clean_text("Tom<b>son</b>'s shares") == "Tomson's shares"
+    assert clean_text("First line.</p><p>Second line.") == "First line. Second line."
 
 
 def test_clean_text_truncates_and_handles_empty() -> None:
@@ -115,30 +135,34 @@ def test_clean_text_truncates_and_handles_empty() -> None:
 
 # ── RSS / Atom parsing against recorded payloads ────────────────────────
 
-FIXTURES = [
-    "rss_cnbc_top.xml",
-    "rss_mw_top.xml",
-    "rss_wsj_markets.xml",
-    "rss_bloomberg_markets.xml",
-    "rss_ft_home.xml",
-    "rss_yahoo_aapl.xml",
-    "rss_seekingalpha_aapl.xml",
-    "rss_fed_press.xml",
-    "rss_coindesk.xml",
-    "rss_bbc_business.xml",
-    "rss_aa_ekonomi.xml",
-    "rss_bloomberght.xml",
-    "rss_prnewswire_fin.xml",
-    "reddit_stocks_new.atom",
+# (fixture, expected item count, ASCII prefix of the first title). Pinned from the recorded payloads.
+FIXTURES: list[tuple[str, int, str]] = [
+    ("rss_cnbc_top.xml", 10, "Anthropic IPO meets AI backlash"),
+    ("rss_mw_top.xml", 10, "This retired professor has reinvented himself"),
+    ("rss_wsj_markets.xml", 10, "Stocks Sink in Broad AI Rout"),
+    ("rss_bloomberg_markets.xml", 10, "Australia Home Sales Rise"),
+    ("rss_ft_home.xml", 8, "Israel"),
+    ("rss_yahoo_aapl.xml", 10, "Dow Jones Futures"),
+    ("rss_seekingalpha_aapl.xml", 10, "Earnings Scoreboard"),
+    ("rss_fed_press.xml", 10, "Federal Reserve Board announces termination"),
+    ("rss_coindesk.xml", 10, "Binance users in some European countries"),
+    ("rss_bbc_business.xml", 10, "Labubu hype seemed unstoppable"),
+    ("rss_aa_ekonomi.xml", 10, "Irakl"),
+    ("rss_bloomberght.xml", 10, "Erdo"),
+    ("rss_prnewswire_fin.xml", 10, "Four Course Records"),
+    ("reddit_stocks_new.atom", 10, "What about the FCF"),
 ]
 
 
-@pytest.mark.parametrize("name", FIXTURES)
-def test_recorded_feed_parses_into_clean_items(fixture_bytes: Callable[[str], bytes], name: str) -> None:
-    kind = "atom" if name.endswith(".atom") else "rss"
+@pytest.mark.parametrize(("name", "count", "title_prefix"), FIXTURES)
+def test_recorded_feed_parses_into_clean_items(
+    fixture_bytes: Callable[[str], bytes], name: str, count: int, title_prefix: str
+) -> None:
+    kind: Literal["rss", "atom"] = "atom" if name.endswith(".atom") else "rss"
     feed = _feed(f"test.{name}", "https://example.test/feed", kind=kind)
     items = parse_feed(fixture_bytes(name), feed=feed, publisher=_publisher(), fetched_at=NOW)
-    assert items, f"{name} produced no items"
+    assert len(items) == count, name
+    assert items[0].title.startswith(title_prefix), items[0].title
     for item in items:
         assert item.url.startswith(("http://", "https://"))
         assert item.title and not TAG_RE.search(item.title)
@@ -461,4 +485,128 @@ def test_news_item_id_for_url_is_stable_across_tracking_params() -> None:
     a = NewsItem.id_for_url(canonicalize_url("https://www.cnbc.com/x?utm_source=a"))
     b = NewsItem.id_for_url(canonicalize_url("https://www.cnbc.com/x#y"))
     assert a == b
+
+
+def test_malformed_entry_is_skipped_without_failing_the_feed() -> None:
+    xml = b"""<?xml version="1.0"?><rss version="2.0"><channel>
+    <item><title>Broken link</title><link>http://[bad</link></item>
+    <item><title>Good link</title><link>https://www.cnbc.com/good</link></item>
+    </channel></rss>"""
+    items = parse_feed(xml, feed=_feed("cnbc.top", "https://e.test"), publisher=_publisher(), fetched_at=NOW)
+    assert [i.url for i in items] == ["https://www.cnbc.com/good"]
+
+
+def test_google_news_unresolved_source_url_is_dropped_even_when_name_matches() -> None:
+    xml = b"""<?xml version="1.0"?><rss version="2.0"><channel>
+    <item><title>Impostor story - Reuters</title><link>https://news.google.com/rss/articles/x</link>
+      <source url="https://reuters-clone.example">Reuters</source></item>
+    </channel></rss>"""
+    registry = PublisherRegistry.load(PACKAGE_DATA_DIR / "publishers.yaml")
+    assert parse_google_news(xml, registry=registry, feed_id="gnews.X", fetched_at=NOW) == []
+
+
+def test_failure_backoff_doubles_is_capped_and_never_shortens_poll(
+    markets_settings: MarketsSettings, store: MarketsStore
+) -> None:
+    ctx = _ctx(markets_settings, store, _cnbc_registry(), lambda r: httpx.Response(200), None)
+
+    def delay_of(feed: FeedSpec, streak: int) -> float:
+        _schedule_next(ctx, feed, NOW, streak)
+        stored = datetime.fromisoformat(store.kv_get(f"feeds.next_due:{feed.id}"))
+        return (stored - NOW).total_seconds()
+
+    short = _feed("x.short", "https://e.test", poll=120)
+    assert 960 * 0.9 <= delay_of(short, 3) <= 960 * 1.1  # 120 * 2**3
+    assert _MAX_BACKOFF_S * 0.9 <= delay_of(short, 10) <= _MAX_BACKOFF_S * 1.1  # capped at 30 min
+    long_poll = _feed("x.long", "https://e.test", poll=3600)
+    assert delay_of(long_poll, 1) >= 3600 * 0.9  # the cap never shortens a long poll
+
+
+def test_stagger_offset_applies_only_to_community_feeds_and_is_stable() -> None:
+    community = _publisher("reddit", 5, [])
+    community = community.model_copy(update={"kind": "community"})
+    reddit = _feed("reddit.stocks", "https://www.reddit.com/r/stocks/new/.rss", poll=900, kind="atom")
+    offset = _stagger_offset(community, reddit)
+    assert 0 <= offset <= 600
+    assert offset == _stagger_offset(community, reddit)
+    assert offset == 135  # crc32("reddit.stocks") % 601: stable across processes
+    assert _stagger_offset(_publisher("cnbc", 2), _feed("cnbc.top", "https://e.test")) == 0
+
+
+async def test_community_feed_is_not_fetched_before_its_staggered_start(
+    markets_settings: MarketsSettings, store: MarketsStore, fixture_bytes: Callable[[str], bytes]
+) -> None:
+    reddit_feed = _feed("reddit.stocks", "https://www.reddit.com/r/stocks/new/.rss", poll=900, kind="atom")
+    reddit = _publisher("reddit", 5, [reddit_feed]).model_copy(update={"kind": "community"})
+    calls: list[str] = []
+    handler = _route({"https://www.reddit.com/r/stocks/new/.rss": fixture_bytes("reddit_stocks_new.atom")}, calls)
+    registry = PublisherRegistry([reddit])
+    result = await FeedCollector().run(_ctx(markets_settings, store, registry, handler, FakePipeline()))
+    assert calls == [] and result.notes[0] == "feeds_due=0"  # first poll waits for its offset
+    later = NOW + timedelta(seconds=_stagger_offset(reddit, reddit_feed) + 1)
+    await FeedCollector().run(_ctx(markets_settings, store, registry, handler, FakePipeline(), now=later))
+    assert len(calls) == 1
+
+
+async def test_run_takes_the_40_most_overdue_feeds_and_defers_the_rest(
+    markets_settings: MarketsSettings, store: MarketsStore, fixture_bytes: Callable[[str], bytes]
+) -> None:
+    publishers = [_publisher(f"p{i:02d}", 2, [_feed(f"p{i:02d}.top", f"https://feeds.test/p{i:02d}")]) for i in range(45)]
+    registry = PublisherRegistry(publishers)
+    # The five last publishers were due three days ago; they must be picked before the rest.
+    for i in range(40, 45):
+        store.kv_set(f"feeds.next_due:p{i:02d}.top", (NOW - timedelta(days=3)).isoformat())
+    calls: list[str] = []
+    body = fixture_bytes("rss_cnbc_top.xml")
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, content=body)
+
+    result = await FeedCollector().run(_ctx(markets_settings, store, registry, serve, FakePipeline()))
+    assert len(calls) == 40
+    assert "feeds_deferred=5" in result.notes
+    for i in range(40, 45):
+        assert f"https://feeds.test/p{i:02d}" in calls
+
+
+async def test_each_feed_reaches_the_pipeline_as_its_own_batch(
+    markets_settings: MarketsSettings, store: MarketsStore, fixture_bytes: Callable[[str], bytes]
+) -> None:
+    registry = _cnbc_registry()
+    routed = _route(
+        {
+            "https://feeds.test/cnbc": fixture_bytes("rss_cnbc_top.xml"),
+            "https://feeds.test/bbc": fixture_bytes("rss_bbc_business.xml"),
+        }
+    )
+    pipeline = FakePipeline()
+    result = await FeedCollector().run(_ctx(markets_settings, store, registry, routed, pipeline))
+    assert len(pipeline.calls) == 2  # one call per completed feed, not one call for the whole run
+    assert result.items == sum(len(c) for c in pipeline.calls) == 20
+
+
+async def test_ingest_sends_at_most_25_items_per_pipeline_call(
+    markets_settings: MarketsSettings, store: MarketsStore
+) -> None:
+    ctx = _ctx(markets_settings, store, _cnbc_registry(), lambda r: httpx.Response(200), None)
+    pipeline = FakePipeline()
+    raws = [
+        RawNewsItem(
+            url=f"https://www.cnbc.com/story-{i}",
+            title=f"Story {i} about markets",
+            feed_id="cnbc.top",
+            publisher_id="cnbc",
+            published_at=NOW,
+        )
+        for i in range(30)
+    ]
+    stored = await _ingest(ctx, pipeline, raws)
+    assert [len(c) for c in pipeline.calls] == [25, 5]
+    assert stored == 30
+
+
+def test_collectors_declare_the_900_second_run_timeout() -> None:
+    assert FeedCollector.timeout_s == 900
+    assert GoogleNewsCollector.timeout_s == 900
 

@@ -1,10 +1,11 @@
 """News feed ingestion: URL canonicalisation, RSS/Atom and Google News parsing, feed collectors.
 
 The parsers are pure functions over response bytes. The collectors fetch due
-feeds through :class:`~awareness.markets.http.Fetcher`, drop stale and
-already-stored items and hand the rest to the news pipeline in one call.
-Provider failures are recorded per feed in :class:`HealthTracker`; the
-collector re-raises only when every due feed failed.
+feeds through :class:`~awareness.markets.http.Fetcher` and hand each feed's new
+items to the news pipeline as soon as that feed completes, so progress persists
+even if a run is cut short. Provider failures are recorded per feed in
+:class:`HealthTracker`; the collector re-raises only when every feed in the run
+failed.
 """
 
 from __future__ import annotations
@@ -13,11 +14,13 @@ import asyncio
 import logging
 import random
 import re
+import zlib
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from html import unescape
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import feedparser
 
@@ -30,6 +33,9 @@ from awareness.markets.sources.registry import PublisherRegistry, registered_dom
 
 log = logging.getLogger(__name__)
 
+# Query keys dropped from every URL. ``ref`` is included on purpose: it is a generic
+# referrer parameter on most publisher sites, so the rare case where it carries an
+# article id is accepted as a loss.
 TRACKING_PARAMS: frozenset[str] = frozenset(
     {
         "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_id",
@@ -44,10 +50,19 @@ _SUMMARY_MAX = 1200
 _BODY_MIN = 600
 _CATEGORY_TAG_MAX = 6
 _FEED_CONCURRENCY = 8
+_MAX_FEEDS_PER_RUN = 40
+_PIPELINE_BATCH = 25
 _MAX_BACKOFF_S = 1800
+_STAGGER_WINDOW_S = 600
 _NEXT_DUE_KEY = "feeds.next_due:{}"
 _BY_PREFIX_RE = re.compile(r"^by\s+", re.IGNORECASE)
-_TAG_RE = re.compile(r"<[^>]*>")
+# Real markup only: a tag must start with a letter after "<" (so "< 5%" is text).
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
+# Block-level tags become a word break; inline tags are removed without a space.
+_BLOCK_TAG_RE = re.compile(
+    r"</?(?:p|br|div|li|ul|ol|h[1-6]|tr|td|th|table|section|article|blockquote)\b[^>]*>", re.IGNORECASE
+)
 _WS_RE = re.compile(r"\s+")
 
 CRYPTO_QUERIES: dict[str, str] = {
@@ -76,26 +91,35 @@ def _is_tracking(key: str) -> bool:
 def canonicalize_url(url: str) -> str:
     """Lowercase scheme and host, drop fragment and tracking params, sort the rest.
 
-    Idempotent: ``canonicalize_url(canonicalize_url(u)) == canonicalize_url(u)``.
-    Values that do not look like absolute URLs are returned stripped and unchanged.
+    Query segments are kept exactly as written (``?flag`` stays ``?flag``; no
+    re-encoding), then sorted. Idempotent. Values that do not look like absolute
+    URLs are returned stripped and unchanged.
     """
     raw = url.strip()
     parts = urlsplit(raw)
     if not parts.scheme or not parts.netloc:
         return raw
-    query = sorted(
-        (key, value)
-        for key, value in parse_qsl(parts.query, keep_blank_values=True)
-        if not _is_tracking(key)
+    segments = sorted(
+        segment
+        for segment in parts.query.split("&")
+        if segment and not _is_tracking(segment.split("=", 1)[0])
     )
-    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, urlencode(query), ""))
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, "&".join(segments), ""))
 
 
 def clean_text(text: str | None, max_len: int | None = None) -> str | None:
-    """Unescape entities, strip markup, collapse whitespace. ``None`` when nothing is left."""
+    """Strip markup, unescape entities, collapse whitespace. ``None`` when nothing is left.
+
+    Markup is removed before unescaping, so entity-encoded or raw comparison
+    operators ("&lt;5%", "< 5%") survive as text. Block tags become a space;
+    inline tags are removed without one, so ``Tom<b>son</b>'s`` reads ``Tomson's``.
+    """
     if not text:
         return None
-    value = _WS_RE.sub(" ", _TAG_RE.sub(" ", unescape(str(text)))).strip()
+    without_comments = _COMMENT_RE.sub("", str(text))
+    without_blocks = _BLOCK_TAG_RE.sub(" ", without_comments)
+    value = unescape(_TAG_RE.sub("", without_blocks))
+    value = _WS_RE.sub(" ", value).strip()
     if not value:
         return None
     if max_len is not None and len(value) > max_len:
@@ -154,35 +178,42 @@ def _entry_body(entry: Any) -> str | None:
 def parse_feed(
     content: bytes, *, feed: FeedSpec, publisher: Publisher, fetched_at: datetime
 ) -> list[RawNewsItem]:
-    """Parse an RSS/Atom payload into raw items. Entries without a usable URL or title are skipped."""
+    """Parse an RSS/Atom payload into raw items.
+
+    Entries without a usable URL or title are skipped; a malformed entry (for example
+    an unparseable link) is skipped on its own without failing the feed.
+    """
     parsed = feedparser.parse(content)
     fetched = ensure_utc(fetched_at)
     language = feed.language or (publisher.languages[0] if publisher.languages else None)
     out: list[RawNewsItem] = []
     for entry in parsed.entries:
-        url = _entry_url(entry)
-        title = clean_text(entry.get("title"))
-        if url is None or not title:
-            continue
-        summary = clean_text(entry.get("summary") or entry.get("description"), max_len=_SUMMARY_MAX)
-        if summary == title:
-            summary = None
-        tags = _entry_tags(entry)
-        out.append(
-            RawNewsItem(
-                url=url,
-                title=title,
-                summary=summary,
-                published_at=_entry_time(entry),
-                author=_clean_author(entry.get("author")),
-                feed_id=feed.id,
-                publisher_id=publisher.id,
-                categories=list(dict.fromkeys([*feed.categories, *tags])),
-                language=language,
-                body_text=_entry_body(entry),
-                fetched_at=fetched,
+        try:
+            url = _entry_url(entry)
+            title = clean_text(entry.get("title"))
+            if url is None or not title:
+                continue
+            summary = clean_text(entry.get("summary") or entry.get("description"), max_len=_SUMMARY_MAX)
+            if summary == title:
+                summary = None
+            tags = _entry_tags(entry)
+            out.append(
+                RawNewsItem(
+                    url=url,
+                    title=title,
+                    summary=summary,
+                    published_at=_entry_time(entry),
+                    author=_clean_author(entry.get("author")),
+                    feed_id=feed.id,
+                    publisher_id=publisher.id,
+                    categories=list(dict.fromkeys([*feed.categories, *tags])),
+                    language=language,
+                    body_text=_entry_body(entry),
+                    fetched_at=fetched,
+                )
             )
-        )
+        except ValueError as exc:
+            log.debug("skipping malformed entry in %s: %s", feed.id, exc)
     return out
 
 
@@ -200,6 +231,20 @@ def _strip_source_suffix(title: str, source_name: str | None) -> str:
     return title
 
 
+def _gnews_origin(
+    registry: PublisherRegistry, source_href: str | None, source_name: str | None
+) -> Publisher | None:
+    """Origin publisher for a Google News item.
+
+    When the ``<source>`` carries a URL it must resolve by domain; a name fallback
+    applies only when no URL was given (otherwise an unlisted domain could borrow
+    the provenance of a registered publisher with the same name).
+    """
+    if source_href:
+        return registry.by_domain(source_href)
+    return registry.by_name(source_name)
+
+
 def parse_google_news(
     content: bytes,
     *,
@@ -210,45 +255,47 @@ def parse_google_news(
 ) -> list[RawNewsItem]:
     """Parse a Google News RSS search result, keeping only allowlisted origins of tier <= ``max_tier``.
 
-    Each item carries ``<source url="...">Name</source>``; the origin must resolve through the
-    registry by domain (preferred) or by name. Unknown or low-tier origins are dropped.
+    Each item carries ``<source url="...">Name</source>``. Unknown or low-tier origins are dropped.
     """
     parsed = feedparser.parse(content)
     fetched = ensure_utc(fetched_at)
     out: list[RawNewsItem] = []
     seen: set[str] = set()
     for entry in parsed.entries:
-        url = _entry_url(entry)
-        if url is None or url in seen:
-            continue
-        source = entry.get("source")
-        source_dict = source if isinstance(source, dict) else {}
-        source_href = source_dict.get("href") or source_dict.get("url")
-        source_name = clean_text(source_dict.get("title"))
-        publisher = registry.by_domain(source_href) or registry.by_name(source_name)
-        if publisher is None or publisher.tier > max_tier:
-            continue
-        origin_name = source_name or publisher.name
-        title = clean_text(entry.get("title"))
-        if not title:
-            continue
-        title = _strip_source_suffix(title, origin_name)
-        if not title:
-            continue
-        seen.add(url)
-        out.append(
-            RawNewsItem(
-                url=url,
-                title=title,
-                published_at=_entry_time(entry),
-                feed_id=feed_id,
-                publisher_id=publisher.id,
-                language=publisher.languages[0] if publisher.languages else None,
-                origin_publisher_name=origin_name,
-                origin_publisher_domain=registered_domain(source_href) or publisher.domain,
-                fetched_at=fetched,
+        try:
+            url = _entry_url(entry)
+            if url is None or url in seen:
+                continue
+            source = entry.get("source")
+            source_dict = source if isinstance(source, dict) else {}
+            source_href = source_dict.get("href") or source_dict.get("url")
+            source_name = clean_text(source_dict.get("title"))
+            publisher = _gnews_origin(registry, source_href, source_name)
+            if publisher is None or publisher.tier > max_tier:
+                continue
+            origin_name = source_name or publisher.name
+            title = clean_text(entry.get("title"))
+            if not title:
+                continue
+            title = _strip_source_suffix(title, origin_name)
+            if not title:
+                continue
+            seen.add(url)
+            out.append(
+                RawNewsItem(
+                    url=url,
+                    title=title,
+                    published_at=_entry_time(entry),
+                    feed_id=feed_id,
+                    publisher_id=publisher.id,
+                    language=publisher.languages[0] if publisher.languages else None,
+                    origin_publisher_name=origin_name,
+                    origin_publisher_domain=registered_domain(source_href) or publisher.domain,
+                    fetched_at=fetched,
+                )
             )
-        )
+        except ValueError as exc:
+            log.debug("skipping malformed google news entry for %s: %s", feed_id, exc)
     return out
 
 
@@ -291,93 +338,150 @@ def _dedupe_by_id(raws: Iterable[RawNewsItem]) -> dict[str, RawNewsItem]:
 
 
 async def _ingest(
-    ctx: CollectorContext, pipeline: NewsPipelineProtocol, raws: Iterable[RawNewsItem]
+    ctx: CollectorContext,
+    pipeline: NewsPipelineProtocol,
+    raws: Iterable[RawNewsItem],
+    seen: set[str] | None = None,
 ) -> int:
-    """Drop stale and already-stored items, send the rest to the pipeline in one call."""
+    """Drop stale, already-stored and already-sent-this-run items; send the rest in batches of 25.
+
+    ``seen`` is the run-level set of item ids, so one story carried by two feeds
+    reaches the pipeline once per run.
+    """
     cutoff = ctx.now() - timedelta(days=ctx.settings.max_item_age_days)
     fresh = _dedupe_by_id(r for r in raws if r.published_at is None or r.published_at >= cutoff)
+    if seen is not None:
+        fresh = {item_id: raw for item_id, raw in fresh.items() if item_id not in seen}
     if not fresh:
         return 0
     known = ctx.store.news_exists(fresh.keys())
     new = [raw for item_id, raw in fresh.items() if item_id not in known]
-    if not new:
+    if seen is not None:
+        seen.update(fresh.keys())
+    stored = 0
+    for start in range(0, len(new), _PIPELINE_BATCH):
+        stored += len(await pipeline.process(new[start : start + _PIPELINE_BATCH]))
+    return stored
+
+
+def _stagger_offset(publisher: Publisher, feed: FeedSpec) -> int:
+    """Initial delay for community feeds: a stable 0 to 600 s offset derived from the feed id.
+
+    Reddit answers 429 when subreddits are hit back-to-back, so their first polls are
+    spread across the window instead of all firing in the same run.
+    """
+    if publisher.kind != "community":
         return 0
-    stored = await pipeline.process(new)
-    return len(stored)
+    return zlib.crc32(feed.id.encode("utf-8")) % (_STAGGER_WINDOW_S + 1)
 
 
-def _is_due(ctx: CollectorContext, feed: FeedSpec, now: datetime) -> bool:
-    due_at = _parse_ts(ctx.store.kv_get(_NEXT_DUE_KEY.format(feed.id)))
-    return due_at is None or due_at <= now
+def _next_due(ctx: CollectorContext, publisher: Publisher, feed: FeedSpec, now: datetime) -> datetime:
+    """Stored next-poll time; a feed with none yet gets its initial (possibly staggered) time."""
+    key = _NEXT_DUE_KEY.format(feed.id)
+    stored = _parse_ts(ctx.store.kv_get(key))
+    if stored is not None:
+        return stored
+    initial = now + timedelta(seconds=_stagger_offset(publisher, feed))
+    ctx.store.kv_set(key, initial.isoformat())
+    return initial
 
 
 def _schedule_next(ctx: CollectorContext, feed: FeedSpec, now: datetime, failure_streak: int) -> None:
-    """Next poll = poll_seconds ±10 % jitter; a failing streak doubles the delay (cap 30 min)."""
+    """Next poll = poll_seconds ±10 % jitter; a failing streak doubles the delay (capped at 30 min,
+    never shorter than poll_seconds)."""
     base = max(feed.poll_seconds, 1)
-    delay = base if failure_streak == 0 else min(base * 2 ** min(failure_streak, 5), _MAX_BACKOFF_S)
+    if failure_streak == 0:
+        delay = base
+    else:
+        delay = max(base, min(base * 2 ** min(failure_streak, 5), _MAX_BACKOFF_S))
     jitter = random.uniform(0.9, 1.1)  # noqa: S311 - scheduling jitter, not security
     ctx.store.kv_set(_NEXT_DUE_KEY.format(feed.id), (now + timedelta(seconds=delay * jitter)).isoformat())
 
 
+@dataclass
+class _Polled:
+    feed: FeedSpec
+    ok: bool
+    raws: list[RawNewsItem]
+    failure_streak: int
+
+
 class FeedCollector:
-    """Polls every due RSS/Atom publisher feed; one failing feed never blocks the others."""
+    """Polls due RSS/Atom publisher feeds, most overdue first, at most 40 per run.
+
+    Each feed's new items go to the pipeline as soon as that feed completes. Failing
+    feeds are isolated; the run raises only when every feed in it failed.
+    """
 
     name = "news.feeds"
     interval_s = 60
+    timeout_s = 900
     lock_group: str | None = None
 
     async def run(self, ctx: CollectorContext) -> CollectorResult:
         if ctx.pipeline is None:
             raise RuntimeError("news.feeds requires a news pipeline")
+        pipeline = ctx.pipeline
         now = ctx.now()
-        due = [
-            (publisher, feed)
-            for publisher, feed in ctx.registry.feeds()
-            if feed.kind in ("rss", "atom") and _is_due(ctx, feed, now)
-        ]
-        if not due:
+        candidates: list[tuple[datetime, Publisher, FeedSpec]] = []
+        for publisher, feed in ctx.registry.feeds():
+            if feed.kind not in ("rss", "atom"):
+                continue
+            due_at = _next_due(ctx, publisher, feed, now)
+            if due_at <= now:
+                candidates.append((due_at, publisher, feed))
+        candidates.sort(key=lambda item: item[0])
+        batch = candidates[:_MAX_FEEDS_PER_RUN]
+        deferred = len(candidates) - len(batch)
+        if not batch:
             return CollectorResult(items=0, notes=["feeds_due=0", "feeds_failed=0"])
 
         semaphore = asyncio.Semaphore(_FEED_CONCURRENCY)
 
-        async def guarded(publisher: Publisher, feed: FeedSpec) -> tuple[bool, list[RawNewsItem]]:
+        async def fetch(publisher: Publisher, feed: FeedSpec) -> _Polled:
             async with semaphore:
                 return await self._poll(ctx, publisher, feed)
 
-        outcomes = await asyncio.gather(*(guarded(p, f) for p, f in due))
-        failed = sum(1 for ok, _ in outcomes if not ok)
-        raws = [raw for _, items in outcomes for raw in items]
-        stored = await _ingest(ctx, ctx.pipeline, raws)
-        if failed == len(due):
+        tasks = [asyncio.ensure_future(fetch(p, f)) for _, p, f in batch]
+        stored = 0
+        failed = 0
+        seen: set[str] = set()
+        try:
+            for finished in asyncio.as_completed(tasks):
+                polled = await finished
+                if polled.ok:
+                    stored += await _ingest(ctx, pipeline, polled.raws, seen)
+                else:
+                    failed += 1
+                _schedule_next(ctx, polled.feed, now, polled.failure_streak)
+        finally:
+            for task in tasks:
+                task.cancel()
+        if failed == len(batch):
             raise RuntimeError("all feeds failed")
         return CollectorResult(
-            items=stored, notes=[f"feeds_due={len(due)}", f"feeds_failed={failed}"]
+            items=stored,
+            notes=[f"feeds_due={len(batch)}", f"feeds_failed={failed}", f"feeds_deferred={deferred}"],
         )
 
-    async def _poll(
-        self, ctx: CollectorContext, publisher: Publisher, feed: FeedSpec
-    ) -> tuple[bool, list[RawNewsItem]]:
-        """Fetch and parse one feed, record its health and schedule the next poll."""
-        now = ctx.now()
+    async def _poll(self, ctx: CollectorContext, publisher: Publisher, feed: FeedSpec) -> _Polled:
+        """Fetch and parse one feed and record its health. Scheduling happens after ingestion."""
         provider = f"feed.{feed.id}"
         health = HealthTracker(ctx.store, now=ctx.now)
         try:
             result = await ctx.http.get(feed.url, profile=feed.profile, conditional=True)
             if result.not_modified:
                 health.ok(provider, 0, feed.poll_seconds)
-                _schedule_next(ctx, feed, now, 0)
-                return True, []
+                return _Polled(feed, True, [], 0)
             raws = parse_feed(result.content, feed=feed, publisher=publisher, fetched_at=result.fetched_at)
         except (FetchError, ValueError, OSError) as exc:
             message = str(exc) if isinstance(exc, FetchError) else f"{type(exc).__name__}: {exc}"
             health.error(provider, message, feed.poll_seconds)
             row = ctx.store.get_health(provider)
-            _schedule_next(ctx, feed, now, row.consecutive_failures if row else 1)
             log.warning("feed failed: %s (%s)", feed.id, message)
-            return False, []
+            return _Polled(feed, False, [], row.consecutive_failures if row else 1)
         health.ok(provider, len(raws), feed.poll_seconds)
-        _schedule_next(ctx, feed, now, 0)
-        return True, raws
+        return _Polled(feed, True, raws, 0)
 
 
 class GoogleNewsCollector:
@@ -385,24 +489,37 @@ class GoogleNewsCollector:
 
     name = "news.gnews"
     interval_s = 900
+    timeout_s = 900
     lock_group: str | None = None
 
     async def run(self, ctx: CollectorContext) -> CollectorResult:
         if ctx.pipeline is None:
             raise RuntimeError("news.gnews requires a news pipeline")
+        pipeline = ctx.pipeline
         symbols = ctx.store.get_watchlist() or list(ctx.settings.watchlist)
         issuers = ticker_to_issuer(load_issuers(ctx.settings.ref_dir))
         queries: dict[str, str] = {}
+        skipped: list[str] = []
         for symbol in symbols:
             issuer = issuers.get(symbol.strip().upper())
             query = watchlist_query(symbol, issuer.title if issuer else None)
             if query:
                 queries[symbol] = query
+            else:
+                skipped.append(symbol)
+        notes = [f"gnews_skipped_no_issuer={len(skipped)}"] if skipped else []
+        if skipped:
+            log.warning(
+                "google news skipped %d symbols with no issuer title (SEC cache missing?): %s",
+                len(skipped),
+                ",".join(skipped),
+            )
         if not queries:
-            return CollectorResult(items=0, notes=["gnews_queries=0"])
+            return CollectorResult(items=0, notes=["gnews_queries=0", *notes])
 
-        raws: list[RawNewsItem] = []
+        stored = 0
         failed = 0
+        seen: set[str] = set()
         for symbol, query in queries.items():
             provider = f"gnews.{symbol}"
             health = HealthTracker(ctx.store, now=ctx.now)
@@ -420,13 +537,12 @@ class GoogleNewsCollector:
                 fetched_at=result.fetched_at,
             )
             health.ok(provider, len(items), self.interval_s)
-            raws.extend(items)
-
-        stored = await _ingest(ctx, ctx.pipeline, raws)
+            stored += await _ingest(ctx, pipeline, items, seen)
         if failed == len(queries):
             raise RuntimeError("all google news queries failed")
         return CollectorResult(
-            items=stored, notes=[f"gnews_queries={len(queries)}", f"gnews_failed={failed}"]
+            items=stored,
+            notes=[f"gnews_queries={len(queries)}", f"gnews_failed={failed}", *notes],
         )
 
 

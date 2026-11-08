@@ -57,7 +57,34 @@ def test_community_publishers_are_tier_5(registry: PublisherRegistry) -> None:
 def test_community_feeds_poll_slowly(registry: PublisherRegistry) -> None:
     for publisher in registry.all():
         if publisher.kind == "community":
-            assert all(f.poll_seconds >= 600 for f in publisher.feeds), publisher.id
+            assert all(f.poll_seconds >= 900 for f in publisher.feeds), publisher.id
+
+
+@pytest.mark.parametrize(
+    ("publisher_id", "tier"),
+    [
+        # tier 1: official sources and top wires
+        ("federal_reserve", 1), ("ecb", 1), ("bank_of_england", 1), ("bank_of_japan", 1),
+        ("bis", 1), ("sec", 1), ("bea", 1), ("us_treasury", 1), ("reuters", 1), ("ap", 1),
+        # tier 2: major financial press
+        ("barrons", 2), ("wsj", 2), ("ft", 2), ("cnbc", 2),
+        # tier 3: general, regional and specialist
+        ("axios", 3), ("fortune", 3), ("business_insider", 3), ("coindesk", 3),
+        # tier 4: aggregators, PR wires, contributor and promo-prone platforms
+        ("forbes", 4), ("motley_fool", 4), ("investorplace", 4), ("benzinga", 4),
+        ("mining_com", 4), ("oilprice", 4), ("yahoo_finance", 4), ("prnewswire", 4),
+    ],
+)
+def test_publisher_tier_policy(registry: PublisherRegistry, publisher_id: str, tier: int) -> None:
+    publisher = registry.get(publisher_id)
+    assert publisher is not None, publisher_id
+    assert publisher.tier == tier
+
+
+def test_no_promo_or_community_source_is_in_the_high_tiers(registry: PublisherRegistry) -> None:
+    for publisher in registry.all():
+        if publisher.kind in ("community", "press_release"):
+            assert publisher.tier >= 4, publisher.id
 
 
 def test_feed_kinds_and_categories_are_valid(registry: PublisherRegistry) -> None:
