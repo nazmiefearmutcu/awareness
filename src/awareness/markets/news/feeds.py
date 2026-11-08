@@ -387,14 +387,18 @@ def _next_due(ctx: CollectorContext, publisher: Publisher, feed: FeedSpec, now: 
 
 
 def _schedule_next(ctx: CollectorContext, feed: FeedSpec, now: datetime, failure_streak: int) -> None:
-    """Next poll = poll_seconds ±10 % jitter; a failing streak doubles the delay (capped at 30 min,
-    never shorter than poll_seconds)."""
+    """Next poll = poll_seconds plus jitter; a failing streak doubles the delay (capped at 30 min,
+    never shorter than poll_seconds).
+
+    Jitter is upward-only (+0…10 %) so a feed is never polled sooner than its ``poll_seconds`` —
+    community hosts such as Reddit rate-limit hard below their floor.
+    """
     base = max(feed.poll_seconds, 1)
     if failure_streak == 0:
         delay = base
     else:
         delay = max(base, min(base * 2 ** min(failure_streak, 5), _MAX_BACKOFF_S))
-    jitter = random.uniform(0.9, 1.1)  # noqa: S311 - scheduling jitter, not security
+    jitter = random.uniform(1.0, 1.1)  # noqa: S311 - scheduling jitter, not security
     ctx.store.kv_set(_NEXT_DUE_KEY.format(feed.id), (now + timedelta(seconds=delay * jitter)).isoformat())
 
 
