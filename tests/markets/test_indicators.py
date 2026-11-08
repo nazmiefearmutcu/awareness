@@ -453,4 +453,90 @@ def test_gdelt_collector_raises_when_every_query_fails(markets_settings: Markets
 
     with pytest.raises(FetchError):
         asyncio.run(run())
-    assert store.kv_get("gdelt.tone.cursor") is not None  # rotation still advances on failure
+    # three queries (AAPL + two fixed), one batch of three: cursor wraps back to 0 after a full pass
+    assert store.kv_get("gdelt.tone.cursor") == 0
+
+
+def test_cnn_skips_history_rows_without_usable_x(fixture_path: FixturePath) -> None:
+    payload = _load(fixture_path, "fng_cnn.json")
+    payload["fear_and_greed_historical"]["data"].extend([
+        {"y": 10.0, "rating": "fear"},               # missing x
+        {"x": "not-a-number", "y": 11.0},            # non-numeric x
+    ])
+    points = parse_cnn_fear_greed(payload, fetched_at=NOW, url="u")
+    main = [p for p in points if p.indicator == "cnn_fear_greed"]
+    assert len(main) == 30  # the two bad rows are skipped, the rest of the payload still parses
+
+
+def test_cboe_max_rows_zero_returns_nothing(fixture_path: FixturePath) -> None:
+    text = fixture_path("cboe_vix_history.csv").read_text(encoding="utf-8")
+    assert parse_cboe_history_csv(text, indicator="vix", fetched_at=NOW, url="u", max_rows=0) == []
+
+
+def test_cboe_accepts_utf8_bom(fixture_path: FixturePath) -> None:
+    text = "﻿" + fixture_path("cboe_vix_history.csv").read_text(encoding="utf-8")
+    points = parse_cboe_history_csv(text, indicator="vix", fetched_at=NOW, url="u")
+    assert len(points) == 90
+
+
+def test_gdelt_malformed_series_shape_is_value_error() -> None:
+    with pytest.raises(ValueError):
+        parse_gdelt_timelinetone({"timeline": [None]}, query_key="x", fetched_at=NOW, url="u")
+    with pytest.raises(ValueError):
+        parse_gdelt_timelinetone({"timeline": [{"series": "Average Tone", "data": {"a": 1}}]},
+                                 query_key="x", fetched_at=NOW, url="u")
+
+
+def test_gdelt_malformed_body_fails_only_that_query(markets_settings: MarketsSettings,
+                                                    store: MarketsStore) -> None:
+    store.set_watchlist(["AAPL", "AMZN", "BTC", "ETH", "GOOGL", "META"])  # 6 + 2 fixed = 8 queries
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = request.url.params["query"]
+        if query == QUERY_TEXT["AAPL"]:
+            return httpx.Response(200, json={"timeline": [None]})  # JSON but wrong shape
+        return httpx.Response(200, content=_gdelt_body(query))
+
+    async def run() -> Any:
+        http = _fetcher(markets_settings, handler)
+        try:
+            return await GdeltToneCollector().run(_ctx(markets_settings, store, http))
+        finally:
+            await http.aclose()
+
+    result = asyncio.run(run())  # must not raise: other queries succeeded
+    assert store.latest_indicator("gdelt.tone:AAPL") is None
+    stored = {p.indicator for p in store.latest_by_prefix("gdelt.tone:")}
+    assert stored == {"gdelt.tone:AMZN", "gdelt.tone:BTC", "gdelt.tone:ETH", "gdelt.tone:GOOGL",
+                      "gdelt.tone:META"}
+    assert store.kv_get("gdelt.tone.cursor") == 6  # cursor advanced past the failed query too
+    assert any("AAPL" in note for note in result.notes)
+
+
+def test_apewisdom_duplicate_across_pages_is_first_wins(fixture_path: FixturePath, markets_settings: MarketsSettings,
+                                                        store: MarketsStore) -> None:
+    stocks = fixture_path("apewisdom_all_stocks_p1.json").read_bytes()
+    page2 = json.dumps({"count": 1, "pages": 2, "current_page": 2, "results": [
+        {"rank": 9, "ticker": "NVDA", "name": "NVIDIA", "mentions": 7, "upvotes": 3,
+         "rank_24h_ago": 9, "mentions_24h_ago": 7},
+    ]}).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "all-crypto" in request.url.path:
+            return httpx.Response(200, content=b'{"results": []}')
+        if request.url.path.endswith("/page/2"):
+            return httpx.Response(200, content=page2)
+        return httpx.Response(200, content=stocks)
+
+    async def run() -> None:
+        http = _fetcher(markets_settings, handler)
+        try:
+            await ApeWisdomCollector().run(_ctx(markets_settings, store, http))
+        finally:
+            await http.aclose()
+
+    asyncio.run(run())
+    nvda = store.latest_indicator("social.stocks.mentions:NVDA")
+    assert nvda is not None
+    assert nvda.meta["rank"] == 1  # page 1 entry kept, not the page 2 rank-9 duplicate
+    assert nvda.value == 91.0

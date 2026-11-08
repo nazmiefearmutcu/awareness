@@ -6,7 +6,7 @@ is filled with defaults. Timestamps are ISO-8601 UTC strings.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from awareness.markets.models import IndicatorPoint, ensure_utc
@@ -18,9 +18,8 @@ _FALLBACK_SCAN = 500
 
 
 def _iso(value: datetime) -> str:
-    utc = ensure_utc(value)
-    assert utc is not None
-    return utc.isoformat()
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return aware.astimezone(UTC).isoformat()
 
 
 def _value_at(store: MarketsStore, indicator: str, ts: datetime) -> float | None:
@@ -88,8 +87,8 @@ def _crypto_section(store: MarketsStore, since: datetime) -> dict[str, Any] | No
 def _vix_section(store: MarketsStore, since: datetime) -> dict[str, Any] | None:
     """VIX term structure. The 3-month and 9-day values are read at the VIX timestamp.
 
-    ``structure`` is ``contango`` when VIX < VIX3M, ``backwardation`` when VIX > VIX3M and
-    ``flat`` when equal. It stays ``None`` when VIX3M is unavailable at that timestamp.
+    ``structure`` is ``contango`` when VIX < VIX3M and ``backwardation`` otherwise (equal counts
+    as backwardation). It stays ``None`` when VIX3M is unavailable at that timestamp.
     """
     latest = store.latest_indicator("vix")
     if latest is None:
@@ -100,13 +99,8 @@ def _vix_section(store: MarketsStore, since: datetime) -> dict[str, Any] | None:
     structure: str | None = None
     if vix3m is not None and vix3m > 0:
         term_ratio = round(latest.value / vix3m, 3)
-        if latest.value < vix3m:
-            structure = "contango"
-        elif latest.value > vix3m:
-            structure = "backwardation"
-        else:
-            structure = "flat"
-    later_3m = {p.ts: p.value for p in _history(store, "vix3m", since)}
+        structure = "contango" if latest.value < vix3m else "backwardation"
+    vix3m_by_ts = {p.ts: p.value for p in _history(store, "vix3m", since)}
     return {
         "vix": latest.value,
         "vix9d": vix9d,
@@ -115,7 +109,7 @@ def _vix_section(store: MarketsStore, since: datetime) -> dict[str, Any] | None:
         "term_ratio": term_ratio,
         "structure": structure,
         "history": [
-            {"ts": _iso(p.ts), "vix": p.value, "vix3m": later_3m.get(p.ts)}
+            {"ts": _iso(p.ts), "vix": p.value, "vix3m": vix3m_by_ts.get(p.ts)}
             for p in _history(store, "vix", since)
         ],
     }

@@ -132,6 +132,18 @@ def test_vix_structure_is_contango_when_vix_below_vix3m(store: MarketsStore) -> 
     assert vix["vix9d"] is None  # not provided -> None, not a default
 
 
+def test_vix_structure_equal_counts_as_backwardation(store: MarketsStore) -> None:
+    ts = datetime(2026, 11, 6, 21, 15, tzinfo=UTC)
+    src = ProviderRef(provider="cboe", url="u", fetched_at=NOW)
+    store.upsert_indicator_points([
+        IndicatorPoint(indicator="vix", ts=ts, value=20.0, source=src),
+        IndicatorPoint(indicator="vix3m", ts=ts, value=20.0, source=src),
+    ])
+    vix = market_sentiment_snapshot(store, now=NOW)["vix"]
+    assert vix["structure"] == "backwardation"
+    assert vix["term_ratio"] == 1.0
+
+
 def test_vix_structure_backwardation_when_vix_above_vix3m(store: MarketsStore) -> None:
     ts = datetime(2026, 11, 6, 21, 15, tzinfo=UTC)
     src = ProviderRef(provider="cboe", url="u", fetched_at=NOW)

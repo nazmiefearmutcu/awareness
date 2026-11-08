@@ -134,9 +134,17 @@ def _any_timestamp(value: object) -> datetime:
 
 
 def _floor_to_30_minutes(value: datetime) -> datetime:
-    utc = ensure_utc(value)
-    assert utc is not None
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    utc = aware.astimezone(UTC)
     return utc.replace(minute=utc.minute - utc.minute % 30, second=0, microsecond=0)
+
+
+def _row_epoch(row: Mapping[str, Any]) -> datetime | None:
+    """Epoch-millisecond ``x`` of a CNN row, or ``None`` when missing or non-numeric."""
+    try:
+        return _epoch_ms(row["x"])
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return None
 
 
 def _cboe_stamp(day: date) -> datetime:
@@ -171,9 +179,9 @@ def parse_cnn_fear_greed(payload: dict, *, fetched_at: datetime, url: str) -> li
     points: list[IndicatorPoint] = []
     historical = payload.get("fear_and_greed_historical") or {}
     for row in historical.get("data") or []:
-        ts = _epoch_ms(row["x"])
+        ts = _row_epoch(row)
         value = _score_or_none(row.get("y"))
-        if value is None or ts == current_ts:
+        if ts is None or value is None or ts == current_ts:
             continue
         points.append(IndicatorPoint(indicator="cnn_fear_greed", ts=ts, value=value,
                                      label=row.get("rating"), source=source))
@@ -186,23 +194,20 @@ def parse_cnn_fear_greed(payload: dict, *, fetched_at: datetime, url: str) -> li
             continue
         indicator = f"cnn_fg.{key}"
         rows = [r for r in (block.get("data") or []) if isinstance(r, Mapping)]
+        timed = [(_row_epoch(r), r) for r in rows]
         try:
             block_ts = _any_timestamp(block["timestamp"])
         except (KeyError, TypeError, ValueError):
             block_ts = None
         block_score = _score_or_none(block.get("score"))
         if block_ts is not None and block_score is not None:
-            raw_now = next((_float_or_none(r.get("y")) for r in rows
-                            if r.get("x") is not None and _epoch_ms(r["x"]) == block_ts), None)
+            raw_now = next((_float_or_none(r.get("y")) for ts, r in timed if ts == block_ts), None)
             points.append(IndicatorPoint(indicator=indicator, ts=block_ts, value=block_score,
                                          label=block.get("rating"),
                                          meta={"scale": "score", "raw": raw_now}, source=source))
-        for row in rows:
-            if row.get("x") is None:
-                continue
-            ts = _epoch_ms(row["x"])
+        for ts, row in timed:
             raw = _float_or_none(row.get("y"))
-            if raw is None or ts == block_ts:
+            if ts is None or raw is None or ts == block_ts:
                 continue
             points.append(IndicatorPoint(indicator=indicator, ts=ts, value=raw, label=row.get("rating"),
                                          meta={"scale": "raw", "raw": raw}, source=source))
@@ -242,7 +247,7 @@ def parse_cboe_history_csv(
     (an HTML error page, for example).
     """
     source = ProviderRef(provider="cboe", url=url, fetched_at=fetched_at)
-    reader = csv.reader(io.StringIO(text))
+    reader = csv.reader(io.StringIO(text.lstrip("﻿")))
     header = next(reader, None)
     if not header or [h.strip().upper() for h in header[:5]] != CBOE_HEADER:
         raise ValueError(f"unexpected CBOE CSV header for {indicator}")
@@ -261,7 +266,7 @@ def parse_cboe_history_csv(
     points = [
         IndicatorPoint(indicator=indicator, ts=_cboe_stamp(day), value=close,
                        meta={"open": o, "high": h, "low": lo}, source=source)
-        for day, o, h, lo, close in rows[-max_rows:]
+        for day, o, h, lo, close in (rows[-max_rows:] if max_rows > 0 else [])
     ]
     return _dedupe(points)
 
@@ -323,7 +328,14 @@ def parse_gdelt_timelinetone(payload: dict, *, query_key: str, fetched_at: datet
     source = ProviderRef(provider="gdelt", url=url, fetched_at=fetched_at)
     points: list[IndicatorPoint] = []
     for series in timeline:
-        for row in series.get("data") or []:
+        if not isinstance(series, Mapping):
+            raise ValueError("GDELT timeline entry is not an object")
+        data = series.get("data") or []
+        if not isinstance(data, list):
+            raise ValueError("GDELT timeline data is not a list")
+        for row in data:
+            if not isinstance(row, Mapping):
+                continue
             value = _float_or_none(row.get("value"))
             try:
                 ts = datetime.strptime(str(row["date"]), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
@@ -411,9 +423,14 @@ class ApeWisdomCollector:
     async def run(self, ctx: CollectorContext) -> CollectorResult:
         responses = [(universe, url, await ctx.http.get(url, profile="bot")) for universe, url in APEWISDOM_URLS]
         points: list[IndicatorPoint] = []
+        seen: set[str] = set()  # first occurrence across pages wins (page 1 outranks later pages)
         for universe, url, res in responses:
-            points.extend(parse_apewisdom(_json_body(res, url), universe=universe,
-                                          fetched_at=res.fetched_at, url=url))
+            for point in parse_apewisdom(_json_body(res, url), universe=universe,
+                                         fetched_at=res.fetched_at, url=url):
+                if point.indicator in seen:
+                    continue
+                seen.add(point.indicator)
+                points.append(point)
         return CollectorResult(items=ctx.store.upsert_indicator_points(points))
 
 
@@ -453,7 +470,7 @@ class GdeltToneCollector:
                 res = await ctx.http.get(GDELT_URL, profile="bot", params=params)
                 parsed = parse_gdelt_timelinetone(_json_body(res, full_url), query_key=query_key,
                                                   fetched_at=res.fetched_at, url=full_url)
-            except (FetchError, ValueError) as exc:
+            except (FetchError, ValueError, KeyError, TypeError, AttributeError) as exc:
                 notes.append(f"{query_key}: {exc}")
                 continue
             points.extend(parsed)
