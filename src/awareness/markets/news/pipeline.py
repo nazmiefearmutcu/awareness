@@ -45,7 +45,7 @@ FINANCE_FEED_CATEGORIES = {
 EXCERPT_CHARS = 400
 # Bump when entity/taxonomy/sentiment/quality rules change: the service then re-enriches the
 # recent window once at startup so stored items follow the current rules.
-NLP_VERSION = "2026-11-08.9"
+NLP_VERSION = "2026-11-08.10"
 
 
 # ── component protocols (implemented in nlp/, news/quality.py, news/cluster.py) ──
@@ -532,6 +532,9 @@ class NewsPipeline:
         pub = d.publisher
         finance_feed = bool(set(d.raw.categories) & FINANCE_FEED_CATEGORIES)
         if negative_hit or pub is None or not evidence:
+            return relevance
+        feed = next((f for f in pub.feeds if f.id == d.raw.feed_id), None)
+        if feed is not None and not feed.relevance_floor:
             return relevance
         if pub.kind in {"wire", "financial_press", "specialist"} and finance_feed:
             return max(relevance, 0.5)

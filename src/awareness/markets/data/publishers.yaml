@@ -488,7 +488,7 @@ publishers:
     languages: [tr]
     fetch_fulltext: true
     feeds:
-      - {id: anadolu.ekonomi, url: "https://www.aa.com.tr/tr/rss/default?cat=ekonomi", categories: [economy], poll_seconds: 300, language: tr}
+      - {id: anadolu.ekonomi, url: "https://www.aa.com.tr/tr/rss/default?cat=ekonomi", categories: [economy], poll_seconds: 300, language: tr, relevance_floor: false}
   - id: bloomberg_ht
     name: Bloomberg HT
     domain: bloomberght.com

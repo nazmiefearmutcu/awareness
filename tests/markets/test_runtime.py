@@ -21,6 +21,7 @@ from awareness.markets.models import (
     CorpEvent,
     EconEvent,
     EntityRef,
+    FeedSpec,
     Holiday,
     IndicatorPoint,
     NewsItem,
@@ -45,6 +46,9 @@ def _registry() -> PublisherRegistry:
             Publisher(id="cnbc", name="CNBC", domain="cnbc.com", tier=2, kind="financial_press", feeds=[]),
             Publisher(id="wsj", name="WSJ", domain="wsj.com", tier=2, kind="financial_press", paywalled=True, feeds=[]),
             Publisher(id="yahoo_finance", name="Yahoo Finance", domain="finance.yahoo.com", tier=4, kind="aggregator", feeds=[]),
+            Publisher(id="wire_tr", name="Wire TR", domain="wire.example", tier=3, kind="wire", feeds=[
+                FeedSpec(id="wire_tr.top", url="https://wire.example/rss", categories=["economy"], relevance_floor=False),
+            ]),
         ]
     )
 
@@ -213,6 +217,13 @@ def test_finance_feed_floor_needs_market_evidence(markets_settings: MarketsSetti
     assert by_title["University greenhouse project grows herbs"].finance_relevance == pytest.approx(0.3)
     # Some market evidence (an asset class) keeps the recall-gap floor for an unknown company.
     assert by_title["Acme Holding plans a new plant"].finance_relevance == pytest.approx(0.5)
+
+
+def test_feed_can_opt_out_of_the_finance_feed_floor(markets_settings: MarketsSettings, store: MarketsStore) -> None:
+    # A mixed economy section of a general wire (relevance_floor: false): items earn relevance from content.
+    pipe = _pipeline(markets_settings, store)
+    items = asyncio.run(pipe.process([_raw(13, "Acme Holding plans a new plant", "wire_tr", categories=["economy"])]))
+    assert items[0].finance_relevance == pytest.approx(0.3)
 
 
 # ── runner ────────────────────────────────────────────────────────────────
