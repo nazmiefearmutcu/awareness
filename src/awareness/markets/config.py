@@ -62,9 +62,9 @@ class MarketsSettings(BaseSettings):
         default_factory=lambda: list(DEFAULT_HOLIDAY_COUNTRIES)
     )
     exchanges: Annotated[list[str], NoDecode] = Field(default_factory=lambda: list(DEFAULT_EXCHANGES))
-    econ_days_back: int = 3
+    econ_days_back: int = 7
     econ_days_ahead: int = 21
-    corp_days_back: int = 3
+    corp_days_back: int = 30
     corp_days_ahead: int = 21
     http_timeout_s: float = 20.0
     browser_user_agent: str = BROWSER_UA
